@@ -1,0 +1,13438 @@
+﻿<template>
+  <n-space vertical size="large">
+    <n-layout embedded has-sider sider-placement="right">
+      <n-layout-content class="chat-layout__content" :content-style="layoutContentStyle">
+        <n-flex
+          vertical
+          align="center"
+          :class="['chat-page', theme, { 'is-compact': isCompactChatLayout, 'is-dense': isDenseChatLayout }]"
+        >
+    <n-card hoverable class="chat-header-card">
+      <n-flex justify="space-between" align="center" wrap :size="12">
+        <n-flex align="center" :size="8">
+          <n-icon :component="ChatMultiple24Filled" size="20" :depth="1" />
+          <span style="font-weight: 500;">聊天</span>
+        </n-flex>
+
+        <n-flex align="center" wrap :size="8">
+          <n-tooltip trigger="hover">
+            <template #trigger>
+              <n-button
+                size="small"
+                tertiary
+                circle
+                :type="sessionSiderCollapsed ? 'default' : 'primary'"
+                @click="toggleSessionSider"
+              >
+                <template #icon>
+                  <n-icon :component="DocumentTextOutline" size="16" />
+                </template>
+              </n-button>
+            </template>
+            {{ sessionSiderTooltipText }}
+          </n-tooltip>
+
+          <n-tooltip trigger="hover">
+            <template #trigger>
+              <n-button size="small" tertiary circle @click="showModelModal = true">
+                <template #icon>
+                  <n-icon :component="FlowModelerReference" size="16" />
+                </template>
+              </n-button>
+            </template>
+            {{ modelTooltipText }}
+          </n-tooltip>
+
+          <n-tooltip trigger="hover">
+            <template #trigger>
+              <n-button size="small" tertiary circle @click="openSystemPromptModal">
+                <template #icon>
+                  <n-icon :component="PromptIcon" size="16" />
+                </template>
+              </n-button>
+            </template>
+            {{ systemTooltipText }}
+          </n-tooltip>
+
+          <n-tooltip trigger="hover">
+            <template #trigger>
+              <n-button size="small" tertiary circle :disabled="!session.messages.length" @click="openSaveSessionModal">
+                <template #icon>
+                  <n-icon :component="SaveOutline" size="16" />
+                </template>
+              </n-button>
+            </template>
+            保存会话
+          </n-tooltip>
+        </n-flex>
+      </n-flex>
+
+      <n-flex align="center" wrap :size="6" style="margin-top: 10px;">
+        <n-tag v-if="selectedProvider" size="small" type="info" bordered>
+          服务商：{{ selectedProvider.name || selectedProvider._id }}
+        </n-tag>
+        <n-tag v-if="selectedModel" size="small" bordered>
+          模型：{{ selectedModel }}
+        </n-tag>
+        <n-tooltip v-if="selectedAgent" trigger="hover">
+          <template #trigger>
+            <n-tag size="small" type="success" bordered>
+              智能体：{{ selectedAgent.name || selectedAgent._id }}
+            </n-tag>
+          </template>
+          {{ selectedAgentHoverText }}
+        </n-tooltip>
+        <n-tag v-if="activePromptLabel" size="small" type="success" bordered>
+          提示词：{{ activePromptLabel }}
+        </n-tag>
+        <n-tooltip v-if="selectedSkillObjects.length" trigger="hover">
+          <template #trigger>
+            <n-tag size="small" type="warning" bordered>
+              技能：{{ selectedSkillObjects.length }}
+            </n-tag>
+          </template>
+          {{ selectedSkillsHoverText }}
+        </n-tooltip>
+        <n-tooltip v-if="activeMcpServers.length" trigger="hover">
+          <template #trigger>
+            <n-tag size="small" type="warning" bordered>
+              MCP：{{ activeMcpServers.length }}
+            </n-tag>
+          </template>
+          {{ activeMcpServersHoverText }}
+        </n-tooltip>
+        <n-tooltip v-if="activeMcpServers.length" trigger="hover">
+          <template #trigger>
+            <n-tag size="small" bordered>
+              工具：{{ mcpToolCountText }}
+            </n-tag>
+          </template>
+          {{ activeMcpToolsHoverText }}
+        </n-tooltip>
+        <n-tag v-if="activeMcpServers.length" size="small" bordered>
+          工具模式：{{ toolModeDisplayText }}
+        </n-tag>
+        <n-tooltip v-if="contextWindowSummaryTag" trigger="hover">
+          <template #trigger>
+            <n-tag
+              size="small"
+              bordered
+              :type="contextWindowSummaryTagType"
+            >
+              {{ contextWindowSummaryTag }}
+            </n-tag>
+          </template>
+          {{ contextWindowSummaryTooltipText }}
+        </n-tooltip>
+        <n-tag
+          v-if="activeSessionFilePath"
+          size="small"
+          type="primary"
+          bordered
+          closable
+          :title="activeSessionFilePath"
+          @close="closeActiveSession"
+        >
+          会话：{{ activeSessionTitle || getSessionTitleFromPath(activeSessionFilePath) }}
+        </n-tag>
+        <n-text v-if="effectiveHeaderHint" depth="3" style="font-size: 12px;">{{ effectiveHeaderHint }}</n-text>
+      </n-flex>
+    </n-card>
+
+    <n-card class="chat-messages" :bordered="false" content-style="padding: 0; height: 100%;">
+      <div class="chat-scroll-wrapper">
+        <n-scrollbar ref="scrollbarRef" style="height: 100%;" @scroll="handleChatScroll">
+          <div ref="chatListRef" class="chat-list">
+            <div v-if="!session.messages.length" class="chat-empty-state">
+              <div class="chat-empty-state__panel">
+                <div class="chat-empty-state__hero">
+                  <div class="chat-empty-state__icon">
+                    <n-icon :component="ChatMultiple24Filled" size="26" />
+                  </div>
+                  <div class="chat-empty-state__title">开始一段新对话</div>
+                  <div class="chat-empty-state__description">{{ chatEmptyStateDescription }}</div>
+                </div>
+
+                <div class="chat-empty-state__summary">
+                  <div
+                    v-for="item in chatSetupSummaryItems"
+                    :key="item.key"
+                    class="chat-empty-state__summary-item"
+                  >
+                    <span class="chat-empty-state__summary-label">{{ item.label }}</span>
+                    <span class="chat-empty-state__summary-value" :title="item.value">{{ item.value }}</span>
+                  </div>
+                </div>
+
+                <div class="chat-empty-state__actions">
+                  <n-button size="small" secondary @click="showModelModal = true">模型设置</n-button>
+                  <n-button size="small" secondary @click="openSystemPromptModal">系统提示词</n-button>
+                  <n-button size="small" secondary @click="openAgentModal">选择智能体</n-button>
+                  <n-button size="small" secondary @click="openFilePicker">添加附件</n-button>
+                  <n-button size="small" tertiary :type="sessionSiderCollapsed ? 'default' : 'primary'" @click="toggleSessionSider">
+                    {{ sessionSiderCollapsed ? '打开会话列表' : '收起会话列表' }}
+                  </n-button>
+                </div>
+
+                <div class="chat-empty-state__hint">{{ composerShortcutHint }}</div>
+              </div>
+            </div>
+
+            <div
+              v-if="chatVirtualTopSpacerHeight > 0"
+              class="chat-list__spacer"
+              :style="{ height: `${chatVirtualTopSpacerHeight}px` }"
+              aria-hidden="true"
+            />
+
+            <div
+              v-for="msg in renderedChatMessages"
+              :key="msg.id"
+              class="chat-item"
+              :class="[msg.role, chatItemStateClasses(msg)]"
+              :id="msg.role === 'user' ? `q-${msg.id}` : undefined"
+              :ref="(el) => setChatItemEl(msg.id, msg.role, el)"
+            >
+            <div class="chat-item__row">
+              <div class="chat-item__avatar" :class="chatAvatarStateClasses(msg)">
+                <n-icon :component="roleIcon(msg)" size="18" :class="['chat-item__avatar-icon', chatAvatarIconClasses(msg)]" />
+              </div>
+
+              <div class="chat-item__bubble">
+                <div class="chat-item__content">
+                  <template v-if="msg.role === 'assistant'">
+                    <div v-if="msg.thinking" class="assistant-thinking">
+                      <div class="assistant-thinking__toggle" @click="toggleThinking(msg)">
+                        <n-icon :component="msg.thinkingExpanded ? ChevronUpOutline : ChevronDownOutline" size="14" />
+                        <span class="assistant-thinking__label">{{ msg.streaming ? '思考中...' : '思考完成' }}</span>
+                        <span class="assistant-thinking__hint">{{ msg.thinkingExpanded ? '点击收起' : '点击展开' }}</span>
+                      </div>
+                      <pre v-show="msg.thinkingExpanded" class="assistant-thinking__text">{{ msg.thinking }}</pre>
+                    </div>
+
+                    <ChatAssistantMedia
+                      :msg="msg"
+                      :theme="theme"
+                      :helpers="assistantMediaHelpers"
+                      :actions="assistantMediaActions"
+                    />
+
+                    <pre v-if="msg.render === 'text' && msg.content" class="chat-plain">{{ msg.content }}</pre>
+                    <LazyMarkdownPreview
+                      v-else-if="msg.content && shouldRenderHeavyChatMessage(msg)"
+                      :editorId="`msg-${msg.id}`"
+                      :modelValue="msg.content"
+                      previewTheme="github"
+                      :theme="theme"
+                      :streaming="msg.streaming"
+                      :stream-throttle-ms="180"
+                      :code-foldable="true"
+                      :auto-fold-threshold="CHAT_CODE_AUTO_FOLD_THRESHOLD"
+                    />
+                    <pre v-else-if="msg.content" class="chat-plain chat-plain--deferred">{{ msg.content }}</pre>
+                  </template>
+
+                  <template v-else-if="msg.role === 'user'">
+                    <n-input
+                      v-if="msg.editing"
+                      v-model:value="msg.editDraft"
+                      type="textarea"
+                      :autosize="{ minRows: 3, maxRows: 12 }"
+                      placeholder="编辑后重发（回车发送，Shift+回车换行，Esc 取消）"
+                      :disabled="sending"
+                      @keydown="(e) => handleUserEditKeydown(e, msg)"
+                    />
+
+                    <pre v-if="msg.render === 'text'" class="chat-plain">{{ msg.content }}</pre>
+                    <LazyMarkdownPreview
+                      v-else-if="!msg.editing && shouldRenderHeavyChatMessage(msg)"
+                      :editorId="`msg-${msg.id}`"
+                      :modelValue="msg.content"
+                      previewTheme="github"
+                      :theme="theme"
+                      :streaming="msg.streaming"
+                      :stream-throttle-ms="180"
+                      :code-foldable="true"
+                      :auto-fold-threshold="CHAT_CODE_AUTO_FOLD_THRESHOLD"
+                    />
+                    <pre v-else-if="!msg.editing" class="chat-plain chat-plain--deferred">{{ msg.content }}</pre>
+
+                    <ChatUserAttachments
+                      :msg="msg"
+                      :theme="theme"
+                      :helpers="userAttachmentHelpers"
+                      :actions="userAttachmentActions"
+                    />
+                  </template>
+
+                  <template v-else-if="msg.role === 'tool_call' || msg.role === 'tool'">
+                    <ChatToolMessage
+                      :msg="msg"
+                      :theme="theme"
+                      :helpers="toolMessageHelpers"
+                      :actions="toolMessageActions"
+                    />
+                  </template>
+
+                  <template v-else>
+                    <pre v-if="msg.render === 'text'" class="chat-plain">{{ msg.content }}</pre>
+                    <LazyMarkdownPreview
+                      v-else-if="shouldRenderHeavyChatMessage(msg)"
+                      :editorId="`msg-${msg.id}`"
+                      :modelValue="msg.content"
+                      previewTheme="github"
+                      :theme="theme"
+                      :streaming="msg.streaming"
+                      :stream-throttle-ms="180"
+                      :code-foldable="true"
+                      :auto-fold-threshold="CHAT_CODE_AUTO_FOLD_THRESHOLD"
+                    />
+                    <pre v-else class="chat-plain chat-plain--deferred">{{ msg.content }}</pre>
+                  </template>
+                </div>
+
+                <div v-if="msg.role === 'assistant'" class="chat-item__actions">
+                  <n-tooltip trigger="hover">
+                    <template #trigger>
+                      <n-button size="tiny" tertiary circle @click="copyAssistantMessage(msg)" :disabled="!msg.content">
+                        <template #icon>
+                          <n-icon :component="CopyOutline" size="12" />
+                        </template>
+                      </n-button>
+                    </template>
+                    复制回复
+                  </n-tooltip>
+
+                  <n-tooltip trigger="hover">
+                    <template #trigger>
+                      <n-button size="tiny" tertiary circle @click="regenerateAssistant(msg)" :disabled="sending">
+                        <template #icon>
+                          <n-icon :component="RefreshOutline" size="12" />
+                        </template>
+                      </n-button>
+                    </template>
+                    重新生成（放弃本次回答）
+                  </n-tooltip>
+                </div>
+
+                <div v-else-if="msg.role === 'user'" class="chat-item__actions">
+                  <n-tooltip trigger="hover">
+                    <template #trigger>
+                      <n-button size="tiny" tertiary circle @click="copyUserMessage(msg)" :disabled="!msg.content">
+                        <template #icon>
+                          <n-icon :component="CopyOutline" size="12" />
+                        </template>
+                      </n-button>
+                    </template>
+                    复制提问
+                  </n-tooltip>
+
+                  <n-tooltip trigger="hover">
+                    <template #trigger>
+                      <n-button size="tiny" tertiary circle @click="toggleOrSubmitUserEdit(msg)" :disabled="sending">
+                        <template #icon>
+                          <n-icon :component="msg.editing ? CheckmarkOutline : PencilOutline" size="12" />
+                        </template>
+                      </n-button>
+                    </template>
+                    {{ msg.editing ? '重发（Enter）/ 取消（Esc）' : '编辑并重发' }}
+                  </n-tooltip>
+                </div>
+              </div>
+            </div>
+
+            <n-text class="chat-item__time" depth="3">{{ formatTime(msg.time) }}</n-text>
+          </div>
+
+            <div
+              v-if="chatVirtualBottomSpacerHeight > 0"
+              class="chat-list__spacer"
+              :style="{ height: `${chatVirtualBottomSpacerHeight}px` }"
+              aria-hidden="true"
+            />
+          </div>
+        </n-scrollbar>
+
+        <div
+          v-if="stickyChatBubble"
+          class="chat-sticky-bubble"
+          :class="[`is-${stickyChatBubble.type}`, { 'is-dark': theme === 'dark' }]"
+          @click="handleStickyChatBubbleAction"
+        >
+          <div class="chat-sticky-bubble__main">
+            <n-icon :component="ChevronUpOutline" size="14" />
+            <span class="chat-sticky-bubble__label">{{ stickyChatBubble.label }}</span>
+            <span v-if="stickyChatBubble.statusText" class="chat-sticky-bubble__status" :class="`is-${stickyChatBubble.status}`">
+              {{ stickyChatBubble.statusText }}
+            </span>
+            <span v-if="stickyChatBubble.meta" class="chat-sticky-bubble__meta">{{ stickyChatBubble.meta }}</span>
+          </div>
+          <n-button size="tiny" tertiary round @click.stop="handleStickyChatBubbleAction">
+            {{ stickyChatBubble.actionText }}
+          </n-button>
+        </div>
+
+        <div v-if="showAnchorRail" class="chat-anchor-rail">
+          <n-tooltip v-for="a in userAnchors" :key="a.id" trigger="hover">
+            <template #trigger>
+              <div
+                class="chat-anchor-marker"
+                :class="{ active: a.id === activeAnchorId }"
+                @click="scrollToUserAnchor(a.id)"
+              />
+            </template>
+            第{{ a.index }} 问：{{ a.preview }}
+          </n-tooltip>
+        </div>
+
+        <n-tooltip v-if="showScrollToBottomButton" trigger="hover">
+          <template #trigger>
+            <n-button
+              class="chat-scroll-to-bottom"
+              size="small"
+              tertiary
+              circle
+              @click="activateAutoScroll"
+            >
+              <template #icon>
+                <n-icon :component="ArrowDownOutline" size="18" />
+              </template>
+            </n-button>
+          </template>
+          回到底部
+        </n-tooltip>
+      </div>
+    </n-card>
+
+    <ChatComposerPanel
+      ref="composerPanelRef"
+      :theme="theme"
+      :attach-accept="ATTACH_ACCEPT"
+      :sending="sending"
+      :composer-input-key="composerInputKey"
+      :input-value="input"
+      :show-inline-agent-picker="showInlineAgentPicker"
+      :inline-agent-picker-header-text="inlineAgentPickerHeaderText"
+      :inline-agent-suggestions="inlineAgentSuggestions"
+      :inline-agent-active-index="inlineAgentActiveIndex"
+      :selected-agent-id="selectedAgentId"
+      :show-inline-command-picker="showInlineCommandPicker"
+      :inline-command-picker-title="inlineCommandPickerTitle"
+      :inline-command-picker-header-text="inlineCommandPickerHeaderText"
+      :inline-command-suggestions="inlineCommandSuggestions"
+      :inline-command-mode="inlineCommandMode"
+      :inline-command-type="inlineCommandType"
+      :inline-command-active-index="inlineCommandActiveIndex"
+      :pending-attachments="pendingAttachments"
+      :pending-image-attachments="pendingImageAttachments"
+      :pending-file-attachments="pendingFileAttachments"
+      :show-builtin-hint="!!(selectedProvider && isUtoolsBuiltinProvider(selectedProvider))"
+      :pending-attachment-helpers="pendingAttachmentHelpers"
+      :pending-attachment-actions="pendingAttachmentActions"
+      :show-input-mode-tags="showInputModeTags"
+      :thinking-effort="thinkingEffort"
+      :thinking-effort-label="thinkingEffortLabel"
+      :image-generation-mode="imageGenerationMode"
+      :image-generation-mode-label="imageGenerationModeLabel"
+      :video-generation-mode="videoGenerationMode"
+      :video-generation-mode-label="videoGenerationModeLabel"
+      :session-messages-length="session.messages.length"
+      :web-search-enabled="webSearchEnabled"
+      :auto-approve-tools="autoApproveTools"
+      :auto-activate-agent-skills="autoActivateAgentSkills"
+      :tool-mode-display-text="toolModeDisplayText"
+      :context-window-preset-label="contextWindowPresetLabel"
+      :context-window-history-focus-label="contextWindowHistoryFocusLabel"
+      :refreshing-mcp-tools="refreshingMcpTools"
+      :thinking-effort-button-type="thinkingEffortButtonType"
+      :image-generation-button-type="imageGenerationButtonType"
+      :video-generation-button-type="videoGenerationButtonType"
+      :can-send="canSend"
+      :footer-hint="footerHint"
+      @update:input-value="input = $event"
+      @file-change="handleFileInputChange"
+      @input-keydown="handleInputKeydown"
+      @composer-paste="handleComposerPaste"
+      @composer-click="handleComposerCursorChange"
+      @composer-keyup="handleComposerCursorChange"
+      @composer-focus="handleComposerCursorChange"
+      @composer-blur="handleComposerBlur"
+      @apply-inline-agent-suggestion="applyInlineAgentSuggestion"
+      @apply-inline-command-suggestion="applyInlineCommandSuggestion"
+      @set-thinking-effort="thinkingEffort = $event"
+      @set-image-generation-mode="setImageGenerationMode"
+      @set-video-generation-mode="setVideoGenerationMode"
+      @clear-session="clearSession"
+      @reset-chat-setup="resetChatSetup"
+      @open-agent-modal="openAgentModal"
+      @insert-inline-command-trigger="insertInlineCommandTrigger"
+      @open-file-picker="openFilePicker"
+      @toggle-web-search="toggleWebSearch"
+      @toggle-auto-approve-tools="toggleAutoApproveTools"
+      @toggle-auto-activate-agent-skills="toggleAutoActivateAgentSkills"
+      @cycle-tool-mode="cycleToolMode"
+      @open-context-window-modal="openContextWindowModal"
+      @refresh-active-mcp-tools="refreshActiveMcpTools"
+      @cycle-thinking-effort="cycleThinkingEffort"
+      @cycle-image-generation-mode="cycleImageGenerationMode"
+      @cycle-video-generation-mode="cycleVideoGenerationMode"
+      @stop="stop"
+      @send="send"
+    />
+
+    <!-- 模型设置 -->
+    <n-modal
+      v-model:show="showModelModal"
+      :mask-closable="false"
+      preset="card"
+      title="模型设置"
+      style="width: 900px; max-width: 95%;"
+    >
+      <n-collapse accordion>
+        <n-collapse-item
+          v-for="p in providers"
+          :key="p._id"
+          :name="p._id"
+          :title="p.name || p._id"
+        >
+          <n-flex vertical :size="8">
+            <n-text depth="3" style="font-size: 12px; word-break: break-all;">
+              {{ isUtoolsBuiltinProvider(p) ? 'uTools 内置 AI 服务商。模型在 uTools 设置中管理。' : (p.baseurl || '未配置基础地址') }}
+            </n-text>
+            <n-flex v-if="isUtoolsBuiltinProvider(p)" align="center" wrap :size="8">
+              <n-button size="tiny" secondary :loading="utoolsAiModelsLoading" @click.stop="refreshBuiltinProviderModelsInChat(true)">
+                刷新模型
+              </n-button>
+              <n-button size="tiny" @click.stop="openBuiltinProviderSettingsFromChat">
+                打开 uTools AI 设置
+              </n-button>
+              <n-text v-if="utoolsAiModelsError" depth="3" style="font-size: 12px;">
+                {{ utoolsAiModelsError }}
+              </n-text>
+            </n-flex>
+            <n-flex align="center" wrap :size="8">
+              <n-flex v-for="m in (p.selectModels || [])" :key="m" align="center" :size="4">
+                <n-button
+                  size="tiny"
+                  :type="isCurrentModel(p._id, m) ? 'primary' : 'default'"
+                  @click="selectProviderModel(p._id, m)"
+                >
+                  {{ m }}
+                </n-button>
+
+                <n-tooltip trigger="hover">
+                  <template #trigger>
+                    <n-button size="tiny" tertiary circle @click.stop="toggleDefaultModel(p._id, m)">
+                      <template #icon>
+                        <n-icon :component="isDefaultModel(p._id, m) ? Star : StarOutline" size="12" />
+                      </template>
+                    </n-button>
+                  </template>
+                  {{ isDefaultModel(p._id, m) ? '默认模型（点击清除）' : '设为默认模型' }}
+                </n-tooltip>
+              </n-flex>
+              <n-text v-if="!p.selectModels || p.selectModels.length === 0" depth="3" style="font-size: 12px;">
+                {{ isUtoolsBuiltinProvider(p) ? '当前还没有启用任何 uTools AI 模型，请先打开 uTools AI 设置。' : '当前服务商还没有启用的模型，请到 设置 -> 服务商 中配置。' }}
+              </n-text>
+            </n-flex>
+          </n-flex>
+        </n-collapse-item>
+      </n-collapse>
+
+      <template #footer>
+        <n-flex justify="space-between" align="center" :size="12">
+          <n-text depth="3" style="font-size: 12px;">
+            默认模型：{{ defaultModelText || '无' }}
+          </n-text>
+          <n-button @click="showModelModal = false">关闭</n-button>
+        </n-flex>
+      </template>
+    </n-modal>
+
+    <!-- 临时系统提示词 -->
+    <n-modal
+      v-model:show="showSystemPromptModal"
+      :mask-closable="false"
+      preset="card"
+      title="临时系统提示词"
+      style="width: 900px; max-width: 95%;"
+    >
+      <n-flex
+        vertical
+        :size="12"
+      >
+        <n-text depth="3" style="font-size: 12px;">
+          当前来源：{{ basePromptSourceText }}
+        </n-text>
+
+        <n-input
+          v-model:value="systemPromptDraft"
+          type="textarea"
+          :autosize="{ minRows: 6, maxRows: 18 }"
+          placeholder="输入仅对当前会话生效的临时系统提示词。"
+        />
+      </n-flex>
+
+      <template #footer>
+        <n-flex justify="space-between" align="center" :size="12">
+          <n-flex :size="8">
+            <n-button size="small" @click="resetSystemPromptToSelectedPrompt" :disabled="!selectedPromptId">
+              重置为提示词
+            </n-button>
+            <n-button size="small" @click="clearCustomSystemPrompt">
+              清空
+            </n-button>
+          </n-flex>
+          <n-flex justify="flex-end" :size="12">
+            <n-button @click="showSystemPromptModal = false">取消</n-button>
+            <n-button type="primary" @click="applyCustomSystemPrompt">
+              应用
+            </n-button>
+          </n-flex>
+        </n-flex>
+      </template>
+    </n-modal>
+
+    <n-modal
+      v-model:show="showContextWindowModal"
+      :mask-closable="false"
+      :class="['chat-context-window-modal', { 'is-dark': theme === 'dark' }]"
+      preset="card"
+      title="上下文窗口"
+      style="width: 720px; max-width: 95%;"
+    >
+      <n-flex vertical :size="12" :class="['chat-context-window-panel', { 'is-dark': theme === 'dark' }]">
+        <n-text depth="3" style="font-size: 12px;">
+          这里只影响当前请求会向模型发送多少历史上下文，不会修改会话原始记录。
+        </n-text>
+        <n-form label-placement="left" label-width="110px">
+          <n-form-item label="预设策略">
+            <n-select
+              v-model:value="contextWindowDraft.preset"
+              :options="contextWindowPresetOptions"
+              placeholder="选择上下文策略"
+              @update:value="handleContextWindowPresetChange"
+            />
+          </n-form-item>
+
+          <n-form-item label="历史侧重">
+            <n-select
+              v-model:value="contextWindowDraft.historyFocus"
+              :options="contextWindowHistoryFocusOptions"
+              placeholder="选择历史保留方式"
+            />
+          </n-form-item>
+          <n-text depth="3" style="font-size: 12px; margin-top: -8px;">
+            {{ contextWindowDraftHistoryFocusHint }}
+          </n-text>
+
+          <template v-if="contextWindowDraft.preset === 'custom'">
+            <n-form-item label="最大轮次">
+              <n-input-number v-model:value="contextWindowDraft.maxTurns" :min="2" :max="200" style="width: 180px;" />
+            </n-form-item>
+            <n-form-item label="完整保留轮次">
+              <n-input-number v-model:value="contextWindowDraft.keepRecentTurnsFull" :min="1" :max="64" style="width: 180px;" />
+            </n-form-item>
+            <n-form-item label="最大消息数">
+              <n-input-number v-model:value="contextWindowDraft.maxMessages" :min="8" :max="1000" style="width: 180px;" />
+            </n-form-item>
+            <n-form-item label="展开模式字符">
+              <n-input-number v-model:value="contextWindowDraft.maxCharsExpanded" :min="4000" :max="4200000" :step="10000" style="width: 180px;" />
+            </n-form-item>
+            <n-form-item label="精简模式字符">
+              <n-input-number v-model:value="contextWindowDraft.maxCharsCompact" :min="6000" :max="4200000" :step="10000" style="width: 180px;" />
+            </n-form-item>
+          </template>
+        </n-form>
+
+        <n-text depth="3" style="font-size: 12px;">
+          当前会话：{{ contextWindowSummaryText }}
+        </n-text>
+        <n-text depth="3" style="font-size: 12px;">
+          {{ contextWindowProviderHint }}
+        </n-text>
+        <ChatContextWindowPreview
+          :theme="theme"
+          :budget-status="contextWindowBudgetStatus"
+          :budget-summary-text="contextWindowPreviewBudgetSummaryText"
+          :budget-items="contextWindowPreviewBudgetItems"
+          :preview-summary-text="contextWindowPreviewSummaryText"
+          :entries="contextWindowPreviewEntries"
+          :omitted-entries="contextWindowPreviewOmittedEntries"
+          :omitted-summary-text="contextWindowPreviewOmittedSummaryText"
+          :omitted-filter-options="contextWindowPreviewOmittedFilterOptions"
+          :resolved-omitted-filter="contextWindowPreviewResolvedOmittedFilter"
+          :filtered-omitted-entries="contextWindowPreviewFilteredOmittedEntries"
+          :omitted-filter="contextWindowPreviewOmittedFilter"
+          :helpers="contextWindowPreviewHelpers"
+          @update:omitted-filter="contextWindowPreviewOmittedFilter = $event"
+        />
+      </n-flex>
+
+      <template #footer>
+        <n-flex justify="space-between" align="center" :size="12">
+          <n-button size="small" @click="resetContextWindowDraftToDefault">
+            恢复默认
+          </n-button>
+          <n-flex justify="flex-end" :size="12">
+            <n-button @click="showContextWindowModal = false">取消</n-button>
+            <n-button type="primary" @click="applyContextWindowSettings">
+              应用
+            </n-button>
+          </n-flex>
+        </n-flex>
+      </template>
+    </n-modal>
+
+    <!-- 智能体选择器 -->
+    <n-modal
+      v-model:show="showAgentModal"
+      :mask-closable="false"
+      preset="card"
+      title="选择智能体（@）"
+      style="width: 600px; max-width: 95%;"
+    >
+      <n-form label-placement="left" label-width="90px">
+        <n-form-item label="智能体">
+          <n-select
+            v-model:value="agentModalSelectedId"
+            :options="agentOptions"
+            placeholder="选择智能体"
+            filterable
+            clearable
+          />
+        </n-form-item>
+      </n-form>
+
+      <template #footer>
+        <n-flex justify="space-between" align="center" :size="12">
+          <n-button size="small" @click="clearSelectedAgent" :disabled="!selectedAgentId">
+            清除智能体
+          </n-button>
+          <n-flex justify="flex-end" :size="12">
+            <n-button @click="showAgentModal = false">取消</n-button>
+            <n-button type="primary" @click="applyAgentModal" :disabled="!agentModalSelectedId">
+              应用
+            </n-button>
+          </n-flex>
+        </n-flex>
+      </template>
+    </n-modal>
+    <!-- 提示词选择器 -->
+    <n-modal
+      v-model:show="showPromptModal"
+      :mask-closable="false"
+      preset="card"
+      title="选择提示词（/prompt）"
+      style="width: 700px; max-width: 95%;"
+    >
+      <n-form label-placement="left" label-width="90px">
+        <n-form-item label="提示词">
+          <n-select
+            v-model:value="promptModalSelectedId"
+            :options="promptOptions"
+            :loading="loadingMcpPrompts"
+            placeholder="选择本地提示词，或当前 MCP 提供的提示词"
+            filterable
+            clearable
+          />
+        </n-form-item>
+        <n-text depth="3" style="font-size: 12px; display: block; margin-left: 90px;">
+          本地提示词会切换系统提示词；MCP 提示词会按标准调用 prompts/get，并插入到当前输入框。
+        </n-text>
+
+        <template v-if="selectedPromptModalKind === 'mcp'">
+          <McpArgumentForm
+            v-if="selectedMcpPromptArgs.length"
+            :params="selectedMcpPromptArgs"
+            :form-data="promptMcpArgsForm"
+            max-height="260px"
+            padding="0"
+            label-width="120px"
+          />
+          <n-text v-else depth="3" style="font-size: 12px; display: block; margin-left: 90px;">
+            该 MCP 提示词无参数，将直接插入输入框。
+          </n-text>
+        </template>
+      </n-form>
+
+      <template #footer>
+        <n-flex justify="space-between" align="center" :size="12">
+          <n-button size="small" @click="clearSelectedPrompt">清除提示词</n-button>
+          <n-flex justify="flex-end" :size="12">
+            <n-button @click="showPromptModal = false">取消</n-button>
+            <n-button type="primary" @click="applyPromptModal">
+              应用
+            </n-button>
+          </n-flex>
+        </n-flex>
+      </template>
+    </n-modal>
+
+    <!-- 技能选择器 -->
+    <n-modal
+      v-model:show="showSkillModal"
+      :mask-closable="false"
+      preset="card"
+      title="选择技能（/skill）"
+      style="width: 800px; max-width: 95%;"
+    >
+      <n-form label-placement="left" label-width="90px">
+        <n-form-item label="技能">
+          <n-select
+            v-model:value="skillModalSelectedIds"
+            multiple
+            :options="skillOptions"
+            placeholder="选择技能（可选）"
+            filterable
+            clearable
+          />
+        </n-form-item>
+      </n-form>
+
+      <template #footer>
+        <n-flex justify="flex-end" :size="12">
+          <n-button @click="showSkillModal = false">取消</n-button>
+          <n-button type="primary" @click="applySkillModal">
+            应用
+          </n-button>
+        </n-flex>
+      </template>
+    </n-modal>
+
+    <!-- MCP 选择器 -->
+    <n-modal
+      v-model:show="showMcpModal"
+      :mask-closable="false"
+      preset="card"
+      title="选择 MCP（/mcp）"
+      style="width: 720px; max-width: 92%;"
+    >
+      <n-flex vertical :size="12">
+        <n-form label-placement="left" label-width="90px">
+          <n-form-item label="MCP 服务">
+            <n-select
+              v-model:value="mcpModalSelectedIds"
+              multiple
+              size="small"
+              :options="mcpOptions"
+              placeholder="选择 MCP 服务（可选）"
+              filterable
+              clearable
+            />
+          </n-form-item>
+        </n-form>
+
+        <n-text depth="3" style="font-size: 12px;">
+          技能中配置的 MCP 会随技能选择自动加入（当前来自技能：{{ derivedMcpIds.length }}）
+        </n-text>
+      </n-flex>
+
+      <template #footer>
+        <n-flex justify="space-between" align="center" :size="12">
+          <n-tooltip trigger="hover">
+            <template #trigger>
+              <n-button
+                size="small"
+                tertiary
+                circle
+                :type="autoApproveTools ? 'primary' : 'default'"
+                @click="toggleAutoApproveTools"
+              >
+                <template #icon>
+                  <n-icon :component="autoApproveTools ? ShieldCheckmarkOutline : ShieldOutline" size="16" />
+                </template>
+              </n-button>
+            </template>
+            自动批准工具调用：{{ autoApproveTools ? '开' : '关' }}
+          </n-tooltip>
+          <n-flex justify="flex-end" :size="12">
+            <n-button @click="showMcpModal = false">取消</n-button>
+            <n-button type="primary" @click="applyMcpModal">
+              应用
+            </n-button>
+          </n-flex>
+        </n-flex>
+      </template>
+    </n-modal>
+        </n-flex>
+      </n-layout-content>
+
+      <n-layout-sider
+        :class="['chat-session-sider', { 'is-dark': theme === 'dark' }]"
+        collapse-mode="transform"
+        :width="sessionSiderWidth"
+        :collapsed-width="sessionSiderCollapsedWidth"
+        :content-style="sessionSiderContentStyle"
+        :show-trigger="isCompactChatLayout ? false : 'arrow-circle'"
+        bordered
+        v-model:collapsed="sessionSiderCollapsed"
+      >
+        <SessionTree
+          ref="sessionTreeRef"
+          :theme="theme"
+          @select="handleSessionHistorySelect"
+          @saved="handleSessionSaved"
+          @rename="handleSessionPathRenamed"
+          @delete="handleSessionPathDeleted"
+        />
+      </n-layout-sider>
+    </n-layout>
+  </n-space>
+</template>
+
+<script setup>
+ import { computed, ref, reactive, watch, nextTick, h, onMounted, onActivated, onDeactivated, onBeforeUnmount } from 'vue'
+import { useRouter } from 'vue-router'
+import {
+  NCard,
+  NFlex,
+  NIcon,
+  NSpace,
+  NLayout,
+  NLayoutSider,
+  NLayoutContent,
+  NSelect,
+  NInput,
+  NInputNumber,
+  NButton,
+  NText,
+  NTag,
+  NScrollbar,
+  NImage,
+  NImageGroup,
+  NModal,
+  NForm,
+  NFormItem,
+  NCollapse,
+  NCollapseItem,
+  NTooltip,
+  useDialog,
+  useMessage
+} from 'naive-ui'
+import LazyMarkdownPreview from '@/components/LazyMarkdownPreview.vue'
+import { ChatMultiple24Filled } from '@vicons/fluent'
+import { FlowModelerReference, SkillLevelIntermediate, BareMetalServer02 } from '@vicons/carbon'
+import { Trash, Magento } from '@vicons/fa'
+import { Prompt as PromptIcon } from '@vicons/tabler'
+import {
+  SendOutline,
+  StopCircleOutline,
+  ArrowDownOutline,
+  ShieldCheckmarkOutline,
+  ShieldOutline,
+  AttachOutline,
+  ImageOutline,
+  VideocamOutline,
+  DocumentTextOutline,
+  SpeedometerOutline,
+  StarOutline,
+  Star,
+  ChevronDownOutline,
+  ChevronUpOutline,
+  PersonCircleOutline,
+  SparklesOutline,
+  ChatbubbleEllipsesOutline,
+  HardwareChipOutline,
+  CopyOutline,
+  DownloadOutline,
+  CloseOutline,
+  RefreshOutline,
+  PencilOutline,
+  CheckmarkOutline,
+  SaveOutline
+} from '@vicons/ionicons5'
+
+import { useUtoolsEnterData } from '@/utils/utoolsListener.js'
+import { getOrCreateMCPClient, getMcpPrompt, releaseMCPClient, closePooledMCPClient, closeAllPooledMCPClients } from '@/utils/mcpClient'
+import { getTheme, getAgents, getProviders, getPrompts, getSkills, getMcpServers, getChatConfig, readSkillFile as readSkillRegistryFile, runSkillScript as runSkillRegistryScript, updateChatConfig } from '@/utils/configListener'
+import { buildRequestOverridesFromAgentModelParams, getAgentReasoningEffortOverride, normalizeAgentModelParams } from '@/utils/agentModelParams'
+import { parseAttachmentTextWithFallback, resetAttachmentTextParserWorker } from '@/utils/attachmentTextParser'
+import { buildSkillFileIndexLines, buildSkillScriptCatalogLines, getSkillDescription, getSkillFileIndex, getSkillScriptCatalog, isDirectorySkill, isRunnableSkillScriptPath } from '@/utils/skillUtils'
+import {
+  buildUtoolsAiMessages,
+  canUseUtoolsAi,
+  getUtoolsAiModelsState,
+  isUtoolsBuiltinProvider,
+  openUtoolsAiModelsSetting,
+  refreshUtoolsAiModels,
+  registerUtoolsAiToolFunctions
+} from '@/utils/utoolsAiProvider'
+import {
+  AGENT_SKILL_LAZY_LOAD_GUIDANCE_LINES,
+  buildBasePromptSelectionState,
+  COMPACT_MCP_CATALOG_NOTE,
+  COMPACT_MCP_TOOL_GUIDANCE_LINES,
+  INTERNAL_TOOL_SPECS,
+  normalizePromptText
+} from '@/utils/chatPromptTooling'
+import {
+  buildChatContextWindow,
+  buildChatContextWindowRuntimeOptions,
+  CHAT_CONTEXT_WINDOW_HISTORY_FOCUS_PRESETS,
+  CHAT_CONTEXT_WINDOW_PRESETS,
+  countChatContextAttachmentMessages,
+  countChatContextAttachmentSummaryMessages,
+  DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG,
+  inspectChatContextWindow,
+  normalizeChatContextWindowConfig,
+  resolveChatContextWindowOptions
+} from '@/utils/chatContextWindow'
+import {
+  calculateHistoryContextCharBudget,
+  calculateReservedRequestChars,
+  estimateToolDefinitionsChars,
+  shouldIncludeReasoningContent
+} from '@/utils/chatRequestCompat'
+import {
+  collectImageGenerationRevisedPrompts,
+  extractImageOutputEntries,
+  extractVideoOutputEntries,
+  extractImageGenerationPromptFromContent,
+  extractImageGenerationTextResult,
+  isLikelyImageGenerationModel,
+  isLikelyVideoGenerationModel
+} from '@/utils/chatImageGeneration.js'
+import {
+  extractInlineAgentContext,
+  extractInlineCommandContext,
+  getInlinePickerMatchScore,
+  INLINE_COMMAND_DEFINITIONS,
+  INLINE_COMMAND_KIND_LABELS
+} from '@/utils/chatInlinePicker'
+import { exists, readFile, writeFile } from '@/utils/fileOperations'
+import { requestOpenNoteFile } from '@/utils/noteOpenBridge'
+import { buildNoteHrefFromPath, resolveNoteAbsPathFromHref, splitMarkdownLinkDestination } from '@/utils/notePathUtils'
+import {
+  contentHasUserAttachments,
+  extractEditableUserTextFromContent,
+  mergeUserTextWithExistingAttachments
+} from '@/utils/chatUserMessageContent'
+import {
+  buildToolVisionUserMessage,
+  buildVisionFallbackTextFromContent,
+  messageContentHasImageUrl,
+  shouldAutoAttachToolImagesForVision,
+  shouldFallbackVisionInputToText
+} from '@/utils/toolVisionContext'
+import {
+  formatToolResultDisplayContent,
+  isAgentRunToolResult
+} from '@/utils/chatToolDisplay'
+import { isAgentRunToolName, mergeAgentRunTraceEntries } from '@/utils/chatAgentRun'
+import { CHAT_CODE_AUTO_FOLD_THRESHOLD } from '@/utils/chatMarkdownPreview'
+import { extractAssistantTextFromPayloads } from '@/utils/chatAssistantResponse'
+import { stringifyToolResultForModel as stringifyToolResultForLlm } from '@/utils/toolResultForModel'
+import { consumeJsonEventStream } from '@/utils/streamJsonEvents'
+import { buildMcpArgsFromForm, normalizeMcpPromptArgumentDefinitions, resetMcpArgFormData } from '@/utils/mcpArgumentForm'
+import ChatAssistantMedia from './ChatAssistantMedia.vue'
+import ChatComposerPanel from './ChatComposerPanel.vue'
+import ChatContextWindowPreview from './ChatContextWindowPreview.vue'
+import ChatToolMessage from './ChatToolMessage.vue'
+import ChatUserAttachments from './ChatUserAttachments.vue'
+import McpArgumentForm from '@/components/McpArgumentForm.vue'
+import SessionTree from './SessionTree.vue'
+
+const dialog = useDialog()
+const message = useMessage()
+const router = useRouter()
+
+const theme = getTheme()
+const utoolsEnterData = useUtoolsEnterData()
+
+const agents = getAgents()
+const providers = getProviders()
+const prompts = getPrompts()
+const skills = getSkills()
+const mcpServers = getMcpServers()
+const chatConfig = getChatConfig()
+const { loading: utoolsAiModelsLoading, loadError: utoolsAiModelsError } = getUtoolsAiModelsState()
+
+function newId() {
+  try {
+    return crypto.randomUUID()
+  } catch {
+    return `${Date.now()}-${Math.random().toString(16).slice(2)}`
+  }
+}
+
+// 兼容：部分 OpenAI 兼容网关会把 /chat/completions 的 tool_calls 映射到 /responses 的 function_call，
+// 从而要求 tool_calls[].id 以 "fc_" 开头，而标准 chat.completions 返回的是 "call_"。
+const toolCallIdCompatByBaseUrl = new Map()
+function getCompatKey(baseUrl) {
+  return normalizeBaseUrl(baseUrl).toLowerCase()
+}
+function isFcToolCallIdCompatEnabled(baseUrl) {
+  return toolCallIdCompatByBaseUrl.get(getCompatKey(baseUrl)) === 'fc'
+}
+function enableFcToolCallIdCompat(baseUrl) {
+  toolCallIdCompatByBaseUrl.set(getCompatKey(baseUrl), 'fc')
+}
+
+const session = reactive({
+  messages: [],
+  apiMessages: []
+})
+
+const sessionTreeRef = ref(null)
+const sessionSiderCollapsed = ref(true)
+const activeSessionFilePath = ref('')
+const activeSessionTitle = ref('')
+const isCompactChatLayout = ref(false)
+const isDenseChatLayout = ref(false)
+
+const selectedAgentId = ref(null)
+const selectedProviderId = ref(null)
+const selectedModel = ref('')
+
+const basePromptMode = ref('custom') // prompt | custom
+const selectedPromptId = ref(null)
+const customSystemPrompt = ref('')
+
+const hasInitializedDefaultSystemPrompt = ref(false)
+const lastLoadedDefaultSystemPrompt = ref('')
+
+function getDefaultSystemPromptText() {
+  return String(chatConfig.value?.defaultSystemPrompt || '')
+}
+
+function applyBasePromptSelection(promptId) {
+  const nextState = buildBasePromptSelectionState(promptId, getDefaultSystemPromptText())
+  selectedPromptId.value = nextState.selectedPromptId
+  basePromptMode.value = nextState.basePromptMode
+  customSystemPrompt.value = nextState.customSystemPrompt
+
+  if (nextState.basePromptMode === 'custom') {
+    lastLoadedDefaultSystemPrompt.value = normalizePromptText(nextState.customSystemPrompt)
+    hasInitializedDefaultSystemPrompt.value = true
+  }
+}
+
+watch(
+  () => normalizePromptText(chatConfig.value?.defaultSystemPrompt || ''),
+  (nextNormalized) => {
+    const rawNext = String(chatConfig.value?.defaultSystemPrompt || '')
+
+    if (!hasInitializedDefaultSystemPrompt.value) {
+      basePromptMode.value = 'custom'
+      customSystemPrompt.value = rawNext
+      lastLoadedDefaultSystemPrompt.value = nextNormalized
+      hasInitializedDefaultSystemPrompt.value = true
+      return
+    }
+
+    const currentNormalized = normalizePromptText(customSystemPrompt.value)
+    if (basePromptMode.value === 'custom' && currentNormalized === normalizePromptText(lastLoadedDefaultSystemPrompt.value)) {
+      customSystemPrompt.value = rawNext
+      lastLoadedDefaultSystemPrompt.value = nextNormalized
+    }
+  },
+  { immediate: true }
+)
+
+const selectedSkillIds = ref([])
+const manualMcpIds = ref([])
+const webSearchEnabled = ref(false)
+const autoApproveTools = ref(true)
+const autoActivateAgentSkills = ref(true)
+
+// 工具模式：
+// - auto：工具较少时展开，过多时自动回退到精简模式
+// - expanded：始终展开
+// - compact：仅暴露 mcp_discover + mcp_call，token 更少、更稳定
+const toolMode = ref('auto') // auto | expanded | compact
+const effectiveToolMode = ref('expanded') // expanded | compact
+const refreshingMcpTools = ref(false)
+const mcpToolsRevision = ref(0)
+const mcpToolsStatusByServerId = reactive({})
+const lastBuiltRequestToolsStats = reactive({
+  key: '',
+  count: 0,
+  chars: 0,
+  updatedAt: 0,
+  mode: 'expanded'
+})
+const mcpListToolsCache = new Map()
+const mcpListToolsInFlight = new Map()
+const MCP_LIST_TOOLS_TTL_MS = 30 * 60_000
+const mcpListPromptsCache = new Map()
+const mcpListPromptsInFlight = new Map()
+const MCP_LIST_PROMPTS_TTL_MS = 30 * 60_000
+const MAX_EXPANDED_TOOL_COUNT = 80
+const mcpToolCatalogByServerId = new Map()
+const mcpToolCatalogRevision = ref(0)
+const MCP_CATALOG_MAX_TOOL_NAMES_PER_SERVER = 600
+const MCP_CATALOG_MAX_TOOL_HINTS_PER_SERVER = 120
+const MCP_CATALOG_MAX_OPTIONAL_KEYS_PER_TOOL = 12
+// 将模型“查找用过”的工具固定到系统提示词，避免因 tool_names 截断导致反复 discover
+const mcpPinnedToolHintsByServerId = new Map()
+const mcpPinnedToolHintsRevision = ref(0)
+const MCP_PINNED_TOOL_HINTS_MAX_PER_SERVER = 20
+
+// Agent 预设技能：默认只暴露名称与描述；需要完整规则内容时再用 use_skill 加载 content；MCP 会随 skill 选择自动挂载
+const agentSkillIds = ref([])
+const activatedAgentSkillIds = ref([])
+const loadedSkillContentById = reactive({})
+const loadedSkillFileCacheBySkillId = reactive({})
+
+const showModelModal = ref(false)
+const showSystemPromptModal = ref(false)
+const showContextWindowModal = ref(false)
+const systemPromptDraft = ref('')
+const contextWindowDraft = reactive({ ...DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG })
+const contextWindowPreviewOmittedFilter = ref('all')
+
+const showAgentModal = ref(false)
+const agentModalSelectedId = ref(null)
+
+const showPromptModal = ref(false)
+const promptModalSelectedId = ref(null)
+const promptMcpArgsForm = reactive({})
+const loadingMcpPrompts = ref(false)
+const mcpPromptCatalog = ref([])
+let mcpPromptCatalogLoadPromise = null
+
+const showSkillModal = ref(false)
+const skillModalSelectedIds = ref([])
+
+const showMcpModal = ref(false)
+const mcpModalSelectedIds = ref([])
+
+const input = ref('')
+const composerInputKey = ref(0)
+const composerPanelRef = ref(null)
+const inlineAgentQuery = ref('')
+const inlineAgentMatchStart = ref(-1)
+const inlineAgentMatchEnd = ref(-1)
+const inlineAgentActiveIndex = ref(0)
+const inlineCommandMode = ref('')
+const inlineCommandType = ref('')
+const inlineCommandQuery = ref('')
+const inlineCommandMatchStart = ref(-1)
+const inlineCommandMatchEnd = ref(-1)
+const inlineCommandActiveIndex = ref(0)
+const sending = ref(false)
+const abortController = ref(null)
+const pendingAttachments = ref([])
+
+const thinkingEffort = ref('auto') // auto | low | medium | high
+const imageGenerationMode = ref('auto') // auto | on | off
+const videoGenerationMode = ref('auto') // auto | on | off
+
+const hasAppliedDefaultModel = ref(false)
+
+const COMPACT_CHAT_BREAKPOINT = 980
+const DENSE_CHAT_BREAKPOINT = 720
+const CHAT_VIRTUALIZATION_MIN_MESSAGES = 40
+const CHAT_VIRTUALIZATION_OVERSCAN_PX = 960
+const CHAT_DEFAULT_MESSAGE_HEIGHT = 180
+
+function syncChatResponsiveState() {
+  if (typeof window === 'undefined') return
+  const width = Number(window.innerWidth || 0)
+  isCompactChatLayout.value = width > 0 && width <= COMPACT_CHAT_BREAKPOINT
+  isDenseChatLayout.value = width > 0 && width <= DENSE_CHAT_BREAKPOINT
+}
+
+const layoutContentStyle = computed(() => {
+  const padding = isCompactChatLayout.value ? '8px' : '8px 24px 8px 8px'
+  return `padding: ${padding}; height: calc(100vh - 30px);`
+})
+
+const sessionSiderWidth = computed(() => (isCompactChatLayout.value ? 280 : 320))
+const sessionSiderCollapsedWidth = computed(() => (isCompactChatLayout.value ? 0 : 15))
+const sessionSiderContentStyle = computed(() => (isCompactChatLayout.value ? 'padding: 16px 12px;' : 'padding: 24px;'))
+
+watch(
+  () => chatConfig.value?.contextWindow,
+  (next) => {
+    if (showContextWindowModal.value) return
+    syncContextWindowDraft(next)
+  },
+  { immediate: true, deep: true }
+)
+
+watch(
+  () => String(chatConfig.value?.imageGenerationMode || 'auto').trim().toLowerCase(),
+  (next) => {
+    imageGenerationMode.value = normalizeImageGenerationMode(next)
+  },
+  { immediate: true }
+)
+
+watch(
+  () => String(chatConfig.value?.videoGenerationMode || 'auto').trim().toLowerCase(),
+  (next) => {
+    videoGenerationMode.value = normalizeImageGenerationMode(next)
+  },
+  { immediate: true }
+)
+
+watch(isCompactChatLayout, (next, prev) => {
+  if (next && !prev) sessionSiderCollapsed.value = true
+})
+
+const MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024
+// Cap current-turn attachment text to roughly the largest widely available long-context
+// models (~1M tokens, approximated here as ~4.2 chars per token).
+const MAX_ATTACHMENT_TEXT_CHARS = 4_200_000
+const MAX_IMAGE_BYTES = 6 * 1024 * 1024
+const INLINE_AGENT_SUGGESTION_LIMIT = 8
+const INLINE_COMMAND_SUGGESTION_LIMIT = 8
+const DIRECT_TEXT_ATTACHMENT_EXTENSIONS = new Set([
+  'txt',
+  'md',
+  'markdown',
+  'mdx',
+  'json',
+  'jsonc',
+  'jsonl',
+  'yaml',
+  'yml',
+  'toml',
+  'ini',
+  'cfg',
+  'conf',
+  'env',
+  'log',
+  'csv',
+  'tsv',
+  'xml',
+  'html',
+  'htm',
+  'css',
+  'scss',
+  'less',
+  'js',
+  'mjs',
+  'cjs',
+  'jsx',
+  'ts',
+  'mts',
+  'cts',
+  'tsx',
+  'vue',
+  'py',
+  'java',
+  'kt',
+  'kts',
+  'groovy',
+  'gradle',
+  'c',
+  'h',
+  'cc',
+  'cpp',
+  'cxx',
+  'hpp',
+  'hh',
+  'hxx',
+  'cs',
+  'go',
+  'rs',
+  'rb',
+  'php',
+  'swift',
+  'm',
+  'mm',
+  'scala',
+  'sh',
+  'bash',
+  'zsh',
+  'fish',
+  'ps1',
+  'bat',
+  'cmd',
+  'sql',
+  'r',
+  'lua',
+  'pl',
+  'pm',
+  'dart',
+  'proto',
+  'properties',
+  'gitignore',
+  'gitattributes',
+  'editorconfig'
+])
+const WORKER_PARSED_ATTACHMENT_EXTENSIONS = new Set(['pdf', 'docx', 'xls', 'xlsx', 'pptx'])
+const CONVERTIBLE_ATTACHMENT_EXTENSIONS = new Set(['doc', 'ppt'])
+const SUPPORTED_ATTACHMENT_EXTENSIONS = new Set([
+  ...DIRECT_TEXT_ATTACHMENT_EXTENSIONS,
+  ...WORKER_PARSED_ATTACHMENT_EXTENSIONS,
+  ...CONVERTIBLE_ATTACHMENT_EXTENSIONS
+])
+const TEXT_ATTACHMENT_MIME_TYPES = new Set([
+  'application/json',
+  'application/ld+json',
+  'application/geo+json',
+  'application/xml',
+  'application/rss+xml',
+  'application/atom+xml',
+  'application/xhtml+xml',
+  'application/yaml',
+  'application/x-yaml',
+  'application/toml',
+  'application/x-toml',
+  'application/javascript',
+  'application/x-javascript',
+  'application/typescript',
+  'application/sql',
+  'application/x-sh',
+  'application/x-httpd-php'
+])
+const MIME_EXTENSION_MAP = Object.freeze({
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/jpg': 'jpg',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+  'image/bmp': 'bmp',
+  'image/svg+xml': 'svg',
+  'text/plain': 'txt',
+  'text/markdown': 'md',
+  'text/x-markdown': 'md',
+  'text/html': 'html',
+  'text/css': 'css',
+  'text/javascript': 'js',
+  'text/typescript': 'ts',
+  'text/csv': 'csv',
+  'text/tab-separated-values': 'tsv',
+  'text/xml': 'xml',
+  'application/json': 'json',
+  'application/ld+json': 'jsonld',
+  'application/geo+json': 'json',
+  'application/javascript': 'js',
+  'application/x-javascript': 'js',
+  'application/typescript': 'ts',
+  'application/xml': 'xml',
+  'application/xhtml+xml': 'html',
+  'application/yaml': 'yaml',
+  'application/x-yaml': 'yaml',
+  'application/toml': 'toml',
+  'application/x-toml': 'toml',
+  'application/sql': 'sql',
+  'application/x-sh': 'sh',
+  'application/x-httpd-php': 'php',
+  'application/pdf': 'pdf'
+})
+const ATTACH_ACCEPT = ['image/*', ...Array.from(SUPPORTED_ATTACHMENT_EXTENSIONS).map((ext) => `.${ext}`)].join(',')
+const attachmentParseQueue = new Map()
+const IMAGE_ATTACHMENT_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'ico'])
+const SVG_TEXT_PREVIEW_MAX_CHARS = 240
+
+function getFileExt(name) {
+  const n = String(name || '')
+  const idx = n.lastIndexOf('.')
+  return idx === -1 ? '' : n.slice(idx + 1).toLowerCase()
+}
+
+function guessExtensionFromMime(mime) {
+  const normalizedMime = String(mime || '').trim().toLowerCase()
+  if (!normalizedMime) return ''
+  return MIME_EXTENSION_MAP[normalizedMime] || ''
+}
+
+function normalizeAttachmentName(file, options = {}) {
+  const preferredName = String(options.name || '').trim()
+  if (preferredName) return preferredName
+
+  const fileName = String(file?.name || '').trim()
+  if (fileName) return fileName
+
+  const ext = guessExtensionFromMime(file?.type)
+  if (ext) return `pasted-file.${ext}`
+  return 'pasted-file'
+}
+
+function truncateText(text, maxChars, suffix) {
+  const raw = String(text || '').trim()
+  if (!raw) return ''
+  if (!maxChars || raw.length <= maxChars) return raw
+  return `${raw.slice(0, maxChars)}\n\n${suffix || `(content truncated, total ${raw.length} chars)`}`
+}
+
+function truncateAttachmentContextForRequest(leadText, attachmentBlock, maxChars) {
+  const lead = String(leadText || '').trim()
+  const attachment = String(attachmentBlock || '').trim()
+  const combined = [lead, attachment].filter(Boolean).join('\n\n')
+  const limit = Number(maxChars)
+
+  if (!attachment || !Number.isFinite(limit) || limit <= 0 || combined.length <= limit) {
+    return combined
+  }
+
+  const suffix = `(attachment content truncated for current request budget, total ${combined.length} chars)`
+  if (!lead) {
+    return truncateText(attachment, limit, suffix)
+  }
+
+  const reserved = lead.length + suffix.length + 4
+  if (reserved >= limit) {
+    return truncateText(combined, limit, suffix)
+  }
+
+  const remaining = Math.max(0, limit - reserved)
+  const compactAttachment = attachment.slice(0, remaining).trimEnd()
+  return [lead, compactAttachment, suffix].filter(Boolean).join('\n\n')
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result || ''))
+    reader.onerror = () => reject(reader.error || new Error('读取文件失败'))
+    reader.readAsDataURL(file)
+  })
+}
+
+function formatAttachmentSize(bytes) {
+  const value = Number(bytes)
+  if (!Number.isFinite(value) || value <= 0) return ''
+
+  const units = ['B', 'KB', 'MB', 'GB']
+  let size = value
+  let unitIndex = 0
+
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024
+    unitIndex += 1
+  }
+
+  const precision = size >= 100 || unitIndex === 0 ? 0 : size >= 10 ? 1 : 2
+  return `${size.toFixed(precision)} ${units[unitIndex]}`
+}
+
+function truncateInlineText(text, maxChars = 160) {
+  const raw = String(text || '').replace(/\s+/g, ' ').trim()
+  if (!raw) return ''
+  if (!maxChars || raw.length <= maxChars) return raw
+  return `${raw.slice(0, maxChars)}...`
+}
+
+function isSvgAttachmentLike({ mime = '', ext = '' } = {}) {
+  const normalizedMime = String(mime || '').trim().toLowerCase()
+  const normalizedExt = String(ext || '').trim().toLowerCase()
+  return normalizedMime === 'image/svg+xml' || normalizedExt === 'svg'
+}
+
+function isImageAttachmentLike({ mime = '', ext = '', kind = '' } = {}) {
+  if (String(kind || '').trim().toLowerCase() === 'image') return true
+  const normalizedMime = String(mime || '').trim().toLowerCase()
+  const normalizedExt = String(ext || '').trim().toLowerCase()
+  if (normalizedMime.startsWith('image/')) return true
+  return IMAGE_ATTACHMENT_EXTENSIONS.has(normalizedExt)
+}
+
+function isDirectTextAttachmentExtension(ext) {
+  return DIRECT_TEXT_ATTACHMENT_EXTENSIONS.has(String(ext || '').trim().toLowerCase())
+}
+
+function isWorkerParsedAttachmentExtension(ext) {
+  return WORKER_PARSED_ATTACHMENT_EXTENSIONS.has(String(ext || '').trim().toLowerCase())
+}
+
+function isConvertibleAttachmentExtension(ext) {
+  return CONVERTIBLE_ATTACHMENT_EXTENSIONS.has(String(ext || '').trim().toLowerCase())
+}
+
+function isTextAttachmentMime(mime) {
+  const normalizedMime = String(mime || '').trim().toLowerCase()
+  if (!normalizedMime || normalizedMime === 'application/octet-stream') return false
+  if (normalizedMime.startsWith('text/')) return true
+  return TEXT_ATTACHMENT_MIME_TYPES.has(normalizedMime)
+}
+
+function isSupportedAttachmentFile(file) {
+  if (!file) return false
+  const mime = String(file?.type || '').trim().toLowerCase()
+  const ext = getFileExt(file?.name) || guessExtensionFromMime(mime)
+  if (isImageAttachmentLike({ mime, ext })) return true
+  if (SUPPORTED_ATTACHMENT_EXTENSIONS.has(ext)) return true
+  return !ext && isTextAttachmentMime(mime)
+}
+
+function getImageKindLabel({ mime = '', ext = '' } = {}) {
+  if (isSvgAttachmentLike({ mime, ext })) return 'SVG'
+
+  const normalizedMime = String(mime || '').trim().toLowerCase()
+  if (normalizedMime.startsWith('image/')) {
+    const subtype = normalizedMime.slice('image/'.length).trim()
+    if (subtype) return subtype.toUpperCase()
+  }
+
+  const normalizedExt = String(ext || '').trim().toLowerCase()
+  if (normalizedExt) {
+    if (normalizedExt === 'jpg') return 'JPEG'
+    return normalizedExt.toUpperCase()
+  }
+
+  return '图片'
+}
+
+function buildImageMetaLine({ mime = '', ext = '', size = 0, width = 0, height = 0 } = {}) {
+  const parts = []
+  const kindLabel = getImageKindLabel({ mime, ext })
+  if (kindLabel) parts.push(kindLabel)
+
+  const sizeText = formatAttachmentSize(size)
+  if (sizeText) parts.push(sizeText)
+
+  const w = Number(width)
+  const h = Number(height)
+  if (w > 0 && h > 0) parts.push(`${w} x ${h}`)
+
+  return parts.join(' · ')
+}
+
+function parseSvgDimensionValue(raw) {
+  const text = String(raw || '').trim()
+  if (!text) return 0
+  const matched = text.match(/^([0-9]+(?:\.[0-9]+)?)/)
+  if (!matched) return 0
+  const value = Number(matched[1])
+  if (!Number.isFinite(value) || value <= 0) return 0
+  return Math.round(value)
+}
+
+function readImageDimensions(dataUrl) {
+  return new Promise((resolve) => {
+    const src = String(dataUrl || '').trim()
+    if (!src) {
+      resolve({ width: 0, height: 0 })
+      return
+    }
+
+    const img = new Image()
+    img.onload = () => {
+      resolve({
+        width: Number(img.naturalWidth || img.width || 0),
+        height: Number(img.naturalHeight || img.height || 0)
+      })
+    }
+    img.onerror = () => resolve({ width: 0, height: 0 })
+    img.src = src
+  })
+}
+
+async function readSvgAttachmentContext(file) {
+  try {
+    const raw = await file?.text?.()
+    const text = String(raw || '')
+    if (!text.trim()) return null
+
+    const parser = new DOMParser()
+    const doc = parser.parseFromString(text, 'image/svg+xml')
+    if (doc.querySelector('parsererror')) return null
+
+    const root =
+      doc.documentElement?.tagName?.toLowerCase() === 'svg'
+        ? doc.documentElement
+        : doc.querySelector?.('svg')
+    if (!root) return null
+
+    const title = truncateInlineText(root.querySelector?.('title')?.textContent || '', 120)
+    const desc = truncateInlineText(root.querySelector?.('desc')?.textContent || '', 180)
+
+    const textNodes = []
+    root.querySelectorAll?.('text, tspan')?.forEach((node) => {
+      const value = truncateInlineText(node?.textContent || '', 80)
+      if (value) textNodes.push(value)
+    })
+
+    const dedupedText = Array.from(new Set(textNodes))
+    const visibleText = truncateInlineText(dedupedText.join(' | '), SVG_TEXT_PREVIEW_MAX_CHARS)
+
+    return {
+      title,
+      desc,
+      visibleText,
+      width: parseSvgDimensionValue(root.getAttribute?.('width')),
+      height: parseSvgDimensionValue(root.getAttribute?.('height')),
+      viewBox: String(root.getAttribute?.('viewBox') || '').trim()
+    }
+  } catch {
+    return null
+  }
+}
+
+async function buildImageAttachmentSummary({ file, name, ext, mime, dataUrl }) {
+  const summary = []
+  const isSvg = isSvgAttachmentLike({ mime, ext })
+  const kind = isSvg ? 'SVG image' : 'image'
+  const svgContext = isSvg ? await readSvgAttachmentContext(file) : null
+
+  summary.push(`Attachment: ${name || 'image'}`)
+  summary.push(`Type: ${mime || getImageKindLabel({ mime, ext })}`)
+
+  const sizeText = formatAttachmentSize(file?.size)
+  if (sizeText) summary.push(`Size: ${sizeText}`)
+
+  const dimensions = await readImageDimensions(dataUrl)
+  const width = Number(dimensions.width || svgContext?.width || 0)
+  const height = Number(dimensions.height || svgContext?.height || 0)
+  if (width > 0 && height > 0) {
+    summary.push(`Dimensions: ${width} x ${height}`)
+  } else if (svgContext?.viewBox) {
+    summary.push(`ViewBox: ${svgContext.viewBox}`)
+  }
+
+  if (svgContext?.title) summary.push(`Title: ${svgContext.title}`)
+  if (svgContext?.desc) summary.push(`Description: ${svgContext.desc}`)
+  if (svgContext?.visibleText) summary.push(`Visible text: ${svgContext.visibleText}`)
+
+  const svgTextPreview = truncateInlineText(
+    [svgContext?.title, svgContext?.visibleText, svgContext?.desc].filter(Boolean).join(' | '),
+    SVG_TEXT_PREVIEW_MAX_CHARS
+  )
+
+  return {
+    text: `${kind} metadata\n${summary.join('\n')}`.trim(),
+    width,
+    height,
+    metaLine: buildImageMetaLine({ mime, ext, size: file?.size, width, height }),
+    svgTextPreview
+  }
+}
+
+function openFilePicker() {
+  try {
+    composerPanelRef.value?.triggerFilePicker?.()
+  } catch {
+    // ignore
+  }
+}
+
+function removeAttachment(id) {
+  const list = Array.isArray(pendingAttachments.value) ? pendingAttachments.value : []
+  pendingAttachments.value = list.filter((a) => a?.id !== id)
+}
+
+function attachmentIcon(a) {
+  const mime = String(a?.mime || '')
+  const ext = String(a?.ext || '')
+  if (isImageAttachmentLike({ mime, ext, kind: a?.kind })) return ImageOutline
+  return DocumentTextOutline
+}
+
+function isImageAttachment(att) {
+  const mime = String(att?.mime || '')
+  const ext = String(att?.ext || '')
+  return isImageAttachmentLike({ mime, ext, kind: att?.kind })
+}
+
+function shouldShowAttachmentTag(att) {
+  if (!att) return false
+  if (!isImageAttachment(att)) return true
+  // 图片已在上方预览，仅在解析中或失败时显示标签
+  const status = String(att?.status || '')
+  return status && status !== 'ready'
+}
+
+function listDisplayAttachments(msg) {
+  const list = Array.isArray(msg?.attachments) ? msg.attachments : []
+  return list.filter((a) => shouldShowAttachmentTag(a))
+}
+
+function countImageAttachments(msg) {
+  const list = Array.isArray(msg?.attachments) ? msg.attachments : []
+  let count = 0
+  list.forEach((a) => {
+    if (isImageAttachment(a)) count += 1
+  })
+  const imagesLen = Array.isArray(msg?.images) ? msg.images.length : 0
+  return Math.max(count, imagesLen)
+}
+
+function countFileAttachments(msg) {
+  const list = Array.isArray(msg?.attachments) ? msg.attachments : []
+  let count = 0
+  list.forEach((a) => {
+    if (!isImageAttachment(a)) count += 1
+  })
+  return count
+}
+
+function attachmentStatusText(att) {
+  const status = String(att?.status || '')
+  if (status === 'processing') return '解析中'
+  if (status === 'error') return `解析失败：${att?.error || '未知错误'}`
+  return ''
+}
+
+function attachmentStatusLabel(att) {
+  const status = String(att?.status || '')
+  if (status === 'processing') return '解析中'
+  if (status === 'error') return '解析失败'
+  return ''
+}
+
+function attachmentTypeLabel(att) {
+  const ext = String(att?.ext || '').trim().toLowerCase()
+  if (ext) return ext === 'jpg' ? 'JPEG' : ext.toUpperCase()
+
+  const mime = String(att?.mime || '').trim().toLowerCase()
+  if (mime === 'application/pdf') return 'PDF'
+  if (mime.startsWith('text/')) return 'TEXT'
+  return 'FILE'
+}
+
+function attachmentMetaSummary(att) {
+  if (!att || typeof att !== 'object') return ''
+
+  const parts = []
+  const typeLabel = attachmentTypeLabel(att)
+  if (typeLabel) parts.push(typeLabel)
+
+  const sizeText = formatAttachmentSize(att?.size)
+  if (sizeText) parts.push(sizeText)
+
+  const statusText = attachmentStatusLabel(att)
+  if (statusText) parts.push(statusText)
+
+  return parts.join(' · ')
+}
+
+function attachmentCardTitle(att) {
+  const name = String(att?.name || '').trim()
+  if (String(att?.status || '') === 'error' && att?.error) {
+    return `${name}\n${att.error}`
+  }
+  return name
+}
+
+function imageMetaLabel(item) {
+  if (!item || typeof item !== 'object') return ''
+  if (String(item.metaLine || '').trim()) return String(item.metaLine || '').trim()
+  return buildImageMetaLine({
+    mime: item?.mime,
+    ext: item?.ext,
+    size: item?.size,
+    width: item?.width,
+    height: item?.height
+  })
+}
+
+function imageInsightLabel(item) {
+  const text = truncateInlineText(item?.svgTextPreview || '', 140)
+  return text ? `SVG 文本：${text}` : ''
+}
+
+function assistantImageTitle(msg) {
+  const count = Array.isArray(msg?.images) ? msg.images.length : 0
+  if (count > 1) return `已生成 ${count} 张图片`
+  return '已生成 1 张图片'
+}
+
+function assistantImagePromptLabel(msg) {
+  const prompt = truncateInlineText(msg?.imagePrompt || '', 220)
+  if (!prompt) return ''
+  return `提示词：${prompt}`
+}
+
+function assistantImageTaskStatusLabel(msg) {
+  const status = String(msg?.imageTask?.status || '').trim().toLowerCase()
+  if (status === 'queued' || status === 'submitted' || status === 'pending' || status === 'accepted') return '已提交'
+  if (status === 'processing' || status === 'running' || status === 'in_progress') return '生成中'
+  if (status === 'completed' || status === 'succeeded' || status === 'success') return '已完成'
+  if (status === 'failed' || status === 'error' || status === 'cancelled') return '失败'
+  return status || '处理中'
+}
+
+function assistantImageTaskTagType(msg) {
+  const status = String(msg?.imageTask?.status || '').trim().toLowerCase()
+  if (status === 'failed' || status === 'error' || status === 'cancelled') return 'error'
+  if (status === 'completed' || status === 'succeeded' || status === 'success') return 'success'
+  if (status === 'queued' || status === 'submitted' || status === 'pending' || status === 'accepted') return 'warning'
+  return 'info'
+}
+
+function assistantImageTaskTitle(msg) {
+  const label = assistantImageTaskStatusLabel(msg)
+  return `图片任务${label === '处理中' ? '' : ` · ${label}`}`.trim()
+}
+
+function assistantImageTaskMetaLabel(msg) {
+  const taskId = String(msg?.imageTask?.id || '').trim()
+  const endpoint = String(msg?.imageTask?.endpointKind || '').trim()
+  const parts = []
+  if (taskId) parts.push(`任务 ID：${taskId}`)
+  if (endpoint) parts.push(`接口：${endpoint}`)
+  return parts.join(' · ')
+}
+
+function assistantImageTaskNote(msg) {
+  return String(msg?.imageTask?.note || '').trim()
+}
+
+async function parseAttachment(att) {
+  const file = att?.file
+  if (!file) throw new Error('附件文件为空')
+
+  if (file.size > MAX_ATTACHMENT_BYTES) {
+    throw new Error(`Attachment too large (${Math.ceil(file.size / 1024 / 1024)}MB). Limit: ${Math.ceil(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB`)
+  }
+
+  const name = String(att.name || file.name || 'unnamed')
+  const ext = String(att.ext || getFileExt(name) || guessExtensionFromMime(att.mime || file.type || '')).trim().toLowerCase()
+  const mime = String(att.mime || file.type || '')
+
+  if (isImageAttachmentLike({ mime, ext })) {
+    if (file.size > MAX_IMAGE_BYTES) {
+      throw new Error(`Image too large (${Math.ceil(file.size / 1024 / 1024)}MB). Limit: ${Math.ceil(MAX_IMAGE_BYTES / 1024 / 1024)}MB`)
+    }
+    const dataUrl = await fileToDataUrl(file)
+    const imageSummary = await buildImageAttachmentSummary({ file, name, ext, mime, dataUrl })
+    return {
+      kind: 'image',
+      name,
+      ext,
+      mime,
+      dataUrl,
+      text: imageSummary.text,
+      width: imageSummary.width,
+      height: imageSummary.height,
+      metaLine: imageSummary.metaLine,
+      svgTextPreview: imageSummary.svgTextPreview
+    }
+  }
+
+  if (isDirectTextAttachmentExtension(ext) || (!ext && isTextAttachmentMime(mime))) {
+    const t = await file.text()
+    return { kind: 'text', name, ext, mime, text: truncateText(t, MAX_ATTACHMENT_TEXT_CHARS) }
+  }
+
+  if (isWorkerParsedAttachmentExtension(ext)) {
+    const text = await parseAttachmentTextWithFallback({ file, ext, fileName: name, maxChars: MAX_ATTACHMENT_TEXT_CHARS })
+    return { kind: 'text', name, ext, mime, text }
+  }
+
+  if (isConvertibleAttachmentExtension(ext)) {
+    throw new Error(`暂不支持解析 .${ext}，建议另存为 .${ext}x 后再上传`)
+  }
+
+  throw new Error(`不支持的附件类型：${ext || 'unknown'}`)
+}
+
+async function ensureAttachmentParsed(att) {
+  if (!att?.id) return
+  if (att.status === 'ready' || att.status === 'error') return
+
+  if (attachmentParseQueue.has(att.id)) return attachmentParseQueue.get(att.id)
+
+  const p = (async () => {
+    att.status = 'processing'
+    att.error = ''
+    try {
+      const parsed = await parseAttachment(att)
+      att.kind = parsed.kind
+      att.text = parsed.text || ''
+      att.dataUrl = parsed.dataUrl || ''
+      att.width = Number(parsed.width || 0)
+      att.height = Number(parsed.height || 0)
+      att.metaLine = parsed.metaLine || ''
+      att.svgTextPreview = parsed.svgTextPreview || ''
+      att.status = 'ready'
+    } catch (err) {
+      att.status = 'error'
+      att.error = err?.message || String(err)
+    } finally {
+      attachmentParseQueue.delete(att.id)
+    }
+  })()
+
+  attachmentParseQueue.set(att.id, p)
+  return p
+}
+
+function appendPendingFiles(files, options = {}) {
+  const list = Array.isArray(files) ? files.filter(Boolean) : []
+  if (!list.length) return 0
+
+  const current = Array.isArray(pendingAttachments.value) ? pendingAttachments.value : []
+  const totalBytes = current.reduce((sum, a) => sum + Number(a?.size || 0), 0) + list.reduce((sum, f) => sum + Number(f?.size || 0), 0)
+  if (totalBytes > MAX_ATTACHMENT_BYTES) {
+    message.warning(`附件总大小超过上限（${Math.ceil(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB），请减少文件数量或大小`)
+    return 0
+  }
+
+  const added = list.map((file) => {
+    const normalizedName = normalizeAttachmentName(file, options)
+    return reactive({
+      id: newId(),
+      name: normalizedName,
+      ext: getFileExt(normalizedName) || guessExtensionFromMime(file?.type),
+      mime: file?.type || '',
+      size: file?.size || 0,
+      file,
+      kind: '',
+      text: '',
+      dataUrl: '',
+      width: 0,
+      height: 0,
+      metaLine: '',
+      svgTextPreview: '',
+      status: 'pending', // pending | processing | ready | error
+      error: ''
+    })
+  })
+  pendingAttachments.value = [...current, ...added]
+
+  // 异步解析，避免阻塞 UI
+  added.forEach((a) => ensureAttachmentParsed(a))
+  return added.length
+}
+
+function getSupportedClipboardFiles(e) {
+  const out = []
+  const seen = new Set()
+  const addFile = (file) => {
+    if (!file || !isSupportedAttachmentFile(file)) return
+    const key = [
+      String(file.name || '').trim().toLowerCase(),
+      Number(file.size || 0),
+      String(file.type || '').trim().toLowerCase()
+    ].join('|')
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push(file)
+  }
+
+  Array.from(e?.clipboardData?.items || []).forEach((item) => {
+    const file = item?.kind === 'file' ? item.getAsFile?.() : null
+    addFile(file)
+  })
+  Array.from(e?.clipboardData?.files || []).forEach(addFile)
+
+  return out
+}
+
+function handleComposerPaste(e) {
+  const files = getSupportedClipboardFiles(e)
+  if (!files.length) return
+
+  e.preventDefault()
+  const addedCount = appendPendingFiles(files)
+  if (addedCount > 0) {
+    message.success(`Added ${addedCount} attachments`)
+  }
+}
+
+async function handleFileInputChange(e) {
+  const files = Array.from(e?.target?.files || [])
+  try {
+    if (e?.target) e.target.value = ''
+  } catch {
+    // ignore
+  }
+  if (!files.length) return
+
+  appendPendingFiles(files)
+  return
+
+  const current = Array.isArray(pendingAttachments.value) ? pendingAttachments.value : []
+  const totalBytes = current.reduce((sum, a) => sum + Number(a?.size || 0), 0) + files.reduce((sum, f) => sum + Number(f?.size || 0), 0)
+  if (totalBytes > MAX_ATTACHMENT_BYTES) {
+    message.warning(`Attachments exceed the total limit (${Math.ceil(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB). Reduce file count or size.`)
+    return
+  }
+
+  const added = files.map((file) =>
+    reactive({
+      id: newId(),
+      name: file?.name || 'unnamed',
+      ext: getFileExt(file?.name),
+      mime: file?.type || '',
+      size: file?.size || 0,
+      file,
+      kind: '',
+      text: '',
+      dataUrl: '',
+      width: 0,
+      height: 0,
+      metaLine: '',
+      svgTextPreview: '',
+      status: 'pending', // pending | processing | ready | error
+      error: ''
+    })
+  )
+  pendingAttachments.value = [...current, ...added]
+
+  // 异步解析，避免阻塞 UI
+  added.forEach((a) => ensureAttachmentParsed(a))
+}
+
+const scrollbarRef = ref(null)
+
+const agentOptions = computed(() => {
+  return (agents.value || []).map((a) => ({ label: a.name || a._id, value: a._id }))
+})
+
+const promptOptions = computed(() => {
+  const localOptions = (prompts.value || []).map((p) => ({
+    label: p.name || p._id,
+    value: makeLocalPromptOptionValue(p._id)
+  }))
+
+  const mcpOptions = (mcpPromptCatalog.value || []).map((item) => ({
+    label: item.label,
+    value: makeMcpPromptOptionValue(item),
+    disabled: !!item.disabled
+  }))
+
+  const groups = []
+  if (localOptions.length) groups.push({ type: 'group', label: '本地提示词（系统提示词）', key: 'local-prompts', children: localOptions })
+  if (mcpOptions.length) groups.push({ type: 'group', label: 'MCP 提示词（插入输入框）', key: 'mcp-prompts', children: mcpOptions })
+  return groups.length ? groups : localOptions
+})
+
+const selectedPromptModalParsedValue = computed(() => parsePromptOptionValue(promptModalSelectedId.value))
+const selectedPromptModalKind = computed(() => selectedPromptModalParsedValue.value.type)
+const selectedMcpPromptForModal = computed(() => {
+  const parsed = selectedPromptModalParsedValue.value
+  if (parsed.type !== 'mcp') return null
+  return findMcpPromptCatalogItem(parsed.serverId, parsed.promptName)
+})
+const selectedMcpPromptArgs = computed(() => {
+  const args = selectedMcpPromptForModal.value?.arguments
+  if (!Array.isArray(args)) return []
+  return args
+})
+
+watch(
+  selectedMcpPromptArgs,
+  (args) => {
+    resetMcpArgFormData(args, promptMcpArgsForm)
+  },
+  { deep: true }
+)
+
+const skillOptions = computed(() => {
+  return (skills.value || []).map((s) => ({ label: s.name || s._id, value: s._id }))
+})
+
+const orderedMcpServers = computed(() => {
+  return [...(mcpServers.value || [])].sort((a, b) => {
+    const disabledDiff = Number(!!a?.disabled) - Number(!!b?.disabled)
+    if (disabledDiff !== 0) return disabledDiff
+    return String(a?.name || a?._id || '').localeCompare(String(b?.name || b?._id || ''), 'zh-Hans-CN')
+  })
+})
+
+const mcpOptions = computed(() => {
+  return orderedMcpServers.value.map((s) => ({
+    label: s.name || s._id,
+    value: s._id,
+    disabled: !!s.disabled
+  }))
+})
+
+const selectedAgent = computed(() => {
+  if (!selectedAgentId.value) return null
+  return (agents.value || []).find((a) => a._id === selectedAgentId.value) || null
+})
+
+const inlineAgentPickerHeaderText = computed(() => {
+  const query = String(inlineAgentQuery.value || '').trim()
+  return query ? `@${query}` : '@'
+})
+
+const inlineCommandPickerTitle = computed(() => {
+  if (inlineCommandMode.value === 'kind') return '选择命令类型'
+  return INLINE_COMMAND_KIND_LABELS[inlineCommandType.value] || '选择命令'
+})
+
+const inlineCommandPickerHeaderText = computed(() => {
+  if (inlineCommandMode.value === 'kind') {
+    const query = String(inlineCommandQuery.value || '').trim()
+    return query ? `/${query}` : '/'
+  }
+
+  const kind = String(inlineCommandType.value || '').trim()
+  if (!kind) return ''
+  const query = String(inlineCommandQuery.value || '').trim()
+  return query ? `/${kind} ${query}` : `/${kind}`
+})
+
+const inlineAgentSuggestions = computed(() => {
+  const list = Array.isArray(agents.value) ? agents.value : []
+  const query = String(inlineAgentQuery.value || '').trim()
+
+  return list
+    .map((agent) => {
+      const id = String(agent?._id || '').trim()
+      const name = String(agent?.name || '').trim()
+      if (!id) return null
+
+      const provider = (providers.value || []).find((p) => p?._id === agent?.provider)
+      const selected = selectedAgentId.value === id
+      const providerLabel = provider?.name || provider?._id || ''
+      const model = String(agent?.model || '').trim()
+      const score = query
+        ? getInlinePickerMatchScore([name, id, providerLabel, model], query)
+        : selected ? -1 : 10
+      if (!Number.isFinite(score)) return null
+
+      return {
+        value: id,
+        id,
+        name,
+        label: name || id,
+        model,
+        providerLabel,
+        selected,
+        score
+      }
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.score - b.score || Number(b.selected) - Number(a.selected) || a.label.localeCompare(b.label))
+    .slice(0, INLINE_AGENT_SUGGESTION_LIMIT)
+})
+
+const inlineCommandSuggestions = computed(() => {
+  const mode = String(inlineCommandMode.value || '').trim()
+  const kind = String(inlineCommandType.value || '').trim()
+  const query = String(inlineCommandQuery.value || '').trim()
+  if (mode === 'kind') {
+    return INLINE_COMMAND_DEFINITIONS
+      .map((item) => {
+        const score = query
+          ? getInlinePickerMatchScore([item.kind, item.label, item.token, ...item.aliases.map((alias) => `/${alias}`)], query)
+          : 0
+        if (query && !Number.isFinite(score)) return null
+        return {
+          value: item.kind,
+          id: item.label,
+          label: item.token,
+          description: item.description,
+          meta: item.aliases.length ? item.aliases.map((alias) => `/${alias}`).join(' ') : '',
+          selected: false,
+          selectedTag: '',
+          score
+        }
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.score - b.score || a.label.localeCompare(b.label))
+      .slice(0, INLINE_COMMAND_SUGGESTION_LIMIT)
+  }
+
+  if (!kind) return []
+
+  if (kind === 'prompt') {
+    const localItems = (prompts.value || [])
+      .map((prompt) => {
+        const id = String(prompt?._id || '').trim()
+        if (!id) return null
+        const label = String(prompt?.name || prompt?._id || '').trim()
+        const description = truncateInlineText(prompt?.content, 72)
+        const selected = selectedPromptId.value === id
+        const score = query
+          ? getInlinePickerMatchScore([label, id, description], query)
+          : selected ? -1 : 10
+        if (!Number.isFinite(score)) return null
+        return {
+          value: makeLocalPromptOptionValue(id),
+          id,
+          label: label || id,
+          description,
+          meta: '本地',
+          selected,
+          selectedTag: '当前',
+          score
+        }
+      })
+      .filter(Boolean)
+
+    const mcpItems = (mcpPromptCatalog.value || [])
+      .map((item) => {
+        const serverId = String(item?.serverId || '').trim()
+        const name = String(item?.name || '').trim()
+        if (!serverId || !name) return null
+        const label = String(item?.label || name).trim()
+        const description = truncateInlineText(item?.description, 72)
+        const meta = ['MCP', item?.serverName || serverId, item?.arguments?.length ? `参数 ${item.arguments.length}` : ''].filter(Boolean).join(' · ')
+        const score = query
+          ? getInlinePickerMatchScore([label, name, serverId, item?.serverName, description, meta], query)
+          : 12
+        if (!Number.isFinite(score)) return null
+        return {
+          value: makeMcpPromptOptionValue(item),
+          id: name,
+          label,
+          description,
+          meta,
+          selected: false,
+          selectedTag: '',
+          score,
+          disabled: !!item.disabled,
+          title: [item?.serverName && item.serverName !== serverId ? serverId : '', description, item.disabled ? '该 MCP 已禁用' : ''].filter(Boolean).join('\n')
+        }
+      })
+      .filter(Boolean)
+
+    return [...localItems, ...mcpItems]
+      .sort((a, b) => a.score - b.score || Number(b.selected) - Number(a.selected) || a.label.localeCompare(b.label, 'zh-Hans-CN'))
+      .slice(0, INLINE_COMMAND_SUGGESTION_LIMIT)
+  }
+
+  if (kind === 'skill') {
+    const agentSet = agentSkillIdSet.value
+    return (skills.value || [])
+      .map((skill) => {
+        const id = String(skill?._id || '').trim()
+        if (!id) return null
+        const label = String(skill?.name || skill?._id || '').trim()
+        const description = truncateInlineText(skill?.description || skill?.content, 72)
+        const selected = (selectedSkillIds.value || []).includes(id)
+        const meta = agentSet.has(id) ? '智能体' : ''
+        const score = query
+          ? getInlinePickerMatchScore([label, id, description, meta], query)
+          : selected ? -1 : 10
+        if (!Number.isFinite(score)) return null
+        return {
+          value: id,
+          id,
+          label: label || id,
+          description,
+          meta,
+          selected,
+          selectedTag: '已选中',
+          score
+        }
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.score - b.score || Number(b.selected) - Number(a.selected) || a.label.localeCompare(b.label))
+      .slice(0, INLINE_COMMAND_SUGGESTION_LIMIT)
+  }
+
+  if (kind === 'mcp') {
+    const manualIdSet = new Set(Array.isArray(manualMcpIds.value) ? manualMcpIds.value : [])
+    const derivedIdSet = new Set(Array.isArray(derivedMcpIds.value) ? derivedMcpIds.value : [])
+
+    return orderedMcpServers.value
+      .map((server) => {
+        const id = String(server?._id || '').trim()
+        if (!id) return null
+        const label = String(server?.name || server?._id || '').trim()
+        const disabled = !!server?.disabled
+        const manualSelected = manualIdSet.has(id)
+        const derivedSelected = derivedIdSet.has(id)
+        const selected = manualSelected || derivedSelected
+        const metaParts = []
+        const transportType = String(server?.transportType || '').trim().toUpperCase()
+        if (transportType) metaParts.push(transportType)
+        if (derivedSelected && !manualSelected) metaParts.push('技能')
+        if (disabled) metaParts.push('已禁用')
+        const meta = metaParts.join(' · ')
+        const description = truncateInlineText(server?.description || server?.url || server?.baseUrl || server?.command, 72)
+        const score = query
+          ? getInlinePickerMatchScore([label, id, description, meta], query)
+          : manualSelected ? -2 : derivedSelected ? -1 : disabled ? 20 : 10
+        if (!Number.isFinite(score)) return null
+        return {
+          value: id,
+          id,
+          label: label || id,
+          description,
+          meta,
+          selected,
+          selectedTag: manualSelected ? '已选中' : derivedSelected ? '技能' : '',
+          disabled,
+          title: [label && label !== id ? id : '', description, disabled ? '该 MCP 已禁用，请先到设置页启用' : '']
+            .filter(Boolean)
+            .join('\n'),
+          score
+        }
+      })
+      .filter(Boolean)
+      .sort(
+        (a, b) =>
+          a.score - b.score ||
+          Number(!!a.disabled) - Number(!!b.disabled) ||
+          Number(b.selected) - Number(a.selected) ||
+          a.label.localeCompare(b.label, 'zh-Hans-CN')
+      )
+  }
+
+  return []
+})
+
+const showInlineAgentPicker = computed(() => {
+  return inlineAgentMatchStart.value >= 0 && inlineAgentSuggestions.value.length > 0
+})
+
+const showInlineCommandPicker = computed(() => {
+  return inlineCommandMatchStart.value >= 0 && inlineCommandSuggestions.value.length > 0
+})
+
+const selectedAgentModelParams = computed(() => normalizeAgentModelParams(selectedAgent.value?.modelParams))
+
+const selectedProvider = computed(() => {
+  if (!selectedProviderId.value) return null
+  return (providers.value || []).find((p) => p._id === selectedProviderId.value) || null
+})
+
+const pendingImageAttachments = computed(() => {
+  const list = Array.isArray(pendingAttachments.value) ? pendingAttachments.value : []
+  return list.filter((item) => isImageAttachment(item))
+})
+
+const pendingFileAttachments = computed(() => {
+  const list = Array.isArray(pendingAttachments.value) ? pendingAttachments.value : []
+  return list.filter((item) => !isImageAttachment(item))
+})
+
+const selectedSkillObjects = computed(() => {
+  const ids = selectedSkillIds.value || []
+  const all = skills.value || []
+  return ids.map((id) => all.find((s) => s._id === id)).filter(Boolean)
+})
+
+function formatDisplayNameWithId(entity) {
+  const id = String(entity?._id || '').trim()
+  const name = String(entity?.name || '').trim()
+  if (!id && !name) return ''
+  if (!name || name === id) return id || name
+  return `${name}（${id}）`
+}
+
+function joinAsLines(items = [], emptyText = '无') {
+  const list = (Array.isArray(items) ? items : [])
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+  if (!list.length) return emptyText
+  return list.map((item) => `- ${item}`).join('\n')
+}
+
+const agentSkillIdSet = computed(() => new Set(Array.isArray(agentSkillIds.value) ? agentSkillIds.value : []))
+const activatedAgentSkillIdSet = computed(() =>
+  new Set(Array.isArray(activatedAgentSkillIds.value) ? activatedAgentSkillIds.value : [])
+)
+
+function getLoadedSkillContent(skillId) {
+  return String(loadedSkillContentById[String(skillId || '').trim()] || '').trim()
+}
+
+function getLoadedSkillFilePathSet(skillId) {
+  const id = String(skillId || '').trim()
+  const list = Array.isArray(loadedSkillFileCacheBySkillId[id]) ? loadedSkillFileCacheBySkillId[id] : []
+  return new Set(list)
+}
+
+function hasLoadedSkillMainContent(skillId, entryFile = 'SKILL.md') {
+  const id = String(skillId || '').trim()
+  if (!id) return false
+  if (Object.prototype.hasOwnProperty.call(loadedSkillContentById, id)) return true
+  const normalizedEntry = String(entryFile || 'SKILL.md').trim() || 'SKILL.md'
+  return getLoadedSkillFilePathSet(id).has(normalizedEntry)
+}
+
+function isSkillPromptContentLoaded(skill) {
+  const id = String(skill?._id || '').trim()
+  if (!id) return false
+  if (isDirectorySkill(skill)) {
+    return hasLoadedSkillMainContent(id, skill?.entryFile || 'SKILL.md')
+  }
+  if (!agentSkillIdSet.value.has(id)) return true
+  return activatedAgentSkillIdSet.value.has(id)
+}
+
+const loadedSkillIdSet = computed(() => {
+  const set = new Set()
+  ;(Array.isArray(selectedSkillObjects.value) ? selectedSkillObjects.value : []).forEach((skill) => {
+    const id = String(skill?._id || '').trim()
+    if (id && isSkillPromptContentLoaded(skill)) set.add(id)
+  })
+  return set
+})
+
+async function loadSkillMainContent(skillId) {
+  const id = String(skillId || '').trim()
+  if (!id) return ''
+  const skill = (skills.value || []).find((item) => item && item._id === id)
+  if (!skill) throw new Error(`未找到技能：${id}`)
+  const entryFile = String(skill?.entryFile || 'SKILL.md').trim() || 'SKILL.md'
+  if (hasLoadedSkillMainContent(id, entryFile)) {
+    return getLoadedSkillContent(id)
+  }
+
+  if (isDirectorySkill(skill)) {
+    const result = await Promise.resolve(readSkillRegistryFile(id, entryFile))
+    const content = String(result?.content || '').trim()
+    loadedSkillContentById[id] = content
+    const current = getLoadedSkillFilePathSet(id)
+    current.add(String(result?.path || entryFile))
+    loadedSkillFileCacheBySkillId[id] = Array.from(current)
+    return content
+  }
+
+  const inlineContent = String(skill?.content || '').trim()
+  loadedSkillContentById[id] = inlineContent
+  loadedSkillFileCacheBySkillId[id] = ['SKILL.md']
+  return inlineContent
+}
+
+watch(
+  [selectedSkillObjects, activatedAgentSkillIds],
+  () => {
+    const activatedSet = activatedAgentSkillIdSet.value
+    ;(Array.isArray(selectedSkillObjects.value) ? selectedSkillObjects.value : []).forEach((skill) => {
+      const id = String(skill?._id || '').trim()
+      if (!id || !isDirectorySkill(skill)) return
+      if (!activatedSet.has(id)) return
+      if (hasLoadedSkillMainContent(id, skill?.entryFile || 'SKILL.md')) return
+      void loadSkillMainContent(id).catch((err) => {
+        console.warn('Failed to load activated directory skill:', id, err)
+      })
+    })
+  },
+  { immediate: true, deep: true }
+)
+
+watch(
+  input,
+  () => {
+    nextTick(() => refreshComposerInlinePickers())
+  },
+  { flush: 'post' }
+)
+
+watch(
+  [agents, prompts, skills, mcpServers],
+  () => {
+    nextTick(() => refreshComposerInlinePickers())
+  },
+  { deep: true }
+)
+
+watch(inlineAgentSuggestions, (list) => {
+  if (!list.length) {
+    inlineAgentActiveIndex.value = 0
+    return
+  }
+  if (inlineAgentActiveIndex.value >= list.length) {
+    inlineAgentActiveIndex.value = 0
+  }
+})
+
+watch(inlineCommandSuggestions, (list) => {
+  if (!list.length) {
+    inlineCommandActiveIndex.value = 0
+    return
+  }
+  if (inlineCommandActiveIndex.value >= list.length || list[inlineCommandActiveIndex.value]?.disabled) {
+    inlineCommandActiveIndex.value = getFirstEnabledInlineCommandIndex(list)
+  }
+})
+
+function normalizeStringList(val) {
+  if (!Array.isArray(val)) return []
+  const out = []
+  const seen = new Set()
+  val.forEach((x) => {
+    const s = String(x || '').trim()
+    if (!s || seen.has(s)) return
+    seen.add(s)
+    out.push(s)
+  })
+  return out
+}
+
+function buildActiveRequestOverrides(options = {}) {
+  const overrides = {
+    ...buildRequestOverridesFromAgentModelParams(selectedAgentModelParams.value)
+  }
+  if (options.omitReasoningEffort) return overrides
+
+  const reasoningEffort = String(thinkingEffort.value || '').trim().toLowerCase()
+  if (reasoningEffort && reasoningEffort !== 'auto') {
+    overrides.reasoning_effort = reasoningEffort
+  }
+  return overrides
+}
+
+function getSkillTriggers(skill) {
+  const t = skill?.triggers && typeof skill.triggers === 'object' ? skill.triggers : {}
+  return {
+    tags: normalizeStringList(t.tags),
+    keywords: normalizeStringList(t.keywords),
+    regex: normalizeStringList(t.regex),
+    intents: normalizeStringList(t.intents)
+  }
+}
+
+function normalizeRegexPattern(raw) {
+  const s = String(raw || '').trim()
+  if (!s) return null
+  const m = s.match(/^\/(.+)\/([a-z]*)$/i)
+  if (m) return { source: m[1], flags: m[2] || 'i' }
+  return { source: s, flags: 'i' }
+}
+
+function scoreSkillByTriggers(skill, textRaw) {
+  const id = skill?._id
+  const name = skill?.name || id || 'Skill'
+  const raw = String(textRaw || '')
+  const lower = raw.toLowerCase()
+  const triggers = getSkillTriggers(skill)
+  const hasAnyTrigger = triggers.keywords.length || triggers.regex.length || triggers.intents.length
+  if (!hasAnyTrigger) return { ok: false, id, name, score: 0, matched: [] }
+
+  let score = 0
+  const matched = []
+
+  triggers.keywords.forEach((kw) => {
+    const needle = String(kw || '').trim().toLowerCase()
+    if (!needle) return
+    if (lower.includes(needle)) {
+      score += 2
+      matched.push(`kw:${kw}`)
+    }
+  })
+
+  triggers.intents.forEach((it) => {
+    const needle = String(it || '').trim().toLowerCase()
+    if (!needle) return
+    if (lower.includes(needle)) {
+      score += 1
+      matched.push(`intent:${it}`)
+    }
+  })
+
+  triggers.regex.forEach((patternRaw) => {
+    const p = normalizeRegexPattern(patternRaw)
+    if (!p?.source) return
+    try {
+      const re = new RegExp(p.source, p.flags || 'i')
+      if (re.test(raw)) {
+        score += 3
+        matched.push(`re:${patternRaw}`)
+      }
+    } catch {
+      // ignore invalid regex
+    }
+  })
+
+  return { ok: true, id, name, score, matched }
+}
+
+function autoActivateAgentSkillsFromText(textRaw) {
+  if (!autoActivateAgentSkills.value) return []
+  const raw = String(textRaw || '').trim()
+  if (!raw) return []
+
+  const agentSet = agentSkillIdSet.value
+  const activatedSet = activatedAgentSkillIdSet.value
+  const candidates = (selectedSkillObjects.value || []).filter((s) => {
+    const id = s?._id
+    return !!id && agentSet.has(id) && !activatedSet.has(id)
+  })
+
+  const scored = candidates
+    .map((s) => scoreSkillByTriggers(s, raw))
+    .filter((x) => x.ok && x.id && x.score > 0)
+    .sort((a, b) => (b.score - a.score) || (b.matched.length - a.matched.length))
+
+  const picked = scored.filter((x) => x.score >= 2).slice(0, 2)
+  if (!picked.length) return []
+
+  const prev = Array.isArray(activatedAgentSkillIds.value) ? activatedAgentSkillIds.value : []
+  const next = new Set(prev)
+  picked.forEach((x) => next.add(x.id))
+  activatedAgentSkillIds.value = Array.from(next)
+  picked.forEach((x) => {
+    const skill = candidates.find((item) => String(item?._id || '').trim() === x.id)
+    if (!isDirectorySkill(skill)) return
+    void loadSkillMainContent(x.id).catch((err) => {
+      console.warn('Failed to auto-load directory skill:', x.id, err)
+    })
+  })
+
+  try {
+    message.info(`已自动启用技能：${picked.map((x) => x.name).join('、')}`)
+  } catch {
+    // ignore
+  }
+
+  return picked
+}
+
+const derivedMcpIds = computed(() => {
+  const ids = new Set()
+  selectedSkillObjects.value.forEach((s) => {
+    normalizeStringList(s?.mcp).forEach((mcpId) => ids.add(mcpId))
+  })
+  return Array.from(ids)
+})
+
+const activeMcpIds = computed(() => {
+  const ids = new Set()
+  ;(manualMcpIds.value || []).forEach((id) => ids.add(id))
+  ;(derivedMcpIds.value || []).forEach((id) => ids.add(id))
+  return Array.from(ids)
+})
+
+const activeMcpServers = computed(() => {
+  const all = mcpServers.value || []
+  return activeMcpIds.value.map((id) => all.find((s) => s._id === id)).filter(Boolean)
+})
+
+const activeMcpPromptCatalogKey = computed(() => {
+  return (activeMcpServers.value || [])
+    .filter((server) => server && server._id && !server.disabled)
+    .map((server) => getMcpToolsCacheKey(server))
+    .sort()
+    .join('\n')
+})
+
+watch(
+  activeMcpPromptCatalogKey,
+  () => {
+    const activeIds = new Set((activeMcpServers.value || []).map((server) => String(server?._id || '').trim()).filter(Boolean))
+    mcpPromptCatalog.value = (mcpPromptCatalog.value || []).filter((item) => activeIds.has(String(item?.serverId || '').trim()))
+    if (showPromptModal.value || (inlineCommandMode.value === 'item' && inlineCommandType.value === 'prompt')) {
+      void ensureMcpPromptCatalogLoaded({ silent: true, forceRefresh: true })
+    }
+  },
+  { flush: 'post' }
+)
+
+function makeLocalPromptOptionValue(promptId) {
+  return `local:${String(promptId || '').trim()}`
+}
+
+function makeMcpPromptOptionValue(item = {}) {
+  const serverId = encodeURIComponent(String(item.serverId || '').trim())
+  const promptName = encodeURIComponent(String(item.name || '').trim())
+  return `mcp:${serverId}:${promptName}`
+}
+
+function parsePromptOptionValue(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return { type: 'local', promptId: '' }
+  if (raw.startsWith('local:')) return { type: 'local', promptId: raw.slice('local:'.length) }
+  if (raw.startsWith('mcp:')) {
+    const rest = raw.slice('mcp:'.length)
+    const idx = rest.indexOf(':')
+    if (idx >= 0) {
+      return {
+        type: 'mcp',
+        serverId: decodeURIComponent(rest.slice(0, idx)),
+        promptName: decodeURIComponent(rest.slice(idx + 1))
+      }
+    }
+  }
+  return { type: 'local', promptId: raw }
+}
+
+function findMcpPromptCatalogItem(serverId, promptName) {
+  const sid = String(serverId || '').trim()
+  const name = String(promptName || '').trim()
+  if (!sid || !name) return null
+  return (mcpPromptCatalog.value || []).find((item) => item?.serverId === sid && item?.name === name) || null
+}
+
+const selectedAgentHoverText = computed(() => {
+  const agent = selectedAgent.value
+  if (!agent) return '未选择智能体'
+  const provider = (providers.value || []).find((item) => item?._id === agent?.provider) || null
+  const providerLabel = provider ? formatDisplayNameWithId(provider) : String(agent?.provider || '').trim() || '未配置'
+  const modelLabel = String(agent?.model || '').trim() || '未配置'
+  const skillNames = normalizeStringList(agent?.skills)
+    .map((id) => (skills.value || []).find((s) => s?._id === id))
+    .filter(Boolean)
+    .map((skill) => formatDisplayNameWithId(skill))
+  const mcpNames = normalizeStringList(agent?.mcp)
+    .map((id) => (mcpServers.value || []).find((server) => server?._id === id))
+    .filter(Boolean)
+    .map((server) => formatDisplayNameWithId(server))
+
+  return [
+    `智能体：${formatDisplayNameWithId(agent)}`,
+    `服务商：${providerLabel}`,
+    `模型：${modelLabel}`,
+    `技能（${skillNames.length}）：`,
+    joinAsLines(skillNames),
+    `MCP（${mcpNames.length}）：`,
+    joinAsLines(mcpNames)
+  ].join('\n')
+})
+
+const selectedSkillsHoverText = computed(() => {
+  const list = Array.isArray(selectedSkillObjects.value) ? selectedSkillObjects.value : []
+  const agentSet = agentSkillIdSet.value
+  const activatedSet = activatedAgentSkillIdSet.value
+  const lines = list.map((skill) => {
+    const id = String(skill?._id || '').trim()
+    const name = formatDisplayNameWithId(skill)
+    if (!id) return name
+    const flags = []
+    if (agentSet.has(id)) flags.push('智能体技能')
+    if (activatedSet.has(id)) flags.push('已启用')
+    if (isDirectorySkill(skill)) flags.push('目录')
+    return flags.length ? `${name}（${flags.join(' / ')}）` : name
+  })
+
+  return [`已选技能：${list.length}`, joinAsLines(lines)].join('\n')
+})
+
+const activeMcpServersHoverText = computed(() => {
+  const list = Array.isArray(activeMcpServers.value) ? activeMcpServers.value : []
+  const manualSet = new Set(Array.isArray(manualMcpIds.value) ? manualMcpIds.value : [])
+  const derivedSet = new Set(Array.isArray(derivedMcpIds.value) ? derivedMcpIds.value : [])
+  const lines = list.map((server) => {
+    const id = String(server?._id || '').trim()
+    const name = formatDisplayNameWithId(server)
+    const tags = []
+    if (manualSet.has(id)) tags.push('手动')
+    if (derivedSet.has(id)) tags.push('来自技能')
+    if (server?.disabled) tags.push('已禁用')
+    return tags.length ? `${name}（${tags.join(' / ')}）` : name
+  })
+  return [`已启用 MCP：${list.length}`, joinAsLines(lines)].join('\n')
+})
+
+const activeMcpToolsHoverText = computed(() => {
+  const servers = (Array.isArray(activeMcpServers.value) ? activeMcpServers.value : []).filter((s) => s && s._id)
+  if (!servers.length) return '当前没有已启用的 MCP 服务'
+
+  const lines = servers.map((server) => {
+    const label = formatDisplayNameWithId(server)
+    if (server?.disabled) return `${label}：已禁用`
+
+    const allow = Array.isArray(server?.allowTools)
+      ? server.allowTools.map((x) => String(x || '').trim()).filter(Boolean)
+      : []
+    if (allow.length) {
+      const preview = allow.slice(0, 6).join(', ')
+      const suffix = allow.length > 6 ? ` ...（共 ${allow.length}）` : ''
+      return `${label}：白名单 ${allow.length} 个（${preview}${suffix}）`
+    }
+
+    const status = mcpToolsStatusByServerId[String(server._id)] || null
+    if (status?.loading) return `${label}：工具列表加载中`
+    if (status?.lastError) return `${label}：读取失败（${status.lastError}）`
+    if (typeof status?.toolCount === 'number' && status.updatedAt) return `${label}：${status.toolCount} 个工具`
+    return `${label}：待加载`
+  })
+
+  return [`工具总数：${mcpToolCountText.value}`, joinAsLines(lines)].join('\n')
+})
+
+const activeKeepAliveMcpServerIds = computed(() => {
+  return (activeMcpServers.value || [])
+    .filter((s) => s && !s.disabled && s.keepAlive && s._id)
+    .map((s) => s._id)
+})
+
+let lastKeepAliveMcpServerIds = new Set()
+watch(
+  activeKeepAliveMcpServerIds,
+  (ids) => {
+    const next = new Set(Array.isArray(ids) ? ids : [])
+    for (const id of lastKeepAliveMcpServerIds) {
+      if (!next.has(id)) closePooledMCPClient(id)
+    }
+    lastKeepAliveMcpServerIds = next
+  },
+  { immediate: true }
+)
+
+const activePromptLabel = computed(() => {
+  if (basePromptMode.value === 'custom') return customSystemPrompt.value ? '临时' : ''
+  if (!selectedPromptId.value) return ''
+  const p = (prompts.value || []).find((x) => x._id === selectedPromptId.value)
+  return p?.name || p?._id || 'Prompt'
+})
+
+const basePromptText = computed(() => {
+  if (basePromptMode.value === 'custom') return String(customSystemPrompt.value || '').trim()
+  if (!selectedPromptId.value) return ''
+  const p = (prompts.value || []).find((x) => x._id === selectedPromptId.value)
+  return String(p?.content || '').trim()
+})
+
+const legacySkillsPromptText = computed(() => {
+  const blocks = []
+  const agentSet = agentSkillIdSet.value
+  const loadedSet = loadedSkillIdSet.value
+  const mcpList = Array.isArray(mcpServers.value) ? mcpServers.value : []
+
+  const hasLazyUnloaded = selectedSkillObjects.value.some((s) => {
+    const id = s?._id
+    return !!id && agentSet.has(id) && !loadedSet.has(id)
+  })
+  if (hasLazyUnloaded) {
+    blocks.push(AGENT_SKILL_LAZY_LOAD_GUIDANCE_LINES.join('\n'))
+  }
+
+  selectedSkillObjects.value.forEach((s) => {
+    const id = s?._id
+    const name = s?.name || id || 'Skill'
+    const desc = String(s?.description || '').trim()
+    const rawContent = String(s?.content || '').trim()
+    const content = id && loadedSet.has(id) ? rawContent : ''
+
+    const isAgentSkill = !!id && agentSet.has(id)
+    const isLoaded = !!id && loadedSet.has(id)
+    const skillMcpIds = Array.isArray(s?.mcp) ? s.mcp.map((x) => String(x || '').trim()).filter(Boolean) : []
+    const skillMcpNames = skillMcpIds.map((mcpId) => mcpList.find((x) => x?._id === mcpId)?.name || mcpId)
+    const mcpHint = skillMcpNames.length ? skillMcpNames.map((n) => `\`${n}\``).join(', ') : '(none)'
+
+    if (!desc && !rawContent && !skillMcpIds.length) return
+
+    const title = id ? `## Skill: ${name} (id: \`${id}\`)` : `## Skill: ${name}`
+    const parts = [title]
+
+    if (isAgentSkill) {
+      const status = isLoaded ? 'Enabled' : 'Not enabled yet (call use_skill first)'
+      parts.push(`Status: ${status}`)
+    }
+
+    if (skillMcpIds.length) {
+      parts.push(`MCP: ${mcpHint}`)
+    }
+
+    if (desc) parts.push(`Description: ${desc}`)
+    if (!desc && !content && rawContent && isAgentSkill && !isLoaded) {
+      parts.push('Hint: this skill is not enabled yet. Use use_skill before requesting full content.')
+    }
+    if (content) parts.push(content)
+    blocks.push(parts.join('\n'))
+  })
+  return blocks.join('\n\n').trim()
+})
+
+const skillsPromptText = computed(() => {
+  const blocks = []
+  const agentSet = agentSkillIdSet.value
+  const loadedSet = loadedSkillIdSet.value
+  const mcpList = Array.isArray(mcpServers.value) ? mcpServers.value : []
+
+  const hasLazyUnloaded = selectedSkillObjects.value.some((skill) => {
+    const id = String(skill?._id || '').trim()
+    if (!id) return false
+    if (isDirectorySkill(skill)) return !loadedSet.has(id)
+    return agentSet.has(id) && !loadedSet.has(id)
+  })
+  if (hasLazyUnloaded) {
+    blocks.push(AGENT_SKILL_LAZY_LOAD_GUIDANCE_LINES.join('\n'))
+  }
+
+  selectedSkillObjects.value.forEach((skill) => {
+    const id = String(skill?._id || '').trim()
+    const name = skill?.name || id || 'Skill'
+    const isDirectory = isDirectorySkill(skill)
+    const isAgentSkill = !!id && agentSet.has(id)
+    const isLoaded = !!id && loadedSet.has(id)
+    const desc = getSkillDescription(skill)
+    const rawContent = isDirectory ? '' : String(skill?.content || '').trim()
+    const content = id && isLoaded ? (isDirectory ? getLoadedSkillContent(id) : rawContent) : ''
+    const fileIndexLines = isDirectory ? buildSkillFileIndexLines(skill) : []
+    const scriptCatalogLines = isDirectory ? buildSkillScriptCatalogLines(skill) : []
+    const skillMcpIds = Array.isArray(skill?.mcp) ? skill.mcp.map((x) => String(x || '').trim()).filter(Boolean) : []
+    const skillMcpNames = skillMcpIds.map((mcpId) => mcpList.find((x) => x?._id === mcpId)?.name || mcpId)
+    const mcpHint = skillMcpNames.length ? skillMcpNames.map((item) => `\`${item}\``).join(', ') : '(none)'
+
+    if (!desc && !rawContent && !skillMcpIds.length && !fileIndexLines.length && !scriptCatalogLines.length) return
+
+    const title = id ? `## Skill: ${name} (id: \`${id}\`)` : `## Skill: ${name}`
+    const parts = [title]
+
+    if (isAgentSkill || isDirectory) {
+      const status = isLoaded
+        ? (isDirectory ? '已加载 SKILL.md' : '已启用')
+        : '尚未加载'
+      parts.push(`Status: ${status}`)
+    }
+
+    if (skillMcpIds.length) {
+      parts.push(`MCP: ${mcpHint}`)
+    }
+
+    if (desc) parts.push(`Description: ${desc}`)
+
+    if (fileIndexLines.length) {
+      parts.push(['Files:', ...fileIndexLines.map((line) => `- ${line}`)].join('\n'))
+    }
+
+    if (scriptCatalogLines.length) {
+      parts.push(['Scripts:', ...scriptCatalogLines.map((line) => `- ${line}`)].join('\n'))
+    }
+
+    if (!content && isDirectory) {
+      parts.push(
+        `Hint: load the skill first with use_skill({"id":"${id}"}) before reading full content or running scripts.`
+      )
+      if (scriptCatalogLines.length) {
+        parts.push('提示：标准技能通常会在 SKILL.md 和脚本头部注释里说明脚本用法。应用会列出 scripts/ 下可执行的文件，manifest 仅作为可选兼容扩展。如果只有一个可执行脚本，调用 run_skill_script 时可以省略 path。')
+      }
+    } else if (!desc && !content && rawContent && isAgentSkill && !isLoaded) {
+      parts.push('Hint: this skill is not enabled yet. Use use_skill before requesting full content.')
+    }
+
+    if (content) parts.push(content)
+    blocks.push(parts.join('\n'))
+  })
+
+  return blocks.join('\n\n').trim()
+})
+
+const mcpToolCatalogPromptText = computed(() => {
+  if (effectiveToolMode.value !== 'compact') return ''
+  const servers = (Array.isArray(activeMcpServers.value) ? activeMcpServers.value : []).filter((s) => s && s._id && !s.disabled)
+  if (!servers.length) return ''
+
+  // 触发依赖，确保 catalog / pinned 更新后 system prompt 会刷新。
+  void mcpToolCatalogRevision.value
+  void mcpPinnedToolHintsRevision.value
+
+  const allowInfo = (s) => {
+    const allow = Array.isArray(s?.allowTools) ? s.allowTools.map((x) => String(x || '').trim()).filter(Boolean) : []
+    return { allow_mode: allow.length ? 'whitelist' : 'all', allow_count: allow.length }
+  }
+
+  const payloadServers = servers
+    .map((s) => {
+      const id = String(s._id || '').trim()
+      if (!id) return null
+      const entry = mcpToolCatalogByServerId.get(id)
+      const pinned = mcpPinnedToolHintsByServerId.get(id)
+      const pinnedHints = Array.isArray(pinned)
+        ? pinned
+            .filter((x) => x && x.name)
+            .slice(0, MCP_PINNED_TOOL_HINTS_MAX_PER_SERVER)
+        : []
+
+      const base = entry || {
+        ok: false,
+        server_id: id,
+        server_name: s.name || id,
+        keepAlive: !!s.keepAlive,
+        ...allowInfo(s),
+        error: 'not_loaded',
+        updated_at: 0
+      }
+      if (!pinnedHints.length) return base
+      return { ...base, pinned_tool_hints: pinnedHints }
+    })
+    .filter(Boolean)
+    .sort((a, b) => String(a.server_id || '').localeCompare(String(b.server_id || '')))
+
+  const payload = {
+    type: 'mcp_tool_catalog',
+    mode: 'compact',
+    servers: payloadServers,
+    note: COMPACT_MCP_CATALOG_NOTE
+  }
+
+  const json = stableStringify(payload, 0)
+  return ['## MCP 工具索引（会话缓存）', '```json', json, '```'].join('\n')
+})
+
+const toolModePromptText = computed(() => {
+  if (effectiveToolMode.value !== 'compact') return ''
+  if (!activeMcpServers.value?.length) return ''
+  return COMPACT_MCP_TOOL_GUIDANCE_LINES.join('\n')
+})
+
+const webSearchPromptText = computed(() => {
+  if (!webSearchEnabled.value) return ''
+  return [
+    '## 联网搜索',
+    '- 当前会话已启用内置联网搜索工具：`web_search` 和 `web_read`。',
+    '- 只在用户明确要求联网，或问题依赖最新/易变信息时使用：新闻、政策、价格、版本、赛事、人物任职、事实核验、公开资料查找等。',
+    '- 稳定常识、当前对话/附件/代码/笔记即可回答的问题不要联网；不要为了确认常识而搜索。',
+    '- `web_search` 用来找候选来源；搜索结果只是线索，不等同于原文证据。需要严肃核验、引用来源或细节较多时，继续用 `web_read` 阅读最相关、最权威的 1-3 个页面。',
+    '- 对“今天是星期几 / 现在日期 / 简单汇率 / 天气”等单一实时事实，如果搜索结果已经给出明确答案，可以直接回答，不必再读原文。',
+    '- 如果用户直接提供 URL 并要求分析、总结或核验网页内容，直接调用 `web_read`，不需要先搜索。',
+    '- 工具结果来自本次运行的实时请求；对于“今天 / 当前 / 最新 / 现在 / 截至目前”等时效性问题，工具结果优先于模型内部知识。',
+    '- 不要因为结果日期晚于模型知识截止时间，就怀疑、弱化、否定或回避工具结果。模型知识截止时间不是质疑本次联网结果真实性的理由。',
+    '- 不要把用户的相对时间意图改写成具体历史年份。用户问“今天 / 当前 / 最新 / now / today / current / latest”时，必须保留该时间意图；除非用户明确指定年份，否则不要擅自添加 2025、2024 等年份。',
+    '- 如果首轮搜索结果已经足以直接回答问题，就直接回答；不要仅因内部不确定性、知识截止时间或“想再次确认”而对同一问题反复搜索。',
+    '- 只有在以下情况才允许补充搜索或改用 `web_read`：结果缺少明确答案、来源不清、多个结果明显冲突、时间戳缺失、用户明确要求核验原文。',
+    '- 回答时优先使用本次联网结果中的明确时间、数值和来源；不要写“由于我的知识截至某年，所以该结果可能不准确”这类表述，除非来源本身确实可疑或相互冲突。',
+    '- 使用联网资料时给出来源链接；如果搜索或读取失败，说明失败原因，并基于已有信息谨慎回答，不要无限重试。'
+  ].join('\n')
+})
+
+const systemContent = computed(() => {
+  const blocks = []
+  if (basePromptText.value) blocks.push(basePromptText.value)
+  if (skillsPromptText.value) blocks.push(skillsPromptText.value)
+  if (webSearchPromptText.value) blocks.push(webSearchPromptText.value)
+  if (toolModePromptText.value) blocks.push(toolModePromptText.value)
+  if (mcpToolCatalogPromptText.value) blocks.push(mcpToolCatalogPromptText.value)
+  return blocks.join('\n\n').trim()
+})
+
+ const modelButtonText = computed(() => {
+  const providerName = selectedProvider.value?.name || selectedProvider.value?._id || ''
+  if (providerName && selectedModel.value) return `${providerName} / ${selectedModel.value}`
+  if (providerName) return providerName
+  if (selectedModel.value) return selectedModel.value
+  return '模型设置'
+})
+
+const modelTooltipText = computed(() => {
+  const t = String(modelButtonText.value || '').trim()
+  if (!t || t === '模型设置') return '模型设置'
+  return `模型：${t}`
+})
+
+ const defaultModelText = computed(() => {
+  const pid = String(chatConfig.value?.defaultProviderId || '').trim()
+  const m = String(chatConfig.value?.defaultModel || '').trim()
+  if (!pid || !m) return ''
+  const providerName = (providers.value || []).find((p) => p._id === pid)?.name || pid
+  return `${providerName} / ${m}`
+})
+
+function isDefaultModel(providerId, model) {
+  const pid = String(providerId || '')
+  const m = String(model || '')
+  return pid === String(chatConfig.value?.defaultProviderId || '') && m === String(chatConfig.value?.defaultModel || '')
+}
+
+async function toggleDefaultModel(providerId, model) {
+  const pid = String(providerId || '').trim()
+  const m = String(model || '').trim()
+  if (!pid || !m) return
+
+  const same = isDefaultModel(pid, m)
+
+  try {
+    if (typeof updateChatConfig !== 'function') {
+      message.warning('当前环境不支持保存默认模型')
+      return
+    }
+
+    if (same) {
+      await updateChatConfig({ defaultProviderId: '', defaultModel: '' })
+      message.success('已清除默认模型')
+    } else {
+      await updateChatConfig({ defaultProviderId: pid, defaultModel: m })
+      message.success('已设为默认模型')
+    }
+  } catch (err) {
+    message.error('保存默认模型失败：' + (err?.message || String(err)))
+  }
+}
+
+function openBuiltinProviderSettingsFromChat() {
+  if (openUtoolsAiModelsSetting()) return
+  message.warning('当前环境不支持打开 uTools AI 模型设置')
+}
+
+async function refreshBuiltinProviderModelsInChat(showSuccess = false) {
+  try {
+    const list = await refreshUtoolsAiModels({ force: true })
+    if (showSuccess) {
+      message.success(`已同步 ${Array.isArray(list) ? list.length : 0} 个 uTools AI 模型`)
+    }
+  } catch (err) {
+    message.error('同步 uTools AI 模型失败：' + (err?.message || String(err)))
+  }
+}
+
+const systemButtonText = computed(() => {
+  if (basePromptMode.value === 'custom') {
+    const current = normalizePromptText(customSystemPrompt.value)
+    if (!current) return '系统：空'
+    const globalDefault = normalizePromptText(chatConfig.value?.defaultSystemPrompt || '')
+    if (globalDefault && current === globalDefault) return 'System: default'
+    return 'System: temporary'
+  }
+  if (!selectedPromptId.value) return '系统：无'
+  return `提示词：${activePromptLabel.value}`
+})
+
+const systemTooltipText = computed(() => {
+  const raw = String(systemButtonText.value || '').trim()
+  if (!raw) return 'System prompt'
+  let label = raw
+  if (label.startsWith('System: ')) label = label.slice('System: '.length)
+  if (label.startsWith('提示词：')) label = label.slice('提示词：'.length)
+  return label ? `System prompt: ${label}` : 'System prompt'
+})
+
+const basePromptSourceText = computed(() => {
+  if (basePromptMode.value === 'custom') {
+    const current = normalizePromptText(customSystemPrompt.value)
+    if (!current) return '自定义（空）'
+    const globalDefault = normalizePromptText(chatConfig.value?.defaultSystemPrompt || '')
+    if (globalDefault && current === globalDefault) return '默认值（全局设置）'
+    return '临时自定义'
+  }
+  if (!selectedPromptId.value) return '无'
+  const p = (prompts.value || []).find((x) => x._id === selectedPromptId.value)
+  return `提示词：${p?.name || p?._id || selectedPromptId.value}`
+})
+
+const headerHint = computed(() => {
+  if (!providers.value?.length) return '还没有可用服务商，请先到 设置 -> 服务商 中添加。'
+  if (!selectedProvider.value) return '请先在顶部模型设置中选择服务商和模型。'
+  if (!selectedProvider.value.baseurl) return '当前服务商的基础地址为空。'
+  if (!selectedProvider.value.apikey) return '当前服务商的 API Key 为空。'
+  if (!selectedModel.value) return '当前模型为空，请先在顶部模型设置中选择。'
+  return ''
+})
+
+const effectiveHeaderHint = computed(() => {
+  if (!selectedProvider.value || !isUtoolsBuiltinProvider(selectedProvider.value)) {
+    return headerHint.value
+  }
+
+  if (!selectedProvider.value.selectModels?.length) {
+    return 'uTools AI 暂无可用模型，请先到 uTools AI 设置中启用。'
+  }
+
+  if (!selectedModel.value) {
+    return '当前模型为空，请先在顶部模型设置中选择。'
+  }
+
+  if (pendingImageAttachments.value.length) {
+    return 'uTools AI does not read image pixels directly here. Image uploads are sent with extracted metadata only.'
+  }
+
+  return ''
+})
+
+const toolModeDisplayText = computed(() => {
+  const desired = String(toolMode.value || 'auto')
+  const effective = String(effectiveToolMode.value || 'expanded')
+  const effectiveLabel = effective === 'compact' ? '精简' : '展开'
+  if (desired === 'compact') return '精简'
+  if (desired === 'expanded') return '展开'
+  return `自动/${effectiveLabel}`
+})
+
+const mcpToolCountText = computed(() => {
+  const servers = (activeMcpServers.value || []).filter((s) => s && !s.disabled && s._id)
+  if (!servers.length) return '0'
+
+  let count = 0
+  let unknown = false
+
+  servers.forEach((s) => {
+    const allow = Array.isArray(s.allowTools) ? s.allowTools.map((x) => String(x || '').trim()).filter(Boolean) : []
+    if (allow.length) {
+      count += allow.length
+      return
+    }
+
+    const st = mcpToolsStatusByServerId[String(s._id)]
+    const toolCount = typeof st?.toolCount === 'number' ? st.toolCount : 0
+    if (toolCount > 0) count += toolCount
+    else unknown = true
+  })
+
+  if (!unknown) return String(count)
+  return count ? `${count}+?` : '?'
+})
+
+function countUserTurns(messages) {
+  return (Array.isArray(messages) ? messages : []).reduce((total, item) => {
+    return item?.role === 'user' ? total + 1 : total
+  }, 0)
+}
+
+const contextWindowPresetLabel = computed(() => {
+  const preset = String(contextWindowConfig.value?.preset || 'balanced')
+  if (preset === 'custom') return '自定义'
+  return CHAT_CONTEXT_WINDOW_PRESETS[preset]?.label || '平衡'
+})
+
+const contextWindowHistoryFocusLabel = computed(() => {
+  const historyFocus = String(contextWindowConfig.value?.historyFocus || 'balanced')
+  return CHAT_CONTEXT_WINDOW_HISTORY_FOCUS_PRESETS[historyFocus]?.label || '平衡'
+})
+
+const contextWindowDraftHistoryFocusHint = computed(() => {
+  const historyFocus = String(contextWindowDraft.historyFocus || 'balanced')
+  if (historyFocus === 'recent') {
+    return '优先保留最近连续轮次，不回补更早的附件。'
+  }
+  if (historyFocus === 'attachments') {
+    return '优先保留附件历史。为了保住附件上下文，较早的纯文本轮次可能会被移除。'
+  }
+  return '平衡最近对话与更早的附件历史。'
+})
+
+const contextWindowHistoryFocusBehaviorText = computed(() => {
+  const historyFocus = String(contextWindowConfig.value?.historyFocus || 'balanced')
+  if (historyFocus === 'recent') return '当前偏好：优先最近轮次；不会回补更早的附件。'
+  if (historyFocus === 'attachments') return '当前偏好：优先附件历史；较早的纯文本轮次可能让位。'
+  return '当前偏好：平衡最近对话与更早的附件摘要。'
+})
+
+const contextWindowConfig = computed(() => normalizeChatContextWindowConfig(chatConfig.value?.contextWindow))
+const contextWindowResolvedOptions = computed(() => resolveChatContextWindowOptions(chatConfig.value?.contextWindow))
+
+const contextWindowPreviewConfig = computed(() => {
+  const raw = showContextWindowModal.value ? contextWindowDraft : chatConfig.value?.contextWindow
+  return resolveChatContextWindowOptions(normalizeChatContextWindowConfig(raw))
+})
+
+function createEmptyContextWindowInspection() {
+  return {
+    messages: [],
+    inspection: {
+      entries: [],
+      omittedEntries: [],
+      messageCount: 0,
+      turnCount: 0,
+      preludeCount: 0
+    }
+  }
+}
+
+function buildContextWindowStats({ includeRequestDetails = false } = {}) {
+  const rawMessages = Array.isArray(session.apiMessages) ? session.apiMessages : []
+  const providerKind = isUtoolsBuiltinProvider(selectedProvider.value) ? 'utools-ai' : 'openai-compatible'
+  const currentToolsKey = getCurrentToolsKey()
+  const toolEstimateFresh =
+    !!lastBuiltRequestToolsStats.updatedAt && String(lastBuiltRequestToolsStats.key || '') === currentToolsKey
+  const toolCount = toolEstimateFresh ? Number(lastBuiltRequestToolsStats.count || 0) : 0
+  const toolSchemaChars = toolEstimateFresh ? Number(lastBuiltRequestToolsStats.chars || 0) : 0
+  const baseChars = effectiveToolMode.value === 'compact'
+    ? contextWindowResolvedOptions.value.maxCharsCompact
+    : contextWindowResolvedOptions.value.maxCharsExpanded
+  const systemChars = String(systemContent.value || '').length
+  const reservedChars = systemChars + toolSchemaChars
+  const historyBudgetChars = getHistoryContextCharBudget({ reservedCharsOverride: reservedChars })
+  const rawAttachmentCount = countChatContextAttachmentMessages(rawMessages)
+  const lightRawTurns = countUserTurns(rawMessages)
+
+  if (!includeRequestDetails) {
+    return {
+      providerKind,
+      rawCount: rawMessages.length,
+      rawTurns: lightRawTurns,
+      rawAttachmentCount,
+      requestCount: rawMessages.length,
+      requestTurns: lightRawTurns,
+      requestAttachmentCount: rawAttachmentCount,
+      attachmentSummaryCount: 0,
+      baseChars,
+      systemChars,
+      toolCount,
+      toolSchemaChars,
+      reservedChars,
+      historyBudgetChars,
+      toolEstimateFresh
+    }
+  }
+
+  const requestMessages = buildRequestApiMessages(providerKind, { reservedCharsOverride: reservedChars })
+  const requestAttachmentCount = countChatContextAttachmentMessages(requestMessages)
+  const attachmentSummaryCount = countChatContextAttachmentSummaryMessages(requestMessages)
+
+  return {
+    providerKind,
+    rawCount: rawMessages.length,
+    rawTurns: lightRawTurns,
+    rawAttachmentCount,
+    requestCount: requestMessages.length,
+    requestTurns: countUserTurns(requestMessages),
+    requestAttachmentCount,
+    attachmentSummaryCount,
+    baseChars,
+    systemChars,
+    toolCount,
+    toolSchemaChars,
+    reservedChars,
+    historyBudgetChars,
+    toolEstimateFresh
+  }
+}
+
+function buildContextWindowPreviewSourceSignature() {
+  const messageSignature = (session.apiMessages || [])
+    .map((msg) => [
+      msg?.role || '',
+      String(msg?.id || ''),
+      String(msg?.content || '').length,
+      Array.isArray(msg?.content) ? msg.content.length : 0
+    ].join(':'))
+    .join('|')
+  return [
+    messageSignature,
+    String(selectedProviderId.value || ''),
+    String(selectedModel.value || ''),
+    String(systemContent.value || '').length,
+    String(effectiveToolMode.value || ''),
+    JSON.stringify(contextWindowPreviewConfig.value || {}),
+    getCurrentToolsKey()
+  ].join('||')
+}
+
+const contextWindowStatsCache = ref(buildContextWindowStats({ includeRequestDetails: false }))
+const contextWindowPreviewState = ref(createEmptyContextWindowInspection())
+
+watch(
+  () => (showContextWindowModal.value ? buildContextWindowPreviewSourceSignature() : 'hidden'),
+  () => {
+    if (!showContextWindowModal.value) return
+    contextWindowStatsCache.value = buildContextWindowStats({ includeRequestDetails: true })
+
+    const rawMessages = Array.isArray(session.apiMessages) ? session.apiMessages : []
+    if (!rawMessages.length) {
+      contextWindowPreviewState.value = createEmptyContextWindowInspection()
+      return
+    }
+
+    const providerKind = isUtoolsBuiltinProvider(selectedProvider.value) ? 'utools-ai' : 'openai-compatible'
+    const previewConfig = contextWindowPreviewConfig.value
+    const toolEstimateFresh =
+      !!lastBuiltRequestToolsStats.updatedAt && String(lastBuiltRequestToolsStats.key || '') === String(getCurrentToolsKey() || '')
+    const toolSchemaChars = toolEstimateFresh ? Number(lastBuiltRequestToolsStats.chars || 0) : 0
+    const baseChars = effectiveToolMode.value === 'compact' ? previewConfig.maxCharsCompact : previewConfig.maxCharsExpanded
+    const reservedChars = String(systemContent.value || '').length + toolSchemaChars
+
+    contextWindowPreviewState.value = inspectChatContextWindow(
+      rawMessages,
+      buildChatContextWindowRuntimeOptions(previewConfig, {
+        providerKind,
+        maxChars: calculateHistoryContextCharBudget({ baseChars, reservedChars })
+      })
+    )
+  },
+  { immediate: true }
+)
+
+watch(
+  () => showContextWindowModal.value,
+  (visible) => {
+    if (visible) return
+    contextWindowPreviewState.value = createEmptyContextWindowInspection()
+    contextWindowStatsCache.value = buildContextWindowStats({ includeRequestDetails: false })
+  }
+)
+
+const contextWindowStats = computed(() =>
+  showContextWindowModal.value
+    ? contextWindowStatsCache.value
+    : buildContextWindowStats({ includeRequestDetails: false })
+)
+
+const contextWindowSummaryTag = computed(() => {
+  const stats = contextWindowStats.value
+  const focusSuffix = ` · ${contextWindowHistoryFocusLabel.value}`
+  const toolSuffix = stats.toolEstimateFresh && stats.toolCount ? ` · 工具 ${stats.toolCount}` : ''
+  const attachmentSuffix = stats.rawAttachmentCount ? ` · 附件 ${stats.requestAttachmentCount}/${stats.rawAttachmentCount}` : ''
+  const attachmentSummarySuffix = stats.attachmentSummaryCount ? ` · 摘要 ${stats.attachmentSummaryCount}` : ''
+  const pressureSuffix = contextWindowBudgetStatusTagSuffix.value ? ` · ${contextWindowBudgetStatusTagSuffix.value}` : ''
+  if (!stats.rawCount) return `上下文：${contextWindowPresetLabel.value}${focusSuffix}`
+  if (stats.requestCount >= stats.rawCount) {
+    return `上下文：${stats.requestTurns} 轮 / ${stats.requestCount} 条消息${focusSuffix}${toolSuffix}${attachmentSuffix}${attachmentSummarySuffix}${pressureSuffix}`
+  }
+  return `上下文：${stats.requestTurns}/${stats.rawTurns} 轮 | ${stats.requestCount}/${stats.rawCount} 条消息${focusSuffix}${toolSuffix}${attachmentSuffix}${attachmentSummarySuffix}${pressureSuffix}`
+})
+
+const contextWindowSummaryText = computed(() => {
+  const stats = contextWindowStats.value
+  const modeText = effectiveToolMode.value === 'compact' ? '精简工具模式' : '展开工具模式'
+  const toolBudgetText = stats.toolEstimateFresh
+    ? `工具定义预留：约 ${formatApproxChars(stats.toolSchemaChars)}，共 ${stats.toolCount} 个工具。`
+    : '工具定义预留会在首次构建请求工具后显示。'
+  const attachmentText = stats.rawAttachmentCount
+    ? `附件轮次保留：${stats.requestAttachmentCount}/${stats.rawAttachmentCount}，其中摘要 ${stats.attachmentSummaryCount} 条。`
+    : '当前历史里没有附件轮次。'
+  return `${contextWindowPresetLabel.value} / ${contextWindowHistoryFocusLabel.value}；本次预计发送 ${stats.requestTurns}/${stats.rawTurns || 0} 轮、${stats.requestCount}/${stats.rawCount || 0} 条消息（${modeText}）。历史预算约为 ${formatApproxChars(stats.historyBudgetChars)}/${formatApproxChars(stats.baseChars)} 字符；系统提示词约占 ${formatApproxChars(stats.systemChars)}。${attachmentText}${toolBudgetText}`
+})
+
+const contextWindowProviderHint = computed(() => {
+  const stats = contextWindowStats.value
+  const toolEstimateHint = stats.toolEstimateFresh
+    ? `最近一次工具定义大小约为 ${formatApproxChars(stats.toolSchemaChars)}。`
+    : '工具定义大小会在首次请求构建工具后显示。'
+  const attachmentHint = stats.rawAttachmentCount
+    ? stats.attachmentSummaryCount
+      ? `附件轮次保留 ${stats.requestAttachmentCount}/${stats.rawAttachmentCount}；其中 ${stats.attachmentSummaryCount} 条较早内容会压缩成摘要。`
+      : `附件轮次保留 ${stats.requestAttachmentCount}/${stats.rawAttachmentCount}；当前仍全部按完整轮次保留。`
+    : ''
+  if (isUtoolsBuiltinProvider(selectedProvider.value)) {
+    return `${contextWindowHistoryFocusBehaviorText.value}uTools AI 路径会自动去掉历史 tool/tool_calls，只保留纯文本的用户与助手记录。${attachmentHint}${toolEstimateHint}`
+  }
+  return `${contextWindowHistoryFocusBehaviorText.value}OpenAI 兼容路径会保留最近工具链，较老的工具轮次会自动压缩，避免无效上下文挤占窗口。${attachmentHint}${toolEstimateHint}`
+})
+
+const contextWindowPreviewInspection = computed(() =>
+  showContextWindowModal.value ? contextWindowPreviewState.value : createEmptyContextWindowInspection()
+)
+
+const contextWindowPreviewEntries = computed(() => {
+  return Array.isArray(contextWindowPreviewInspection.value?.inspection?.entries)
+    ? contextWindowPreviewInspection.value.inspection.entries
+    : []
+})
+
+const contextWindowPreviewOmittedEntries = computed(() => {
+  return Array.isArray(contextWindowPreviewInspection.value?.inspection?.omittedEntries)
+    ? contextWindowPreviewInspection.value.inspection.omittedEntries
+    : []
+})
+
+const contextWindowPreviewBudgetStats = computed(() => {
+  const inspection = contextWindowPreviewInspection.value?.inspection
+  const entries = contextWindowPreviewEntries.value
+  const previewConfig = contextWindowPreviewConfig.value
+  const providerKind = isUtoolsBuiltinProvider(selectedProvider.value) ? 'utools-ai' : 'openai-compatible'
+  const currentToolsKey = getCurrentToolsKey()
+  const toolEstimateFresh =
+    !!lastBuiltRequestToolsStats.updatedAt && String(lastBuiltRequestToolsStats.key || '') === currentToolsKey
+  const toolSchemaChars = toolEstimateFresh ? Number(lastBuiltRequestToolsStats.chars || 0) : 0
+  const toolCount = toolEstimateFresh ? Number(lastBuiltRequestToolsStats.count || 0) : 0
+  const systemChars = String(systemContent.value || '').length
+  const baseChars = effectiveToolMode.value === 'compact' ? previewConfig.maxCharsCompact : previewConfig.maxCharsExpanded
+  const reservedChars = systemChars + toolSchemaChars
+  const historyCharsBudget = calculateHistoryContextCharBudget({ baseChars, reservedChars })
+
+  return {
+    turnBudget: providerKind === 'utools-ai' ? Math.min(32, previewConfig.maxTurns + 2) : previewConfig.maxTurns,
+    turnUsed: entries.filter((entry) => entry?.kind === 'turn').length,
+    messageBudget: previewConfig.maxMessages,
+    messageUsed: Number(inspection?.messageCount || 0),
+    historyCharsBudget,
+    historyCharsUsed: entries.reduce((total, entry) => total + Number(entry?.chars || 0), 0),
+    baseChars,
+    reservedChars,
+    systemChars,
+    toolSchemaChars,
+    toolCount,
+    toolEstimateFresh
+  }
+})
+
+const contextWindowPreviewBudgetItems = computed(() => {
+  const stats = contextWindowPreviewBudgetStats.value
+  return [
+    buildContextWindowBudgetItem({
+      key: 'turns',
+      label: '轮次预算',
+      used: stats.turnUsed,
+      max: stats.turnBudget,
+      hint: '这里只统计真实用户轮次；附件回补摘要不占用轮次预算。'
+    }),
+    buildContextWindowBudgetItem({
+      key: 'messages',
+      label: '消息预算',
+      used: stats.messageUsed,
+      max: stats.messageBudget,
+      hint: '消息数直接受 maxMessages 限制，压缩后通常会下降。'
+    }),
+    buildContextWindowBudgetItem({
+      key: 'history_chars',
+      label: '历史字符',
+      used: stats.historyCharsUsed,
+      max: stats.historyCharsBudget,
+      formatter: formatApproxChars,
+      hint: '这里表示本次请求实际会发送给模型的历史文本体量。'
+    }),
+    buildContextWindowBudgetItem({
+      key: 'reserved_chars',
+      label: '预留开销',
+      used: stats.reservedChars,
+      max: stats.baseChars,
+      formatter: formatApproxChars,
+      hint: stats.toolEstimateFresh
+        ? `系统提示词约占 ${formatApproxChars(stats.systemChars)}；工具定义约占 ${formatApproxChars(stats.toolSchemaChars)}。`
+        : `系统提示词约占 ${formatApproxChars(stats.systemChars)}；工具定义大小会在构建后计入。`
+    })
+  ]
+})
+
+const contextWindowPreviewBudgetSummaryText = computed(() => {
+  const stats = contextWindowPreviewBudgetStats.value
+  const historyUsageText = `${formatApproxChars(stats.historyCharsUsed)} / ${formatApproxChars(stats.historyCharsBudget)}`
+  const reservedText = `${formatApproxChars(stats.reservedChars)} / ${formatApproxChars(stats.baseChars)}`
+  if (!stats.messageUsed) {
+    return `当前还没有可发送的历史；已预留预算 ${reservedText}。`
+  }
+  return `历史字符 ${historyUsageText}；已预留预算 ${reservedText}。`
+})
+
+const contextWindowBudgetStatus = computed(() => {
+  const items = contextWindowPreviewBudgetItems.value
+  const omittedEntries = contextWindowPreviewOmittedEntries.value
+  const hardBudgetTrim = omittedEntries.some((entry) => hasContextWindowHardBudgetReason(entry?.reasons))
+  const softBudgetTrim = omittedEntries.some((entry) => hasContextWindowSoftBudgetReason(entry?.reasons))
+  const pressureItems = items.filter((item) => item.ratio >= 0.8)
+  const strongestRatio = items.reduce((max, item) => Math.max(max, Number(item?.ratio || 0)), 0)
+  const driverText = pressureItems
+    .slice(0, 2)
+    .map((item) => `${item.label} ${item.usedLabel}/${item.maxLabel}`)
+    .join(', ')
+
+  if (hardBudgetTrim || strongestRatio >= 0.98) {
+    const lead = driverText ? `预算已满：${driverText}。` : '预算已满。'
+    return {
+      level: 'critical',
+      tagType: 'error',
+      tagSuffix: '预算已满',
+      text: `${lead}继续增加内容会直接裁掉更早的历史。`,
+      tooltip: hardBudgetTrim
+        ? `${lead}由于轮次、消息数或字符预算限制，已有部分历史被裁掉。`
+        : `${lead}当前上下文窗口几乎没有剩余空间。`
+    }
+  }
+
+  if (softBudgetTrim || strongestRatio >= 0.8) {
+    const lead = driverText ? `预算偏紧：${driverText}。` : '预算偏紧。'
+    return {
+      level: 'warning',
+      tagType: 'warning',
+      tagSuffix: '预算紧张',
+      text: `${lead}继续增加内容可能会压缩或裁掉更早的历史。`,
+      tooltip: softBudgetTrim
+        ? `${lead}由于预算压力，部分较早的前导消息或历史已经被排除。`
+        : `${lead}如果继续增加内容，最早的轮次会优先被压缩。`
+    }
+  }
+
+  return {
+    level: 'safe',
+    tagType: 'default',
+    tagSuffix: '',
+    text: '',
+    tooltip: '当前上下文窗口仍有可用预算。'
+  }
+})
+
+const contextWindowBudgetStatusTagSuffix = computed(() => String(contextWindowBudgetStatus.value?.tagSuffix || ''))
+const contextWindowSummaryTagType = computed(() => {
+  const type = String(contextWindowBudgetStatus.value?.tagType || 'default')
+  return type === 'default' ? undefined : type
+})
+const contextWindowSummaryTooltipText = computed(() => {
+  const budgetTooltip = String(contextWindowBudgetStatus.value?.tooltip || '').trim()
+  if (!budgetTooltip) return contextWindowSummaryText.value
+  return `${contextWindowSummaryText.value} ${budgetTooltip}`.trim()
+})
+
+const contextWindowPreviewSummaryText = computed(() => {
+  const inspection = contextWindowPreviewInspection.value?.inspection
+  const entries = contextWindowPreviewEntries.value
+  const omittedCount = Array.isArray(inspection?.omittedEntries) ? inspection.omittedEntries.length : 0
+  if (!inspection?.messageCount) {
+    return omittedCount ? `当前没有可发送的历史；已有 ${omittedCount} 段历史被省略。` : '当前没有可发送的历史。'
+  }
+  return omittedCount
+    ? `当前展示 ${entries.length} 段已纳入上下文的片段，共 ${inspection.messageCount} 条消息；另有 ${omittedCount} 段被省略。`
+    : `当前展示 ${entries.length} 段已纳入上下文的片段，共 ${inspection.messageCount} 条消息。`
+})
+
+const contextWindowPreviewOmittedSummaryText = computed(() => {
+  const omittedEntries = contextWindowPreviewOmittedEntries.value
+  if (!omittedEntries.length) return ''
+  const filteredCount = contextWindowPreviewFilteredOmittedEntries.value.length
+  if (filteredCount === omittedEntries.length) {
+    return `当前展示 ${omittedEntries.length} 段被省略的历史及其主要原因。`
+  }
+  return `当前筛选下展示 ${filteredCount}/${omittedEntries.length} 段被省略的历史。`
+})
+
+const contextWindowPreviewOmittedFilterOptions = computed(() => {
+  const entries = contextWindowPreviewOmittedEntries.value
+  const options = [
+    { value: 'all', label: '全部', count: entries.length },
+    { value: 'budget', label: '预算', count: entries.filter((entry) => matchesContextWindowOmittedFilter(entry, 'budget')).length },
+    { value: 'attachments', label: '附件', count: entries.filter((entry) => matchesContextWindowOmittedFilter(entry, 'attachments')).length },
+    { value: 'prelude', label: '前导', count: entries.filter((entry) => matchesContextWindowOmittedFilter(entry, 'prelude')).length }
+  ]
+  return options.filter((option) => option.value === 'all' || option.count > 0)
+})
+
+const contextWindowPreviewResolvedOmittedFilter = computed(() => {
+  const active = String(contextWindowPreviewOmittedFilter.value || 'all')
+  return contextWindowPreviewOmittedFilterOptions.value.some((option) => option.value === active) ? active : 'all'
+})
+
+const contextWindowPreviewFilteredOmittedEntries = computed(() => {
+  const active = contextWindowPreviewResolvedOmittedFilter.value
+  return contextWindowPreviewOmittedEntries.value.filter((entry) => matchesContextWindowOmittedFilter(entry, active))
+})
+
+function buildContextWindowBudgetItem({ key, label, used, max, formatter = null, hint = '' } = {}) {
+  const normalize = (value) => {
+    const num = Number(value)
+    return Number.isFinite(num) ? Math.max(0, num) : 0
+  }
+  const formatValue = typeof formatter === 'function' ? formatter : (value) => String(Math.round(normalize(value)))
+  const safeUsed = normalize(used)
+  const safeMax = normalize(max)
+  const ratio = safeMax > 0 ? safeUsed / safeMax : 0
+  const percent = Math.max(0, Math.min(100, Math.round(ratio * 100)))
+  let tone = 'safe'
+  if (ratio >= 0.95) tone = 'critical'
+  else if (ratio >= 0.8) tone = 'warning'
+
+  return {
+    key,
+    label,
+    used: safeUsed,
+    max: safeMax,
+    usedLabel: formatValue(safeUsed),
+    maxLabel: formatValue(safeMax),
+    ratio,
+    percent,
+    tone,
+    hint
+  }
+}
+
+function hasContextWindowHardBudgetReason(reasons) {
+  const list = Array.isArray(reasons) ? reasons : []
+  return list.some((reason) => reason === 'turn_limit' || reason === 'message_limit' || reason === 'char_limit')
+}
+
+function hasContextWindowSoftBudgetReason(reasons) {
+  const list = Array.isArray(reasons) ? reasons : []
+  return list.some((reason) => reason === 'prelude_budget_exhausted') || hasContextWindowHardBudgetReason(list)
+}
+
+function matchesContextWindowOmittedFilter(entry, filterKey = 'all') {
+  const key = String(filterKey || 'all')
+  const reasons = Array.isArray(entry?.reasons) ? entry.reasons : []
+  if (key === 'budget') {
+    return hasContextWindowSoftBudgetReason(reasons)
+  }
+  if (key === 'attachments') {
+    return !!entry?.hasAttachment || reasons.some((reason) => reason === 'attachment_policy_disabled' || reason === 'attachment_displacement')
+  }
+  if (key === 'prelude') return entry?.kind === 'prelude'
+  return true
+}
+
+function contextWindowPreviewModeLabel(entry) {
+  const mode = String(entry?.mode || '')
+  if (mode === 'prelude') return '前导'
+  if (mode === 'full') return '完整'
+  if (mode === 'compact') return '压缩'
+  if (mode === 'attachment_summary') return '附件摘要'
+  if (mode === 'pinned_attachment_summary') return '回补附件'
+  return '保留'
+}
+
+function contextWindowPreviewModeType(entry) {
+  const mode = String(entry?.mode || '')
+  if (mode === 'full') return 'success'
+  if (mode === 'compact') return 'warning'
+  if (mode === 'attachment_summary') return 'warning'
+  if (mode === 'pinned_attachment_summary') return 'info'
+  return 'default'
+}
+
+function contextWindowPreviewEntryLabel(entry, index) {
+  if (entry?.kind === 'prelude') return '系统前导消息'
+  if (entry?.kind === 'pinned_attachment_summary') {
+    const turnNumber = Number(entry?.index)
+    return Number.isFinite(turnNumber) ? `附件回补 | 第 ${turnNumber + 1} 轮` : `附件回补 | 第 ${index + 1} 项`
+  }
+  const turnNumber = Number(entry?.index)
+  return Number.isFinite(turnNumber) ? `第 ${turnNumber + 1} 轮` : `片段 ${index + 1}`
+}
+
+function contextWindowPreviewEntryNote(entry) {
+  if (entry?.omitted) {
+    const reasons = Array.isArray(entry?.reasons) ? entry.reasons : []
+    if (entry?.kind === 'prelude') return '前导消息只保留预算内还能放下的最新部分。'
+    if (reasons.includes('attachment_displacement')) {
+      return entry?.hasAttachment ? '这条附件轮次被更高优先级的上下文挤出。' : '为了保留附件历史，这条普通轮次被挤出。'
+    }
+    if (reasons.includes('attachment_policy_disabled')) {
+      return '这条历史里包含较早的附件，但当前策略不会回补它们。'
+    }
+    if (reasons.includes('turn_limit') || reasons.includes('message_limit') || reasons.includes('char_limit')) {
+      return '当前上下文预算已满，这段历史不会发送给模型。'
+    }
+    return '这段历史未被纳入当前请求上下文。'
+  }
+  if (entry?.kind === 'prelude') return '它会插入到历史消息之前，只保留预算允许的最新部分。'
+  if (entry?.kind === 'pinned_attachment_summary') return '这条附件来自更早历史，当前以摘要锚点的形式回补。'
+  if (entry?.mode === 'attachment_summary') return '原始轮次已压缩为附件摘要。'
+  if (entry?.mode === 'compact') return entry?.hasAttachment ? '该轮次已压缩，并优先保留了附件内容。' : '该轮次已压缩，较长文本或工具内容被裁剪。'
+  if (entry?.mustKeep) return '这是最新轮次，默认按最高优先级保留。'
+  if (entry?.hasAttachment) return '该轮次包含附件上下文，当前按完整轮次保留。'
+  return ''
+}
+
+function contextWindowPreviewOmittedReasonLabel(reason) {
+  const key = String(reason || '')
+  if (key === 'turn_limit') return '超过轮次预算'
+  if (key === 'message_limit') return '超过消息预算'
+  if (key === 'char_limit') return '超过字符预算'
+  if (key === 'attachment_policy_disabled') return '附件回补已关闭'
+  if (key === 'prelude_budget_exhausted') return '前导预算不足'
+  if (key === 'attachment_displacement') return '被附件优先级挤出'
+  return '未纳入'
+}
+
+function contextWindowPreviewOmittedReasonType(reason) {
+  const key = String(reason || '')
+  if (key === 'attachment_policy_disabled') return 'info'
+  if (key === 'prelude_budget_exhausted') return 'default'
+  return 'warning'
+}
+
+const footerHint = computed(() => {
+  if (sending.value) return '发送中...'
+  if (effectiveHeaderHint.value) return effectiveHeaderHint.value
+  if (!systemContent.value) return '系统提示词为空。你可以先选择提示词、启用技能，或在上方输入临时系统提示词。'
+  return `联网：${webSearchEnabled.value ? '开' : '关'} | MCP 工具：${activeMcpServers.value.length} | 自动批准：${autoApproveTools.value ? '开' : '关'}`
+})
+
+const composerShortcutHint =
+  '按回车发送，Shift+回车换行，@ 选择智能体，/prompt、/skill、/mcp 快速插入配置。'
+
+const sessionSiderTooltipText = computed(() => {
+  const title = activeSessionTitle.value || getSessionTitleFromPath(activeSessionFilePath.value)
+  const action = sessionSiderCollapsed.value ? '打开会话列表' : '收起会话列表'
+  return title ? `${action}（当前会话：${title}）` : action
+})
+
+const chatEmptyStateDescription = computed(() => {
+  if (effectiveHeaderHint.value) return effectiveHeaderHint.value
+
+  const title = activeSessionTitle.value || getSessionTitleFromPath(activeSessionFilePath.value)
+  if (title) {
+    return `当前会话已绑定到“${title}”。发送第一条消息后，新内容会继续写入该会话。`
+  }
+
+  return '你可以直接开始输入，或先配置模型、提示词、智能体和附件。'
+})
+
+const chatSetupSummaryItems = computed(() => {
+  const providerName = selectedProvider.value?.name || selectedProvider.value?._id || '未选择'
+  const modelName = String(selectedModel.value || '').trim() || '未选择'
+  const agentName = selectedAgent.value?.name || selectedAgent.value?._id || '未设置'
+  const promptName = activePromptLabel.value || basePromptSourceText.value || '未设置'
+  const skillText = selectedSkillObjects.value.length ? `已启用 ${selectedSkillObjects.value.length} 个` : '未启用'
+  const mcpText = activeMcpServers.value.length
+    ? `${activeMcpServers.value.length} 个服务 / ${mcpToolCountText.value} 个工具`
+    : '未启用'
+
+  const items = [
+    { key: 'provider', label: '服务商', value: providerName },
+    { key: 'model', label: '模型', value: modelName },
+    { key: 'agent', label: '智能体', value: agentName },
+    { key: 'prompt', label: '提示词', value: promptName },
+    { key: 'skill', label: '技能', value: skillText },
+    { key: 'mcp', label: 'MCP', value: mcpText }
+  ]
+
+  const sessionTitle = activeSessionTitle.value || getSessionTitleFromPath(activeSessionFilePath.value)
+  if (sessionTitle) items.push({ key: 'session', label: '会话', value: sessionTitle })
+
+  return items
+})
+
+const thinkingEffortLabel = computed(() => {
+  const v = String(thinkingEffort.value || 'auto')
+  if (v === 'low') return '低'
+  if (v === 'medium') return '中'
+  if (v === 'high') return '高'
+  return '自动'
+})
+
+const imageGenerationModeLabel = computed(() => {
+  const v = String(imageGenerationMode.value || 'auto')
+  if (v === 'on') return '开启'
+  if (v === 'off') return '关闭'
+  return '自动'
+})
+
+const videoGenerationModeLabel = computed(() => {
+  const v = String(videoGenerationMode.value || 'auto')
+  if (v === 'on') return '开启'
+  if (v === 'off') return '关闭'
+  return '自动'
+})
+
+const showInputModeTags = computed(() => {
+  return (
+    thinkingEffort.value !== 'auto' ||
+    normalizeImageGenerationMode(imageGenerationMode.value) !== 'auto' ||
+    normalizeImageGenerationMode(videoGenerationMode.value) !== 'auto'
+  )
+})
+
+const thinkingEffortButtonType = computed(() => (thinkingEffort.value !== 'auto' ? 'primary' : 'default'))
+
+const imageGenerationButtonType = computed(() => {
+  const mode = normalizeImageGenerationMode(imageGenerationMode.value)
+  if (mode === 'on') return 'primary'
+  if (mode === 'off') return 'warning'
+  return 'default'
+})
+
+const videoGenerationButtonType = computed(() => {
+  const mode = normalizeImageGenerationMode(videoGenerationMode.value)
+  if (mode === 'on') return 'primary'
+  if (mode === 'off') return 'warning'
+  return 'default'
+})
+
+const canSend = computed(() => {
+  return !!String(input.value || '').trim() || (pendingAttachments.value || []).length > 0
+})
+
+function copyToClipboard(text) {
+  const t = String(text || '')
+  if (!t.trim()) return
+  const api = navigator?.clipboard
+  if (!api?.writeText) {
+    message.warning('当前环境不支持剪贴板复制')
+    return
+  }
+  api
+    .writeText(t)
+    .then(() => message.success('已复制到剪贴板'))
+    .catch((err) => message.error('复制失败：' + (err?.message || String(err))))
+}
+
+function copyAssistantMessage(msg) {
+  copyToClipboard(msg?.content || '')
+}
+
+function copyUserMessage(msg) {
+  copyToClipboard(msg?.content || '')
+}
+
+let chatPreviewLinkRoot = null
+
+function cleanupChatPreviewLinkHandlers() {
+  if (!chatPreviewLinkRoot) return
+  chatPreviewLinkRoot.removeEventListener('click', handleChatPreviewLinkClick)
+  chatPreviewLinkRoot.removeEventListener('contextmenu', handleChatPreviewLinkContextMenu)
+  chatPreviewLinkRoot = null
+}
+
+function ensureChatPreviewLinkHandlers(root) {
+  if (!root || chatPreviewLinkRoot === root) return
+  cleanupChatPreviewLinkHandlers()
+  root.addEventListener('click', handleChatPreviewLinkClick)
+  root.addEventListener('contextmenu', handleChatPreviewLinkContextMenu)
+  chatPreviewLinkRoot = root
+}
+
+async function resolveChatNoteAbsPathFromHref(hrefRaw) {
+  return resolveNoteAbsPathFromHref({
+    hrefRaw,
+    currentDir: 'note',
+    existsFn: exists
+  })
+}
+
+async function openChatNoteFromHref(href) {
+  const noteAbsPath = await resolveChatNoteAbsPathFromHref(href)
+  if (!noteAbsPath) return false
+  await router.push({ name: 'note' }).catch(() => {})
+  requestOpenNoteFile(noteAbsPath)
+  return true
+}
+
+function openExternalHref(href) {
+  try {
+    globalThis?.utools?.shellOpenExternal?.(href)
+  } catch {
+    // ignore
+  }
+
+  try {
+    if (!globalThis?.utools?.shellOpenExternal) window.open(href, '_blank', 'noopener')
+  } catch {
+    // ignore
+  }
+}
+
+async function handleChatPreviewLinkClick(e) {
+  const link = e.target?.closest?.('a')
+  if (!link || !chatPreviewLinkRoot?.contains(link)) return
+
+  const href = String(link.getAttribute('href') || '').trim()
+  if (!href || href.startsWith('#')) return
+
+  e.preventDefault()
+  e.stopPropagation()
+
+  if (/^https?:\/\//i.test(href) || /^mailto:/i.test(href)) {
+    openExternalHref(href)
+    return
+  }
+
+  if (await openChatNoteFromHref(href)) return
+  copyToClipboard(href)
+}
+
+function handleChatPreviewLinkContextMenu(e) {
+  const link = e.target?.closest?.('a')
+  if (!link || !chatPreviewLinkRoot?.contains(link)) return
+
+  const href = String(link.getAttribute('href') || '').trim()
+  if (!href) return
+
+  e.preventDefault()
+  e.stopPropagation()
+
+  if (/^mailto:/i.test(href)) {
+    copyToClipboard(String(href).replace(/^mailto:/i, '').split('?')[0])
+    return
+  }
+
+  if (/^https?:\/\//i.test(href)) {
+    copyToClipboard(href)
+    return
+  }
+
+  resolveChatNoteAbsPathFromHref(href)
+    .then((noteAbsPath) => {
+      if (!noteAbsPath) {
+        copyToClipboard(href)
+        return
+      }
+      const noteHref = buildNoteHrefFromPath(noteAbsPath)
+      copyToClipboard(noteHref || href)
+    })
+    .catch(() => copyToClipboard(href))
+}
+
+function isDataImageUrl(url) {
+  const s = String(url || '')
+  return /^data:image\/[a-z0-9.+-]+;base64,/i.test(s)
+}
+
+function looksLikeBase64Payload(s) {
+  const text = String(s || '').trim()
+  if (text.length < 256) return false
+  if (/\s/.test(text)) return false
+  if (!/^[a-z0-9+/]+=*$/i.test(text)) return false
+  if (text.length % 4 !== 0) return false
+  return true
+}
+
+function ensureFilenameExt(nameRaw, mime) {
+  const name = String(nameRaw || '').trim()
+  const mt = String(mime || '').trim().toLowerCase()
+  const hasExt = /\.[a-z0-9]+$/i.test(name)
+  if (name && hasExt) return name
+
+  let ext = 'png'
+  if (mt.includes('jpeg') || mt.includes('jpg')) ext = 'jpg'
+  else if (mt.includes('gif')) ext = 'gif'
+  else if (mt.includes('webp')) ext = 'webp'
+  else if (mt.includes('bmp')) ext = 'bmp'
+  else if (mt.includes('mp4')) ext = 'mp4'
+  else if (mt.includes('webm')) ext = 'webm'
+  else if (mt.includes('quicktime') || mt.includes('mov')) ext = 'mov'
+  else if (mt.includes('x-m4v') || mt.includes('m4v')) ext = 'm4v'
+
+  if (!name) return `image_${Date.now()}.${ext}`
+  return `${name}.${ext}`
+}
+
+function extractChatImagesFromToolResult(result) {
+  return extractImageOutputEntries(result).map((img, index) => ({
+    id: newId(),
+    name: String(img?.name || `image_${index + 1}`).trim() || `image_${index + 1}`,
+    src: String(img?.src || '').trim(),
+    mime: String(img?.mime || '').trim()
+  }))
+}
+
+function extractChatVideosFromToolResult(result) {
+  return extractVideoOutputEntries(result).map((video, index) => ({
+    id: newId(),
+    name: String(video?.name || `video_${index + 1}`).trim() || `video_${index + 1}`,
+    src: String(video?.src || '').trim(),
+    mime: String(video?.mime || '').trim()
+  }))
+}
+
+function createAssistantImageBubblePlaceholder(note = '图片生成中，结果就绪后会展示在这里。') {
+  return {
+    id: `assistant-image-placeholder-${newId()}`,
+    name: '图片生成中',
+    src: '',
+    mime: '',
+    note: String(note || '').trim() || '图片生成中，结果就绪后会展示在这里。'
+  }
+}
+
+function createAssistantVideoBubblePlaceholder(note = '视频生成中，结果就绪后会展示在这里。') {
+  return {
+    id: `assistant-video-placeholder-${newId()}`,
+    name: '视频生成中',
+    src: '',
+    mime: '',
+    note: String(note || '').trim() || '视频生成中，结果就绪后会展示在这里。'
+  }
+}
+
+function assistantVisibleImages(msg) {
+  if (Array.isArray(msg?.images) && msg.images.length) return msg.images
+  if (msg?.imageBubblePlaceholder) {
+    return [msg.imageBubblePlaceholderImage || createAssistantImageBubblePlaceholder()]
+  }
+  return []
+}
+
+function assistantVisibleImageCount(msg) {
+  return Array.isArray(msg?.images) ? msg.images.filter((img) => String(img?.src || '').trim()).length : 0
+}
+
+function assistantImageBlockEyebrow(msg) {
+  return assistantVisibleImageCount(msg) ? '图片结果' : '图片占位'
+}
+
+function assistantImageDisplayTitle(msg) {
+  if (assistantVisibleImageCount(msg)) return assistantImageTitle(msg)
+  return assistantImageTaskTitle(msg) || '图片生成中'
+}
+
+function assistantImagePlaceholderText(msg, img) {
+  const note = String(img?.note || '').trim()
+  if (note) return note
+  return assistantImageTaskNote(msg) || '图片生成中，结果就绪后会展示在这里。'
+}
+
+function assistantImageInsightLabel(msg, img) {
+  return imageInsightLabel(img) || assistantImageTaskMetaLabel(msg) || ''
+}
+
+function assistantVisibleVideos(msg) {
+  if (Array.isArray(msg?.videos) && msg.videos.length) return msg.videos
+  if (msg?.videoBubblePlaceholder) {
+    return [msg.videoBubblePlaceholderItem || createAssistantVideoBubblePlaceholder()]
+  }
+  return []
+}
+
+function assistantVisibleVideoCount(msg) {
+  return Array.isArray(msg?.videos) ? msg.videos.filter((video) => String(video?.src || '').trim()).length : 0
+}
+
+function clearAssistantMediaBubblePlaceholders(msg) {
+  if (!msg || typeof msg !== 'object') return
+  msg.imageBubblePlaceholder = false
+  msg.imageBubblePlaceholderImage = null
+  msg.videoBubblePlaceholder = false
+  msg.videoBubblePlaceholderItem = null
+}
+
+function applyAssistantRequestPlaceholderMode(msg, placeholderMode = 'text') {
+  if (!msg || typeof msg !== 'object') return
+  clearAssistantMediaBubblePlaceholders(msg)
+  const mode = String(placeholderMode || 'text').trim().toLowerCase()
+  if (mode === 'image') {
+    msg.imageBubblePlaceholder = true
+    msg.imageBubblePlaceholderImage = createAssistantImageBubblePlaceholder()
+    return
+  }
+  if (mode === 'video') {
+    msg.videoBubblePlaceholder = true
+    msg.videoBubblePlaceholderItem = createAssistantVideoBubblePlaceholder()
+  }
+}
+
+function prepareAssistantDisplayForTextResponse(msg) {
+  if (!msg || typeof msg !== 'object') return
+  clearAssistantMediaBubblePlaceholders(msg)
+  msg.transientRequestPlaceholder = false
+}
+
+function removeDisplayMessageById(messageId) {
+  const id = String(messageId || '').trim()
+  if (!id) return
+  const index = session.messages.findIndex((msg) => msg?.id === id)
+  if (index !== -1) session.messages.splice(index, 1)
+}
+
+function assistantVideoBlockEyebrow(msg) {
+  return assistantVisibleVideoCount(msg) ? '视频结果' : '视频占位'
+}
+
+function assistantVideoDisplayTitle(msg) {
+  if (assistantVisibleVideoCount(msg)) {
+    const count = assistantVisibleVideoCount(msg)
+    return count > 1 ? `已生成 ${count} 个视频` : '已生成 1 个视频'
+  }
+  return assistantVideoTaskTitle(msg) || '视频生成中'
+}
+
+function assistantVideoPlaceholderText(msg, video) {
+  const note = String(video?.note || '').trim()
+  if (note) return note
+  return assistantVideoTaskNote(msg) || '视频生成中，结果就绪后会展示在这里。'
+}
+
+function assistantVideoInsightLabel(msg, video) {
+  return videoInsightLabel(video) || assistantVideoTaskMetaLabel(msg) || ''
+}
+
+function assistantVideoPromptLabel(msg) {
+  return String(msg?.videoPrompt || '').trim()
+}
+
+function assistantVideoTaskStatusLabel(messageLike) {
+  const status = String(messageLike?.videoTask?.status || '').trim().toLowerCase()
+  if (['queued', 'submitted', 'pending', 'accepted'].includes(status)) return '排队中'
+  if (['processing', 'running', 'in_progress'].includes(status)) return '处理中'
+  if (['completed', 'succeeded', 'success'].includes(status)) return '已完成'
+  if (['failed', 'error'].includes(status)) return '失败'
+  return status ? status : '处理中'
+}
+
+function assistantVideoTaskTitle(messageLike) {
+  return `视频任务${assistantVideoTaskStatusLabel(messageLike) === '处理中' ? '' : ` · ${assistantVideoTaskStatusLabel(messageLike)}`}`.trim()
+}
+
+function assistantVideoTaskMetaLabel(messageLike) {
+  const task = messageLike?.videoTask
+  if (!task) return ''
+  const parts = []
+  if (task.id) parts.push(`任务 ID：${task.id}`)
+  if (task.endpointKind) parts.push(`接口：${task.endpointKind}`)
+  return parts.join(' · ')
+}
+
+function assistantVideoTaskNote(messageLike) {
+  return String(messageLike?.videoTask?.note || '').trim()
+}
+
+function videoMetaLabel(video) {
+  const parts = []
+  if (video?.mime) parts.push(video.mime)
+  return parts.join(' · ')
+}
+
+function videoInsightLabel(video) {
+  return String(video?.note || '').trim()
+}
+
+function summarizeImageGenerationPayload(payload) {
+  if (payload == null) return ''
+  if (typeof payload === 'string') return truncateText(payload, 600, '(response truncated)')
+
+  try {
+    return truncateText(stableStringify(payload), 800, '(response truncated)')
+  } catch {
+    return truncateText(String(payload), 600, '(response truncated)')
+  }
+}
+
+function sanitizeToolResultForLLM(result) {
+  const seen = new WeakSet()
+  const KEY_HINT_IMAGE = /^(images|image|artifacts|output|outputs)$/i
+  const KEY_HINT_BASE64 = /(base64|b64|b64_json|dataurl|data_url)$/i
+  const KEY_HINT_TRACE = /^(trace|events|steps)$/i
+
+  const walk = (val, depth, keyHint) => {
+    if (depth > 6) return '（已截断：层级过深）'
+    if (val == null) return val
+
+    if (typeof val === 'string') {
+      const s = val
+      const key = String(keyHint || '')
+
+      // 关键字段：base64 / dataUrl 直接省略
+      if (KEY_HINT_BASE64.test(key)) {
+        if (!s) return s
+        if (isDataImageUrl(s) || looksLikeBase64Payload(s) || s.length > 200) return '(omitted: base64/dataUrl too long)'
+        return s
+      }
+
+      // images/data 列表里的长字符串也倾向省略，通常就是 base64
+      if (KEY_HINT_IMAGE.test(key) && (isDataImageUrl(s) || looksLikeBase64Payload(s))) {
+        return '(omitted: image base64/dataUrl)'
+      }
+
+      if (s.length > 20000) return `${s.slice(0, 20000)}\n(truncated: string too long, total ${s.length} chars)`
+      return s
+    }
+
+    if (typeof val === 'number' || typeof val === 'boolean') return val
+
+    if (Array.isArray(val)) {
+      const limit = KEY_HINT_TRACE.test(String(keyHint || '')) ? 40 : 50
+      if (val.length > limit) {
+        return [...val.slice(0, limit).map((x) => walk(x, depth + 1, keyHint)), `（已截断：数组过长，共 ${val.length} 项）`]
+      }
+      return val.map((x) => walk(x, depth + 1, keyHint))
+    }
+
+    if (typeof val === 'object') {
+      if (seen.has(val)) return '（已省略：循环引用）'
+      seen.add(val)
+      const out = {}
+      const entries = Object.entries(val)
+      for (const [k, v] of entries) {
+        out[k] = walk(v, depth + 1, k)
+      }
+      return out
+    }
+
+    return String(val)
+  }
+
+  return walk(result, 0, '')
+}
+
+function stringifyToolResultForModel(result) {
+  if (typeof result === 'string') return result
+  try {
+    return stableStringify(result)
+  } catch {
+    return String(result ?? '')
+  }
+}
+
+const BUILTIN_AGENTS_TRACE_EVENT = 'builtin-agents-trace'
+const BUILTIN_AGENTS_SERVER_ID = 'builtin_agents_mcp'
+const BUILTIN_AGENT_ID = 'builtin_agent_notes'
+const BUILTIN_AGENT_ORCHESTRATION_SKILL_ID = 'builtin_skill_agent_orchestration'
+const BUILTIN_AGENTS_TOOL_APPROVAL_REQUEST_EVENT = 'builtin-agents-tool-approval-request'
+const BUILTIN_AGENTS_TOOL_APPROVAL_RESPONSE_EVENT = 'builtin-agents-tool-approval-response'
+
+function copyChatImageLink(img) {
+  const src = String(img?.src || '').trim()
+  if (!src) return
+  copyToClipboard(src)
+}
+
+function copyChatVideoLink(video) {
+  const src = String(video?.src || '').trim()
+  if (!src) return
+  copyToClipboard(src)
+}
+
+async function loadChatImageBlob(img) {
+  const src = String(img?.src || '').trim()
+  if (!src) throw new Error('图片链接为空')
+
+  const response = await fetch(src)
+  if (!response.ok) {
+    throw new Error(`加载图片失败（HTTP ${response.status}）`)
+  }
+
+  const blob = await response.blob()
+  if (!blob || !blob.size) {
+    throw new Error('图片内容为空')
+  }
+  return blob
+}
+
+async function loadChatVideoBlob(video) {
+  const src = String(video?.src || '').trim()
+  if (!src) throw new Error('视频链接为空')
+
+  const response = await fetch(src)
+  if (!response.ok) {
+    throw new Error(`加载视频失败（HTTP ${response.status}）`)
+  }
+
+  const blob = await response.blob()
+  if (!blob || !blob.size) {
+    throw new Error('视频内容为空')
+  }
+  return blob
+}
+
+async function copyChatImage(img) {
+  const src = String(img?.src || '').trim()
+  if (!src) return
+
+  const clipboardApi = navigator?.clipboard
+  if (!clipboardApi?.write || typeof ClipboardItem === 'undefined') {
+    copyChatImageLink(img)
+    return
+  }
+
+  try {
+    const blob = await loadChatImageBlob(img)
+    const mime = String(blob.type || img?.mime || 'image/png').trim() || 'image/png'
+    await clipboardApi.write([
+      new ClipboardItem({
+        [mime]: blob
+      })
+    ])
+    message.success('图片已复制到剪贴板')
+  } catch (err) {
+    copyChatImageLink(img)
+    message.warning(`当前环境不支持直接复制图片，已改为复制图片链接：${err?.message || String(err)}`)
+  }
+}
+
+function copyChatVideo(video) {
+  const src = String(video?.src || '').trim()
+  if (!src) return
+  copyChatVideoLink(video)
+  message.success('视频链接已复制到剪贴板')
+}
+
+function isToolMessage(msgOrRole) {
+  const role = typeof msgOrRole === 'string' ? msgOrRole : String(msgOrRole?.role || '').trim()
+  return role === 'tool' || role === 'tool_call'
+}
+
+function getToolMessageStatus(msg) {
+  if (!isToolMessage(msg)) return ''
+  const explicit = String(msg?.toolStatus || '').trim()
+  if (explicit === 'running' || explicit === 'success' || explicit === 'error' || explicit === 'rejected') return explicit
+  if (isAgentRunToolResult(msg?.toolResultPayload)) {
+    const payloadStatus = String(msg?.toolResultPayload?.status || '').trim()
+    if (payloadStatus === 'error') return 'error'
+    if (payloadStatus === 'aborted') return 'rejected'
+    if (payloadStatus === 'running') return 'running'
+    if (payloadStatus === 'completed') return 'success'
+  }
+  const text = String(msg?.content || '').trim()
+  if (/rejected|拒绝/i.test(text)) return 'rejected'
+  if (/failed|error[:?]?|错误|失败/i.test(text)) return 'error'
+  return String(msg?.role || '').trim() === 'tool_call' ? 'running' : 'success'
+}
+
+function toolMessageStatusLabel(msg) {
+  const status = getToolMessageStatus(msg)
+  if (status === 'running') return '运行中'
+  if (status === 'error') return '失败'
+  if (status === 'rejected') return '已拒绝'
+  return '已完成'
+}
+
+function toolMessageLabel(msg) {
+  const toolName = String(msg?.toolName || '').trim()
+  if (toolName === 'agent_run') return '子智能体编排'
+  if (toolName === 'agents_list') return '智能体发现'
+  return '工具执行'
+}
+
+function chatItemStateClasses(msg) {
+  const status = getToolMessageStatus(msg)
+  return {
+    'is-streaming': msg?.role === 'assistant' && !!msg?.streaming,
+    'is-tool-running': status === 'running',
+    'is-tool-success': status === 'success',
+    'is-tool-error': status === 'error',
+    'is-tool-rejected': status === 'rejected',
+    'is-agent-run': isToolMessage(msg) && String(msg?.toolName || '').trim() === 'agent_run'
+  }
+}
+
+function chatAvatarStateClasses(msg) {
+  const status = getToolMessageStatus(msg)
+  return {
+    'is-streaming': msg?.role === 'assistant' && !!msg?.streaming,
+    'is-running': status === 'running',
+    'is-success': status === 'success',
+    'is-error': status === 'error',
+    'is-rejected': status === 'rejected'
+  }
+}
+
+function chatAvatarIconClasses(msg) {
+  const status = getToolMessageStatus(msg)
+  return {
+    'is-streaming': msg?.role === 'assistant' && !!msg?.streaming,
+    'is-spinning': status === 'running'
+  }
+}
+
+function extractServerNameFromToolMeta(toolMeta = '') {
+  const raw = String(toolMeta || '').trim()
+  if (!raw) return ''
+  const idx = raw.indexOf(' / ')
+  return idx >= 0 ? raw.slice(0, idx).trim() : raw
+}
+
+function extractToolNameFromToolMeta(toolMeta = '') {
+  const raw = String(toolMeta || '').trim()
+  if (!raw) return ''
+  const idx = raw.indexOf(' / ')
+  return idx >= 0 ? raw.slice(idx + 3).trim() : ''
+}
+
+function extractFirstJsonFenceText(content = '') {
+  const match = String(content || '').match(/```(?:json)?\s*([\s\S]*?)```/i)
+  return match ? String(match[1] || '').trim() : ''
+}
+
+function inferToolResultStatus(messageLike) {
+  const explicit = String(messageLike?.toolStatus || '').trim()
+  if (explicit === 'running' || explicit === 'success' || explicit === 'error' || explicit === 'rejected') return explicit
+  if (isAgentRunToolResult(messageLike?.toolResultPayload)) {
+    const payloadStatus = String(messageLike?.toolResultPayload?.status || '').trim()
+    if (payloadStatus === 'error') return 'error'
+    if (payloadStatus === 'aborted') return 'rejected'
+    if (payloadStatus === 'running') return 'running'
+    if (payloadStatus === 'completed') return 'success'
+  }
+  const role = String(messageLike?.role || '').trim()
+  if (role === 'tool_call') return 'running'
+  const text = String(messageLike?.content || '').trim()
+  if (/rejected|拒绝/i.test(text)) return 'rejected'
+  if (/failed|error[:?]?|错误|失败/i.test(text)) return 'error'
+  return 'success'
+}
+
+function buildToolExecutionMessageContent(options = {}) {
+  const serverName = String(options.serverName || '').trim() || '未知'
+  const toolName = String(options.toolName || '').trim() || ''
+  const argsText = String(options.argsText || '').trim() || '{}'
+  const resultContent = String(options.resultContent || '').trim()
+  const errorText = String(options.errorText || '').trim()
+  const status = options.status || 'running'
+  const autoApproved = options.autoApproved
+  const traceItems = Array.isArray(options.traceItems) ? options.traceItems : []
+  const lines = [
+    '### 工具调用',
+    `- 服务：**${serverName}**`,
+    `- 工具：\`${toolName}\``,
+    `- 状态：**${status === 'running' ? '运行中' : status === 'error' ? '失败' : status === 'rejected' ? '已拒绝' : '已完成'}**`
+  ]
+
+  if (typeof autoApproved === 'boolean') lines.push(`- 自动批准：**${autoApproved ? '是' : '否'}**`)
+
+  lines.push('', '#### 参数', '', '```json', argsText, '```')
+
+  if (status === 'running') lines.push('', '> 等待工具结果...')
+  if (traceItems.length && status === 'running') {
+    lines.push('', '#### 实时轨迹', '')
+    traceItems.slice(-40).forEach((item) => {
+      lines.push(formatAgentRunTraceEntry(item))
+    })
+  }
+  if (resultContent) lines.push('', resultContent)
+  else if (errorText && status !== 'running') lines.push('', '#### 错误', '', errorText)
+
+  return lines.join('\n').trim()
+}
+
+function createPendingToolExecutionMessage({ serverName = '', toolName = '', argsText = '{}', autoApproved = false, traceStreamId = '', argsObj = null } = {}) {
+  const targetAgentLabel = isAgentRunToolName(toolName)
+    ? String(argsObj?.agent_name || argsObj?.agent_id || argsObj?.name || argsObj?.id || '').trim()
+    : ''
+  const expandByDefault = isAgentRunToolName(toolName)
+  return createDisplayMessage(
+    'tool_call',
+    buildToolExecutionMessageContent({
+      serverName,
+      toolName,
+      argsText,
+      autoApproved,
+      status: 'running'
+    }),
+    {
+      toolMeta: `${serverName || '未知'} / ${toolName || ''}`.trim(),
+      toolExpanded: expandByDefault,
+      toolStatus: 'running',
+      toolServerName: String(serverName || '').trim(),
+      toolName: String(toolName || '').trim(),
+      toolArgsText: String(argsText || '').trim() || '{}',
+      toolAutoApproved: !!autoApproved,
+      toolSubMeta: targetAgentLabel ? `智能体：${targetAgentLabel}` : '',
+      toolTraceStreamId: String(traceStreamId || '').trim(),
+      toolLiveTrace: []
+    }
+  )
+}
+
+function buildToolExecutionResultSubMeta(result) {
+  if (!isAgentRunToolResult(result)) return ''
+  const agentName = String(result?.agent?.name || result?.agent?.id || '').trim()
+  const traceCount = Array.isArray(result?.trace) ? result.trace.length : 0
+  const rounds = Number(result?.metrics?.rounds)
+  return [
+    agentName ? `智能体：${agentName}` : '',
+    traceCount > 0 ? `轨迹步骤：${traceCount}` : '',
+    Number.isFinite(rounds) && rounds > 0 ? `轮次：${rounds}` : ''
+  ].filter(Boolean).join(' · ')
+}
+
+function mergeToolExecutionDisplayMessage(toolDisplay, resultMessage, options = {}) {
+  if (!toolDisplay || !isToolMessage(toolDisplay) || !resultMessage) return resultMessage
+  const status = options.status || inferToolResultStatus(resultMessage)
+  const serverName =
+    String(options.toolServerName || resultMessage.toolServerName || toolDisplay.toolServerName || extractServerNameFromToolMeta(resultMessage.toolMeta) || '').trim() || '未知'
+  const toolName = String(options.toolName || resultMessage.toolName || toolDisplay.toolName || '').trim()
+  const autoApproved = typeof toolDisplay.toolAutoApproved === 'boolean' ? toolDisplay.toolAutoApproved : undefined
+  const resultContent = String(resultMessage.content || '').trim()
+  const nextPayload =
+    options.toolResultPayload ??
+    resultMessage.toolResultPayload ??
+    toolDisplay.toolResultPayload ??
+    null
+
+  toolDisplay.role = 'tool'
+  toolDisplay.toolStatus = status
+  toolDisplay.toolMeta = String(resultMessage.toolMeta || toolDisplay.toolMeta || '').trim()
+  toolDisplay.toolServerName = serverName
+  if (toolName) toolDisplay.toolName = toolName
+  toolDisplay.toolSubMeta = String(options.toolSubMeta ?? resultMessage.toolSubMeta ?? toolDisplay.toolSubMeta ?? '').trim()
+  if (Array.isArray(resultMessage.images)) toolDisplay.images = resultMessage.images
+  if (typeof options.toolExpanded === 'boolean') toolDisplay.toolExpanded = options.toolExpanded
+  if (isAgentRunToolResult(nextPayload)) {
+    const mergedTrace = mergeAgentRunTraceEntries(toolDisplay.toolLiveTrace, nextPayload.trace)
+    toolDisplay.toolLiveTrace = mergedTrace
+    toolDisplay.toolResultPayload = { ...nextPayload, trace: mergedTrace }
+    const payloadAgentName = String(nextPayload?.agent?.name || nextPayload?.agent?.id || '').trim()
+    if (payloadAgentName) toolDisplay.toolAgentName = payloadAgentName
+    toolDisplay.toolLiveFinalContent = String(nextPayload?.final?.content || nextPayload?.summary || '').trim()
+    toolDisplay.toolLiveFinalReasoning = String(nextPayload?.final?.reasoning || '').trim()
+    toolDisplay.toolLiveRound = Number(nextPayload?.metrics?.rounds) || toolDisplay.toolLiveRound || 0
+  } else {
+    toolDisplay.toolResultPayload = nextPayload && typeof nextPayload === 'object' ? nextPayload : null
+  }
+  toolDisplay.content = buildToolExecutionMessageContent({
+    serverName,
+    toolName: toolDisplay.toolName,
+    argsText: toolDisplay.toolArgsText || '{}',
+    autoApproved,
+    status,
+    resultContent,
+    traceItems: Array.isArray(toolDisplay.toolLiveTrace) ? toolDisplay.toolLiveTrace : [],
+    errorText: options.errorText || ''
+  })
+  if (status !== 'running' && toolDisplay.toolTraceStreamId) {
+    activeAgentRunToolMessageByStreamId.delete(toolDisplay.toolTraceStreamId)
+  }
+  scheduleRefreshUserAnchorMeta()
+  return toolDisplay
+}
+
+function maybeCoalesceLatestToolMessages() {
+  const list = session?.messages
+  if (!Array.isArray(list) || list.length < 2) return
+  const latest = list[list.length - 1]
+  if (!latest || String(latest.role || '').trim() !== 'tool') return
+
+  for (let i = list.length - 2; i >= 0; i -= 1) {
+    const candidate = list[i]
+    if (!isToolMessage(candidate)) break
+    if (!canCoalesceToolResultIntoPending(candidate, latest)) continue
+
+    mergeToolExecutionDisplayMessage(candidate, latest)
+    list.splice(list.length - 1, 1)
+    return
+  }
+}
+
+function canCoalesceToolResultIntoPending(pending, result) {
+  if (!pending || !result) return false
+  if (!isToolMessage(pending) || String(result.role || '').trim() !== 'tool') return false
+  if (getToolMessageStatus(pending) !== 'running') return false
+
+  const pendingMeta = String(pending.toolMeta || '').trim()
+  const resultMeta = String(result.toolMeta || '').trim()
+  if (pendingMeta && resultMeta && pendingMeta !== resultMeta) return false
+
+  const pendingToolName = String(pending.toolName || '').trim()
+  const resultToolName = String(result.toolName || '').trim()
+  if (pendingToolName && resultToolName && pendingToolName !== resultToolName) return false
+
+  return true
+}
+
+function coalesceToolExecutionDisplayMessages(messages = []) {
+  const out = []
+  for (const msg of Array.isArray(messages) ? messages : []) {
+    if (String(msg?.role || '').trim() === 'tool') {
+      let merged = false
+      for (let i = out.length - 1; i >= 0; i -= 1) {
+        const candidate = out[i]
+        if (!isToolMessage(candidate)) break
+        if (!canCoalesceToolResultIntoPending(candidate, msg)) continue
+
+        mergeToolExecutionDisplayMessage(candidate, msg)
+        merged = true
+        break
+      }
+      if (merged) continue
+    }
+    out.push(msg)
+  }
+  return out
+}
+
+const activeAgentRunToolMessageByStreamId = new Map()
+const pendingBuiltinAgentsEventsByStreamId = new Map()
+const BUILTIN_AGENTS_EVENT_FLUSH_INTERVAL_MS = 33
+let pendingBuiltinAgentsEventsFlushTimer = null
+
+function resolveActiveAgentRunToolMessage(streamId) {
+  const id = String(streamId || '').trim()
+  if (!id) return null
+  return (
+    activeAgentRunToolMessageByStreamId.get(id) ||
+    (session.messages || []).find((msg) => String(msg?.toolTraceStreamId || '').trim() === id) ||
+    null
+  )
+}
+
+function updateAgentRunToolMessageTraceBatch(streamId, entries) {
+  const id = String(streamId || '').trim()
+  const nextEntries = (Array.isArray(entries) ? entries : [])
+    .filter((entry) => entry && typeof entry === 'object')
+  if (!id || !nextEntries.length) return
+
+  const messageRef = resolveActiveAgentRunToolMessage(id)
+  if (!messageRef || !isToolMessage(messageRef)) return
+
+  const current = Array.isArray(messageRef.toolLiveTrace) ? messageRef.toolLiveTrace : []
+  const mergedTrace = mergeAgentRunTraceEntries(current, nextEntries)
+  if (mergedTrace.length === current.length) {
+    const latest = nextEntries[nextEntries.length - 1]
+    const latestAgentName = String(latest?.agent_name || '').trim()
+    if (latestAgentName && !messageRef.toolAgentName) messageRef.toolAgentName = latestAgentName
+    return
+  }
+
+  messageRef.toolLiveTrace = mergedTrace
+  const latestEntry = nextEntries[nextEntries.length - 1]
+  const agentName = String(latestEntry?.agent_name || messageRef.toolAgentName || '').trim()
+  if (agentName) messageRef.toolAgentName = agentName
+  const subMeta = [
+    messageRef.toolAgentName ? `智能体：${messageRef.toolAgentName}` : '',
+    mergedTrace.length ? `${mergedTrace.length} 个轨迹步骤` : ''
+  ].filter(Boolean).join(' · ')
+  messageRef.toolSubMeta = subMeta
+  messageRef.content = buildToolExecutionMessageContent({
+    serverName: messageRef.toolServerName || extractServerNameFromToolMeta(messageRef.toolMeta),
+    toolName: messageRef.toolName,
+    argsText: messageRef.toolArgsText || '{}',
+    autoApproved: messageRef.toolAutoApproved,
+    status: 'running',
+    traceItems: mergedTrace
+  })
+  scheduleRefreshUserAnchorMeta()
+  if (autoScrollEnabled.value && (isAtBottom.value || sending.value)) scheduleScrollToBottom()
+}
+
+function updateAgentRunToolMessageLiveUpdate(streamId, live) {
+  const id = String(streamId || '').trim()
+  if (!id || !live || typeof live !== 'object') return
+
+  const messageRef = resolveActiveAgentRunToolMessage(id)
+  if (!messageRef || !isToolMessage(messageRef)) return
+
+  if (live.reset === true) {
+    messageRef.toolLiveFinalContent = ''
+    messageRef.toolLiveFinalReasoning = ''
+  }
+
+  if (Object.prototype.hasOwnProperty.call(live, 'content')) {
+    messageRef.toolLiveFinalContent = String(live.content || '')
+  }
+  if (Object.prototype.hasOwnProperty.call(live, 'reasoning')) {
+    messageRef.toolLiveFinalReasoning = String(live.reasoning || '')
+  }
+  if (Object.prototype.hasOwnProperty.call(live, 'round')) {
+    messageRef.toolLiveRound = Number(live.round) || 0
+  }
+
+  const nextPayload =
+    isAgentRunToolResult(messageRef.toolResultPayload)
+      ? { ...messageRef.toolResultPayload }
+      : { kind: 'agent_run_result', status: 'running', trace: [] }
+  nextPayload.status = String(nextPayload.status || 'running').trim() || 'running'
+  nextPayload.final = {
+    content: String(messageRef.toolLiveFinalContent || ''),
+    reasoning: String(messageRef.toolLiveFinalReasoning || '')
+  }
+  nextPayload.summary = nextPayload.final.content
+  nextPayload.trace = Array.isArray(messageRef.toolLiveTrace) ? messageRef.toolLiveTrace : []
+  messageRef.toolResultPayload = nextPayload
+
+  scheduleRefreshUserAnchorMeta()
+  if (autoScrollEnabled.value && (isAtBottom.value || sending.value)) scheduleScrollToBottom()
+}
+
+function mergeAgentRunLivePayload(base, incoming) {
+  const merged = base && typeof base === 'object' ? { ...base } : {}
+  const next = incoming && typeof incoming === 'object' ? incoming : {}
+  if (next.reset === true) merged.reset = true
+  if (Object.prototype.hasOwnProperty.call(next, 'content')) merged.content = next.content
+  if (Object.prototype.hasOwnProperty.call(next, 'reasoning')) merged.reasoning = next.reasoning
+  if (Object.prototype.hasOwnProperty.call(next, 'round')) merged.round = next.round
+  return merged
+}
+
+function flushPendingBuiltinAgentsEvents() {
+  pendingBuiltinAgentsEventsFlushTimer = null
+  if (!pendingBuiltinAgentsEventsByStreamId.size) return
+
+  const pending = Array.from(pendingBuiltinAgentsEventsByStreamId.entries())
+  pendingBuiltinAgentsEventsByStreamId.clear()
+  pending.forEach(([streamId, bucket]) => {
+    if (!streamId || !bucket) return
+    if (Array.isArray(bucket.entries) && bucket.entries.length) {
+      updateAgentRunToolMessageTraceBatch(streamId, bucket.entries)
+    }
+    if (bucket.live && typeof bucket.live === 'object') {
+      updateAgentRunToolMessageLiveUpdate(streamId, bucket.live)
+    }
+    if (bucket.done === true) activeAgentRunToolMessageByStreamId.delete(streamId)
+  })
+}
+
+function schedulePendingBuiltinAgentsEventsFlush() {
+  if (pendingBuiltinAgentsEventsFlushTimer) return
+  pendingBuiltinAgentsEventsFlushTimer = window.setTimeout(
+    flushPendingBuiltinAgentsEvents,
+    BUILTIN_AGENTS_EVENT_FLUSH_INTERVAL_MS
+  )
+}
+
+function handleBuiltinAgentsTraceEvent(event) {
+  const detail = event?.detail && typeof event.detail === 'object' ? event.detail : {}
+  const streamId = String(detail.streamId || '').trim()
+  const entry = detail.entry && typeof detail.entry === 'object' ? detail.entry : null
+  const live = detail.live && typeof detail.live === 'object' ? detail.live : null
+  if (!streamId) return
+  const prev = pendingBuiltinAgentsEventsByStreamId.get(streamId) || { entries: [], live: null, done: false }
+  const next = {
+    entries: Array.isArray(prev.entries) ? prev.entries.slice() : [],
+    live: prev.live && typeof prev.live === 'object' ? { ...prev.live } : null,
+    done: prev.done === true
+  }
+  if (entry) next.entries.push(entry)
+  if (live) next.live = mergeAgentRunLivePayload(next.live, live)
+  if (detail.done === true) next.done = true
+  pendingBuiltinAgentsEventsByStreamId.set(streamId, next)
+  schedulePendingBuiltinAgentsEventsFlush()
+}
+
+function prepareBuiltinAgentToolCallArgs(server, toolName, argsObj, pendingMessage) {
+  const isBuiltinAgentsServer = String(server?._id || '').trim() === BUILTIN_AGENTS_SERVER_ID
+  if (!isBuiltinAgentsServer || !isAgentRunToolName(toolName)) return argsObj
+
+  const nextArgs = argsObj && typeof argsObj === 'object' && !Array.isArray(argsObj) ? { ...argsObj } : {}
+  const streamId = String(pendingMessage?.toolTraceStreamId || pendingMessage?.id || '').trim()
+  const approvalMode = autoApproveTools.value ? 'auto' : 'manual'
+  if (streamId) {
+    // Keep legacy/internal key and a plain key to avoid middleware stripping prefixed fields.
+    nextArgs.__trace_stream_id = streamId
+    nextArgs.trace_stream_id = streamId
+  }
+  // Keep legacy/internal key and a plain key for better cross-provider compatibility.
+  nextArgs.__tool_approval_mode = approvalMode
+  nextArgs.tool_approval_mode = approvalMode
+
+  if (pendingMessage) {
+    pendingMessage.toolTraceStreamId = streamId
+    pendingMessage.toolApprovalMode = approvalMode
+    if (streamId) activeAgentRunToolMessageByStreamId.set(streamId, pendingMessage)
+  }
+
+  return nextArgs
+}
+
+function dispatchBuiltinAgentsToolApprovalResponse(requestId, approved) {
+  const id = String(requestId || '').trim()
+  if (!id || !window?.dispatchEvent || typeof window.CustomEvent !== 'function') return
+  try {
+    window.dispatchEvent(
+      new window.CustomEvent(BUILTIN_AGENTS_TOOL_APPROVAL_RESPONSE_EVENT, {
+        detail: {
+          requestId: id,
+          approved: approved === true ? true : approved === false ? false : null
+        }
+      })
+    )
+  } catch {
+    // ignore
+  }
+}
+
+function createAbortAwareDialogState() {
+  const controller = abortController.value
+  const signal = controller?.signal
+  if (!signal?.addEventListener) return null
+  return {
+    onAbort(listener) {
+      if (typeof listener !== 'function') return null
+      const handler = () => listener()
+      signal.addEventListener('abort', handler, { once: true })
+      return () => {
+        try {
+          signal.removeEventListener('abort', handler)
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+}
+
+async function handleBuiltinAgentsToolApprovalRequest(event) {
+  const detail = event?.detail && typeof event.detail === 'object' ? event.detail : {}
+  const requestId = String(detail.requestId || '').trim()
+  if (!requestId) return
+
+  const serverName = String(detail.serverName || detail.serverId || '').trim() || '未知'
+  const toolName = String(detail.toolName || '').trim() || 'unknown'
+  const argsText = String(detail.argsText || '{}').trim() || '{}'
+  const reasoningText = String(detail.reasoningText || '').trim()
+  const agentName = String(detail.agentName || '').trim()
+  const extraLines = agentName ? ['智能体：' + agentName] : []
+
+  let approved = null
+  if (autoApproveTools.value) {
+    approved = true
+  } else {
+    approved = await confirmToolCall({
+      serverName,
+      toolName,
+      argsText,
+      reasoningText,
+      abortState: createAbortAwareDialogState(),
+      titleText: '确认子 Agent 工具调用',
+      extraLines
+    })
+  }
+
+  dispatchBuiltinAgentsToolApprovalResponse(requestId, approved)
+}
+
+function downloadChatImage(img) {
+  const src = String(img?.src || '').trim()
+  if (!src) return
+
+  const triggerDownload = (href, filename) => {
+    const a = document.createElement('a')
+    a.href = href
+    a.download = filename
+    a.rel = 'noopener'
+    a.style.display = 'none'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+  }
+
+  const filename = ensureFilenameExt(img?.name, img?.mime)
+
+  if (src.startsWith('data:')) {
+    try {
+      triggerDownload(src, filename)
+      return
+    } catch (err) {
+      message.error('下载失败：' + (err?.message || String(err)))
+      return
+    }
+  }
+
+  if (/^https?:\/\//i.test(src)) {
+    loadChatImageBlob(img)
+      .then((blob) => {
+        const objectUrl = URL.createObjectURL(blob)
+        try {
+          triggerDownload(objectUrl, ensureFilenameExt(img?.name, blob.type || img?.mime))
+        } finally {
+          window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1200)
+        }
+      })
+      .catch((err) => {
+        copyChatImageLink(img)
+        try {
+          globalThis?.utools?.shellOpenExternal?.(src)
+        } catch {
+          // ignore
+        }
+        message.info('已复制图片链接。如无法直接下载，请在浏览器中打开后再保存。' + ((err && err.message) ? `（${err.message}）` : ''))
+      })
+    return
+  }
+
+  // 远程链接：复制链接并尝试打开
+  if (/^https?:\/\//i.test(src)) {
+    copyToClipboard(src)
+    try {
+      globalThis?.utools?.shellOpenExternal?.(src)
+    } catch {
+      // ignore
+    }
+    message.info('已复制图片链接。如无法直接下载，请在浏览器中打开后再保存。')
+    return
+  }
+
+  message.warning('暂不支持下载该图片来源')
+}
+
+function downloadChatVideo(video) {
+  const src = String(video?.src || '').trim()
+  if (!src) return
+
+  const triggerDownload = (href, filename) => {
+    const a = document.createElement('a')
+    a.href = href
+    a.download = filename
+    a.rel = 'noopener'
+    a.style.display = 'none'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+  }
+
+  const fallbackName = String(video?.name || '').trim() || `video_${Date.now()}`
+  const filename = ensureFilenameExt(fallbackName, video?.mime || 'video/mp4')
+
+  if (src.startsWith('data:')) {
+    try {
+      triggerDownload(src, filename)
+      return
+    } catch (err) {
+      message.error('下载失败：' + (err?.message || String(err)))
+      return
+    }
+  }
+
+  if (/^https?:\/\//i.test(src)) {
+    loadChatVideoBlob(video)
+      .then((blob) => {
+        const objectUrl = URL.createObjectURL(blob)
+        try {
+          triggerDownload(objectUrl, ensureFilenameExt(fallbackName, blob.type || video?.mime || 'video/mp4'))
+        } finally {
+          window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1200)
+        }
+      })
+      .catch((err) => {
+        copyChatVideoLink(video)
+        try {
+          globalThis?.utools?.shellOpenExternal?.(src)
+        } catch {
+          // ignore
+        }
+        message.info('已复制视频链接。如无法直接下载，请在浏览器中打开后再保存。' + ((err && err.message) ? `（${err.message}）` : ''))
+      })
+    return
+  }
+
+  message.warning('暂不支持下载该视频来源')
+}
+
+const assistantMediaHelpers = {
+  assistantImageTaskTitle,
+  assistantImageTaskTagType,
+  assistantImageTaskStatusLabel,
+  assistantImagePromptLabel,
+  assistantImageTaskMetaLabel,
+  assistantImageTaskNote,
+  assistantVisibleImages,
+  assistantVisibleImageCount,
+  assistantImageBlockEyebrow,
+  assistantImageDisplayTitle,
+  assistantImagePlaceholderText,
+  assistantImageInsightLabel,
+  assistantVisibleVideos,
+  assistantVisibleVideoCount,
+  assistantVideoBlockEyebrow,
+  assistantVideoDisplayTitle,
+  assistantVideoPromptLabel,
+  assistantVideoPlaceholderText,
+  assistantVideoInsightLabel,
+  imageMetaLabel,
+  videoMetaLabel
+}
+
+const assistantMediaActions = {
+  copyChatImage,
+  downloadChatImage,
+  copyChatVideo,
+  downloadChatVideo
+}
+
+const userAttachmentHelpers = {
+  countImageAttachments,
+  countFileAttachments,
+  listDisplayAttachments,
+  attachmentCardTitle,
+  attachmentIcon,
+  attachmentMetaSummary,
+  imageMetaLabel,
+  imageInsightLabel
+}
+
+const userAttachmentActions = {
+  toggleAttachmentsExpanded,
+  downloadChatImage,
+  copyChatImage
+}
+
+const toolMessageHelpers = {
+  toolMessageLabel,
+  getToolMessageStatus,
+  toolMessageStatusLabel,
+  imageMetaLabel,
+  imageInsightLabel,
+  shouldRenderHeavyChatMessage,
+  truncateInlineText
+}
+
+const toolMessageActions = {
+  toggleToolExpanded,
+  downloadChatImage,
+  copyChatImage,
+  scheduleScrollToBottom
+}
+
+const pendingAttachmentHelpers = {
+  attachmentStatusText,
+  imageMetaLabel,
+  imageInsightLabel,
+  attachmentCardTitle,
+  attachmentIcon,
+  attachmentMetaSummary
+}
+
+const pendingAttachmentActions = {
+  removeAttachment
+}
+
+const contextWindowPreviewHelpers = {
+  modeType: contextWindowPreviewModeType,
+  modeLabel: contextWindowPreviewModeLabel,
+  entryLabel: contextWindowPreviewEntryLabel,
+  entryNote: contextWindowPreviewEntryNote,
+  omittedReasonType: contextWindowPreviewOmittedReasonType,
+  omittedReasonLabel: contextWindowPreviewOmittedReasonLabel,
+  formatApproxChars
+}
+
+function roleIcon(messageOrRole) {
+  const msg = messageOrRole && typeof messageOrRole === 'object' ? messageOrRole : null
+  const role = String(msg?.role || messageOrRole || '').trim()
+  if (role === 'user') return PersonCircleOutline
+  if (role === 'assistant') return SparklesOutline
+  if (role === 'thinking') return ChatbubbleEllipsesOutline
+  if (role === 'tool_call' || role === 'tool') {
+    const status = getToolMessageStatus(msg || { role })
+    if (status === 'running') return RefreshOutline
+    if (status === 'error') return CloseOutline
+    if (status === 'rejected') return ShieldOutline
+    return HardwareChipOutline
+  }
+  return ChatbubbleEllipsesOutline
+}
+
+function formatTime(ts) {
+  if (!ts) return ''
+  try {
+    const d = new Date(ts)
+    return d.toLocaleString()
+  } catch {
+    return ''
+  }
+}
+
+function toggleThinking(msg) {
+  if (!msg) return
+  msg.thinkingExpanded = !msg.thinkingExpanded
+  scheduleRefreshUserAnchorMeta()
+  scheduleStickyChatBubbleSync()
+}
+
+function toggleToolExpanded(msg) {
+  if (!msg || (msg.role !== 'tool' && msg.role !== 'tool_call')) return
+  msg.toolExpanded = !msg.toolExpanded
+  if (msg.toolExpanded) scheduleScrollToBottom()
+  scheduleRefreshUserAnchorMeta()
+  scheduleStickyChatBubbleSync()
+}
+
+function toggleAttachmentsExpanded(msg) {
+  if (!msg || msg.role !== 'user') return
+  msg.attachmentsExpanded = !msg.attachmentsExpanded
+  if (msg.attachmentsExpanded) scheduleScrollToBottom()
+  scheduleRefreshUserAnchorMeta()
+  scheduleStickyChatBubbleSync()
+}
+
+const autoScrollEnabled = ref(true)
+const isAtBottom = ref(true)
+const SCROLL_BOTTOM_THRESHOLD_PX = 12
+const SCROLL_AUTO_DISABLE_DISTANCE_PX = 100
+
+const chatScrollEl = ref(null)
+const chatListRef = ref(null)
+const chatScrollTop = ref(0)
+const chatViewportHeight = ref(0)
+const chatScrollDistanceFromBottom = ref(Number.POSITIVE_INFINITY)
+const isChatScrollable = ref(false)
+const visibleHeavyChatMessageIds = ref(new Set())
+const chatMessageMetricsVersion = ref(0)
+const recentHeavyChatMessageIds = computed(() => {
+  const ids = new Set()
+  const tail = Array.isArray(session.messages) ? session.messages.slice(-14) : []
+  tail.forEach((msg) => {
+    const id = String(msg?.id || '').trim()
+    if (id) ids.add(id)
+  })
+  return ids
+})
+let chatLayoutResizeObserver = null
+let chatMessageVisibilityObserver = null
+let chatMessageResizeObserver = null
+const chatMessageElMap = new Map()
+const chatMessageHeightCache = new Map()
+const intersectingHeavyChatMessageIds = new Set()
+
+function estimateChatMessageHeight(msg) {
+  const role = String(msg?.role || '')
+  const contentLength = String(msg?.content || '').length
+  const attachmentCount = Array.isArray(msg?.attachments) ? msg.attachments.length : 0
+  const thinkingLength = String(msg?.thinking || '').length
+  const base = role === 'tool_call' || role === 'tool' ? 168 : role === 'assistant' ? 156 : 140
+  const contentExtra = Math.min(520, Math.ceil(contentLength / 9))
+  const attachmentExtra = attachmentCount * 76
+  const thinkingExtra = msg?.thinkingExpanded ? Math.min(320, Math.ceil(thinkingLength / 10)) : 0
+  return Math.max(112, base + contentExtra + attachmentExtra + thinkingExtra)
+}
+
+const chatVirtualizedEnabled = computed(() => (session.messages?.length || 0) >= CHAT_VIRTUALIZATION_MIN_MESSAGES)
+
+const forcedRenderedChatMessageIdSet = computed(() => {
+  const ids = new Set(recentHeavyChatMessageIds.value)
+  for (const msg of session.messages || []) {
+    const id = String(msg?.id || '').trim()
+    if (!id) continue
+    if (msg.streaming || msg.editing || msg.thinkingExpanded || msg.toolExpanded || msg.attachmentsExpanded) ids.add(id)
+  }
+  return ids
+})
+
+const chatVirtualLayout = computed(() => {
+  void chatMessageMetricsVersion.value
+  const items = []
+  const idToIndex = new Map()
+  const topById = new Map()
+  let offset = 0
+  ;(session.messages || []).forEach((msg, index) => {
+    const id = String(msg?.id || '').trim()
+    const height = Math.max(96, Number(chatMessageHeightCache.get(id)) || estimateChatMessageHeight(msg) || CHAT_DEFAULT_MESSAGE_HEIGHT)
+    items.push({
+      id,
+      index,
+      top: offset,
+      bottom: offset + height,
+      height,
+      msg
+    })
+    if (id) {
+      idToIndex.set(id, index)
+      topById.set(id, offset)
+    }
+    offset += height
+  })
+  return {
+    items,
+    idToIndex,
+    topById,
+    totalHeight: offset
+  }
+})
+
+function resolveChatRenderRange(layout, scrollTop, viewportHeight) {
+  const items = Array.isArray(layout?.items) ? layout.items : []
+  if (!items.length) return { start: 0, end: -1 }
+  if (!chatVirtualizedEnabled.value) return { start: 0, end: items.length - 1 }
+
+  const overscan = CHAT_VIRTUALIZATION_OVERSCAN_PX
+  const viewportTop = Math.max(0, Number(scrollTop) - overscan)
+  const viewportBottom = Math.max(0, Number(scrollTop) + Math.max(0, Number(viewportHeight) || 0) + overscan)
+
+  let start = 0
+  while (start < items.length && items[start].bottom < viewportTop) start += 1
+  let end = Math.max(start, 0)
+  while (end < items.length - 1 && items[end].top <= viewportBottom) end += 1
+
+  if (start >= items.length) {
+    start = Math.max(0, items.length - 1)
+    end = items.length - 1
+  }
+
+  const forcedIds = forcedRenderedChatMessageIdSet.value
+  let forcedStart = start
+  let forcedEnd = end
+  forcedIds.forEach((id) => {
+    const index = layout.idToIndex.get(id)
+    if (!Number.isInteger(index)) return
+    forcedStart = Math.min(forcedStart, index)
+    forcedEnd = Math.max(forcedEnd, index)
+  })
+
+  return {
+    start: Math.max(0, forcedStart),
+    end: Math.min(items.length - 1, Math.max(forcedEnd, forcedStart))
+  }
+}
+
+const renderedChatRange = computed(() =>
+  resolveChatRenderRange(chatVirtualLayout.value, chatScrollTop.value, chatViewportHeight.value)
+)
+
+const renderedChatMessages = computed(() => {
+  const { items } = chatVirtualLayout.value
+  const { start, end } = renderedChatRange.value
+  if (!items.length || end < start) return []
+  return items.slice(start, end + 1).map((item) => item.msg)
+})
+
+const chatVirtualTopSpacerHeight = computed(() => {
+  if (!chatVirtualizedEnabled.value) return 0
+  const first = chatVirtualLayout.value.items[renderedChatRange.value.start]
+  return first ? Math.max(0, Math.round(first.top)) : 0
+})
+
+const chatVirtualBottomSpacerHeight = computed(() => {
+  if (!chatVirtualizedEnabled.value) return 0
+  const items = chatVirtualLayout.value.items
+  const last = items[renderedChatRange.value.end]
+  if (!last) return 0
+  return Math.max(0, Math.round(chatVirtualLayout.value.totalHeight - last.bottom))
+})
+
+function getDistanceFromBottom(elMaybe) {
+  const el = elMaybe || chatScrollEl.value || resolveScrollbarContainerEl()
+  if (!el) return Number.POSITIVE_INFINITY
+  return Math.max(0, el.scrollHeight - (el.scrollTop + el.clientHeight))
+}
+
+function updateAtBottomState(elMaybe) {
+  const el = elMaybe || chatScrollEl.value || resolveScrollbarContainerEl()
+  if (!el) {
+    chatScrollDistanceFromBottom.value = Number.POSITIVE_INFINITY
+    isAtBottom.value = false
+    isChatScrollable.value = false
+    return { distanceFromBottom: Number.POSITIVE_INFINITY, atBottom: false }
+  }
+  const distanceFromBottom = getDistanceFromBottom(el)
+  chatScrollTop.value = Number(el?.scrollTop || 0)
+  chatViewportHeight.value = Number(el?.clientHeight || 0)
+  chatScrollDistanceFromBottom.value = distanceFromBottom
+  isChatScrollable.value = !!el && el.scrollHeight > el.clientHeight + 2
+  isAtBottom.value = distanceFromBottom <= SCROLL_BOTTOM_THRESHOLD_PX
+  return { distanceFromBottom, atBottom: isAtBottom.value }
+}
+
+const showScrollToBottomButton = computed(() => {
+  if (!isChatScrollable.value) return false
+  return chatScrollDistanceFromBottom.value > SCROLL_AUTO_DISABLE_DISTANCE_PX
+})
+
+const userAnchorMeta = ref([])
+const activeAnchorId = ref(null)
+const userAnchorElMap = new Map()
+
+function getUserAnchorPreview(msg) {
+  const text = String(msg?.content || '')
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean)[0] || ''
+  const flat = text.replace(/\s+/g, ' ').trim()
+  if (!flat) return '(empty)'
+  return flat.length > 40 ? `${flat.slice(0, 40)}...` : flat
+}
+
+const userAnchors = computed(() => {
+  const anchors = []
+  for (const msg of session.messages || []) {
+    if (!msg || msg.role !== 'user') continue
+    const index = anchors.length + 1
+    anchors.push({
+      id: msg.id,
+      domId: `q-${msg.id}`,
+      index,
+      preview: getUserAnchorPreview(msg)
+    })
+  }
+  return anchors
+})
+
+const showAnchorRail = computed(() => !isCompactChatLayout.value && userAnchors.value.length > 1)
+const stickyChatBubble = ref(null)
+let stickyChatBubbleSyncFrame = 0
+
+function getStickyChatBubbleState(msg) {
+  if (!msg || typeof msg !== 'object') return null
+  const id = String(msg.id || '').trim()
+  if (!id) return null
+
+  if (msg.role === 'assistant' && msg.thinking && msg.thinkingExpanded) {
+    return {
+      id,
+      type: 'thinking',
+      label: msg.streaming ? '思考中...' : '思考完成',
+      meta: '',
+      status: '',
+      statusText: '',
+      actionText: '收起思考'
+    }
+  }
+
+  if (msg.role === 'user' && msg.attachmentsExpanded && ((msg.images && msg.images.length) || (msg.attachments && msg.attachments.length))) {
+    return {
+      id,
+      type: 'attachments',
+      label: '附件',
+      meta: `${countImageAttachments(msg)} 图 / ${countFileAttachments(msg)} 文件`,
+      status: '',
+      statusText: '',
+      actionText: '收起附件'
+    }
+  }
+
+  if (isToolMessage(msg) && msg.toolExpanded) {
+    const status = getToolMessageStatus(msg)
+    return {
+      id,
+      type: 'tool',
+      label: toolMessageLabel(msg),
+      meta: msg.toolSubMeta || msg.toolMeta || '',
+      status,
+      statusText: toolMessageStatusLabel(msg),
+      actionText: '收起工具'
+    }
+  }
+
+  return null
+}
+
+function setStickyChatBubbleState(next) {
+  const prev = stickyChatBubble.value
+  if (
+    prev?.id === next?.id &&
+    prev?.type === next?.type &&
+    prev?.label === next?.label &&
+    prev?.meta === next?.meta &&
+    prev?.status === next?.status &&
+    prev?.statusText === next?.statusText &&
+    prev?.actionText === next?.actionText
+  ) {
+    return
+  }
+  stickyChatBubble.value = next
+}
+
+function syncStickyChatBubble() {
+  if (!chatScrollEl.value && !resolveScrollbarContainerEl()) {
+    setStickyChatBubbleState(null)
+    return
+  }
+
+  const layout = chatVirtualLayout.value
+  const items = Array.isArray(layout?.items) ? layout.items : []
+  if (!items.length) {
+    setStickyChatBubbleState(null)
+    return
+  }
+
+  const threshold = Math.max(0, Number(chatScrollTop.value) || 0) + 8
+  const minVisibleBottom = threshold + 64
+  let next = null
+
+  for (const item of items) {
+    if (!item || item.top > threshold) break
+    if (item.bottom <= minVisibleBottom) continue
+    const msg = item.msg
+    const state = getStickyChatBubbleState(msg)
+    if (state) next = state
+  }
+
+  if (!next && stickyChatBubble.value?.id) {
+    const currentId = String(stickyChatBubble.value.id)
+    const current = items.find((item) => String(item?.id || '') === currentId)
+    const currentState = getStickyChatBubbleState(current?.msg)
+    if (currentState && current.top <= threshold + 96 && current.bottom > threshold + 24) {
+      next = currentState
+    }
+  }
+
+  setStickyChatBubbleState(next)
+}
+
+function scheduleStickyChatBubbleSync() {
+  if (stickyChatBubbleSyncFrame) return
+  const raf = window?.requestAnimationFrame || ((cb) => window.setTimeout(cb, 16))
+  stickyChatBubbleSyncFrame = raf(() => {
+    stickyChatBubbleSyncFrame = 0
+    syncStickyChatBubble()
+  })
+}
+
+function clearStickyChatBubbleSync() {
+  if (!stickyChatBubbleSyncFrame) return
+  if (typeof window?.cancelAnimationFrame === 'function') window.cancelAnimationFrame(stickyChatBubbleSyncFrame)
+  else clearTimeout(stickyChatBubbleSyncFrame)
+  stickyChatBubbleSyncFrame = 0
+}
+
+function handleStickyChatBubbleAction() {
+  const id = stickyChatBubble.value?.id
+  const msg = session.messages.find((item) => String(item?.id || '') === String(id || ''))
+  if (!msg) {
+    setStickyChatBubbleState(null)
+    return
+  }
+
+  if (stickyChatBubble.value?.type === 'thinking') toggleThinking(msg)
+  else if (stickyChatBubble.value?.type === 'attachments') toggleAttachmentsExpanded(msg)
+  else if (stickyChatBubble.value?.type === 'tool') toggleToolExpanded(msg)
+
+  setStickyChatBubbleState(null)
+  scheduleStickyChatBubbleSync()
+}
+
+function syncVisibleHeavyChatMessageIds() {
+  visibleHeavyChatMessageIds.value = new Set(intersectingHeavyChatMessageIds)
+}
+
+function bumpChatMessageMetricsVersion() {
+  chatMessageMetricsVersion.value += 1
+}
+
+function updateChatMessageHeight(messageId, el) {
+  const id = String(messageId || '').trim()
+  if (!id || !(el instanceof HTMLElement)) return
+  const nextHeight = Math.max(96, Math.ceil(el.getBoundingClientRect().height || el.offsetHeight || 0))
+  if (!nextHeight) return
+  if (chatMessageHeightCache.get(id) === nextHeight) return
+  chatMessageHeightCache.set(id, nextHeight)
+  bumpChatMessageMetricsVersion()
+}
+
+function disconnectChatMessageResizeObserver() {
+  if (!chatMessageResizeObserver) return
+  try {
+    chatMessageResizeObserver.disconnect()
+  } catch {
+    // ignore
+  }
+  chatMessageResizeObserver = null
+}
+
+function ensureChatMessageResizeObserver() {
+  if (chatMessageResizeObserver || typeof ResizeObserver === 'undefined') return
+  chatMessageResizeObserver = new ResizeObserver((entries) => {
+    let changed = false
+    entries.forEach((entry) => {
+      const target = entry?.target
+      if (!(target instanceof HTMLElement)) return
+      const id = String(target.dataset.messageId || '').trim()
+      if (!id) return
+      const nextHeight = Math.max(96, Math.ceil(entry.contentRect?.height || target.getBoundingClientRect().height || target.offsetHeight || 0))
+      if (!nextHeight || chatMessageHeightCache.get(id) === nextHeight) return
+      chatMessageHeightCache.set(id, nextHeight)
+      changed = true
+    })
+    if (changed) {
+      bumpChatMessageMetricsVersion()
+      scheduleRefreshUserAnchorMeta()
+      if (autoScrollEnabled.value && (isAtBottom.value || sending.value)) scheduleScrollToBottom()
+    }
+  })
+}
+
+function disconnectChatMessageVisibilityObserver(options = {}) {
+  if (chatMessageVisibilityObserver) {
+    try {
+      chatMessageVisibilityObserver.disconnect()
+    } catch {
+      // ignore
+    }
+    chatMessageVisibilityObserver = null
+  }
+
+  intersectingHeavyChatMessageIds.clear()
+  if (options.clearVisible !== false) syncVisibleHeavyChatMessageIds()
+}
+
+function setupChatMessageVisibilityObserver() {
+  disconnectChatMessageVisibilityObserver()
+  if (typeof IntersectionObserver === 'undefined') {
+    syncVisibleHeavyChatMessageIds()
+    return
+  }
+
+  const root = chatScrollEl.value || resolveScrollbarContainerEl()
+  if (!root) {
+    syncVisibleHeavyChatMessageIds()
+    return
+  }
+
+  chatMessageVisibilityObserver = new IntersectionObserver(
+    (entries) => {
+      let changed = false
+      entries.forEach((entry) => {
+        const id = String(entry.target?.dataset?.messageId || '').trim()
+        if (!id) return
+        if (entry.isIntersecting) {
+          if (!intersectingHeavyChatMessageIds.has(id)) {
+            intersectingHeavyChatMessageIds.add(id)
+            changed = true
+          }
+        } else if (intersectingHeavyChatMessageIds.delete(id)) {
+          changed = true
+        }
+      })
+      if (changed) syncVisibleHeavyChatMessageIds()
+    },
+    {
+      root,
+      rootMargin: '480px 0px'
+    }
+  )
+
+  for (const [id, el] of chatMessageElMap.entries()) {
+    if (!el) continue
+    el.dataset.messageId = id
+    chatMessageVisibilityObserver.observe(el)
+  }
+}
+
+function setChatItemEl(messageId, role, el) {
+  const k = String(messageId || '')
+  if (!k) return
+
+  if (role === 'user') {
+    if (el) userAnchorElMap.set(k, el)
+    else userAnchorElMap.delete(k)
+  }
+
+  const prev = chatMessageElMap.get(k)
+  if (prev && prev !== el) {
+    try {
+      chatMessageVisibilityObserver?.unobserve(prev)
+    } catch {
+      // ignore
+    }
+    try {
+      chatMessageResizeObserver?.unobserve(prev)
+    } catch {
+      // ignore
+    }
+  }
+
+  if (el) {
+    ensureChatMessageResizeObserver()
+    el.dataset.messageId = k
+    chatMessageElMap.set(k, el)
+    updateChatMessageHeight(k, el)
+    try {
+      chatMessageVisibilityObserver?.observe(el)
+    } catch {
+      // ignore
+    }
+    try {
+      chatMessageResizeObserver?.observe(el)
+    } catch {
+      // ignore
+    }
+  } else {
+    chatMessageElMap.delete(k)
+    if (intersectingHeavyChatMessageIds.delete(k)) syncVisibleHeavyChatMessageIds()
+  }
+}
+
+function shouldRenderHeavyChatMessage(msg) {
+  if (!msg || typeof msg !== 'object') return true
+  const id = String(msg.id || '').trim()
+  if (!id) return true
+  if (msg.streaming || msg.editing || msg.thinkingExpanded || msg.toolExpanded || msg.attachmentsExpanded) return true
+  if (recentHeavyChatMessageIds.value.has(id)) return true
+  return visibleHeavyChatMessageIds.value.has(id)
+}
+
+function refreshUserAnchorMeta() {
+  const next = userAnchors.value
+    .map((a) => {
+      const top = chatVirtualLayout.value.topById.get(a.id)
+      if (top == null) return null
+      return { ...a, top }
+    })
+    .filter(Boolean)
+
+  userAnchorMeta.value = next
+}
+
+function updateActiveAnchorFromScroll(container) {
+  const el = container || chatScrollEl.value
+  if (!el) return
+  if (userAnchorMeta.value.length !== userAnchors.value.length) refreshUserAnchorMeta()
+
+  const meta = userAnchorMeta.value
+  if (!meta.length) {
+    activeAnchorId.value = null
+    return
+  }
+
+  const scrollTop = el.scrollTop
+  const viewBottom = scrollTop + el.clientHeight
+  const margin = 8
+
+  let active = null
+  for (const m of meta) {
+    if (m.top == null) continue
+    if (m.top <= scrollTop + margin) active = m.id
+    else break
+  }
+
+  if (!active) {
+    const firstInView = meta.find((m) => m.top != null && m.top >= scrollTop - margin && m.top <= viewBottom + margin)
+    active = firstInView?.id || meta[0]?.id || null
+  }
+
+  activeAnchorId.value = active
+}
+
+let anchorMetaRefreshScheduled = false
+function scheduleRefreshUserAnchorMeta() {
+  if (anchorMetaRefreshScheduled) return
+  anchorMetaRefreshScheduled = true
+
+  const raf = window?.requestAnimationFrame || ((cb) => window.setTimeout(cb, 16))
+  raf(async () => {
+    anchorMetaRefreshScheduled = false
+    await nextTick()
+    if (!chatScrollEl.value) chatScrollEl.value = resolveScrollbarContainerEl()
+    if (!chatLayoutResizeObserver) setupChatLayoutResizeObserver()
+    refreshUserAnchorMeta()
+    updateActiveAnchorFromScroll()
+    updateAtBottomState(chatScrollEl.value)
+    syncStickyChatBubble()
+  })
+}
+
+async function scrollToUserAnchor(messageId) {
+  const k = String(messageId || '')
+  autoScrollEnabled.value = false
+  await nextTick()
+  const el = userAnchorElMap.get(k)
+  if (el) {
+    try {
+      el.scrollIntoView({ block: 'start', behavior: 'smooth' })
+      return
+    } catch {
+      el.scrollIntoView()
+      return
+    }
+  }
+  const container = chatScrollEl.value || resolveScrollbarContainerEl()
+  const targetTop = chatVirtualLayout.value.topById.get(k)
+  if (!container || targetTop == null) return
+  try {
+    container.scrollTo({ top: Math.max(0, targetTop - 8), behavior: 'smooth' })
+  } catch {
+    container.scrollTop = Math.max(0, targetTop - 8)
+  }
+}
+
+function resolveScrollbarContainerEl() {
+  const inst = scrollbarRef.value
+  const root = inst?.$el
+  if (root?.querySelector) return root.querySelector('.n-scrollbar-container')
+  return null
+}
+
+function disconnectChatLayoutResizeObserver() {
+  if (!chatLayoutResizeObserver) return
+  try {
+    chatLayoutResizeObserver.disconnect()
+  } catch {
+    // ignore
+  }
+  chatLayoutResizeObserver = null
+}
+
+function setupChatLayoutResizeObserver() {
+  disconnectChatLayoutResizeObserver()
+  if (typeof ResizeObserver === 'undefined') return
+  const container = chatScrollEl.value || resolveScrollbarContainerEl()
+  const list = chatListRef.value
+  if (!container || !list) return
+
+  chatScrollEl.value = container
+  chatLayoutResizeObserver = new ResizeObserver(() => {
+    scheduleRefreshUserAnchorMeta()
+    if (autoScrollEnabled.value && (isAtBottom.value || sending.value)) scheduleScrollToBottom()
+  })
+  chatLayoutResizeObserver.observe(container)
+  chatLayoutResizeObserver.observe(list)
+}
+
+function waitForLayoutFrame() {
+  return new Promise((resolve) => {
+    const raf = window?.requestAnimationFrame || ((cb) => window.setTimeout(cb, 16))
+    raf(() => resolve())
+  })
+}
+
+async function refreshChatViewportState(options = {}) {
+  const reconnectObserver = !!options.reconnectObserver
+  await nextTick()
+  await waitForLayoutFrame()
+
+  const container = resolveScrollbarContainerEl()
+  const list = chatListRef.value
+  chatScrollEl.value = container || null
+  if (list) ensureChatPreviewLinkHandlers(list)
+  if (!container) return
+
+  if (reconnectObserver) {
+    setupChatLayoutResizeObserver()
+    setupChatMessageVisibilityObserver()
+  }
+  refreshUserAnchorMeta()
+  updateActiveAnchorFromScroll(container)
+  updateAtBottomState(container)
+  syncStickyChatBubble()
+}
+
+watch(
+  () => userAnchors.value.length,
+  async () => {
+    await nextTick()
+    if (!chatScrollEl.value) chatScrollEl.value = resolveScrollbarContainerEl()
+    refreshUserAnchorMeta()
+    updateActiveAnchorFromScroll()
+    updateAtBottomState(chatScrollEl.value)
+  }
+)
+
+watch(
+  () => chatMessageMetricsVersion.value,
+  () => {
+    scheduleRefreshUserAnchorMeta()
+    scheduleStickyChatBubbleSync()
+  }
+)
+
+watch(
+  () => session.messages.map((msg) => String(msg?.id || '')).join('|'),
+  (signature) => {
+    const validIds = new Set(String(signature || '').split('|').filter(Boolean))
+    Array.from(chatMessageHeightCache.keys()).forEach((id) => {
+      if (!validIds.has(id)) chatMessageHeightCache.delete(id)
+    })
+    Array.from(chatMessageElMap.keys()).forEach((id) => {
+      if (!validIds.has(id)) chatMessageElMap.delete(id)
+    })
+    Array.from(userAnchorElMap.keys()).forEach((id) => {
+      if (!validIds.has(id)) userAnchorElMap.delete(id)
+    })
+    if (activeAnchorId.value && !validIds.has(activeAnchorId.value)) activeAnchorId.value = null
+    bumpChatMessageMetricsVersion()
+  }
+)
+
+watch(
+  () => session.messages.length,
+  () => {
+    maybeCoalesceLatestToolMessages()
+  }
+)
+
+onMounted(async () => {
+  syncChatResponsiveState()
+  window?.addEventListener?.('resize', syncChatResponsiveState)
+  window?.addEventListener?.(BUILTIN_AGENTS_TRACE_EVENT, handleBuiltinAgentsTraceEvent)
+  window?.addEventListener?.(BUILTIN_AGENTS_TOOL_APPROVAL_REQUEST_EVENT, handleBuiltinAgentsToolApprovalRequest)
+  await refreshChatViewportState({ reconnectObserver: true })
+})
+
+onActivated(async () => {
+  await refreshChatViewportState({ reconnectObserver: true })
+  if (autoScrollEnabled.value) scheduleScrollToBottom()
+})
+
+onDeactivated(() => {
+  disconnectChatLayoutResizeObserver()
+  disconnectChatMessageVisibilityObserver()
+  disconnectChatMessageResizeObserver()
+  clearStickyChatBubbleSync()
+  setStickyChatBubbleState(null)
+  cleanupChatPreviewLinkHandlers()
+  chatScrollEl.value = null
+})
+
+function toggleSessionSider() {
+  sessionSiderCollapsed.value = !sessionSiderCollapsed.value
+}
+
+function activateAutoScroll() {
+  autoScrollEnabled.value = true
+  scrollToBottom({ force: true })
+}
+
+function handleChatScroll(e) {
+  const el = resolveScrollbarContainerEl() || e?.target
+  if (!el) return
+  chatScrollEl.value = el
+  if (!chatLayoutResizeObserver) setupChatLayoutResizeObserver()
+  if (!chatMessageVisibilityObserver) setupChatMessageVisibilityObserver()
+
+  const { distanceFromBottom, atBottom } = updateAtBottomState(el)
+
+  if (atBottom) {
+    const wasDisabled = !autoScrollEnabled.value
+    autoScrollEnabled.value = true
+    if (wasDisabled) scrollToBottom({ force: true })
+  } else if (autoScrollEnabled.value) {
+    if (distanceFromBottom > SCROLL_AUTO_DISABLE_DISTANCE_PX) autoScrollEnabled.value = false
+  } else if (sending.value && distanceFromBottom <= SCROLL_AUTO_DISABLE_DISTANCE_PX) {
+    // 用户从上方滚回接近底部时，如果模型仍在回复，则恢复自动滚动
+    autoScrollEnabled.value = true
+    scrollToBottom({ force: true })
+  }
+
+  updateActiveAnchorFromScroll(el)
+  scheduleStickyChatBubbleSync()
+}
+
+async function scrollToBottom(options = {}) {
+  if (options.force) scrollToBottomForcePending = true
+  if (scrollToBottomPromise) return scrollToBottomPromise
+
+  scrollToBottomPromise = (async () => {
+    await nextTick()
+    await waitForLayoutFrame()
+
+    const force = scrollToBottomForcePending
+    scrollToBottomForcePending = false
+
+    if (!force && !autoScrollEnabled.value) {
+      // 只要在阈值内，模型回复时就自动滚到底部
+      const el = chatScrollEl.value || resolveScrollbarContainerEl()
+      if (!sending.value || !el) return
+      const distanceFromBottom = getDistanceFromBottom(el)
+      if (distanceFromBottom > SCROLL_AUTO_DISABLE_DISTANCE_PX) return
+      autoScrollEnabled.value = true
+    }
+
+    const el = chatScrollEl.value || resolveScrollbarContainerEl()
+    if (!el) return
+
+    const nextTop = Math.max(0, el.scrollHeight - el.clientHeight)
+    try {
+      el.scrollTo({ top: nextTop, behavior: 'auto' })
+    } catch {
+      el.scrollTop = nextTop
+    }
+
+    updateAtBottomState(el)
+  })().finally(() => {
+    scrollToBottomPromise = null
+  })
+
+  return scrollToBottomPromise
+}
+
+let scrollScheduled = false
+let scrollToBottomPromise = null
+let scrollToBottomForcePending = false
+function scheduleScrollToBottom(options = {}) {
+  if (options.force) scrollToBottomForcePending = true
+  if (scrollScheduled) return
+  scrollScheduled = true
+  const raf = window?.requestAnimationFrame || ((cb) => window.setTimeout(cb, 16))
+  raf(() => {
+    scrollScheduled = false
+    void scrollToBottom()
+  })
+}
+
+const TYPEWRITER_INTERVAL_MS = 16
+const typewriterStates = new Map()
+
+function takeUnicodeChunk(text, count = 1) {
+  if (!text) return { chunk: '', rest: '' }
+  const safeCount = Number.isFinite(count) ? Math.max(1, Math.floor(count)) : 1
+  let end = 0
+  let taken = 0
+  while (taken < safeCount && end < text.length) {
+    const cp = text.codePointAt(end)
+    end += cp && cp > 0xffff ? 2 : 1
+    taken += 1
+  }
+  return { chunk: text.slice(0, end), rest: text.slice(end) }
+}
+
+function getTypewriterChunkSize(text) {
+  const length = String(text || '').length
+  if (length > 1200) return 16
+  if (length > 480) return 10
+  if (length > 180) return 6
+  if (length > 80) return 3
+  return 1
+}
+
+function ensureTypewriterState(messageId) {
+  let state = typewriterStates.get(messageId)
+  if (state) return state
+  state = { buffer: '', running: false, timer: null, idleResolvers: [], message: null }
+  typewriterStates.set(messageId, state)
+  return state
+}
+
+function typewriterEnqueue(message, text) {
+  const chunk = String(text || '')
+  if (!chunk) return
+  const state = ensureTypewriterState(message.id)
+  state.message = message
+  state.buffer += chunk
+
+  if (state.running) return
+  state.running = true
+
+  const tick = () => {
+    if (!state.buffer) {
+      state.running = false
+      state.timer = null
+      const resolvers = state.idleResolvers.splice(0, state.idleResolvers.length)
+      resolvers.forEach((r) => r())
+      return
+    }
+
+    const { chunk: nextChunk, rest } = takeUnicodeChunk(state.buffer, getTypewriterChunkSize(state.buffer))
+    state.buffer = rest
+    message.content += nextChunk
+    scheduleScrollToBottom()
+
+    state.timer = window.setTimeout(tick, TYPEWRITER_INTERVAL_MS)
+  }
+
+  tick()
+}
+
+function typewriterWaitIdle(messageId) {
+  const state = typewriterStates.get(messageId)
+  if (!state) return Promise.resolve()
+  if (!state.running && !state.buffer) return Promise.resolve()
+  return new Promise((resolve) => state.idleResolvers.push(resolve))
+}
+
+function typewriterFlushAll() {
+  for (const [id, state] of typewriterStates.entries()) {
+    if (state.timer) window.clearTimeout(state.timer)
+    state.timer = null
+    state.running = false
+
+    if (state.message && state.buffer) {
+      state.message.content += state.buffer
+      state.buffer = ''
+    }
+
+    const resolvers = state.idleResolvers.splice(0, state.idleResolvers.length)
+    resolvers.forEach((r) => r())
+
+    typewriterStates.delete(id)
+  }
+}
+
+function clearSessionData() {
+  activeAgentRunToolMessageByStreamId.clear()
+  session.messages.splice(0, session.messages.length)
+  session.apiMessages.splice(0, session.apiMessages.length)
+  lastDisplayMessageTime = 0
+}
+
+let lastDisplayMessageTime = 0
+
+function nextDisplayMessageTime() {
+  const now = Date.now()
+  lastDisplayMessageTime = now > lastDisplayMessageTime ? now : lastDisplayMessageTime + 1
+  return lastDisplayMessageTime
+}
+
+function deepCopyJson(value, fallback) {
+  try {
+    return JSON.parse(JSON.stringify(value))
+  } catch {
+    return fallback ?? value
+  }
+}
+
+function buildDefaultSessionName() {
+  const d = new Date()
+  const pad = (n) => String(n).padStart(2, '0')
+  const yyyy = d.getFullYear()
+  const mm = pad(d.getMonth() + 1)
+  const dd = pad(d.getDate())
+  const hh = pad(d.getHours())
+  const mi = pad(d.getMinutes())
+  const ss = pad(d.getSeconds())
+  return `会话-${yyyy}${mm}${dd}-${hh}${mi}${ss}`
+}
+
+function serializeDisplayMessageForSave(msg) {
+  if (!msg || typeof msg !== 'object') return null
+  const out = { ...msg }
+
+  if (out.role === 'user') {
+    out.editing = false
+    out.editDraft = ''
+    out.attachmentsExpanded = false
+  }
+
+  if (out.role === 'assistant') {
+    out.streaming = false
+    out.thinkingExpanded = false
+  }
+
+  if (out.role === 'tool' || out.role === 'tool_call') {
+    out.toolExpanded = false
+    out.agentRunExpandedStepIds = []
+  }
+
+  if (Array.isArray(out.attachments)) {
+    out.attachments = out.attachments
+      .map((a) => {
+        if (!a || typeof a !== 'object') return null
+        return {
+          id: a.id,
+          name: a.name,
+          ext: a.ext,
+          mime: a.mime,
+          size: a.size,
+          kind: a.kind,
+          status: a.status,
+          error: a.error
+        }
+      })
+      .filter(Boolean)
+  }
+
+  return out
+}
+
+function buildSessionSavePayload() {
+  return {
+    version: 1,
+    type: 'chat_session',
+    savedAt: new Date().toISOString(),
+    state: {
+      selectedAgentId: selectedAgentId.value,
+      selectedProviderId: selectedProviderId.value,
+      selectedModel: selectedModel.value,
+      basePromptMode: basePromptMode.value,
+      selectedPromptId: selectedPromptId.value,
+      customSystemPrompt: customSystemPrompt.value,
+      selectedSkillIds: deepCopyJson(selectedSkillIds.value, []),
+      agentSkillIds: deepCopyJson(agentSkillIds.value, []),
+      activatedAgentSkillIds: deepCopyJson(activatedAgentSkillIds.value, []),
+      manualMcpIds: deepCopyJson(manualMcpIds.value, []),
+      webSearchEnabled: webSearchEnabled.value,
+      autoApproveTools: autoApproveTools.value,
+      autoActivateAgentSkills: autoActivateAgentSkills.value,
+      toolMode: toolMode.value,
+      effectiveToolMode: effectiveToolMode.value,
+      thinkingEffort: thinkingEffort.value,
+      imageGenerationMode: imageGenerationMode.value,
+      videoGenerationMode: videoGenerationMode.value
+    },
+    session: {
+      messages: (session.messages || []).map(serializeDisplayMessageForSave).filter(Boolean),
+      apiMessages: deepCopyJson(session.apiMessages || [], [])
+    }
+  }
+}
+
+function replacePathPrefix(targetPath, oldBase, newBase) {
+  const t = String(targetPath || '')
+  if (t === oldBase) return newBase
+  if (t.startsWith(oldBase + '/')) return newBase + t.slice(oldBase.length)
+  return t
+}
+
+function getSessionTitleFromPath(filePath) {
+  const p = String(filePath || '').trim()
+  const name = p.split('/').filter(Boolean).pop() || ''
+  if (!name) return ''
+  return name.toLowerCase().endsWith('.json') ? name.slice(0, -5) : name
+}
+
+let sessionAutosaveTimer = null
+let lastSessionAutosaveAt = 0
+let sessionAutosaveInFlight = false
+let lastSessionAutosaveErrorAt = 0
+let lastSessionAutosaveErrorMsg = ''
+
+function unbindSessionAutosave(options = {}) {
+  const silent = !!options.silent
+
+  activeSessionFilePath.value = ''
+  activeSessionTitle.value = ''
+
+  if (sessionAutosaveTimer) {
+    window.clearTimeout(sessionAutosaveTimer)
+    sessionAutosaveTimer = null
+  }
+
+  if (!silent) message.info('Auto-save unbound from the current session file')
+}
+
+async function runSessionAutosave() {
+  const filePath = String(activeSessionFilePath.value || '').trim()
+  if (!filePath) return
+  if (sessionAutosaveInFlight) return
+
+  sessionAutosaveInFlight = true
+  try {
+    const payload = buildSessionSavePayload()
+    const title = String(activeSessionTitle.value || '').trim()
+    if (title) payload.title = title
+    payload.updatedAt = new Date().toISOString()
+    const json = JSON.stringify(payload, null, 2)
+    await writeFile(filePath, json)
+    lastSessionAutosaveAt = Date.now()
+  } catch (err) {
+    const msg = err?.message || String(err)
+    const now = Date.now()
+    const shouldNotify = now - lastSessionAutosaveErrorAt > 5000 || msg !== lastSessionAutosaveErrorMsg
+    if (shouldNotify) {
+      message.error('自动保存失败：' + msg)
+      lastSessionAutosaveErrorAt = now
+      lastSessionAutosaveErrorMsg = msg
+    }
+
+    if (err?.code === 'ENOENT') {
+      unbindSessionAutosave({ silent: true })
+      message.warning('会话文件已不存在，已解除自动保存绑定')
+    }
+  } finally {
+    sessionAutosaveInFlight = false
+  }
+}
+
+function scheduleSessionAutosave(options = {}) {
+  const filePath = String(activeSessionFilePath.value || '').trim()
+  if (!filePath) return
+
+  const force = !!options.force
+  const debounceMs = 900
+  const maxWaitMs = 12000
+  const now = Date.now()
+
+  if (force) {
+    if (sessionAutosaveTimer) {
+      window.clearTimeout(sessionAutosaveTimer)
+      sessionAutosaveTimer = null
+    }
+    void runSessionAutosave()
+    return
+  }
+
+  if (sessionAutosaveTimer) window.clearTimeout(sessionAutosaveTimer)
+  sessionAutosaveTimer = window.setTimeout(() => {
+    sessionAutosaveTimer = null
+    runSessionAutosave()
+  }, debounceMs)
+
+  if (!sessionAutosaveInFlight && now - lastSessionAutosaveAt >= maxWaitMs) {
+    window.clearTimeout(sessionAutosaveTimer)
+    sessionAutosaveTimer = null
+    void runSessionAutosave()
+  }
+}
+
+function resetChatRuntimeState() {
+  typewriterFlushAll()
+  clearAllUserEditingState()
+  clearSessionData()
+  userAnchorElMap.clear()
+  userAnchorMeta.value = []
+  activeAnchorId.value = null
+  autoScrollEnabled.value = true
+  input.value = ''
+  pendingAttachments.value = []
+  abortController.value = null
+}
+
+function hasUncommittedChatDraft(targetPath = '') {
+  const nextPath = String(targetPath || '').trim()
+  const currentPath = String(activeSessionFilePath.value || '').trim()
+  if (nextPath && currentPath && nextPath === currentPath) return false
+
+  if (String(input.value || '').trim()) return true
+  if ((pendingAttachments.value || []).length > 0) return true
+
+  if (!currentPath) {
+    return (session.messages?.length || 0) > 0 || (session.apiMessages?.length || 0) > 0
+  }
+
+  return false
+}
+
+async function confirmSwitchSessionWithDraft(targetPath = '') {
+  if (!hasUncommittedChatDraft(targetPath)) return true
+
+  const currentPath = String(activeSessionFilePath.value || '').trim()
+  const hasUnsavedConversation = !currentPath && ((session.messages?.length || 0) > 0 || (session.apiMessages?.length || 0) > 0)
+  const hasComposerDraft = !!String(input.value || '').trim() || (pendingAttachments.value || []).length > 0
+
+  const content = hasUnsavedConversation
+    ? '当前对话尚未保存，切换历史会话会丢失这段对话内容，是否继续？'
+    : hasComposerDraft
+      ? 'There is still unsent text or attachments in the composer. Switching history sessions will discard this draft. Continue?'
+      : 'Switching history sessions will discard the current unsaved content. Continue?'
+
+  return new Promise((resolve) => {
+    dialog.warning({
+      title: '确认切换会话',
+      content,
+      positiveText: '继续切换',
+      negativeText: '取消',
+      onPositiveClick: () => resolve(true),
+      onNegativeClick: () => resolve(false),
+      onClose: () => resolve(false)
+    })
+  })
+}
+
+async function clearSession() {
+  if (sending.value) return
+
+  const hasContent = (session.messages && session.messages.length) || (session.apiMessages && session.apiMessages.length)
+  if (!hasContent) return
+
+  const boundPath = String(activeSessionFilePath.value || '').trim()
+  if (boundPath) {
+    await closeActiveSession()
+    return
+  }
+
+  resetChatRuntimeState()
+  await nextTick()
+  scheduleRefreshUserAnchorMeta()
+}
+
+async function openSaveSessionModal() {
+  if (!session.messages.length) {
+    message.warning('当前会话为空')
+    return
+  }
+
+  const payload = buildSessionSavePayload()
+  const options = { defaultName: buildDefaultSessionName() }
+
+  if (sessionTreeRef.value?.openSaveSessionModal) {
+    await sessionTreeRef.value.openSaveSessionModal(payload, options)
+    return
+  }
+
+  // 兜底：如果侧边栏内容尚未挂载，先展开再尝试打开保存弹窗
+  sessionSiderCollapsed.value = false
+  await nextTick()
+  if (!sessionTreeRef.value?.openSaveSessionModal) {
+    message.warning('会话保存功能尚未就绪')
+    return
+  }
+  await sessionTreeRef.value.openSaveSessionModal(payload, options)
+}
+
+function handleSessionSaved(filePath) {
+  const rel = String(filePath || '').trim()
+  if (!rel) return
+  activeSessionFilePath.value = rel
+  activeSessionTitle.value = getSessionTitleFromPath(rel)
+  void sessionTreeRef.value?.selectPath?.(rel)
+}
+
+function handleSessionPathRenamed(oldPath, newPath) {
+  const cur = String(activeSessionFilePath.value || '').trim()
+  const from = String(oldPath || '').trim()
+  const to = String(newPath || '').trim()
+  if (!cur || !from || !to) return
+
+  const next = replacePathPrefix(cur, from, to)
+  if (next === cur) return
+
+  activeSessionFilePath.value = next
+  activeSessionTitle.value = getSessionTitleFromPath(next)
+  void sessionTreeRef.value?.selectPath?.(next)
+}
+
+function handleSessionPathDeleted(deletedPath) {
+  const cur = String(activeSessionFilePath.value || '').trim()
+  const p = String(deletedPath || '').trim()
+  if (!cur || !p) return
+
+  if (cur === p || cur.startsWith(p + '/')) {
+    unbindSessionAutosave({ silent: true })
+    try {
+      sessionTreeRef.value?.clearSelection?.()
+    } catch {
+      // ignore
+    }
+    message.warning('当前会话文件已被删除，自动保存绑定已解除')
+  }
+}
+
+async function closeActiveSession() {
+  if (sending.value) {
+    message.warning('正在生成中，无法关闭会话绑定')
+    return
+  }
+
+  const boundPath = String(activeSessionFilePath.value || '').trim()
+  if (!boundPath) return
+
+  try {
+    await runSessionAutosave()
+  } catch {
+    // ignore
+  }
+
+  unbindSessionAutosave({ silent: true })
+  try {
+    sessionTreeRef.value?.clearSelection?.()
+  } catch {
+    // ignore
+  }
+
+  resetChatRuntimeState()
+  await nextTick()
+  scheduleRefreshUserAnchorMeta()
+
+  message.info('已关闭会话绑定并清空当前会话')
+}
+
+function normalizeLoadedDisplayMessage(msg) {
+  const raw = msg && typeof msg === 'object' ? { ...msg } : {}
+  raw.id = String(raw.id || '').trim() || newId()
+  raw.role = String(raw.role || 'assistant').trim() || 'assistant'
+  raw.time = typeof raw.time === 'number' ? raw.time : Date.now()
+
+  if (typeof raw.render !== 'string' || !raw.render.trim()) {
+    raw.render = raw.role === 'assistant' || raw.role === 'thinking' ? 'text' : 'md'
+  }
+
+  if (typeof raw.content !== 'string') raw.content = stableStringify(raw.content)
+
+  if (raw.role === 'assistant') {
+    raw.streaming = false
+    raw.thinkingExpanded = false
+    if (raw.thinking != null && typeof raw.thinking !== 'string') raw.thinking = stableStringify(raw.thinking)
+  }
+
+  if (raw.role === 'user') {
+    raw.editing = false
+    raw.editDraft = ''
+  }
+
+  if (raw.role === 'tool' || raw.role === 'tool_call') {
+    if (typeof raw.toolExpanded !== 'boolean') raw.toolExpanded = false
+    if (!Array.isArray(raw.agentRunExpandedStepIds)) raw.agentRunExpandedStepIds = []
+    if (typeof raw.toolMeta !== 'string') raw.toolMeta = String(raw.toolMeta || '')
+    if (typeof raw.toolStatus !== 'string' || !raw.toolStatus.trim()) raw.toolStatus = raw.role === 'tool_call' ? 'running' : 'success'
+    if (typeof raw.toolName !== 'string') raw.toolName = String(raw.toolName || '')
+    if (typeof raw.toolServerName !== 'string') raw.toolServerName = String(raw.toolServerName || '')
+    if (typeof raw.toolArgsText !== 'string') raw.toolArgsText = String(raw.toolArgsText || '')
+    if (typeof raw.toolAutoApproved !== 'boolean') raw.toolAutoApproved = false
+    if (typeof raw.toolSubMeta !== 'string') raw.toolSubMeta = String(raw.toolSubMeta || '')
+    if (typeof raw.toolTraceStreamId !== 'string') raw.toolTraceStreamId = String(raw.toolTraceStreamId || '')
+    if (!Array.isArray(raw.toolLiveTrace)) raw.toolLiveTrace = []
+    if (typeof raw.toolAgentName !== 'string') raw.toolAgentName = String(raw.toolAgentName || '')
+    if (typeof raw.toolLiveFinalContent !== 'string') raw.toolLiveFinalContent = String(raw.toolLiveFinalContent || '')
+    if (typeof raw.toolLiveFinalReasoning !== 'string') raw.toolLiveFinalReasoning = String(raw.toolLiveFinalReasoning || '')
+    raw.toolLiveRound = Number.isFinite(Number(raw.toolLiveRound)) ? Number(raw.toolLiveRound) : 0
+    if (!raw.toolResultPayload || typeof raw.toolResultPayload !== 'object' || Array.isArray(raw.toolResultPayload)) raw.toolResultPayload = null
+
+    if (!raw.toolServerName) raw.toolServerName = extractServerNameFromToolMeta(raw.toolMeta)
+    if (!raw.toolName) raw.toolName = extractToolNameFromToolMeta(raw.toolMeta)
+    if (raw.role === 'tool_call' && !raw.toolArgsText) raw.toolArgsText = extractFirstJsonFenceText(raw.content) || '{}'
+  }
+
+  return raw
+}
+
+function normalizeLoadedDisplayMessages(messages) {
+  const list = Array.isArray(messages) ? messages.map((msg, index) => ({ index, msg: normalizeLoadedDisplayMessage(msg) })) : []
+  list.sort((a, b) => {
+    const at = Number(a?.msg?.time)
+    const bt = Number(b?.msg?.time)
+    const aTime = Number.isFinite(at) ? at : 0
+    const bTime = Number.isFinite(bt) ? bt : 0
+    if (aTime !== bTime) return aTime - bTime
+    return a.index - b.index
+  })
+
+  let cursor = 0
+  const normalized = list.map(({ msg }) => {
+    const rawTime = Number(msg?.time)
+    cursor = Number.isFinite(rawTime) && rawTime > cursor ? rawTime : cursor + 1
+    msg.time = cursor
+    lastDisplayMessageTime = cursor
+    return msg
+  })
+
+  return coalesceToolExecutionDisplayMessages(normalized)
+}
+
+function applyLoadedChatState(state) {
+  if (!state || typeof state !== 'object') return
+
+  if ('selectedAgentId' in state) selectedAgentId.value = state.selectedAgentId || null
+  if ('selectedProviderId' in state) selectedProviderId.value = state.selectedProviderId || null
+  if ('selectedModel' in state) selectedModel.value = String(state.selectedModel || '').trim()
+
+  if ('basePromptMode' in state) {
+    const mode = String(state.basePromptMode || '').trim()
+    basePromptMode.value = mode === 'prompt' ? 'prompt' : 'custom'
+  }
+
+  if ('selectedPromptId' in state) selectedPromptId.value = state.selectedPromptId || null
+  if ('customSystemPrompt' in state) customSystemPrompt.value = String(state.customSystemPrompt || '')
+  if (basePromptMode.value === 'prompt' && !selectedPromptId.value) {
+    applyBasePromptSelection(null)
+  }
+
+  if (Array.isArray(state.selectedSkillIds)) selectedSkillIds.value = normalizeStringList(state.selectedSkillIds)
+  if (Array.isArray(state.agentSkillIds)) agentSkillIds.value = normalizeStringList(state.agentSkillIds)
+  if (Array.isArray(state.activatedAgentSkillIds)) activatedAgentSkillIds.value = normalizeStringList(state.activatedAgentSkillIds)
+  if (Array.isArray(state.manualMcpIds)) manualMcpIds.value = normalizeStringList(state.manualMcpIds)
+
+  if (typeof state.webSearchEnabled === 'boolean') webSearchEnabled.value = state.webSearchEnabled
+  if (typeof state.autoApproveTools === 'boolean') autoApproveTools.value = state.autoApproveTools
+  if (typeof state.autoActivateAgentSkills === 'boolean') autoActivateAgentSkills.value = state.autoActivateAgentSkills
+
+  const toolModeCandidate = String(state.toolMode || '').trim()
+  if (toolModeCandidate === 'auto' || toolModeCandidate === 'expanded' || toolModeCandidate === 'compact') {
+    toolMode.value = toolModeCandidate
+  }
+
+  const effectiveModeCandidate = String(state.effectiveToolMode || '').trim()
+  if (effectiveModeCandidate === 'expanded' || effectiveModeCandidate === 'compact') {
+    effectiveToolMode.value = effectiveModeCandidate
+  }
+
+  const effort = String(state.thinkingEffort || '').trim()
+  if (effort === 'auto' || effort === 'low' || effort === 'medium' || effort === 'high') {
+    thinkingEffort.value = effort
+  }
+
+  imageGenerationMode.value = normalizeImageGenerationMode(state.imageGenerationMode)
+  videoGenerationMode.value = normalizeImageGenerationMode(state.videoGenerationMode)
+}
+
+async function loadSessionFromFile(filePath) {
+  const relPath = String(filePath || '').trim()
+  if (!relPath) return
+
+  if (sending.value) {
+    message.warning('正在生成中，请先停止后再加载历史会话。')
+    return
+  }
+
+  const confirmed = await confirmSwitchSessionWithDraft(relPath)
+  if (!confirmed) return
+
+  try {
+    const content = await readFile(relPath)
+    const parsed = safeJsonParse(String(content || ''))
+    if (!parsed.ok) {
+      message.error('解析会话文件失败：' + (parsed.error?.message || '未知错误'))
+      return
+    }
+
+    const data = parsed.value
+    const state = data?.state && typeof data.state === 'object' ? data.state : null
+
+    const displayMessages = Array.isArray(data?.session?.messages)
+      ? data.session.messages
+      : Array.isArray(data?.messages)
+        ? data.messages
+        : []
+
+    const apiMessages = Array.isArray(data?.session?.apiMessages)
+      ? data.session.apiMessages
+      : Array.isArray(data?.apiMessages)
+        ? data.apiMessages
+        : []
+
+    const previousPath = String(activeSessionFilePath.value || '').trim()
+    if (previousPath && previousPath !== relPath) {
+      try {
+        await runSessionAutosave()
+      } catch {
+        // ignore
+      }
+    }
+
+    unbindSessionAutosave({ silent: true })
+    resetChatRuntimeState()
+
+    if (state) applyLoadedChatState(state)
+
+    const apiSafe = Array.isArray(apiMessages)
+      ? apiMessages.filter((m) => m && typeof m === 'object' && typeof m.role === 'string')
+      : []
+    session.apiMessages.push(...deepCopyJson(apiSafe, []))
+
+    const displaySafe = normalizeLoadedDisplayMessages(displayMessages)
+
+    // 兼容：早期定时任务会话默认按 text 保存，加载到聊天页后需要切回 md 渲染
+    const isTimedTaskSession =
+      String(data?.source?.type || '').trim() === 'timed_task' || String(relPath || '').includes('/Timed Task/')
+    if (isTimedTaskSession) {
+      displaySafe.forEach((m) => {
+        if (m?.role === 'assistant' && m.render === 'text') m.render = 'md'
+      })
+    }
+
+    session.messages.push(...displaySafe)
+
+    await nextTick()
+    await sessionTreeRef.value?.selectPath?.(relPath)
+    scheduleRefreshUserAnchorMeta()
+    await scrollToBottom({ force: true })
+
+    activeSessionFilePath.value = relPath
+    activeSessionTitle.value =
+      typeof data?.title === 'string' && data.title.trim() ? data.title.trim() : getSessionTitleFromPath(relPath)
+
+    message.success('历史会话已加载')
+  } catch (err) {
+    message.error('加载会话失败：' + (err?.message || String(err)))
+  }
+}
+
+async function handleSessionHistorySelect(filePath) {
+  await loadSessionFromFile(filePath)
+  if (isCompactChatLayout.value) sessionSiderCollapsed.value = true
+}
+
+watch(
+  () => session.messages.length,
+  () => scheduleSessionAutosave(),
+  { flush: 'post' }
+)
+
+watch(
+  () => session.apiMessages.length,
+  () => scheduleSessionAutosave(),
+  { flush: 'post' }
+)
+
+watch(
+  sending,
+  (next, prev) => {
+    if (prev && !next) scheduleSessionAutosave({ force: true })
+  },
+  { flush: 'post' }
+)
+
+watch(
+  [
+    selectedAgentId,
+    selectedProviderId,
+    selectedModel,
+    basePromptMode,
+    selectedPromptId,
+    customSystemPrompt,
+    selectedSkillIds,
+    manualMcpIds,
+    toolMode,
+    thinkingEffort,
+    imageGenerationMode,
+    videoGenerationMode
+  ],
+  () => scheduleSessionAutosave(),
+  { flush: 'post' }
+)
+
+function applyAgent(agentId) {
+  selectedAgentId.value = agentId
+  const agent = (agents.value || []).find((a) => a._id === agentId)
+  if (!agent) return
+
+  const providerOverride = String(agent.provider || '').trim()
+  const modelOverride = String(agent.model || '').trim()
+  const reasoningEffortOverride = getAgentReasoningEffortOverride(agent.modelParams)
+
+  if (providerOverride) {
+    selectedProviderId.value = providerOverride
+    const provider = (providers.value || []).find((p) => p._id === providerOverride)
+    const firstModel = Array.isArray(provider?.selectModels) ? provider.selectModels[0] : ''
+    selectedModel.value = (modelOverride || firstModel || '').trim()
+  } else {
+    if (modelOverride) selectedModel.value = modelOverride
+    if (!selectedProviderId.value && !selectedModel.value) {
+      tryApplyDefaultModelFromConfig({ force: true })
+    }
+  }
+
+  applyBasePromptSelection(agent.prompt || null)
+
+  const nextAgentSkills = Array.isArray(agent.skills) ? [...agent.skills] : []
+  agentSkillIds.value = nextAgentSkills
+  activatedAgentSkillIds.value =
+    String(agent?._id || '').trim() === BUILTIN_AGENT_ID && nextAgentSkills.includes(BUILTIN_AGENT_ORCHESTRATION_SKILL_ID)
+      ? [BUILTIN_AGENT_ORCHESTRATION_SKILL_ID]
+      : []
+  selectedSkillIds.value = nextAgentSkills
+  manualMcpIds.value = Array.isArray(agent.mcp) ? [...agent.mcp] : []
+  if (reasoningEffortOverride) thinkingEffort.value = reasoningEffortOverride
+}
+
+function tryApplyDefaultModelFromConfig(options = {}) {
+  const force = !!options.force
+  if (!force && hasAppliedDefaultModel.value) return false
+
+  if (!force && (selectedAgentId.value || selectedProviderId.value || selectedModel.value)) {
+    hasAppliedDefaultModel.value = true
+    return false
+  }
+
+  const cfg = chatConfig.value
+  const configuredProviderId = String(cfg?.defaultProviderId || '').trim()
+  const modelId = String(cfg?.defaultModel || '').trim()
+
+  // 没有配置默认模型时，不标记已应用，等待后续配置变更时再尝试
+  // 当未配置默认 Provider / Model 时，后续会回退到内置 Provider 或首个可用 Provider
+  // 仅配置了模型但没配置服务商时，无法自动应用
+  // 继续在下方按 Provider 列表做兜底选择
+
+  const list = Array.isArray(providers.value) ? providers.value : []
+  const provider =
+    (configuredProviderId ? list.find((p) => p?._id === configuredProviderId) : null) ||
+    list.find((p) => isUtoolsBuiltinProvider(p)) ||
+    list[0]
+  if (!provider) return false
+
+  const models = Array.isArray(provider?.selectModels) ? provider.selectModels : []
+  if (!models.length) return false
+
+  const finalModel = modelId && models.includes(modelId) ? modelId : models[0]
+  selectedProviderId.value = String(provider._id || '').trim()
+  selectedModel.value = String(finalModel || '').trim()
+  hasAppliedDefaultModel.value = true
+  return true
+}
+
+// 默认不自动选择智能体；由用户手动选择
+watch([providers, chatConfig], () => tryApplyDefaultModelFromConfig(), { immediate: true })
+
+watch(
+  selectedProvider,
+  (provider) => {
+    if (!provider) return
+    const models = provider.selectModels || []
+    if (!Array.isArray(models) || models.length === 0) return
+    if (!selectedModel.value) selectedModel.value = models[0]
+    if (selectedModel.value && !models.includes(selectedModel.value)) selectedModel.value = models[0]
+  },
+  { immediate: true }
+)
+
+function stop() {
+  abortController.value?.abort()
+  typewriterFlushAll()
+}
+
+onBeforeUnmount(() => {
+  try {
+    if (pendingBuiltinAgentsEventsFlushTimer) {
+      window.clearTimeout(pendingBuiltinAgentsEventsFlushTimer)
+      pendingBuiltinAgentsEventsFlushTimer = null
+    }
+  } catch {
+    // ignore
+  }
+  pendingBuiltinAgentsEventsByStreamId.clear()
+  try {
+    window?.removeEventListener?.(BUILTIN_AGENTS_TRACE_EVENT, handleBuiltinAgentsTraceEvent)
+  } catch {
+    // ignore
+  }
+  try {
+    window?.removeEventListener?.(BUILTIN_AGENTS_TOOL_APPROVAL_REQUEST_EVENT, handleBuiltinAgentsToolApprovalRequest)
+  } catch {
+    // ignore
+  }
+  try {
+    window?.removeEventListener?.('resize', syncChatResponsiveState)
+  } catch {
+    // ignore
+  }
+  disconnectChatLayoutResizeObserver()
+  disconnectChatMessageVisibilityObserver()
+  disconnectChatMessageResizeObserver()
+  clearStickyChatBubbleSync()
+  setStickyChatBubbleState(null)
+  cleanupChatPreviewLinkHandlers()
+  try {
+    abortController.value?.abort()
+  } catch {
+    // ignore
+  }
+  try {
+    typewriterFlushAll()
+  } catch {
+    // ignore
+  }
+  try {
+    closeAllPooledMCPClients()
+  } catch {
+    // ignore
+  }
+  try {
+    resetAttachmentTextParserWorker()
+  } catch {
+    // ignore
+  }
+})
+
+function handleUserEditKeydown(e, msg) {
+  if (!msg || !msg.editing) return
+  if (sending.value) return
+
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    msg.editing = false
+    msg.editDraft = ''
+    return
+  }
+
+  if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    e.preventDefault()
+    toggleOrSubmitUserEdit(msg)
+  }
+}
+
+function clearAllUserEditingState() {
+  ;(session.messages || []).forEach((m) => {
+    if (m?.role !== 'user') return
+    if (m.editing) {
+      m.editing = false
+      m.editDraft = ''
+    }
+  })
+  scheduleRefreshUserAnchorMeta()
+}
+
+function isFiniteNumber(n) {
+  return typeof n === 'number' && Number.isFinite(n)
+}
+
+function resolveUserApiIndexForDisplayMessage(msg) {
+  if (isFiniteNumber(msg?.apiIndex)) return msg.apiIndex
+  for (let i = (session.apiMessages || []).length - 1; i >= 0; i--) {
+    if (session.apiMessages[i]?.role === 'user') return i
+  }
+  return -1
+}
+
+function getUserApiMessageContentByIndex(apiIndex) {
+  if (!isFiniteNumber(apiIndex) || apiIndex < 0) return null
+  const apiMessage = session.apiMessages?.[apiIndex]
+  if (!apiMessage || apiMessage.role !== 'user') return null
+  return apiMessage.content
+}
+
+function messageHasDisplayAttachments(msg, apiIndex = resolveUserApiIndexForDisplayMessage(msg)) {
+  if (Array.isArray(msg?.attachments) && msg.attachments.length) return true
+  if (Array.isArray(msg?.images) && msg.images.length) return true
+  return contentHasUserAttachments(getUserApiMessageContentByIndex(apiIndex))
+}
+
+function findNearestUserApiIndexBefore(apiIndex) {
+  if (!isFiniteNumber(apiIndex)) return -1
+  for (let i = apiIndex - 1; i >= 0; i--) {
+    if (session.apiMessages?.[i]?.role === 'user' && session.apiMessages?.[i]?.synthetic_tool_vision !== true) return i
+  }
+  return -1
+}
+
+function findDisplayIndexByApiIndex(role, apiIndex) {
+  return (session.messages || []).findIndex((m) => m?.role === role && m?.apiIndex === apiIndex)
+}
+
+function truncateConversationAfterUser(userApiIndex, userDisplayIndex) {
+  if (isFiniteNumber(userDisplayIndex) && userDisplayIndex >= 0) {
+    session.messages.splice(userDisplayIndex + 1, session.messages.length)
+  }
+  if (isFiniteNumber(userApiIndex) && userApiIndex >= 0) {
+    session.apiMessages.splice(userApiIndex + 1, session.apiMessages.length)
+  }
+}
+
+function resetComposerInput() {
+  composerInputKey.value += 1
+}
+
+function getRequestConfigOrHint() {
+  const provider = selectedProvider.value
+  if (!provider) {
+    message.warning('请先选择服务商 / 模型')
+    showModelModal.value = true
+    return null
+  }
+
+  if (isUtoolsBuiltinProvider(provider)) {
+    if (!canUseUtoolsAi()) {
+      message.warning('当前环境不支持内置 uTools AI 服务商，请在 uTools 插件环境中使用。')
+      return null
+    }
+
+    const model = String(selectedModel.value || '').trim()
+    if (!model) {
+      message.warning('请先选择模型')
+      showModelModal.value = true
+      return null
+    }
+
+    const imageMode = normalizeImageGenerationMode(imageGenerationMode.value)
+    const videoMode = normalizeImageGenerationMode(videoGenerationMode.value)
+    if (
+      imageMode === 'on' ||
+      (imageMode === 'auto' && isLikelyImageGenerationModel(model)) ||
+      videoMode === 'on' ||
+      (videoMode === 'auto' && isLikelyVideoGenerationModel(model))
+    ) {
+      message.warning('当前页面会将 uTools 内置 AI 按文本聊天处理，不支持直接图片/视频生成，请改用兼容 OpenAI 的服务商。')
+      return null
+    }
+
+    return {
+      providerKind: 'utools-ai',
+      model,
+      requestMode: 'chat',
+      imageGenerationPlaceholderMode: 'text',
+      supportsVision: false
+    }
+  }
+
+  const baseUrl = provider.baseurl
+  const apiKey = provider.apikey
+  if (!baseUrl || !apiKey) {
+    message.warning('请先配置服务商接口地址 / API 密钥')
+    return null
+  }
+
+  const model = String(selectedModel.value || '').trim()
+  if (!model) {
+    message.warning('请先选择模型')
+    showModelModal.value = true
+    return null
+  }
+
+  const imageMode = normalizeImageGenerationMode(imageGenerationMode.value)
+  const videoMode = normalizeImageGenerationMode(videoGenerationMode.value)
+  const useManualImageGeneration = imageMode === 'on'
+  const useAutoImageGeneration = imageMode === 'auto' && isLikelyImageGenerationModel(model)
+  const useManualVideoGeneration = videoMode === 'on'
+  const useAutoVideoGeneration = videoMode === 'auto' && isLikelyVideoGenerationModel(model)
+  const requestMode =
+    useManualVideoGeneration
+      ? 'video-generation'
+      : useManualImageGeneration
+      ? 'image-generation'
+      : videoMode === 'off' && imageMode === 'off'
+        ? 'chat'
+        : useAutoVideoGeneration
+          ? 'video-generation'
+        : useAutoImageGeneration
+          ? 'image-generation'
+          : 'chat'
+
+  return {
+    providerKind: 'openai-compatible',
+    baseUrl,
+    apiKey,
+    model,
+    requestMode,
+    imageGenerationPlaceholderMode: useManualImageGeneration ? 'image' : 'text',
+    videoGenerationPlaceholderMode: useManualVideoGeneration ? 'video' : 'text',
+    supportsVision: requestMode === 'chat'
+  }
+}
+
+function getCurrentToolsKey() {
+  const mcpKey = (activeMcpIds.value || [])
+    .map((x) => String(x || '').trim())
+    .filter(Boolean)
+    .sort()
+    .join(',')
+
+  const agentSet = agentSkillIdSet.value
+  const hasAgentSkillsSelected = selectedSkillObjects.value.some((s) => {
+    const id = s?._id
+    return !!id && agentSet.has(id)
+  })
+
+  const mcpConfigKey = (activeMcpServers.value || [])
+    .map((s) => {
+      if (!s || !s._id) return ''
+      const id = String(s._id || '').trim()
+      const disabled = s.disabled ? 1 : 0
+      const allow = Array.isArray(s.allowTools)
+        ? s.allowTools.map((x) => String(x || '').trim()).filter(Boolean).sort().join('|')
+        : ''
+      const transport = String(s.transportType || '')
+      const url = String(s.url || '')
+      const command = String(s.command || '')
+      return `${id}:${disabled}:${transport}:${url}:${command}:${allow}`
+    })
+    .filter(Boolean)
+    .sort()
+    .join(';')
+
+  return `${toolMode.value}|${mcpToolsRevision.value}|${hasAgentSkillsSelected ? 'agent_skill_tools' : ''}|${mcpConfigKey}|${mcpKey}`
+}
+
+function syncLastBuiltRequestToolsStats(tools) {
+  const list = Array.isArray(tools) ? tools : []
+  lastBuiltRequestToolsStats.key = getCurrentToolsKey()
+  lastBuiltRequestToolsStats.count = list.length
+  lastBuiltRequestToolsStats.chars = estimateToolDefinitionsChars(list)
+  lastBuiltRequestToolsStats.updatedAt = Date.now()
+  lastBuiltRequestToolsStats.mode = String(effectiveToolMode.value || 'expanded')
+}
+
+function formatApproxChars(value) {
+  const num = Math.max(0, Math.floor(Number(value) || 0))
+  if (num >= 1000) return `${(num / 1000).toFixed(num >= 10000 ? 0 : 1)}k`
+  return String(num)
+}
+
+async function runChatRounds({
+  baseUrl,
+  apiKey,
+  model,
+  signal,
+  setCurrentAssistantDisplay,
+  abortState = null,
+  assistantPlaceholderMode = 'text',
+  supportsVision = false
+}) {
+  let tools = []
+  let toolMap = new Map()
+  let lastToolsKey = ''
+
+  const refreshToolsBundleIfNeeded = async () => {
+    const key = getCurrentToolsKey()
+    if (key === lastToolsKey) return
+    const bundle = await buildToolsBundleV2({ abortState })
+    tools = Array.isArray(bundle?.tools) ? bundle.tools : []
+    toolMap = bundle?.map instanceof Map ? bundle.map : new Map()
+    lastToolsKey = key
+  }
+
+  throwIfAborted(abortState)
+  await refreshToolsBundleIfNeeded()
+  const maxRounds = 150
+  let omitReasoningEffort = false
+  let forceReasoningContent = false
+  let imagesFallbackToText = false
+  let compatFcToolCallId = isFcToolCallIdCompatEnabled(baseUrl)
+  let plainTextToolFallback = false
+
+  for (let round = 0; round < maxRounds; round++) {
+    throwIfAborted(abortState)
+    await refreshToolsBundleIfNeeded()
+    const assistantDisplay = createDisplayMessage('assistant', '', {
+      thinking: '',
+      thinkingExpanded: false,
+      streaming: true,
+      render: 'md',
+      transientRequestPlaceholder: String(assistantPlaceholderMode || 'text').trim().toLowerCase() !== 'text'
+    })
+    applyAssistantRequestPlaceholderMode(assistantDisplay, assistantPlaceholderMode)
+    session.messages.push(assistantDisplay)
+    setCurrentAssistantDisplay(assistantDisplay)
+
+    let lastReasoningText = ''
+
+    const onDelta = (evt) => {
+      if (abortState?.aborted || signal?.aborted) return
+      if (evt?.type === 'content' && evt.delta) {
+        prepareAssistantDisplayForTextResponse(assistantDisplay)
+        typewriterEnqueue(assistantDisplay, String(evt.delta))
+      }
+
+      if (evt?.type === 'reasoning' && evt.delta) {
+        assistantDisplay.thinking = String(assistantDisplay.thinking || '') + String(evt.delta)
+        lastReasoningText = String(evt.reasoning || assistantDisplay.thinking || '')
+        scheduleScrollToBottom()
+      }
+    }
+
+    let result = null
+    for (let attempt = 0; attempt < 3; attempt++) {
+        const activeTools = plainTextToolFallback ? [] : tools
+        const attemptBody = {
+          model,
+          stream: true,
+          messages: buildRequestMessages({
+            baseUrl,
+            model,
+            forceReasoningContent,
+            compatToolCallIdAsFc: compatFcToolCallId,
+            fallbackAllVisionMessages: imagesFallbackToText,
+            tools: activeTools,
+            plainTextToolFallback
+          }),
+          ...(activeTools.length ? { tools: activeTools, tool_choice: 'auto' } : {}),
+          ...buildActiveRequestOverrides({ omitReasoningEffort })
+        }
+
+      try {
+        result = await streamChatCompletion({
+          baseUrl,
+          apiKey,
+          body: attemptBody,
+          signal,
+          onDelta,
+          abortState
+        })
+        throwIfAborted(abortState)
+        break
+      } catch (err) {
+        const errText = String(err?.message || err || '')
+        if (isAbortError(err) || abortState?.aborted || signal?.aborted) throw createAbortError()
+
+        if (!compatFcToolCallId && errText.includes("Expected an ID that begins with 'fc'") && errText.includes('input[') && errText.includes('.id')) {
+          compatFcToolCallId = true
+          enableFcToolCallIdCompat(baseUrl)
+          message.warning("检测到当前端点要求工具调用 ID 以 fc_ 开头，已启用兼容模式（tool_calls.id: call_ -> fc_）。")
+          continue
+        }
+
+        const hasVision = (session.apiMessages || []).some((msg) => messageContentHasImageUrl(msg?.content))
+        if (!imagesFallbackToText && hasVision && shouldFallbackVisionInputToText(errText)) {
+          imagesFallbackToText = true
+          message.warning('当前端点不支持 image_url 输入。本次请求已自动改为纯文本发送，模型将无法直接理解图片。')
+          continue
+        }
+
+        if (!omitReasoningEffort && thinkingEffort.value !== 'auto' && errText.includes('reasoning_effort')) {
+          // 部分接口不支持 reasoning_effort，自动回退为不传该字段
+          omitReasoningEffort = true
+          continue
+        }
+
+        if (!plainTextToolFallback && hasToolStateMessages(session.apiMessages) && shouldRetryToolContinuationAsPlainText(errText)) {
+          plainTextToolFallback = true
+          message.warning('当前端点的工具续跑接口临时不可用，已改为用纯文本工具结果继续回答。')
+          continue
+        }
+
+        if (!forceReasoningContent) {
+          const lower = errText.toLowerCase()
+          if (lower.includes('reasoning_content') && lower.includes('missing')) {
+            // DeepSeek thinking_mode 下，后续请求里的 assistant 消息需要带上 reasoning_content
+            forceReasoningContent = true
+            continue
+          }
+        }
+
+        throw err
+      }
+    }
+
+    if (!result) {
+      throw new Error('请求失败：已达到重试次数上限')
+    }
+    throwIfAborted(abortState)
+
+    if (result?.content && !assistantDisplay.content && !typewriterStates.has(assistantDisplay.id)) {
+      prepareAssistantDisplayForTextResponse(assistantDisplay)
+      typewriterEnqueue(assistantDisplay, String(result.content || ''))
+    }
+
+    await typewriterWaitIdle(assistantDisplay.id)
+    assistantDisplay.streaming = false
+    assistantDisplay.render = 'md'
+    typewriterStates.delete(assistantDisplay.id)
+    const assistantImages = extractChatImagesFromToolResult(result?.payloads?.length ? result.payloads : result)
+    const assistantVideos = extractChatVideosFromToolResult(result?.payloads?.length ? result.payloads : result)
+    if (assistantImages.length) {
+      assistantDisplay.images = assistantImages
+      assistantDisplay.transientRequestPlaceholder = false
+      clearAssistantMediaBubblePlaceholders(assistantDisplay)
+    }
+    if (assistantVideos.length) {
+      assistantDisplay.videos = assistantVideos
+      assistantDisplay.transientRequestPlaceholder = false
+      clearAssistantMediaBubblePlaceholders(assistantDisplay)
+    }
+    scheduleScrollToBottom()
+
+    const toolCalls = Array.isArray(result.toolCalls) ? result.toolCalls : []
+    const normalizedToolCalls = toolCalls.map((tc) => {
+      const id = typeof tc.id === 'string' && tc.id ? tc.id : `call_${newId()}`
+      return {
+        id,
+        type: tc.type || 'function',
+        function: {
+          name: tc.function?.name || '',
+          arguments: tc.function?.arguments || ''
+        }
+      }
+    })
+
+    session.apiMessages.push({
+      role: 'assistant',
+      content: String(result.content || ''),
+      ...(normalizedToolCalls.length ? { tool_calls: normalizedToolCalls } : {}),
+      reasoning_content: String(result.reasoning ?? '')
+    })
+    assistantDisplay.apiIndex = session.apiMessages.length - 1
+
+    if (!assistantDisplay.content.trim() && normalizedToolCalls.length && !String(assistantDisplay.thinking || '').trim()) {
+      const idx = session.messages.findIndex((m) => m.id === assistantDisplay.id)
+      if (idx !== -1) session.messages.splice(idx, 1)
+    }
+    if (
+      !assistantDisplay.content.trim() &&
+      !normalizedToolCalls.length &&
+      !(Array.isArray(assistantDisplay.images) && assistantDisplay.images.length) &&
+      !(Array.isArray(assistantDisplay.videos) && assistantDisplay.videos.length)
+    ) {
+      assistantDisplay.content = buildEmptyAssistantResponseText()
+    }
+
+    setCurrentAssistantDisplay(null)
+    await scrollToBottom()
+
+    if (!normalizedToolCalls.length) break
+
+    if (round === maxRounds - 1) {
+      session.messages.push(createDisplayMessage('assistant', 'Tool-call round limit reached.'))
+      break
+    }
+
+    for (const toolCall of normalizedToolCalls) {
+      throwIfAborted(abortState)
+      const exec = await executeToolCall(toolCall, toolMap, lastReasoningText || String(result.reasoning || ''), abortState)
+      throwIfAborted(abortState)
+      session.apiMessages.push({
+        role: 'tool',
+        tool_call_id: toolCall.id,
+        content: String(exec?.content || '')
+      })
+      const latestUserPrompt = getLatestRealUserPromptText()
+      const shouldAttachToolImages =
+        String(exec?.toolName || '').trim() === 'notes_read' ||
+        shouldAutoAttachToolImagesForVision(latestUserPrompt)
+      if (supportsVision && shouldAttachToolImages && Array.isArray(exec?.images) && exec.images.length) {
+        const syntheticVisionMessage = buildToolVisionUserMessage({
+          images: exec.images,
+          serverName: exec.serverName || toolCall?.function?.name || '',
+          toolName: exec.toolName || toolCall?.function?.name || '',
+          userPrompt: latestUserPrompt
+        })
+        if (syntheticVisionMessage) {
+          session.apiMessages.push(syntheticVisionMessage)
+        }
+      }
+    }
+  }
+}
+
+function mergeUtoolsAiStreamText(previous, incoming) {
+  const next = String(incoming || '')
+  if (!next) {
+    return {
+      delta: '',
+      total: String(previous || '')
+    }
+  }
+
+  const current = String(previous || '')
+  if (current && next.startsWith(current)) {
+    return {
+      delta: next.slice(current.length),
+      total: next
+    }
+  }
+
+  return {
+    delta: next,
+    total: current + next
+  }
+}
+
+async function runUtoolsAiChatRound({ model, setCurrentAssistantDisplay, setAbortHandle, isAborted, abortState = null }) {
+  if (!canUseUtoolsAi()) {
+    throw new Error('当前环境不支持 uTools 官方 AI')
+  }
+
+  throwIfAborted(abortState)
+  const bundle = await buildToolsBundleV2({ abortState })
+  const tools = Array.isArray(bundle?.tools) ? bundle.tools : []
+  const toolMap = bundle?.map instanceof Map ? bundle.map : new Map()
+  const assistantSegments = []
+  let assistantDisplay = null
+
+  const createStreamingAssistantDisplay = () => {
+    const msg = createDisplayMessage('assistant', '', {
+      thinking: '',
+      thinkingExpanded: false,
+      streaming: true,
+      render: 'md'
+    })
+    assistantSegments.push(msg)
+    assistantDisplay = msg
+    session.messages.push(msg)
+    setCurrentAssistantDisplay(msg)
+    return msg
+  }
+
+  const hasVisibleAssistantContent = (msg) => {
+    return !!String(msg?.content || '').trim() || !!String(msg?.thinking || '').trim()
+  }
+
+  const finalizeStreamingAssistantDisplay = async (options = {}) => {
+    const removeIfEmpty = !!options.removeIfEmpty
+    const current = assistantDisplay
+    if (!current) return null
+
+    await typewriterWaitIdle(current.id)
+    current.streaming = false
+    current.render = 'md'
+    typewriterStates.delete(current.id)
+
+    if (removeIfEmpty && !hasVisibleAssistantContent(current)) {
+      const idx = session.messages.findIndex((m) => m.id === current.id)
+      if (idx !== -1) session.messages.splice(idx, 1)
+    }
+
+    assistantDisplay = null
+    setCurrentAssistantDisplay(null)
+    scheduleScrollToBottom()
+    return current
+  }
+
+  const ensureStreamingAssistantDisplay = () => assistantDisplay || createStreamingAssistantDisplay()
+
+  createStreamingAssistantDisplay()
+
+  let streamedContent = ''
+  let streamedReasoning = ''
+  let toolInvokeCount = 0
+  const utoolsToolFallbackRecords = []
+
+  const buildUtoolsToolFallbackPrompt = () => {
+    const records = utoolsToolFallbackRecords
+      .map((record, index) => {
+        const serverName = String(record.serverName || '').trim()
+        const toolName = String(record.toolName || record.name || '').trim()
+        const args = truncateText(record.argsText || '{}', 1200, '(tool arguments truncated)')
+        const content = truncateText(record.content || '', 24000, '(tool result truncated)')
+        return [
+          `### 工具结果 ${index + 1}`,
+          serverName || toolName ? `工具：${[serverName, toolName].filter(Boolean).join(' / ')}` : '',
+          `参数：${args}`,
+          '结果：',
+          content || '（空结果）'
+        ].filter(Boolean).join('\n')
+      })
+      .filter(Boolean)
+      .join('\n\n')
+
+    return [
+      '系统补充：刚才已经完成了工具调用，但当前 uTools AI 工具续跑接口临时不可用。',
+      '请直接基于下面的工具结果回答用户刚才的问题；如果资料不足，请说明不足之处。',
+      records
+    ].filter(Boolean).join('\n\n')
+  }
+
+  const requestUtoolsAi = (requestApiMessages, requestTools = tools) => {
+    return window.utools.ai(
+      {
+        model,
+        messages: buildUtoolsAiMessages({
+          systemContent: systemContent.value,
+          apiMessages: requestApiMessages
+        }),
+        ...(requestTools.length ? { tools: requestTools } : {})
+      },
+      (chunk) => {
+        if (abortState?.aborted || isAborted?.()) return
+        const contentState = mergeUtoolsAiStreamText(streamedContent, chunk?.content)
+        streamedContent = contentState.total
+        if (contentState.delta) {
+          ensureStreamingAssistantDisplay()
+          typewriterEnqueue(assistantDisplay, contentState.delta)
+        }
+
+        const reasoningState = mergeUtoolsAiStreamText(streamedReasoning, chunk?.reasoning_content)
+        streamedReasoning = reasoningState.total
+        if (reasoningState.delta) {
+          ensureStreamingAssistantDisplay()
+          assistantDisplay.thinking = String(assistantDisplay.thinking || '') + reasoningState.delta
+          scheduleScrollToBottom()
+        }
+      }
+    )
+  }
+
+  const unregisterToolFns = registerUtoolsAiToolFunctions({
+    tools,
+    invokeTool: async (name, argsObj) => {
+      throwIfAborted(abortState)
+      toolInvokeCount += 1
+      await finalizeStreamingAssistantDisplay({ removeIfEmpty: true })
+
+      const argsText = stableStringify(argsObj || {})
+      const exec = await executeToolCall(
+        {
+          id: `utools_call_${newId()}`,
+          type: 'function',
+          function: {
+            name,
+            arguments: argsText || '{}'
+          }
+        },
+        toolMap,
+        streamedReasoning,
+        abortState
+      )
+
+      const raw = String(exec?.content || '')
+      utoolsToolFallbackRecords.push({
+        name,
+        argsText,
+        content: raw,
+        serverName: exec?.serverName || '',
+        toolName: exec?.toolName || name
+      })
+      const parsed = safeJsonParse(raw)
+      if (exec?.serverName === '内置联网' || exec?.toolName === 'web_search' || exec?.toolName === 'web_read') {
+        return raw
+      }
+      return parsed.ok ? parsed.value : raw
+    }
+  })
+
+  try {
+    const requestApiMessages = buildRequestApiMessages('utools-ai', { tools })
+    let request = requestUtoolsAi(requestApiMessages, tools)
+    setAbortHandle(request)
+    let result = null
+    try {
+      result = await request
+    } catch (err) {
+      const errText = err?.message || String(err)
+      if (!toolInvokeCount || !shouldRetryToolContinuationAsPlainText(errText) || abortState?.aborted || isAborted?.()) throw err
+      await finalizeStreamingAssistantDisplay({ removeIfEmpty: true })
+      message.warning('当前 uTools AI 工具续跑接口临时不可用，已改为用纯文本工具结果继续回答。')
+      request = requestUtoolsAi(
+        [
+          ...requestApiMessages,
+          {
+            role: 'user',
+            content: buildUtoolsToolFallbackPrompt()
+          }
+        ],
+        []
+      )
+      setAbortHandle(request)
+      result = await request
+    }
+
+    if (isAborted?.() || abortState?.aborted) throw createAbortError()
+
+    const finalContentState = mergeUtoolsAiStreamText(streamedContent, result?.content)
+    streamedContent = finalContentState.total
+    if (finalContentState.delta) {
+      ensureStreamingAssistantDisplay()
+      typewriterEnqueue(assistantDisplay, finalContentState.delta)
+    }
+
+    const finalReasoningState = mergeUtoolsAiStreamText(streamedReasoning, result?.reasoning_content)
+    streamedReasoning = finalReasoningState.total
+    if (finalReasoningState.delta) {
+      ensureStreamingAssistantDisplay()
+      assistantDisplay.thinking = String(assistantDisplay.thinking || '') + finalReasoningState.delta
+    }
+
+    await finalizeStreamingAssistantDisplay({ removeIfEmpty: true })
+
+    session.apiMessages.push({
+      role: 'assistant',
+      content: String(streamedContent || ''),
+      ...(streamedReasoning ? { reasoning_content: streamedReasoning } : {})
+    })
+    const assistantApiIndex = session.apiMessages.length - 1
+    const visibleSegments = assistantSegments.filter((segment) => session.messages.some((m) => m.id === segment.id))
+    visibleSegments.forEach((segment) => {
+      segment.apiIndex = assistantApiIndex
+    })
+
+    if (!visibleSegments.some((segment) => hasVisibleAssistantContent(segment)) && toolInvokeCount === 0) {
+      const emptyMsg = createDisplayMessage('assistant', buildEmptyAssistantResponseText())
+      emptyMsg.apiIndex = assistantApiIndex
+      session.messages.push(emptyMsg)
+    }
+
+    setCurrentAssistantDisplay(null)
+    await scrollToBottom()
+  } finally {
+    unregisterToolFns()
+    setAbortHandle(null)
+  }
+}
+
+function buildImageGenerationResultText({ imageCount, revisedPrompts }) {
+  const count = Math.max(0, Number(imageCount) || 0)
+  if (!revisedPrompts.length) return ''
+  const title = count > 1 ? `已生成 ${count} 张图片` : '已生成 1 张图片'
+  return `### ${title}\n\n#### 修订提示词\n\n${revisedPrompts.join('\n\n')}`
+}
+
+function buildImageGenerationApiSummary({ imageCount, revisedPrompts }) {
+  const count = Math.max(0, Number(imageCount) || 0)
+  const lines = [`（已生成 ${count || 1} 张图片）`]
+  const firstRevisedPrompt = truncateInlineText(revisedPrompts?.[0] || '', 260)
+  if (firstRevisedPrompt) lines.push(`修订提示词：${firstRevisedPrompt}`)
+  return lines.join('\n')
+}
+
+function collectImageGenerationResponseOutputTypes(payload) {
+  if (!payload || typeof payload !== 'object') return []
+  const output = Array.isArray(payload.output) ? payload.output : []
+  const labels = []
+  const push = (value) => {
+    const text = String(value || '').trim()
+    if (!text || labels.includes(text)) return
+    labels.push(text)
+  }
+  output.forEach((item) => {
+    if (!item || typeof item !== 'object') return
+    push(item.type)
+    if (Array.isArray(item.content)) {
+      item.content.forEach((part) => {
+        const partType = String(part?.type || '').trim()
+        if (!partType) return
+        push(partType)
+        if (item.type) push(`${item.type}:${partType}`)
+      })
+    }
+  })
+  return labels
+}
+
+function isLikelyXaiImageModel(model) {
+  return /grok-imagine/i.test(String(model || '').trim())
+}
+
+function extractImageGenerationTaskState(payload, requestMeta = null) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null
+  const status = String(payload.status ?? payload.state ?? payload.task_status ?? payload.taskStatus ?? '')
+    .trim()
+    .toLowerCase()
+  if (!status) return null
+
+  if (!['queued', 'submitted', 'pending', 'accepted', 'processing', 'running', 'in_progress'].includes(status)) {
+    return null
+  }
+
+  const id = String(payload.task_id ?? payload.taskId ?? payload.job_id ?? payload.jobId ?? payload.id ?? '')
+    .trim()
+  const endpointKind = requestMeta?.kind === 'responses-api' ? 'responses' : requestMeta?.kind === 'images-api' ? 'images' : ''
+  const note = status === 'queued' || status === 'submitted' || status === 'pending' || status === 'accepted'
+    ? 'The provider accepted the image task, but the current compatibility layer has not polled the final image result yet.'
+    : '服务商仍在处理图片任务，最终结果返回后会显示在这里。'
+
+  return { id, status, endpointKind, note }
+}
+
+function isResponsesApiImageSoftFailure(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false
+  if (String(payload.object || '').trim().toLowerCase() !== 'response') return false
+  if (extractImageGenerationTaskState(payload, { kind: 'responses-api' })) return false
+  if (extractChatImagesFromToolResult(payload).length) return false
+
+  const status = String(payload.status || '').trim().toLowerCase()
+  if (status && !['completed', 'succeeded', 'success'].includes(status)) return false
+
+  const outputTypes = collectImageGenerationResponseOutputTypes(payload)
+  if (!outputTypes.length) return true
+
+  if (extractImageGenerationTextResult(payload)) return false
+
+  return outputTypes.every((type) => /^(message|output_text|message:output_text)$/i.test(String(type || '').trim()))
+}
+
+function buildImageGenerationCompatibilityError(payload, requestMeta = null, diagnostics = {}) {
+  const payloadPreview = summarizeImageGenerationPayload(payload)
+  const outputTypes = collectImageGenerationResponseOutputTypes(payload)
+  const model = String(diagnostics?.model || '').trim()
+  const lines = []
+  const image404 =
+    Array.isArray(diagnostics?.attempts) &&
+    diagnostics.attempts.some((item) => item?.kind === 'images-api' && Number(item?.status) === 404)
+
+  if (requestMeta?.kind === 'responses-api' && isResponsesApiImageSoftFailure(payload)) {
+    lines.push('兼容层已判定请求完成，但没有返回可展示的图片结果。')
+    lines.push('当前服务商可能只支持文本响应，不支持真正的 image_generation 结果载荷。')
+    if (outputTypes.length) lines.push(`输出类型：${outputTypes.join(', ')}`)
+    if (isLikelyXaiImageModel(model) && image404) {
+      lines.push('当前网关对 xAI 图片接口的兼容可能不完整：/v1/images/generations 不可用，而 /v1/responses 只返回文本。')
+      lines.push('如果使用 xAI，优先选择 grok-imagine-image 模型并走 /v1/images/generations 端点。')
+    }
+  } else {
+    lines.push('图片生成接口没有返回可展示的图片数据。')
+    if (outputTypes.length) lines.push(`输出类型：${outputTypes.join(', ')}`)
+  }
+
+  if (requestMeta?.url) lines.push(`接口：${requestMeta.url}`)
+  if (payloadPreview) lines.push(`返回预览：\n${payloadPreview}`)
+  return lines.join('\n')
+}
+
+function buildImageGenerationPendingText(imageTask = null) {
+  const statusLabel = imageTask ? assistantImageTaskStatusLabel({ imageTask }) : '生成中'
+  const taskId = String(imageTask?.id || '').trim()
+  return `图片生成${statusLabel}${taskId ? `（任务 ID：${taskId}）` : '……'}`
+}
+
+function createImageGenerationPlaceholderDisplay(userPrompt, placeholderMode = 'text') {
+  const assistantDisplay = createDisplayMessage('assistant', placeholderMode === 'image' ? '' : buildImageGenerationPendingText(), {
+    streaming: false,
+    render: 'text',
+    imagePrompt: userPrompt,
+    transientRequestPlaceholder: true
+  })
+
+  if (placeholderMode === 'image') {
+    assistantDisplay.imageBubblePlaceholder = true
+    assistantDisplay.imageBubblePlaceholderImage = createAssistantImageBubblePlaceholder()
+  }
+
+  return assistantDisplay
+}
+
+function applyImageGenerationTaskToDisplay(assistantDisplay, imageTask, placeholderMode = 'text') {
+  if (!assistantDisplay) return
+  assistantDisplay.streaming = false
+  assistantDisplay.render = 'text'
+  assistantDisplay.transientRequestPlaceholder = false
+
+  if (placeholderMode === 'image') {
+    assistantDisplay.content = ''
+    assistantDisplay.imageTask = imageTask
+    assistantDisplay.imageBubblePlaceholder = true
+    assistantDisplay.imageBubblePlaceholderImage = createAssistantImageBubblePlaceholder(
+      imageTask?.note || '图片生成中，结果就绪后会展示在这里。'
+    )
+    return
+  }
+
+  assistantDisplay.imageTask = null
+  assistantDisplay.imageBubblePlaceholder = false
+  assistantDisplay.imageBubblePlaceholderImage = null
+  assistantDisplay.content = buildImageGenerationPendingText(imageTask)
+}
+
+function applyImageGenerationTextToDisplay(assistantDisplay, textResult) {
+  if (!assistantDisplay) return
+  assistantDisplay.streaming = false
+  assistantDisplay.render = 'md'
+  assistantDisplay.content = String(textResult || '').trim()
+  assistantDisplay.imageTask = null
+  assistantDisplay.images = []
+  assistantDisplay.imageBubblePlaceholder = false
+  assistantDisplay.imageBubblePlaceholderImage = null
+  assistantDisplay.transientRequestPlaceholder = false
+}
+
+function applyImageGenerationImagesToDisplay(assistantDisplay, { images, userPrompt, revisedPrompts }) {
+  if (!assistantDisplay) return
+  assistantDisplay.streaming = false
+  assistantDisplay.render = revisedPrompts.length ? 'md' : 'text'
+  assistantDisplay.content = ''
+  assistantDisplay.imageTask = null
+  assistantDisplay.images = images
+  assistantDisplay.imagePrompt = userPrompt
+  assistantDisplay.imageBubblePlaceholder = false
+  assistantDisplay.imageBubblePlaceholderImage = null
+  assistantDisplay.transientRequestPlaceholder = false
+  assistantDisplay.content = buildImageGenerationResultText({
+    imageCount: images.length,
+    revisedPrompts
+  })
+}
+
+async function postImageGeneration({ baseUrl, apiKey, body, signal }) {
+  const base = normalizeBaseUrl(baseUrl)
+  let lastError = null
+  const triedUrls = []
+  const attemptDiagnostics = []
+  const uniqueUrls = (list = []) => Array.from(new Set((Array.isArray(list) ? list : []).filter(Boolean)))
+  const imageApiCandidates = uniqueUrls([
+    `${base}/images/generations`,
+    !/\/v1$/i.test(base) ? `${base}/v1/images/generations` : ''
+  ])
+  const responsesApiCandidates = uniqueUrls([
+    `${base}/responses`,
+    !/\/v1$/i.test(base) ? `${base}/v1/responses` : ''
+  ])
+  const attempts = [
+    ...imageApiCandidates.flatMap((url) => [
+      {
+        kind: 'images-api',
+        url,
+        payload: { ...body, response_format: 'b64_json' }
+      },
+      {
+        kind: 'images-api',
+        url,
+        payload: body
+      }
+    ]),
+    ...responsesApiCandidates.flatMap((url) => [
+      {
+        kind: 'responses-api',
+        url,
+        payload: {
+          model: body.model,
+          input: String(body.prompt || ''),
+          tools: [{ type: 'image_generation' }],
+          tool_choice: { type: 'image_generation' }
+        }
+      },
+      {
+        kind: 'responses-api',
+        url,
+        payload: {
+          model: body.model,
+          input: String(body.prompt || ''),
+          tools: [{ type: 'image_generation' }],
+          tool_choice: 'required'
+        }
+      },
+      {
+        kind: 'responses-api',
+        url,
+        payload: {
+          model: body.model,
+          input: String(body.prompt || ''),
+          tools: [{ type: 'image_generation' }]
+        }
+      }
+    ])
+  ]
+
+  for (const attempt of attempts) {
+    const { kind, url, payload } = attempt
+    triedUrls.push(url)
+    try {
+      let resp = null
+      try {
+        resp = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`
+          },
+          body: JSON.stringify(payload),
+          signal
+        })
+      } catch (err) {
+        lastError = err
+        continue
+      }
+
+      if (resp.status === 404) {
+        attemptDiagnostics.push({ kind, url, status: resp.status })
+        lastError = new Error(`图片生成接口不存在（HTTP 404）：${url}`)
+        continue
+      }
+
+      const responseText = await resp.text()
+      const parsedResponse = safeJsonParse(responseText)
+
+      if (!resp.ok) {
+        const errJson = parsedResponse.ok ? parsedResponse.value : null
+        const detail = errJson?.error?.message || (parsedResponse.ok ? stableStringify(errJson) : responseText)
+        const detailText = String(detail || '').toLowerCase()
+
+        if (
+          kind === 'images-api' &&
+          payload.response_format === 'b64_json' &&
+          (detailText.includes('response_format') || detailText.includes('b64_json') || detailText.includes('unsupported'))
+        ) {
+          attemptDiagnostics.push({ kind, url, status: resp.status, detail: String(detail || '') })
+          lastError = new Error(`图片生成请求失败（HTTP ${resp.status}）：${detail || resp.statusText}`)
+          continue
+        }
+
+        if (kind === 'images-api' && detailText.includes('not found')) {
+          attemptDiagnostics.push({ kind, url, status: resp.status, detail: String(detail || '') })
+          lastError = new Error(`图片生成接口不存在（HTTP ${resp.status}）：${url}`)
+          continue
+        }
+
+        throw new Error(`图片生成请求失败（HTTP ${resp.status}）：${detail || resp.statusText}\nURL: ${url}`)
+      }
+
+      if (parsedResponse.ok) {
+        if (kind === 'responses-api' && isResponsesApiImageSoftFailure(parsedResponse.value)) {
+          attemptDiagnostics.push({ kind, url, status: resp.status, softFailure: true })
+          lastError = new Error(
+            buildImageGenerationCompatibilityError(parsedResponse.value, { kind, url }, { model: body.model, attempts: attemptDiagnostics })
+          )
+          continue
+        }
+        return { payload: parsedResponse.value, requestMeta: { kind, url } }
+      }
+
+      const plain = String(responseText || '').trim()
+      if (plain) return { payload: plain, requestMeta: { kind, url } }
+      throw new Error('图片生成接口返回了空响应')
+    } catch (err) {
+      lastError = err
+      continue
+    }
+  }
+
+  const triedSummary = Array.from(new Set(triedUrls)).join('\n')
+  if (triedSummary) {
+    throw new Error(
+      `${lastError?.message || '图片生成请求失败：未收到有效响应。'}\n已尝试以下端点：\n${triedSummary}`
+    )
+  }
+
+  throw lastError || new Error('图片生成请求失败：未收到有效响应。')
+}
+
+async function runImageGenerationRound({
+  baseUrl,
+  apiKey,
+  model,
+  signal,
+  setCurrentAssistantDisplay,
+  abortState = null,
+  placeholderMode = 'text'
+}) {
+  throwIfAborted(abortState)
+  const lastUserApiMsg = (() => {
+    for (let i = (session.apiMessages || []).length - 1; i >= 0; i--) {
+      if (session.apiMessages[i]?.role === 'user') return session.apiMessages[i]
+    }
+    return null
+  })()
+
+  const userPrompt = extractImageGenerationPromptFromContent(lastUserApiMsg?.content).trim()
+  if (!userPrompt) {
+    throw new Error('图片生成提示词为空')
+  }
+
+  const assistantDisplay = createImageGenerationPlaceholderDisplay(userPrompt, placeholderMode)
+  session.messages.push(assistantDisplay)
+  setCurrentAssistantDisplay(assistantDisplay)
+  await scrollToBottom()
+
+  const prompt = buildImageGenerationPromptFromHistory(userPrompt)
+  const { payload, requestMeta } = await withTimeout(
+    postImageGeneration({
+      baseUrl,
+      apiKey,
+      body: {
+        model,
+        prompt
+      },
+      signal
+    }),
+    IMAGE_GENERATION_REQUEST_TIMEOUT_MS,
+    '图片生成请求'
+  )
+  throwIfAborted(abortState)
+
+  const imageTask = extractImageGenerationTaskState(payload, requestMeta)
+  if (imageTask) {
+    applyImageGenerationTaskToDisplay(assistantDisplay, imageTask, placeholderMode)
+    session.apiMessages.push({
+      role: 'assistant',
+      content:
+        placeholderMode === 'image'
+          ? `图片任务已受理：${assistantImageTaskStatusLabel(assistantDisplay)}${imageTask.id ? `（任务 ID：${imageTask.id}）` : ''}`
+          : buildImageGenerationPendingText(imageTask)
+    })
+    assistantDisplay.apiIndex = session.apiMessages.length - 1
+    await scrollToBottom()
+    return
+  }
+
+  const images = extractChatImagesFromToolResult(payload)
+  const textResult = extractImageGenerationTextResult(payload)
+  if (!images.length) {
+    if (textResult) {
+      applyImageGenerationTextToDisplay(assistantDisplay, textResult)
+      session.apiMessages.push({
+        role: 'assistant',
+        content: textResult
+      })
+      assistantDisplay.apiIndex = session.apiMessages.length - 1
+      setCurrentAssistantDisplay(null)
+      await scrollToBottom()
+      return
+    }
+    throw new Error(buildImageGenerationCompatibilityError(payload, requestMeta))
+  }
+
+  const revisedPrompts = collectImageGenerationRevisedPrompts(payload)
+  applyImageGenerationImagesToDisplay(assistantDisplay, { images, userPrompt, revisedPrompts })
+
+  session.apiMessages.push({
+    role: 'assistant',
+    content: buildImageGenerationApiSummary({
+      imageCount: images.length,
+      revisedPrompts
+    })
+  })
+  assistantDisplay.apiIndex = session.apiMessages.length - 1
+  setCurrentAssistantDisplay(null)
+  await scrollToBottom()
+}
+
+function buildVideoGenerationPendingText(videoTask = null) {
+  const statusLabel = videoTask ? assistantVideoTaskStatusLabel({ videoTask }) : '生成中'
+  const taskId = String(videoTask?.id || '').trim()
+  return `视频生成${statusLabel}${taskId ? `（任务 ID：${taskId}）` : '……'}`
+}
+
+function createVideoGenerationPlaceholderDisplay(userPrompt, placeholderMode = 'text') {
+  const assistantDisplay = createDisplayMessage('assistant', placeholderMode === 'video' ? '' : buildVideoGenerationPendingText(), {
+    streaming: false,
+    render: 'text',
+    videoPrompt: userPrompt,
+    transientRequestPlaceholder: true
+  })
+
+  if (placeholderMode === 'video') {
+    assistantDisplay.videoBubblePlaceholder = true
+    assistantDisplay.videoBubblePlaceholderItem = createAssistantVideoBubblePlaceholder()
+  }
+
+  return assistantDisplay
+}
+
+function applyVideoGenerationTaskToDisplay(assistantDisplay, videoTask, placeholderMode = 'text') {
+  if (!assistantDisplay) return
+  assistantDisplay.streaming = false
+  assistantDisplay.render = 'text'
+  assistantDisplay.transientRequestPlaceholder = false
+
+  if (placeholderMode === 'video') {
+    assistantDisplay.content = ''
+    assistantDisplay.videoTask = videoTask
+    assistantDisplay.videoBubblePlaceholder = true
+    assistantDisplay.videoBubblePlaceholderItem = createAssistantVideoBubblePlaceholder(
+      videoTask?.note || '视频生成中，结果就绪后会展示在这里。'
+    )
+    return
+  }
+
+  assistantDisplay.videoTask = null
+  assistantDisplay.videoBubblePlaceholder = false
+  assistantDisplay.videoBubblePlaceholderItem = null
+  assistantDisplay.content = buildVideoGenerationPendingText(videoTask)
+}
+
+function applyVideoGenerationTextToDisplay(assistantDisplay, textResult) {
+  if (!assistantDisplay) return
+  assistantDisplay.streaming = false
+  assistantDisplay.render = 'md'
+  assistantDisplay.content = String(textResult || '').trim()
+  assistantDisplay.videoTask = null
+  assistantDisplay.videos = []
+  assistantDisplay.videoBubblePlaceholder = false
+  assistantDisplay.videoBubblePlaceholderItem = null
+  assistantDisplay.transientRequestPlaceholder = false
+}
+
+function buildVideoGenerationResultText({ videoCount }) {
+  const count = Math.max(0, Number(videoCount) || 0)
+  if (!count) return ''
+  return count > 1 ? `已生成 ${count} 个视频` : '已生成 1 个视频'
+}
+
+function applyVideoGenerationVideosToDisplay(assistantDisplay, { videos, userPrompt }) {
+  if (!assistantDisplay) return
+  assistantDisplay.streaming = false
+  assistantDisplay.render = 'text'
+  assistantDisplay.content = ''
+  assistantDisplay.videoTask = null
+  assistantDisplay.videos = videos
+  assistantDisplay.videoPrompt = userPrompt
+  assistantDisplay.videoBubblePlaceholder = false
+  assistantDisplay.videoBubblePlaceholderItem = null
+  assistantDisplay.transientRequestPlaceholder = false
+  assistantDisplay.content = buildVideoGenerationResultText({ videoCount: videos.length })
+}
+
+function buildVideoGenerationApiSummary({ videoCount }) {
+  const count = Math.max(0, Number(videoCount) || 0)
+  return `（已生成 ${count || 1} 个视频）`
+}
+
+function extractVideoGenerationTaskState(payload, requestMeta = null) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null
+  const status = String(payload.status ?? payload.state ?? payload.task_status ?? payload.taskStatus ?? '')
+    .trim()
+    .toLowerCase()
+  if (!status) return null
+
+  if (!['queued', 'submitted', 'pending', 'accepted', 'processing', 'running', 'in_progress'].includes(status)) {
+    return null
+  }
+
+  const id = String(payload.task_id ?? payload.taskId ?? payload.job_id ?? payload.jobId ?? payload.id ?? '').trim()
+  const endpointKind = requestMeta?.kind === 'videos-api' ? 'videos' : ''
+  const note =
+    status === 'queued' || status === 'submitted' || status === 'pending' || status === 'accepted'
+      ? '视频任务已受理，正在排队生成。'
+      : '视频正在生成中，结果就绪后会展示在这里。'
+
+  return { id, status, endpointKind, note }
+}
+
+function buildVideoGenerationCompatibilityError(payload, requestMeta = null) {
+  const payloadPreview = summarizeImageGenerationPayload(payload)
+  const lines = ['视频生成接口没有返回可展示的视频数据。']
+  if (requestMeta?.url) lines.push(`接口：${requestMeta.url}`)
+  if (payloadPreview) lines.push(`返回预览：\n${payloadPreview}`)
+  return lines.join('\n')
+}
+
+function shouldFallbackMediaRequestToChat(err, mediaKind = 'image') {
+  const text = String(err?.message || err || '').trim()
+  if (!text) return false
+
+  const lower = text.toLowerCase()
+  const mediaLabel = mediaKind === 'video' ? '视频' : '图片'
+  const mediaToken = mediaKind === 'video' ? 'video' : 'image'
+  const httpStatuses = Array.from(
+    lower.matchAll(/http[\s:：]*(\d{3})|status[\s:=：]*(\d{3})/gi),
+    (match) => Number(match?.[1] || match?.[2] || 0)
+  ).filter((code) => Number.isFinite(code) && code > 0)
+
+  if (httpStatuses.some((code) => code === 404 || code === 405 || code === 415 || code === 422 || code >= 500)) {
+    return true
+  }
+
+  if (
+    lower.includes('unsupported') ||
+    lower.includes('not supported') ||
+    lower.includes('not support') ||
+    lower.includes('not found') ||
+    text.includes('接口不存在') ||
+    text.includes('兼容层') ||
+    text.includes('没有返回可展示') ||
+    text.includes('只支持文本') ||
+    lower.includes('only supports text') ||
+    lower.includes('only support text') ||
+    text.includes('已尝试以下端点') ||
+    lower.includes('/images/generations') ||
+    lower.includes('/videos') ||
+    lower.includes('/responses') ||
+    lower.includes('request failed')
+  ) {
+    return true
+  }
+
+  if (
+    (text.includes(mediaLabel) || lower.includes(mediaToken)) &&
+    (text.includes('模型') || lower.includes('model') || text.includes('请求失败') || lower.includes('failed'))
+  ) {
+    return true
+  }
+
+  return false
+}
+
+function uniqueNonEmpty(list = []) {
+  return Array.from(new Set((Array.isArray(list) ? list : []).filter(Boolean)))
+}
+
+function buildVideoStatusCandidates(baseEndpoint, videoId) {
+  const base = String(baseEndpoint || '').replace(/\/+$/, '')
+  const id = String(videoId || '').trim()
+  if (!base || !id) return []
+  return uniqueNonEmpty([`${base}/${id}`])
+}
+
+function buildVideoContentCandidates(baseEndpoint, videoId) {
+  const base = String(baseEndpoint || '').replace(/\/+$/, '')
+  const id = String(videoId || '').trim()
+  if (!base || !id) return []
+  return uniqueNonEmpty([`${base}/${id}/content`])
+}
+
+async function delayWithAbort(ms, abortState = null, signal = null) {
+  if (!ms || ms <= 0) return
+  await new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      cleanup()
+      resolve()
+    }, ms)
+
+    const onAbort = () => {
+      cleanup()
+      reject(createAbortError())
+    }
+
+    const cleanup = () => {
+      window.clearTimeout(timer)
+      try {
+        unregisterAbort?.()
+      } catch {
+        // ignore
+      }
+      if (signal && abortHandler) signal.removeEventListener('abort', abortHandler)
+    }
+
+    const unregisterAbort = abortState?.onAbort?.(onAbort)
+    const abortHandler = signal ? () => onAbort() : null
+    if (signal && abortHandler) signal.addEventListener('abort', abortHandler, { once: true })
+  })
+}
+
+async function postVideoGeneration({ baseUrl, apiKey, body, signal }) {
+  const base = normalizeBaseUrl(baseUrl)
+  const triedUrls = []
+  let lastError = null
+  const videoApiCandidates = uniqueNonEmpty([`${base}/videos`, !/\/v1$/i.test(base) ? `${base}/v1/videos` : ''])
+
+  for (const url of videoApiCandidates) {
+    triedUrls.push(url)
+    try {
+      const form = new FormData()
+      form.set('model', String(body.model || '').trim())
+      form.set('prompt', String(body.prompt || '').trim())
+
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`
+        },
+        body: form,
+        signal
+      })
+
+      if (resp.status === 404) {
+        lastError = new Error(`视频生成接口不存在（HTTP 404）：${url}`)
+        continue
+      }
+
+      const responseText = await resp.text()
+      const parsedResponse = safeJsonParse(responseText)
+      if (!resp.ok) {
+        const errJson = parsedResponse.ok ? parsedResponse.value : null
+        const detail = errJson?.error?.message || (parsedResponse.ok ? stableStringify(errJson) : responseText)
+        throw new Error(`视频生成请求失败（HTTP ${resp.status}）：${detail || resp.statusText}\nURL: ${url}`)
+      }
+
+      if (parsedResponse.ok) {
+        return { payload: parsedResponse.value, requestMeta: { kind: 'videos-api', url, baseEndpoint: url } }
+      }
+
+      const plain = String(responseText || '').trim()
+      if (plain) return { payload: plain, requestMeta: { kind: 'videos-api', url, baseEndpoint: url } }
+      throw new Error('视频生成接口返回了空响应')
+    } catch (err) {
+      lastError = err
+      continue
+    }
+  }
+
+  const triedSummary = Array.from(new Set(triedUrls)).join('\n')
+  if (triedSummary) {
+    throw new Error(`${lastError?.message || '视频生成请求失败：未收到有效响应。'}\n已尝试以下端点：\n${triedSummary}`)
+  }
+  throw lastError || new Error('视频生成请求失败：未收到有效响应。')
+}
+
+async function fetchVideoGenerationStatus({ requestMeta, videoId, apiKey, signal }) {
+  const candidates = buildVideoStatusCandidates(requestMeta?.baseEndpoint, videoId)
+  let lastError = null
+
+  for (const url of candidates) {
+    try {
+      const resp = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          Accept: 'application/json'
+        },
+        signal
+      })
+      if (resp.status === 404) continue
+      const responseText = await resp.text()
+      const parsedResponse = safeJsonParse(responseText)
+      if (!resp.ok) {
+        const detail = parsedResponse.ok ? stableStringify(parsedResponse.value) : responseText
+        throw new Error(`查询视频任务失败（HTTP ${resp.status}）：${detail || resp.statusText}`)
+      }
+      if (parsedResponse.ok) return parsedResponse.value
+      return String(responseText || '').trim()
+    } catch (err) {
+      lastError = err
+    }
+  }
+
+  if (lastError) throw lastError
+  return null
+}
+
+async function fetchVideoGenerationContentPayload({ requestMeta, videoId, apiKey, signal }) {
+  const candidates = buildVideoContentCandidates(requestMeta?.baseEndpoint, videoId)
+  let lastError = null
+
+  for (const url of candidates) {
+    try {
+      const resp = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${apiKey}`
+        },
+        signal
+      })
+      if (resp.status === 404) continue
+      if (!resp.ok) {
+        const responseText = await resp.text()
+        throw new Error(`获取视频内容失败（HTTP ${resp.status}）：${responseText || resp.statusText}`)
+      }
+
+      const blob = await resp.blob()
+      if (!blob || !blob.size) throw new Error('视频内容为空')
+      const objectUrl = URL.createObjectURL(blob)
+      return {
+        data: [
+          {
+            url: objectUrl,
+            mime: blob.type || 'video/mp4',
+            name: `video_${videoId}`
+          }
+        ]
+      }
+    } catch (err) {
+      lastError = err
+    }
+  }
+
+  if (lastError) throw lastError
+  return null
+}
+
+async function waitForVideoGenerationResult({
+  initialPayload,
+  requestMeta,
+  apiKey,
+  signal,
+  abortState = null,
+  timeoutMs = 10 * 60 * 1000
+}) {
+  const directVideos = extractChatVideosFromToolResult(initialPayload)
+  if (directVideos.length) return initialPayload
+
+  let payload = initialPayload
+  let taskState = extractVideoGenerationTaskState(payload, requestMeta)
+  const videoId = String(taskState?.id || payload?.id || payload?.task_id || '').trim()
+  if (!videoId) return payload
+
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < timeoutMs) {
+    throwIfAborted(abortState)
+    const status = String(payload?.status ?? payload?.state ?? '').trim().toLowerCase()
+    if (['completed', 'succeeded', 'success'].includes(status)) {
+      if (extractChatVideosFromToolResult(payload).length) return payload
+      const contentPayload = await fetchVideoGenerationContentPayload({ requestMeta, videoId, apiKey, signal })
+      return contentPayload || payload
+    }
+    if (['failed', 'error', 'cancelled', 'canceled'].includes(status)) return payload
+
+    await delayWithAbort(8000, abortState, signal)
+    const nextPayload = await fetchVideoGenerationStatus({ requestMeta, videoId, apiKey, signal })
+    if (!nextPayload) return payload
+    payload = nextPayload
+    taskState = extractVideoGenerationTaskState(payload, requestMeta)
+    if (!taskState && extractChatVideosFromToolResult(payload).length) return payload
+  }
+
+  return null
+}
+
+async function runVideoGenerationRound({
+  baseUrl,
+  apiKey,
+  model,
+  signal,
+  setCurrentAssistantDisplay,
+  abortState = null,
+  placeholderMode = 'text'
+}) {
+  throwIfAborted(abortState)
+  const lastUserApiMsg = (() => {
+    for (let i = (session.apiMessages || []).length - 1; i >= 0; i--) {
+      if (session.apiMessages[i]?.role === 'user') return session.apiMessages[i]
+    }
+    return null
+  })()
+
+  const userPrompt = extractImageGenerationPromptFromContent(lastUserApiMsg?.content).trim()
+  if (!userPrompt) {
+    throw new Error('视频生成提示词为空')
+  }
+
+  const assistantDisplay = createVideoGenerationPlaceholderDisplay(userPrompt, placeholderMode)
+  session.messages.push(assistantDisplay)
+  setCurrentAssistantDisplay(assistantDisplay)
+  await scrollToBottom()
+
+  const prompt = buildVideoGenerationPromptFromHistory(userPrompt)
+  const { payload, requestMeta } = await withTimeout(
+    postVideoGeneration({
+      baseUrl,
+      apiKey,
+      body: {
+        model,
+        prompt
+      },
+      signal
+    }),
+    180000,
+    '视频生成请求'
+  )
+  throwIfAborted(abortState)
+
+  let finalPayload = payload
+  const videoTask = extractVideoGenerationTaskState(payload, requestMeta)
+  if (videoTask) {
+    applyVideoGenerationTaskToDisplay(assistantDisplay, videoTask, placeholderMode)
+    const resolvedPayload = await waitForVideoGenerationResult({
+      initialPayload: payload,
+      requestMeta,
+      apiKey,
+      signal,
+      abortState
+    })
+    if (!resolvedPayload) {
+      session.apiMessages.push({
+        role: 'assistant',
+        content:
+          placeholderMode === 'video'
+            ? `视频任务已受理：${assistantVideoTaskStatusLabel(assistantDisplay)}${videoTask.id ? `（任务 ID：${videoTask.id}）` : ''}`
+            : buildVideoGenerationPendingText(videoTask)
+      })
+      assistantDisplay.apiIndex = session.apiMessages.length - 1
+      await scrollToBottom()
+      return
+    }
+    finalPayload = resolvedPayload
+  }
+
+  const videos = extractChatVideosFromToolResult(finalPayload)
+  const textResult = extractImageGenerationTextResult(finalPayload)
+  if (!videos.length) {
+    if (textResult) {
+      applyVideoGenerationTextToDisplay(assistantDisplay, textResult)
+      session.apiMessages.push({
+        role: 'assistant',
+        content: textResult
+      })
+      assistantDisplay.apiIndex = session.apiMessages.length - 1
+      setCurrentAssistantDisplay(null)
+      await scrollToBottom()
+      return
+    }
+    throw new Error(buildVideoGenerationCompatibilityError(finalPayload, requestMeta))
+  }
+
+  applyVideoGenerationVideosToDisplay(assistantDisplay, { videos, userPrompt })
+  session.apiMessages.push({
+    role: 'assistant',
+    content: buildVideoGenerationApiSummary({
+      videoCount: videos.length
+    })
+  })
+  assistantDisplay.apiIndex = session.apiMessages.length - 1
+  setCurrentAssistantDisplay(null)
+  await scrollToBottom()
+}
+
+const CHAT_REQUEST_TIMEOUT_MS = 36000000
+const IMAGE_GENERATION_REQUEST_TIMEOUT_MS = 180000
+
+async function runChatSession({
+  providerKind = 'openai-compatible',
+  requestMode = 'chat',
+  imageGenerationPlaceholderMode = 'text',
+  videoGenerationPlaceholderMode = 'text',
+  supportsVision = false,
+  baseUrl,
+  apiKey,
+  model,
+  prepare
+}) {
+  if (sending.value) return
+
+  sending.value = true
+  let requestHandle = null
+  const abortListeners = new Set()
+  const requestAbortState = {
+    aborted: false,
+    onAbort(listener) {
+      if (typeof listener !== 'function') return () => {}
+      if (requestAbortState.aborted) {
+        try {
+          listener()
+        } catch {
+          // ignore
+        }
+        return () => {}
+      }
+      abortListeners.add(listener)
+      return () => {
+        abortListeners.delete(listener)
+      }
+    },
+    abort() {
+      if (requestAbortState.aborted) return
+      requestAbortState.aborted = true
+      abortListeners.forEach((listener) => {
+        try {
+          listener()
+        } catch {
+          // ignore
+        }
+      })
+      abortListeners.clear()
+      try {
+        requestHandle?.abort?.()
+      } catch {
+        // ignore
+      }
+    }
+  }
+  abortController.value = requestAbortState
+  let timedOut = false
+  const requestTimeoutTimer = window.setTimeout(() => {
+    timedOut = true
+    requestAbortState.abort()
+  }, CHAT_REQUEST_TIMEOUT_MS)
+
+  let currentAssistantDisplay = null
+
+  try {
+    if (typeof prepare === 'function') await prepare()
+
+    if (providerKind === 'utools-ai') {
+      await runUtoolsAiChatRound({
+        model,
+        setCurrentAssistantDisplay: (m) => {
+          currentAssistantDisplay = m
+        },
+        setAbortHandle: (handle) => {
+          requestHandle = handle
+        },
+        isAborted: () => requestAbortState.aborted,
+        abortState: requestAbortState
+      })
+    } else {
+      requestHandle = new AbortController()
+      if (requestAbortState.aborted) requestHandle.abort()
+      if (requestMode === 'image-generation') {
+        try {
+          await runImageGenerationRound({
+            baseUrl,
+            apiKey,
+            model,
+            signal: requestHandle.signal,
+            placeholderMode: imageGenerationPlaceholderMode,
+            setCurrentAssistantDisplay: (m) => {
+              currentAssistantDisplay = m
+            },
+            abortState: requestAbortState
+          })
+        } catch (err) {
+          if (!shouldFallbackMediaRequestToChat(err, 'image')) throw err
+          removeDisplayMessageById(currentAssistantDisplay?.id)
+          currentAssistantDisplay = null
+          requestHandle = new AbortController()
+          if (requestAbortState.aborted) requestHandle.abort()
+          message.warning('图片生成接口不兼容当前返回，已自动回退为文本聊天。')
+          await runChatRounds({
+            baseUrl,
+            apiKey,
+            model,
+            signal: requestHandle.signal,
+            assistantPlaceholderMode: imageGenerationPlaceholderMode,
+            supportsVision,
+            setCurrentAssistantDisplay: (m) => {
+              currentAssistantDisplay = m
+            },
+            abortState: requestAbortState
+          })
+        }
+      } else if (requestMode === 'video-generation') {
+        try {
+          await runVideoGenerationRound({
+            baseUrl,
+            apiKey,
+            model,
+            signal: requestHandle.signal,
+            placeholderMode: videoGenerationPlaceholderMode,
+            setCurrentAssistantDisplay: (m) => {
+              currentAssistantDisplay = m
+            },
+            abortState: requestAbortState
+          })
+        } catch (err) {
+          if (!shouldFallbackMediaRequestToChat(err, 'video')) throw err
+          removeDisplayMessageById(currentAssistantDisplay?.id)
+          currentAssistantDisplay = null
+          requestHandle = new AbortController()
+          if (requestAbortState.aborted) requestHandle.abort()
+          message.warning('视频生成接口不兼容当前返回，已自动回退为文本聊天。')
+          await runChatRounds({
+            baseUrl,
+            apiKey,
+            model,
+            signal: requestHandle.signal,
+            assistantPlaceholderMode: videoGenerationPlaceholderMode,
+            supportsVision,
+            setCurrentAssistantDisplay: (m) => {
+              currentAssistantDisplay = m
+            },
+            abortState: requestAbortState
+          })
+        }
+      } else {
+        await runChatRounds({
+          baseUrl,
+          apiKey,
+          model,
+          signal: requestHandle.signal,
+          supportsVision,
+          setCurrentAssistantDisplay: (m) => {
+            currentAssistantDisplay = m
+          },
+          abortState: requestAbortState
+        })
+      }
+    }
+  } catch (err) {
+    if (requestAbortState.aborted || isAbortError(err)) {
+      const stopText = timedOut ? `（请求在 ${CHAT_REQUEST_TIMEOUT_MS}ms 后超时并已停止）` : '（已停止）'
+      if (currentAssistantDisplay) {
+        currentAssistantDisplay.streaming = false
+        currentAssistantDisplay.content = currentAssistantDisplay.content || stopText
+      } else {
+        session.messages.push(createDisplayMessage('assistant', stopText))
+      }
+    } else {
+      const errorText = err?.message || String(err)
+      if (currentAssistantDisplay) {
+        currentAssistantDisplay.streaming = false
+        const shouldRemovePlaceholder =
+          currentAssistantDisplay.transientRequestPlaceholder ||
+          (!String(currentAssistantDisplay.content || '').trim() &&
+            !String(currentAssistantDisplay.thinking || '').trim() &&
+            !(Array.isArray(currentAssistantDisplay.images) && currentAssistantDisplay.images.length) &&
+            !(Array.isArray(currentAssistantDisplay.videos) && currentAssistantDisplay.videos.length) &&
+            !currentAssistantDisplay.imageTask &&
+            !currentAssistantDisplay.videoTask)
+        if (shouldRemovePlaceholder) {
+          const idx = session.messages.findIndex((m) => m.id === currentAssistantDisplay.id)
+          if (idx !== -1) session.messages.splice(idx, 1)
+        }
+      }
+      message.error(errorText || '请求失败')
+      await scrollToBottom()
+    }
+  } finally {
+    window.clearTimeout(requestTimeoutTimer)
+    sending.value = false
+    abortController.value = null
+    currentAssistantDisplay = null
+    await scrollToBottom()
+  }
+}
+
+async function prepareUserApiMessage({ text, attachments, userDisplay, preferVision = true, providerKind = 'openai-compatible' }) {
+  const list = Array.isArray(attachments) ? attachments : []
+  if (list.length) {
+    await Promise.all(list.map((a) => ensureAttachmentParsed(a)))
+  }
+
+  try {
+    list.forEach((a) => {
+      if (a && typeof a === 'object') a.file = null
+    })
+  } catch {
+    // ignore
+  }
+
+  const attachmentContextBlocksForVision = []
+  const attachmentContextBlocksTextOnly = []
+  const imageAttachments = []
+
+  for (const a of list) {
+    if (a.status === 'ready' && a.kind === 'image' && a.dataUrl) {
+      imageAttachments.push(a)
+      const metaText = String(a.text || '').trim() || `附件：${a.name}\n图片元数据不可用`
+      attachmentContextBlocksForVision.push(`${metaText}\n（图片已随消息发送）`)
+      attachmentContextBlocksTextOnly.push(`${metaText}\n（当前提供商不会直接接收图片二进制，模型只能看到这些元数据）`)
+      continue
+    }
+    if (a.status === 'ready') {
+      const attachmentText = String(a.text || '').trim()
+      const block = `附件：${a.name}\n${attachmentText || '（内容为空）'}`
+      attachmentContextBlocksForVision.push(block)
+      attachmentContextBlocksTextOnly.push(block)
+      continue
+    }
+    if (a.status === 'error') {
+      const block = `附件：${a.name}\n（解析失败：${a.error || '未知错误'}）`
+      attachmentContextBlocksForVision.push(block)
+      attachmentContextBlocksTextOnly.push(block)
+    }
+  }
+
+  try {
+    userDisplay.images = imageAttachments.map((a) => ({
+      id: newId(),
+      src: a.dataUrl,
+      name: a.name || 'image',
+      mime: a.mime || '',
+      size: Number(a.size || 0),
+      width: Number(a.width || 0),
+      height: Number(a.height || 0),
+      metaLine: a.metaLine || '',
+      svgTextPreview: a.svgTextPreview || ''
+    }))
+  } catch {
+    // ignore
+  }
+
+  const currentTurnAttachmentBudget = await getCurrentTurnAttachmentCharBudget(providerKind)
+  const attachmentBlockForVision = attachmentContextBlocksForVision.length
+    ? `【附件内容】\n${attachmentContextBlocksForVision.join('\n\n')}`
+    : ''
+  const attachmentBlockTextOnly = attachmentContextBlocksTextOnly.length
+    ? `【附件内容】\n${attachmentContextBlocksTextOnly.join('\n\n')}`
+    : ''
+
+  const combinedTextForVision = truncateAttachmentContextForRequest(text, attachmentBlockForVision, currentTurnAttachmentBudget)
+  const combinedTextTextOnly = truncateAttachmentContextForRequest(text, attachmentBlockTextOnly, currentTurnAttachmentBudget)
+
+  const userApiMessage = { role: 'user', content: combinedTextTextOnly }
+  if (preferVision && imageAttachments.length) {
+    userApiMessage.content = [
+      {
+        type: 'text',
+        text: combinedTextForVision || '请结合下面的图片进行回答。'
+      },
+      ...imageAttachments.map((a) => ({
+        type: 'image_url',
+        image_url: { url: a.dataUrl }
+      }))
+    ]
+    userApiMessage.vision_fallback_text = combinedTextTextOnly
+  }
+
+  session.apiMessages.push(userApiMessage)
+  userDisplay.apiIndex = session.apiMessages.length - 1
+  await scrollToBottom({ force: true })
+}
+
+function getLatestRealUserPromptText(apiMessages = session.apiMessages) {
+  for (let i = (Array.isArray(apiMessages) ? apiMessages : []).length - 1; i >= 0; i -= 1) {
+    const msg = apiMessages[i]
+    if (msg?.role !== 'user' || msg?.synthetic_tool_vision === true) continue
+    return extractEditableUserTextFromContent(msg.content)
+  }
+  return ''
+}
+
+async function regenerateAssistant(msg) {
+  if (sending.value) return
+  const cfg = getRequestConfigOrHint()
+  if (!cfg) return
+
+  typewriterFlushAll()
+  clearAllUserEditingState()
+
+  const assistantApiIndex = isFiniteNumber(msg?.apiIndex)
+    ? msg.apiIndex
+    : (() => {
+        for (let i = (session.apiMessages || []).length - 1; i >= 0; i--) {
+          if (session.apiMessages[i]?.role === 'assistant') return i
+        }
+        return -1
+      })()
+
+  if (!isFiniteNumber(assistantApiIndex) || assistantApiIndex < 0) {
+    message.warning('没有找到可重新生成的回答')
+    return
+  }
+
+  const userApiIndex = findNearestUserApiIndexBefore(assistantApiIndex)
+  if (!isFiniteNumber(userApiIndex) || userApiIndex < 0) {
+    message.error('未找到对应的用户提问，无法继续重新生成')
+    return
+  }
+
+  const userDisplayIndex =
+    findDisplayIndexByApiIndex('user', userApiIndex) >= 0
+      ? findDisplayIndexByApiIndex('user', userApiIndex)
+      : (() => {
+          const assistantDisplayIndex = (session.messages || []).findIndex((m) => m?.id === msg?.id)
+          if (assistantDisplayIndex <= 0) return -1
+          for (let i = assistantDisplayIndex - 1; i >= 0; i--) {
+            if (session.messages[i]?.role === 'user') return i
+          }
+          return -1
+        })()
+
+  if (userDisplayIndex < 0) {
+    message.error('未找到对应的用户气泡，无法继续重新生成')
+    return
+  }
+
+  const hasFollowing = session.messages.length > userDisplayIndex + 1 || session.apiMessages.length > userApiIndex + 1
+  const ok = await new Promise((resolve) => {
+    dialog.warning({
+      title: '确认重新生成',
+      content: hasFollowing ? '重新生成会删除本次回答及其后的对话内容，确定继续吗？' : '确定重新生成这条回答吗？',
+      positiveText: '重新生成',
+      negativeText: '取消',
+      onPositiveClick: () => resolve(true),
+      onNegativeClick: () => resolve(false),
+      onClose: () => resolve(false)
+    })
+  })
+  if (!ok) return
+
+  truncateConversationAfterUser(userApiIndex, userDisplayIndex)
+  try {
+    const userDisplay = session.messages[userDisplayIndex]
+    const triggerText = [
+      String(userDisplay?.content || ''),
+      ...(Array.isArray(userDisplay?.attachments)
+        ? userDisplay.attachments.map((a) => String(a?.name || '')).filter(Boolean)
+        : [])
+    ]
+      .filter(Boolean)
+      .join(' ')
+    autoActivateAgentSkillsFromText(triggerText)
+  } catch {
+    // ignore
+  }
+  await runChatSession({ ...cfg, prepare: async () => scrollToBottom({ force: true }) })
+}
+
+function toggleOrSubmitUserEdit(msg) {
+  if (!msg || msg.role !== 'user') return
+  if (sending.value) return
+
+  if (!msg.editing) {
+    clearAllUserEditingState()
+    const userApiIndex = resolveUserApiIndexForDisplayMessage(msg)
+    const apiContent = getUserApiMessageContentByIndex(userApiIndex)
+    msg.editing = true
+    msg.editDraft = extractEditableUserTextFromContent(apiContent ?? msg.content)
+    scheduleScrollToBottom()
+    scheduleRefreshUserAnchorMeta()
+    return
+  }
+
+  submitUserEdit(msg)
+}
+
+async function submitUserEdit(msg) {
+  if (!msg || msg.role !== 'user') return
+  if (sending.value) return
+
+  const draft = String(msg.editDraft ?? '').trim()
+  const userApiIndex = resolveUserApiIndexForDisplayMessage(msg)
+  const hasAttachments = messageHasDisplayAttachments(msg, userApiIndex)
+  if (!draft && !hasAttachments) {
+    message.warning('内容不能为空')
+    return
+  }
+
+  const cfg = getRequestConfigOrHint()
+  if (!cfg) return
+
+  typewriterFlushAll()
+
+  if (!isFiniteNumber(userApiIndex) || userApiIndex < 0) {
+    message.error('未找到对应的请求记录，无法继续编辑并重发')
+    return
+  }
+
+  const userDisplayIndex = (session.messages || []).findIndex((m) => m?.id === msg?.id)
+  if (userDisplayIndex < 0) {
+    message.error('未找到对应的用户气泡，无法继续编辑并重发')
+    return
+  }
+
+  const hasFollowing = session.messages.length > userDisplayIndex + 1 || session.apiMessages.length > userApiIndex + 1
+  const ok = await new Promise((resolve) => {
+    dialog.warning({
+      title: '确认重发',
+      content: hasFollowing ? '重发会删除这条消息之后的所有对话内容，确定继续吗？' : '确定重发这条消息吗？' ,
+      positiveText: '重发',
+      negativeText: '取消',
+      onPositiveClick: () => resolve(true),
+      onNegativeClick: () => resolve(false),
+      onClose: () => resolve(false)
+    })
+  })
+  if (!ok) return
+
+  msg.content = draft || (hasAttachments ? '(sent attachments)' : '')
+  msg.editing = false
+  msg.editDraft = ''
+
+  if (session.apiMessages?.[userApiIndex]?.role === 'user') {
+    session.apiMessages[userApiIndex].content = mergeUserTextWithExistingAttachments(
+      session.apiMessages[userApiIndex].content,
+      draft
+    )
+  }
+
+  truncateConversationAfterUser(userApiIndex, userDisplayIndex)
+  await runChatSession({ ...cfg, prepare: async () => scrollToBottom({ force: true }) })
+}
+
+function toggleAutoApproveTools() {
+  autoApproveTools.value = !autoApproveTools.value
+}
+
+function toggleWebSearch() {
+  webSearchEnabled.value = !webSearchEnabled.value
+}
+
+function toggleAutoActivateAgentSkills() {
+  autoActivateAgentSkills.value = !autoActivateAgentSkills.value
+}
+
+function cycleToolMode() {
+  const order = ['auto', 'expanded', 'compact']
+  const current = String(toolMode.value || 'auto')
+  const idx = order.indexOf(current)
+  const next = order[(idx + 1 + order.length) % order.length]
+  toolMode.value = next
+  if (next === 'expanded') effectiveToolMode.value = 'expanded'
+  if (next === 'compact') effectiveToolMode.value = 'compact'
+}
+
+async function refreshActiveMcpTools() {
+  if (refreshingMcpTools.value) return
+  const servers = (activeMcpServers.value || []).filter((s) => s && !s.disabled && s._id)
+  if (!servers.length) {
+    message.info('当前没有启用的 MCP 服务')
+    return
+  }
+
+  refreshingMcpTools.value = true
+  try {
+    mcpListToolsCache.clear()
+    mcpListToolsInFlight.clear()
+    mcpToolsRevision.value += 1
+    clearMcpToolCatalog()
+    clearPinnedMcpToolHints()
+    await warmMcpToolCatalogForServers(servers, { forceRefresh: true })
+    message.success('已刷新 MCP 工具列表')
+  } catch (err) {
+    message.error('刷新 MCP 工具列表失败：' + (err?.message || String(err)))
+  } finally {
+    refreshingMcpTools.value = false
+  }
+}
+
+function cycleThinkingEffort() {
+  const order = ['auto', 'low', 'medium', 'high']
+  const current = String(thinkingEffort.value || 'auto')
+  const idx = order.indexOf(current)
+  thinkingEffort.value = order[(idx + 1 + order.length) % order.length]
+}
+
+function normalizeImageGenerationMode(value) {
+  const mode = String(value || '').trim().toLowerCase()
+  if (mode === 'on' || mode === 'off') return mode
+  return 'auto'
+}
+
+function setImageGenerationMode(nextMode) {
+  const next = normalizeImageGenerationMode(nextMode)
+  imageGenerationMode.value = next
+}
+
+function setVideoGenerationMode(nextMode) {
+  const next = normalizeImageGenerationMode(nextMode)
+  videoGenerationMode.value = next
+}
+
+function cycleImageGenerationMode() {
+  const order = ['auto', 'on', 'off']
+  const current = normalizeImageGenerationMode(imageGenerationMode.value)
+  const idx = order.indexOf(current)
+  setImageGenerationMode(order[(idx + 1 + order.length) % order.length])
+}
+
+function cycleVideoGenerationMode() {
+  const order = ['auto', 'on', 'off']
+  const current = normalizeImageGenerationMode(videoGenerationMode.value)
+  const idx = order.indexOf(current)
+  setVideoGenerationMode(order[(idx + 1 + order.length) % order.length])
+}
+
+function clearInlineAgentPicker() {
+  inlineAgentQuery.value = ''
+  inlineAgentMatchStart.value = -1
+  inlineAgentMatchEnd.value = -1
+  inlineAgentActiveIndex.value = 0
+}
+
+function clearInlineCommandPicker() {
+  inlineCommandMode.value = ''
+  inlineCommandType.value = ''
+  inlineCommandQuery.value = ''
+  inlineCommandMatchStart.value = -1
+  inlineCommandMatchEnd.value = -1
+  inlineCommandActiveIndex.value = 0
+}
+
+function clearInlinePickers() {
+  clearInlineAgentPicker()
+  clearInlineCommandPicker()
+}
+
+function getComposerTextareaEl() {
+  return composerPanelRef.value?.getTextareaEl?.() || null
+}
+
+function refreshComposerInlinePickers(options = {}) {
+  const text = typeof options.text === 'string' ? options.text : String(input.value || '')
+  const caret =
+    typeof options.caret === 'number'
+      ? options.caret
+      : (getComposerTextareaEl()?.selectionStart ?? text.length)
+
+  const commandContext = extractInlineCommandContext(text, caret)
+  if (commandContext) {
+    clearInlineAgentPicker()
+    inlineCommandMode.value = commandContext.mode
+    inlineCommandType.value = commandContext.type
+    inlineCommandQuery.value = commandContext.query
+    inlineCommandMatchStart.value = commandContext.start
+    inlineCommandMatchEnd.value = commandContext.end
+    if (commandContext.mode === 'item' && commandContext.type === 'prompt') {
+      void ensureMcpPromptCatalogLoaded({ silent: true })
+    }
+    return
+  }
+
+  const agentContext = extractInlineAgentContext(text, caret)
+  if (agentContext) {
+    clearInlineCommandPicker()
+    inlineAgentQuery.value = agentContext.query
+    inlineAgentMatchStart.value = agentContext.start
+    inlineAgentMatchEnd.value = agentContext.end
+    return
+  }
+
+  clearInlinePickers()
+}
+
+function handleComposerCursorChange() {
+  refreshComposerInlinePickers()
+}
+
+function handleComposerBlur() {
+  clearInlinePickers()
+}
+
+function focusComposerAt(position) {
+  nextTick(() => {
+    composerPanelRef.value?.focusComposer?.()
+    const el = getComposerTextareaEl()
+    if (el && Number.isFinite(position)) {
+      el.setSelectionRange(position, position)
+    }
+    refreshComposerInlinePickers({ caret: position })
+  })
+}
+
+function insertInlineCommandTrigger(kind) {
+  const normalizedKind = String(kind || '').trim().toLowerCase()
+  if (!INLINE_COMMAND_KIND_LABELS[normalizedKind]) return
+
+  clearInlinePickers()
+
+  const token = `/${normalizedKind} `
+  const raw = String(input.value || '')
+  const el = getComposerTextareaEl()
+  const start = el?.selectionStart ?? raw.length
+  const end = el?.selectionEnd ?? start
+  const before = raw.slice(0, start)
+  const after = raw.slice(end)
+  const prefix = before && !/[\s\n]$/.test(before) ? ' ' : ''
+  const suffix = after && !/^[\s\n]/.test(after) ? ' ' : ''
+
+  input.value = `${before}${prefix}${token}${suffix}${after}`
+  focusComposerAt(before.length + prefix.length + token.length)
+}
+
+function moveInlineAgentActive(step) {
+  const list = inlineAgentSuggestions.value
+  if (!list.length) return
+  const size = list.length
+  inlineAgentActiveIndex.value = (inlineAgentActiveIndex.value + step + size) % size
+}
+
+function applyInlineAgentSuggestion(agentId) {
+  const id = String(agentId || '').trim()
+  if (!id) return
+
+  const raw = String(input.value || '')
+  const start = inlineAgentMatchStart.value
+  const end = inlineAgentMatchEnd.value >= start ? inlineAgentMatchEnd.value : start
+  let nextCaret = Math.max(0, start)
+
+  if (start >= 0 && end >= start) {
+    const before = raw.slice(0, start)
+    let after = raw.slice(end)
+    if (/\s$/.test(before) && /^\s/.test(after)) {
+      after = after.replace(/^\s+/, ' ')
+    }
+    input.value = `${before}${after}`
+    nextCaret = before.length
+  }
+
+  applyAgent(id)
+  clearInlineAgentPicker()
+  focusComposerAt(nextCaret)
+}
+
+function moveInlineCommandActive(step) {
+  const list = inlineCommandSuggestions.value
+  if (!list.length) return
+  const size = list.length
+  let nextIndex = inlineCommandActiveIndex.value
+  let attempts = 0
+  do {
+    nextIndex = (nextIndex + step + size) % size
+    attempts += 1
+  } while (attempts < size && list[nextIndex]?.disabled)
+  inlineCommandActiveIndex.value = nextIndex
+}
+
+function getFirstEnabledInlineCommandIndex(list = inlineCommandSuggestions.value) {
+  const index = (Array.isArray(list) ? list : []).findIndex((item) => !item?.disabled)
+  return index >= 0 ? index : 0
+}
+
+function replaceInlineCommandToken(kind) {
+  const normalizedKind = String(kind || '').trim().toLowerCase()
+  if (!INLINE_COMMAND_KIND_LABELS[normalizedKind]) return
+
+  const raw = String(input.value || '')
+  const start = inlineCommandMatchStart.value
+  const end = inlineCommandMatchEnd.value >= start ? inlineCommandMatchEnd.value : start
+  const before = start >= 0 ? raw.slice(0, start) : raw
+  let after = end >= start ? raw.slice(end) : ''
+  const token = `/${normalizedKind} `
+
+  if (/^[ \t]+/.test(after)) {
+    after = after.replace(/^[ \t]+/, '')
+  } else if (after && !/^[\s\n]/.test(after)) {
+    after = ` ${after}`
+  }
+
+  input.value = `${before}${token}${after}`
+  focusComposerAt(before.length + token.length)
+}
+
+function removeInlineCommandToken() {
+  const raw = String(input.value || '')
+  const start = inlineCommandMatchStart.value
+  const end = inlineCommandMatchEnd.value >= start ? inlineCommandMatchEnd.value : start
+  let nextCaret = Math.max(0, start)
+
+  if (start >= 0 && end >= start) {
+    const before = raw.slice(0, start)
+    let after = raw.slice(end)
+    if (/\s$/.test(before) && /^\s/.test(after)) {
+      after = after.replace(/^\s+/, ' ')
+    }
+    input.value = `${before}${after}`
+    nextCaret = before.length
+  }
+
+  clearInlineCommandPicker()
+  focusComposerAt(nextCaret)
+}
+
+async function applyInlineCommandSuggestion(item) {
+  const value = String(item?.value || '').trim()
+  if (!value) return
+  if (item?.disabled) {
+    message.warning('该 MCP 已禁用，请先到设置页启用')
+    return
+  }
+
+  if (inlineCommandMode.value === 'kind') {
+    replaceInlineCommandToken(value)
+    return
+  }
+
+  if (inlineCommandType.value === 'prompt') {
+    const parsed = parsePromptOptionValue(value)
+    if (parsed.type === 'mcp') {
+      const promptItem = findMcpPromptCatalogItem(parsed.serverId, parsed.promptName)
+      if (!promptItem) {
+        message.warning('未找到该 MCP 提示词，请刷新后重试')
+        return
+      }
+
+      removeInlineCommandToken()
+      if (Array.isArray(promptItem.arguments) && promptItem.arguments.length) {
+        promptModalSelectedId.value = makeMcpPromptOptionValue(promptItem)
+        showPromptModal.value = true
+        return
+      }
+
+      await applyMcpPromptToComposer(promptItem)
+      return
+    }
+
+    applyBasePromptSelection(parsed.promptId || null)
+    removeInlineCommandToken()
+    return
+  }
+
+  if (inlineCommandType.value === 'skill') {
+    const set = new Set(Array.isArray(selectedSkillIds.value) ? selectedSkillIds.value : [])
+    if (set.has(value)) set.delete(value)
+    else set.add(value)
+    selectedSkillIds.value = Array.from(set)
+    removeInlineCommandToken()
+    return
+  }
+
+  if (inlineCommandType.value === 'mcp') {
+    const set = new Set(Array.isArray(manualMcpIds.value) ? manualMcpIds.value : [])
+    if (set.has(value)) set.delete(value)
+    else set.add(value)
+    manualMcpIds.value = Array.from(set)
+    void ensureMcpPromptCatalogLoaded({ silent: true, forceRefresh: true })
+    removeInlineCommandToken()
+  }
+}
+
+function handleInputKeydown(e) {
+  if (!sending.value && !e.ctrlKey && !e.metaKey && !e.altKey && showInlineCommandPicker.value) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      moveInlineCommandActive(1)
+      return
+    }
+
+    if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      moveInlineCommandActive(-1)
+      return
+    }
+
+    if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+      const list = inlineCommandSuggestions.value
+      const active =
+        list[inlineCommandActiveIndex.value] ||
+        list[getFirstEnabledInlineCommandIndex(list)] ||
+        list[0]
+      if (active) {
+        e.preventDefault()
+        applyInlineCommandSuggestion(active)
+        return
+      }
+    }
+
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      clearInlineCommandPicker()
+      return
+    }
+  }
+
+  if (!sending.value && !e.ctrlKey && !e.metaKey && !e.altKey && showInlineAgentPicker.value) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      moveInlineAgentActive(1)
+      return
+    }
+
+    if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      moveInlineAgentActive(-1)
+      return
+    }
+
+    if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+      const active = inlineAgentSuggestions.value[inlineAgentActiveIndex.value] || inlineAgentSuggestions.value[0]
+      if (active) {
+        e.preventDefault()
+        applyInlineAgentSuggestion(active.value)
+        return
+      }
+    }
+
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      clearInlineAgentPicker()
+      return
+    }
+  }
+
+  if (e.key !== 'Enter') return
+  if (e.shiftKey) return
+  e.preventDefault()
+  send()
+}
+
+function openSystemPromptModal() {
+  systemPromptDraft.value = basePromptText.value
+  showSystemPromptModal.value = true
+}
+
+function applyCustomSystemPrompt() {
+  basePromptMode.value = 'custom'
+  customSystemPrompt.value = String(systemPromptDraft.value || '')
+  showSystemPromptModal.value = false
+}
+
+function clearCustomSystemPrompt() {
+  basePromptMode.value = 'custom'
+  customSystemPrompt.value = ''
+  systemPromptDraft.value = ''
+}
+
+function resetSystemPromptToSelectedPrompt() {
+  basePromptMode.value = 'prompt'
+  customSystemPrompt.value = ''
+  const p = (prompts.value || []).find((x) => x._id === selectedPromptId.value)
+  systemPromptDraft.value = String(p?.content || '')
+}
+
+function syncContextWindowDraft(raw = chatConfig.value?.contextWindow) {
+  Object.assign(contextWindowDraft, resolveChatContextWindowOptions(raw))
+}
+
+function openContextWindowModal() {
+  syncContextWindowDraft()
+  contextWindowPreviewOmittedFilter.value = 'all'
+  showContextWindowModal.value = true
+}
+
+function handleContextWindowPresetChange(value) {
+  const preset = String(value || '').trim()
+  if (!preset || preset === 'custom') return
+  Object.assign(contextWindowDraft, resolveChatContextWindowOptions({ ...contextWindowDraft, preset }))
+}
+
+function resetContextWindowDraftToDefault() {
+  Object.assign(contextWindowDraft, resolveChatContextWindowOptions(DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG))
+}
+
+async function applyContextWindowSettings() {
+  try {
+    if (typeof updateChatConfig !== 'function') {
+      message.warning('当前环境不支持保存聊天上下文设置')
+      return
+    }
+
+    const normalized = resolveChatContextWindowOptions(normalizeChatContextWindowConfig(contextWindowDraft))
+    await updateChatConfig({ contextWindow: normalized })
+    syncContextWindowDraft(normalized)
+    showContextWindowModal.value = false
+    message.success('已保存上下文窗口设置')
+  } catch (err) {
+    message.error('保存上下文窗口设置失败：' + (err?.message || String(err)))
+  }
+}
+
+function isCurrentModel(providerId, model) {
+  return providerId === selectedProviderId.value && model === selectedModel.value
+}
+
+function selectProviderModel(providerId, model) {
+  selectedProviderId.value = providerId
+  selectedModel.value = model
+  showModelModal.value = false
+}
+
+function openAgentModal() {
+  clearInlinePickers()
+  agentModalSelectedId.value = selectedAgentId.value
+  showAgentModal.value = true
+}
+
+async function resetChatSetup() {
+  if (String(activeSessionFilePath.value || '').trim()) {
+    await closeActiveSession()
+  }
+
+  clearInlinePickers()
+
+  // 关闭弹窗
+  showModelModal.value = false
+  showSystemPromptModal.value = false
+  showContextWindowModal.value = false
+  showAgentModal.value = false
+  showPromptModal.value = false
+  showSkillModal.value = false
+  showMcpModal.value = false
+
+  // 清除智能体、提示词、技能、MCP 选择及相关草稿。
+  selectedAgentId.value = null
+  agentModalSelectedId.value = null
+
+  selectedPromptId.value = null
+  promptModalSelectedId.value = null
+  basePromptMode.value = 'custom'
+  const rawDefaultSystemPrompt = String(chatConfig.value?.defaultSystemPrompt || '')
+  customSystemPrompt.value = rawDefaultSystemPrompt
+  lastLoadedDefaultSystemPrompt.value = normalizePromptText(rawDefaultSystemPrompt)
+  hasInitializedDefaultSystemPrompt.value = true
+  systemPromptDraft.value = ''
+
+  selectedSkillIds.value = []
+  skillModalSelectedIds.value = []
+  agentSkillIds.value = []
+  activatedAgentSkillIds.value = []
+
+  manualMcpIds.value = []
+  mcpModalSelectedIds.value = []
+
+  // 其他开关回到初始值。
+  webSearchEnabled.value = false
+  autoApproveTools.value = true
+  autoActivateAgentSkills.value = true
+  toolMode.value = 'auto'
+  effectiveToolMode.value = 'expanded'
+  thinkingEffort.value = 'auto'
+  imageGenerationMode.value = normalizeImageGenerationMode(chatConfig.value?.imageGenerationMode)
+  videoGenerationMode.value = normalizeImageGenerationMode(chatConfig.value?.videoGenerationMode)
+  try {
+    mcpListToolsCache.clear()
+    mcpListToolsInFlight.clear()
+    mcpToolsRevision.value += 1
+    clearMcpToolCatalog()
+    clearPinnedMcpToolHints()
+  } catch {
+    // ignore
+  }
+
+  // 重置模型到默认配置（若有）。
+  selectedProviderId.value = null
+  selectedModel.value = ''
+  hasAppliedDefaultModel.value = false
+  tryApplyDefaultModelFromConfig({ force: true })
+
+  message.success('已重置为初始状态')
+}
+
+function clearSelectedAgent() {
+  clearInlinePickers()
+  const skillIdsToRemove = new Set([
+    ...normalizeStringList(agentSkillIds.value),
+    ...normalizeStringList(selectedAgent.value?.skills)
+  ])
+  const mcpIdsToRemove = new Set(normalizeStringList(selectedAgent.value?.mcp))
+
+  if (skillIdsToRemove.size) {
+    selectedSkillIds.value = normalizeStringList((selectedSkillIds.value || []).filter((id) => !skillIdsToRemove.has(id)))
+  }
+  if (mcpIdsToRemove.size) {
+    manualMcpIds.value = normalizeStringList((manualMcpIds.value || []).filter((id) => !mcpIdsToRemove.has(id)))
+  }
+
+  selectedAgentId.value = null
+  agentModalSelectedId.value = null
+  agentSkillIds.value = []
+  activatedAgentSkillIds.value = []
+  showAgentModal.value = false
+}
+
+function applyAgentModal() {
+  if (!agentModalSelectedId.value) return
+  applyAgent(agentModalSelectedId.value)
+  clearInlinePickers()
+  showAgentModal.value = false
+}
+
+function openPromptModal() {
+  clearInlinePickers()
+  promptModalSelectedId.value = selectedPromptId.value ? makeLocalPromptOptionValue(selectedPromptId.value) : null
+  showPromptModal.value = true
+  void ensureMcpPromptCatalogLoaded({ silent: true })
+}
+
+function clearSelectedPrompt() {
+  promptModalSelectedId.value = null
+  applyBasePromptSelection(null)
+  showPromptModal.value = false
+}
+
+async function applyPromptModal() {
+  const parsed = selectedPromptModalParsedValue.value
+  if (parsed.type === 'mcp') {
+    const promptItem = findMcpPromptCatalogItem(parsed.serverId, parsed.promptName)
+    if (!promptItem) {
+      message.warning('未找到该 MCP 提示词，请刷新后重试')
+      return
+    }
+
+    let args = {}
+    try {
+      args = buildMcpPromptArgsFromModal()
+    } catch (err) {
+      message.warning('MCP 提示词参数无效：' + (err?.message || String(err)))
+      return
+    }
+
+    const ok = await applyMcpPromptToComposer(promptItem, args)
+    if (!ok) return
+    showPromptModal.value = false
+    return
+  }
+
+  applyBasePromptSelection(parsed.promptId || null)
+  showPromptModal.value = false
+}
+
+function openSkillModal() {
+  clearInlinePickers()
+  skillModalSelectedIds.value = Array.isArray(selectedSkillIds.value) ? [...selectedSkillIds.value] : []
+  showSkillModal.value = true
+}
+
+function applySkillModal() {
+  selectedSkillIds.value = Array.isArray(skillModalSelectedIds.value) ? [...skillModalSelectedIds.value] : []
+  showSkillModal.value = false
+}
+
+function openMcpModal() {
+  clearInlinePickers()
+  mcpModalSelectedIds.value = Array.isArray(manualMcpIds.value) ? [...manualMcpIds.value] : []
+  showMcpModal.value = true
+}
+
+function applyMcpModal() {
+  manualMcpIds.value = Array.isArray(mcpModalSelectedIds.value) ? [...mcpModalSelectedIds.value] : []
+  showMcpModal.value = false
+  void ensureMcpPromptCatalogLoaded({ silent: true, forceRefresh: true })
+}
+
+function normalizeBaseUrl(url) {
+  const raw = String(url || '').trim()
+  if (!raw) return ''
+
+  const noQuery = raw.split('#')[0].split('?')[0]
+  let base = noQuery.replace(/\/+$/, '')
+
+  // 兼容：用户把“完整接口地址”粘进了接口地址
+  base = base
+    .replace(/\/v1\/chat\/completions$/i, '/v1')
+    .replace(/\/chat\/completions$/i, '')
+    .replace(/\/v1\/completions$/i, '/v1')
+    .replace(/\/completions$/i, '')
+    .replace(/\/v1\/models$/i, '/v1')
+    .replace(/\/models$/i, '')
+
+  return base.replace(/\/+$/, '')
+}
+
+const contextWindowPresetOptions = [
+  {
+    label: '紧凑',
+    value: 'aggressive',
+    description: CHAT_CONTEXT_WINDOW_PRESETS.aggressive.description
+  },
+  {
+    label: '平衡',
+    value: 'balanced',
+    description: CHAT_CONTEXT_WINDOW_PRESETS.balanced.description
+  },
+  {
+    label: '宽松',
+    value: 'wide',
+    description: CHAT_CONTEXT_WINDOW_PRESETS.wide.description
+  },
+  {
+    label: '自定义',
+    value: 'custom',
+    description: '手动控制轮次、消息数量和字符预算。'
+  }
+]
+
+const contextWindowHistoryFocusOptions = [
+  {
+    label: CHAT_CONTEXT_WINDOW_HISTORY_FOCUS_PRESETS.recent.label,
+    value: 'recent',
+    description: CHAT_CONTEXT_WINDOW_HISTORY_FOCUS_PRESETS.recent.description
+  },
+  {
+    label: CHAT_CONTEXT_WINDOW_HISTORY_FOCUS_PRESETS.balanced.label,
+    value: 'balanced',
+    description: CHAT_CONTEXT_WINDOW_HISTORY_FOCUS_PRESETS.balanced.description
+  },
+  {
+    label: CHAT_CONTEXT_WINDOW_HISTORY_FOCUS_PRESETS.attachments.label,
+    value: 'attachments',
+    description: CHAT_CONTEXT_WINDOW_HISTORY_FOCUS_PRESETS.attachments.description
+  }
+]
+
+function getHistoryContextCharBudget(options = {}) {
+  const { tools = [], reservedCharsOverride = null } = options || {}
+  const baseChars = effectiveToolMode.value === 'compact'
+    ? contextWindowResolvedOptions.value.maxCharsCompact
+    : contextWindowResolvedOptions.value.maxCharsExpanded
+  const reservedChars = Number.isFinite(Number(reservedCharsOverride))
+    ? Math.max(0, Math.floor(Number(reservedCharsOverride)))
+    : calculateReservedRequestChars({
+        systemContent: systemContent.value,
+        tools
+      })
+  return calculateHistoryContextCharBudget({
+    baseChars,
+    reservedChars
+  })
+}
+
+async function getCurrentTurnAttachmentCharBudget(providerKind = 'openai-compatible') {
+  let tools = []
+  try {
+    const bundle = await buildToolsBundleV2({})
+    tools = Array.isArray(bundle?.tools) ? bundle.tools : []
+  } catch {
+    tools = []
+  }
+
+  const historyBudget = getHistoryContextCharBudget({ tools })
+  const boundedBudget = Math.max(4000, Math.floor(historyBudget * (providerKind === 'utools-ai' ? 0.8 : 0.85)))
+  return Math.min(MAX_ATTACHMENT_TEXT_CHARS, boundedBudget)
+}
+
+function buildRequestApiMessages(providerKind = 'openai-compatible', options = {}) {
+  const { tools = [], reservedCharsOverride = null } = options || {}
+  return buildChatContextWindow(
+    session.apiMessages,
+    buildChatContextWindowRuntimeOptions(contextWindowResolvedOptions.value, {
+      providerKind,
+      maxChars: getHistoryContextCharBudget({ tools, reservedCharsOverride })
+    })
+  )
+}
+
+function extractRequestMessageTextContent(content) {
+  return extractImageGenerationPromptFromContent(content)
+}
+
+function isLikelyImageGenerationPrompt(text) {
+  const normalized = String(text || '').trim().toLowerCase()
+  if (!normalized) return false
+
+  return /(^|\b)(draw|generate|create|make|render|illustrate|design)(\b|$)|生成图片|生成一张图|生成一幅图|画一张图|画一幅图|做一张图|出图|产图|画图|绘图|海报|封面图|插画|头像|壁纸|logo/i.test(
+    normalized
+  )
+}
+
+function isLikelyVideoGenerationPrompt(text) {
+  const normalized = String(text || '').trim().toLowerCase()
+  if (!normalized) return false
+
+  return /(^|\b)(animate|generate|create|make|render)(\b|$)|生成视频|做个视频|出视频|产视频|视频生成|动画短片|短视频|motion video|text to video|text-to-video|img2video|image-to-video/i.test(
+    normalized
+  )
+}
+
+function buildEmptyAssistantResponseText() {
+  const imageMode = normalizeImageGenerationMode(imageGenerationMode.value)
+  const videoMode = normalizeImageGenerationMode(videoGenerationMode.value)
+  const model = String(selectedModel.value || '').trim()
+  const latestUserPrompt = (() => {
+    for (let i = (session.apiMessages || []).length - 1; i >= 0; i -= 1) {
+      const msg = session.apiMessages[i]
+      if (msg?.role === 'user') return extractRequestMessageTextContent(msg.content)
+    }
+    return ''
+  })()
+
+  if (videoMode === 'on') {
+    return '（模型返回为空：当前已开启视频生成模式，但服务商/模型没有返回可用结果，请检查视频生成接口兼容性）'
+  }
+
+  if (imageMode === 'on') {
+    return '（模型返回为空：当前已开启图片生成模式，但服务商/模型没有返回可用结果，请检查图片生成接口兼容性）'
+  }
+
+  if (videoMode === 'auto' && isLikelyVideoGenerationPrompt(latestUserPrompt) && !isLikelyVideoGenerationModel(model)) {
+    return '(the model returned empty text. If this was actually a video-generation request, switch the video-generation mode to On and retry.)'
+  }
+
+  if (imageMode === 'auto' && isLikelyImageGenerationPrompt(latestUserPrompt) && !isLikelyImageGenerationModel(model)) {
+    return '(the model returned empty text. If this was actually an image-generation request, switch the image-generation mode to On and retry.)'
+  }
+
+  return '（模型返回为空：请检查服务商配置或接口兼容性）'
+}
+
+function buildMediaGenerationPromptFromHistory(userPrompt, options = {}) {
+  const currentPrompt = String(userPrompt || '').trim()
+  if (!currentPrompt) return ''
+
+  const mediaLabel = String(options.mediaLabel || '图片').trim() || '图片'
+  const promptLead = `当前${mediaLabel}生成需求：\n${currentPrompt}`
+  const reservedChars = String(systemContent.value || '').length + promptLead.length + 2000
+  const requestMessages = buildRequestApiMessages('openai-compatible', { reservedCharsOverride: reservedChars })
+
+  let latestUserIndex = -1
+  for (let i = requestMessages.length - 1; i >= 0; i -= 1) {
+    if (requestMessages[i]?.role === 'user') {
+      latestUserIndex = i
+      break
+    }
+  }
+
+  const historyLines = (latestUserIndex > 0 ? requestMessages.slice(0, latestUserIndex) : [])
+    .filter((message) => message?.role === 'user' || message?.role === 'assistant')
+    .map((message) => {
+      const text = truncateInlineText(extractRequestMessageTextContent(message.content), 800)
+      if (!text) return ''
+      const roleLabel = message.role === 'assistant' ? 'Assistant' : 'User'
+      return `${roleLabel}: ${text}`
+    })
+    .filter(Boolean)
+
+  const contextText = historyLines.length
+    ? truncateText(historyLines.join('\n\n'), 6000, '(older conversation context truncated)')
+    : ''
+
+  return [String(systemContent.value || '').trim(), contextText ? `参考最近对话上下文：\n${contextText}` : '', promptLead]
+    .filter(Boolean)
+    .join('\n\n')
+}
+
+function buildImageGenerationPromptFromHistory(userPrompt, options = {}) {
+  return buildMediaGenerationPromptFromHistory(userPrompt, { ...options, mediaLabel: '图片' })
+}
+
+function buildVideoGenerationPromptFromHistory(userPrompt, options = {}) {
+  return buildMediaGenerationPromptFromHistory(userPrompt, { ...options, mediaLabel: '视频' })
+}
+
+function hasToolStateMessages(messages) {
+  return (Array.isArray(messages) ? messages : []).some((message) => {
+    if (!message || typeof message !== 'object') return false
+    return message.role === 'tool' || (message.role === 'assistant' && Array.isArray(message.tool_calls) && message.tool_calls.length > 0)
+  })
+}
+
+function shouldRetryToolContinuationAsPlainText(errorText) {
+  const lower = String(errorText || '').toLowerCase()
+  if (!lower) return false
+  if (lower.includes('request targeted an endpoint') && lower.includes('temporarily unavailable')) return true
+  if (lower.includes('endpoint') && lower.includes('closed') && lower.includes('temporarily unavailable')) return true
+  if (lower.includes('unsupported') && lower.includes('tool')) return true
+  if (lower.includes('does not support') && lower.includes('tool')) return true
+  return false
+}
+
+function formatToolCallFallbackLine(toolCall) {
+  const name = String(toolCall?.function?.name || '').trim() || 'unknown_tool'
+  const args = truncateText(String(toolCall?.function?.arguments || '').trim() || '{}', 1200, '(tool arguments truncated)')
+  return `- ${name}: ${args}`
+}
+
+function coerceToolStateMessageToPlainText(message) {
+  if (!message || typeof message !== 'object') return null
+  if (message.role === 'tool') {
+    const callId = String(message.tool_call_id || message.call_id || '').trim()
+    const content = truncateText(message.content || '', 24000, '(tool result truncated)')
+    return {
+      role: 'assistant',
+      content: [`工具结果${callId ? `（${callId}）` : ''}：`, content || '（空结果）'].join('\n')
+    }
+  }
+  if (message.role === 'assistant' && Array.isArray(message.tool_calls) && message.tool_calls.length) {
+    const content = String(message.content || '').trim()
+    const calls = message.tool_calls.map(formatToolCallFallbackLine).filter(Boolean).join('\n')
+    return {
+      role: 'assistant',
+      content: [content, calls ? `已调用工具：\n${calls}` : '已调用工具。'].filter(Boolean).join('\n\n')
+    }
+  }
+  return null
+}
+
+function buildRequestMessages(options = {}) {
+  const {
+    baseUrl = '',
+    model = '',
+    forceReasoningContent = false,
+    compatToolCallIdAsFc = false,
+    visionFallbackText = '',
+    fallbackAllVisionMessages = false,
+    plainTextToolFallback = false,
+    apiMessages = null,
+    tools = []
+  } = options || {}
+  const needsReasoningContent = shouldIncludeReasoningContent({
+    baseUrl,
+    model,
+    forceReasoningContent
+  })
+
+  const msgs = []
+  if (systemContent.value) msgs.push({ role: 'system', content: systemContent.value })
+
+  const sourceMessages = Array.isArray(apiMessages) ? apiMessages : buildRequestApiMessages('openai-compatible', { tools })
+  let latestVisionUserIndex = -1
+  for (let i = sourceMessages.length - 1; i >= 0; i -= 1) {
+    const candidate = sourceMessages[i]
+    if (candidate?.role === 'user' && messageContentHasImageUrl(candidate.content)) {
+      latestVisionUserIndex = i
+      break
+    }
+  }
+
+  for (let index = 0; index < sourceMessages.length; index += 1) {
+    const m = sourceMessages[index]
+    if (!m || typeof m !== 'object') continue
+    const toolFallbackMessage = plainTextToolFallback ? coerceToolStateMessageToPlainText(m) : null
+    const cloned = toolFallbackMessage ? { ...toolFallbackMessage } : { ...m }
+
+    if (messageContentHasImageUrl(cloned.content) && fallbackAllVisionMessages) {
+      const fallbackText = String(
+        cloned.vision_fallback_text ||
+          (index === latestVisionUserIndex ? visionFallbackText : '') ||
+          buildVisionFallbackTextFromContent(cloned.content, { reason: '当前接口不支持 image_url' }) ||
+          '（图片已省略）'
+      ).trim()
+      cloned.content = fallbackText
+    }
+
+    if (!toolFallbackMessage && compatToolCallIdAsFc) {
+      if (cloned.role === 'assistant' && Array.isArray(cloned.tool_calls)) {
+        cloned.tool_calls = cloned.tool_calls.map((tc) => {
+          if (!tc || typeof tc !== 'object') return tc
+          const id = typeof tc.id === 'string' ? tc.id : ''
+          if (!id.startsWith('call_')) return tc
+          const callId = typeof tc.call_id === 'string' && tc.call_id ? tc.call_id : id
+          return { ...tc, id: `fc_${id.slice('call_'.length)}`, call_id: callId }
+        })
+      }
+
+      if (cloned.role === 'tool' && typeof cloned.tool_call_id === 'string' && cloned.tool_call_id.startsWith('call_')) {
+        cloned.call_id = cloned.tool_call_id
+      }
+    }
+
+    if (cloned.role === 'assistant') {
+      if (needsReasoningContent) {
+        const rc = cloned.reasoning_content ?? cloned.reasoning ?? cloned.thinking ?? cloned.thought ?? ''
+        cloned.reasoning_content = typeof rc === 'string' ? rc : stableStringify(rc)
+      } else {
+        delete cloned.reasoning_content
+        delete cloned.reasoning
+        delete cloned.thinking
+        delete cloned.thought
+      }
+    } else {
+      delete cloned.reasoning_content
+      delete cloned.reasoning
+      delete cloned.thinking
+      delete cloned.thought
+    }
+
+    delete cloned.vision_fallback_text
+    delete cloned.synthetic_tool_vision
+
+    msgs.push(cloned)
+  }
+
+  return msgs
+}
+
+function safeJsonParse(text) {
+  try {
+    return { ok: true, value: JSON.parse(text) }
+  } catch (e) {
+    return { ok: false, error: e }
+  }
+}
+
+function stableStringify(obj, spaces = 2) {
+  try {
+    return JSON.stringify(obj, null, spaces)
+  } catch {
+    return String(obj)
+  }
+}
+
+function withTimeout(promise, timeoutMs, label) {
+  const ms = Number(timeoutMs)
+  if (!ms || ms <= 0) return promise
+
+  let timer = null
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = window.setTimeout(() => reject(new Error(`${label || 'Operation'} timed out (${ms}ms)`)), ms)
+  })
+
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timer) window.clearTimeout(timer)
+  })
+}
+
+function createAbortError(message = 'Aborted') {
+  const err = new Error(message)
+  err.name = 'AbortError'
+  return err
+}
+
+function isAbortError(err) {
+  return err?.name === 'AbortError'
+}
+
+function throwIfAborted(abortState, message = 'Aborted') {
+  if (abortState?.aborted) throw createAbortError(message)
+}
+
+function waitForAbortable(promise, abortState, message = 'Aborted') {
+  throwIfAborted(abortState, message)
+  if (!abortState?.onAbort) return promise
+
+  return new Promise((resolve, reject) => {
+    let settled = false
+    let unregisterAbort = null
+    const finish = (fn) => {
+      if (settled) return
+      settled = true
+      try {
+        unregisterAbort?.()
+      } catch {
+        // ignore
+      }
+      fn()
+    }
+
+    unregisterAbort = abortState.onAbort(() => {
+      finish(() => reject(createAbortError(message)))
+    }) || null
+
+    Promise.resolve(promise).then(
+      (value) => finish(() => resolve(value)),
+      (err) => finish(() => reject(err))
+    )
+  })
+}
+
+function closeMcpClientSafely(server, client, pooled = false) {
+  try {
+    if (pooled && server?._id) closePooledMCPClient(server._id)
+    else client?.close?.()
+  } catch {
+    // ignore
+  }
+}
+
+function registerAbortableMcpClient(abortState, server, client, pooled = false) {
+  if (!abortState?.onAbort || !client) return null
+  return abortState.onAbort(() => {
+    closeMcpClientSafely(server, client, pooled)
+  }) || null
+}
+
+function ensureMcpToolsStatus(serverId) {
+  const id = String(serverId || '').trim()
+  if (!id) return null
+  if (!mcpToolsStatusByServerId[id]) {
+    mcpToolsStatusByServerId[id] = {
+      loading: false,
+      toolCount: 0,
+      updatedAt: 0,
+      lastError: '',
+      lastErrorAt: 0
+    }
+  }
+  return mcpToolsStatusByServerId[id]
+}
+
+function getMcpToolsCacheKey(server) {
+  const id = String(server?._id || '').trim()
+  const fingerprint = stableStringify({
+    transportType: server?.transportType,
+    command: server?.command,
+    args: server?.args,
+    url: server?.url,
+    method: server?.method,
+    headers: server?.headers,
+    env: server?.env,
+    cwd: server?.cwd
+  })
+  return `${id}|${fingerprint}`
+}
+
+function normalizeMcpPromptList(server, list) {
+  const serverId = String(server?._id || '').trim()
+  const serverName = String(server?.name || serverId).trim()
+  return (Array.isArray(list) ? list : [])
+    .map((prompt) => {
+      const name = String(prompt?.name || '').trim()
+      if (!name) return null
+      const description = String(prompt?.description || '').trim()
+      return {
+        serverId,
+        serverName,
+        name,
+        label: `${serverName} / ${name}`,
+        description,
+        arguments: normalizeMcpPromptArgumentDefinitions(prompt),
+        disabled: !!server?.disabled
+      }
+    })
+    .filter(Boolean)
+}
+
+function filterAllowedMcpTools(server, list) {
+  const allow = Array.isArray(server?.allowTools) ? server.allowTools.map((x) => String(x || '').trim()).filter(Boolean) : []
+  if (!allow.length) return Array.isArray(list) ? list : []
+  const enabledNames = new Set(allow)
+  return (Array.isArray(list) ? list : []).filter((t) => enabledNames.has(String(t?.name || '').trim()))
+}
+
+async function listMcpToolsForServer(server, options = {}) {
+  const forceRefresh = !!options.forceRefresh
+  const silent = !!options.silent
+  const abortState = options.abortState || null
+
+  throwIfAborted(abortState)
+
+  const serverId = String(server?._id || '').trim()
+  if (!serverId) return { ok: false, tools: [], error: new Error('missing server id') }
+
+  const status = ensureMcpToolsStatus(serverId)
+  const cacheKey = getMcpToolsCacheKey(server)
+  const now = Date.now()
+
+  const cached = mcpListToolsCache.get(cacheKey)
+  if (!forceRefresh && cached && now - cached.at < MCP_LIST_TOOLS_TTL_MS) {
+    if (status) {
+      status.loading = false
+      status.toolCount = Array.isArray(cached.tools) ? cached.tools.length : 0
+      status.updatedAt = cached.at
+      status.lastError = ''
+      status.lastErrorAt = 0
+    }
+    return { ok: true, tools: cached.tools, cached: true, updatedAt: cached.at }
+  }
+
+  const inflight = mcpListToolsInFlight.get(cacheKey)
+  if (inflight) return abortState ? waitForAbortable(inflight, abortState) : inflight
+
+  const promise = (async () => {
+    if (status) status.loading = true
+
+    let client = null
+    let pooled = false
+    let unregisterAbort = null
+    try {
+      ;({ client, pooled } = getOrCreateMCPClient(server))
+      if (!client?.listTools) {
+        throw new Error('MCP 客户端不可用（未注入 createMCPClient）')
+      }
+
+      const listTimeoutMs = Number(server?.timeout) || 10000
+      unregisterAbort = registerAbortableMcpClient(abortState, server, client, pooled)
+      const list = await waitForAbortable(
+        withTimeout(client.listTools(), listTimeoutMs, `获取 MCP 工具列表：${server.name || server._id}`),
+        abortState
+      )
+      try {
+        unregisterAbort?.()
+      } catch {
+        // ignore
+      }
+      unregisterAbort = null
+      throwIfAborted(abortState)
+      releaseMCPClient(server, client)
+      client = null
+
+      const tools = Array.isArray(list) ? list : Array.isArray(list?.tools) ? list.tools : []
+      const at = Date.now()
+      mcpListToolsCache.set(cacheKey, { at, tools })
+
+      if (status) {
+        status.loading = false
+        status.toolCount = tools.length
+        status.updatedAt = at
+        status.lastError = ''
+        status.lastErrorAt = 0
+      }
+
+      return { ok: true, tools, cached: false, updatedAt: at }
+    } catch (err) {
+      try {
+        unregisterAbort?.()
+      } catch {
+        // ignore
+      }
+      unregisterAbort = null
+
+      if (isAbortError(err) || abortState?.aborted) {
+        if (status) status.loading = false
+        throw createAbortError()
+      }
+
+      closeMcpClientSafely(server, client, pooled)
+
+      const errorText = err?.message || String(err)
+      if (status) {
+        status.loading = false
+        status.lastError = errorText
+        status.lastErrorAt = Date.now()
+      }
+
+      if (!silent) console.warn('listMcpToolsForServer failed', serverId, err)
+      return { ok: false, tools: [], error: err }
+    } finally {
+      try {
+        unregisterAbort?.()
+      } catch {
+        // ignore
+      }
+    }
+  })()
+
+  mcpListToolsInFlight.set(cacheKey, promise)
+  promise.finally(() => mcpListToolsInFlight.delete(cacheKey))
+  return promise
+}
+
+async function listMcpPromptsForServer(server, options = {}) {
+  const forceRefresh = !!options.forceRefresh
+  const abortState = options.abortState || null
+  throwIfAborted(abortState)
+
+  const serverId = String(server?._id || '').trim()
+  if (!serverId) return { ok: false, prompts: [], error: new Error('missing server id') }
+  if (server?.disabled) return { ok: true, prompts: [], disabled: true }
+
+  const cacheKey = getMcpToolsCacheKey(server)
+  const now = Date.now()
+  const cached = mcpListPromptsCache.get(cacheKey)
+  if (!forceRefresh && cached && now - cached.at < MCP_LIST_PROMPTS_TTL_MS) {
+    return { ok: true, prompts: cached.prompts, cached: true, updatedAt: cached.at }
+  }
+
+  const inflight = mcpListPromptsInFlight.get(cacheKey)
+  if (inflight) return abortState ? waitForAbortable(inflight, abortState) : inflight
+
+  const promise = (async () => {
+    let client = null
+    let pooled = false
+    let unregisterAbort = null
+    try {
+      ;({ client, pooled } = getOrCreateMCPClient(server))
+      if (!client?.listPrompts) {
+        throw new Error('MCP 客户端不支持 prompts/list')
+      }
+
+      const listTimeoutMs = Number(server?.timeout) || 10000
+      unregisterAbort = registerAbortableMcpClient(abortState, server, client, pooled)
+      const list = await waitForAbortable(
+        withTimeout(client.listPrompts(), listTimeoutMs, `获取 MCP 提示词列表：${server.name || server._id}`),
+        abortState
+      )
+      try {
+        unregisterAbort?.()
+      } catch {
+        // ignore
+      }
+      unregisterAbort = null
+      throwIfAborted(abortState)
+      releaseMCPClient(server, client)
+      client = null
+
+      const promptsList = Array.isArray(list) ? list : Array.isArray(list?.prompts) ? list.prompts : []
+      const prompts = normalizeMcpPromptList(server, promptsList)
+      const at = Date.now()
+      mcpListPromptsCache.set(cacheKey, { at, prompts })
+      return { ok: true, prompts, cached: false, updatedAt: at }
+    } catch (err) {
+      try {
+        unregisterAbort?.()
+      } catch {
+        // ignore
+      }
+      closeMcpClientSafely(server, client, pooled)
+      return { ok: false, prompts: [], error: err }
+    } finally {
+      mcpListPromptsInFlight.delete(cacheKey)
+    }
+  })()
+
+  mcpListPromptsInFlight.set(cacheKey, promise)
+  return promise
+}
+
+async function ensureMcpPromptCatalogLoaded(options = {}) {
+  const forceRefresh = !!options.forceRefresh
+  const silent = !!options.silent
+  if (mcpPromptCatalogLoadPromise && !forceRefresh) return mcpPromptCatalogLoadPromise
+
+  mcpPromptCatalogLoadPromise = (async () => {
+    const servers = (Array.isArray(activeMcpServers.value) ? activeMcpServers.value : []).filter((server) => server && server._id && !server.disabled)
+    if (!servers.length) {
+      mcpPromptCatalog.value = []
+      return []
+    }
+
+    loadingMcpPrompts.value = true
+    try {
+      const results = await Promise.all(servers.map((server) => listMcpPromptsForServer(server, { forceRefresh })))
+      const promptsList = []
+      results.forEach((result, index) => {
+        if (result?.ok) {
+          promptsList.push(...(Array.isArray(result.prompts) ? result.prompts : []))
+          return
+        }
+        if (!silent) {
+          const server = servers[index]
+          message.warning(`MCP 提示词加载失败：${server?.name || server?._id || ''} ${result?.error?.message || result?.error || ''}`.trim())
+        }
+      })
+      promptsList.sort((a, b) => String(a.serverName || '').localeCompare(String(b.serverName || ''), 'zh-Hans-CN') || String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN'))
+      mcpPromptCatalog.value = promptsList
+      return promptsList
+    } finally {
+      loadingMcpPrompts.value = false
+      mcpPromptCatalogLoadPromise = null
+    }
+  })()
+
+  return mcpPromptCatalogLoadPromise
+}
+
+function buildMcpPromptArgsFromModal() {
+  const args = selectedMcpPromptArgs.value
+  if (Array.isArray(args) && args.length) {
+    return buildMcpArgsFromForm(args, promptMcpArgsForm)
+  }
+
+  return undefined
+}
+
+function stringifyPromptContentBlock(content) {
+  if (content === undefined || content === null) return ''
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) return content.map(stringifyPromptContentBlock).filter(Boolean).join('\n\n')
+  if (typeof content !== 'object') return String(content)
+
+  const type = String(content.type || '').trim()
+  if (type === 'text') return String(content.text || '').trim()
+  if (type === 'image') return `[图片${content.mimeType ? `：${content.mimeType}` : ''}]`
+  if (type === 'audio') return `[音频${content.mimeType ? `：${content.mimeType}` : ''}]`
+  if (type === 'resource') {
+    const resource = content.resource && typeof content.resource === 'object' ? content.resource : {}
+    if (typeof resource.text === 'string') return resource.text
+    if (resource.uri) return `[资源：${resource.uri}]`
+  }
+  if (content.uri) return `[资源：${content.uri}]`
+  return stableStringify(content)
+}
+
+function formatMcpPromptResultForComposer(result, item) {
+  const messages = Array.isArray(result?.messages) ? result.messages : []
+  const serverName = String(item?.serverName || item?.serverId || '').trim()
+  const promptName = String(item?.name || '').trim()
+  const header = `MCP Prompt: ${[serverName, promptName].filter(Boolean).join(' / ')}`
+
+  if (!messages.length) {
+    const fallback = stringifyPromptContentBlock(result?.content ?? result?.text ?? result)
+    return fallback ? `${header}\n\n${fallback}` : header
+  }
+
+  const blocks = messages
+    .map((messageItem) => {
+      const role = String(messageItem?.role || 'user').trim()
+      const content = stringifyPromptContentBlock(messageItem?.content).trim()
+      if (!content) return ''
+      const roleLabel = role === 'user' ? 'User' : role === 'assistant' ? 'Assistant' : role === 'system' ? 'System' : role
+      return `${roleLabel}:\n${content}`
+    })
+    .filter(Boolean)
+
+  return [header, ...blocks].filter(Boolean).join('\n\n').trim()
+}
+
+function insertTextIntoComposer(text) {
+  const insertion = String(text || '').trim()
+  if (!insertion) return
+
+  const raw = String(input.value || '')
+  const el = getComposerTextareaEl()
+  const start = el?.selectionStart ?? raw.length
+  const end = el?.selectionEnd ?? start
+  const before = raw.slice(0, start)
+  const after = raw.slice(end)
+  const prefix = before && !/[\s\n]$/.test(before) ? '\n\n' : ''
+  const suffix = after && !/^[\s\n]/.test(after) ? '\n\n' : ''
+  input.value = `${before}${prefix}${insertion}${suffix}${after}`
+  focusComposerAt(before.length + prefix.length + insertion.length)
+}
+
+async function applyMcpPromptToComposer(item, args) {
+  const serverId = String(item?.serverId || '').trim()
+  const promptName = String(item?.name || '').trim()
+  if (!serverId || !promptName) return false
+
+  const server = (mcpServers.value || []).find((candidate) => candidate?._id === serverId) || null
+  if (!server || server.disabled) {
+    message.warning('该 MCP 不可用，请先到设置页启用')
+    return false
+  }
+
+  let client = null
+  let pooled = false
+  try {
+    ;({ client, pooled } = getOrCreateMCPClient(server))
+    if (!client?.getPrompt && !client?.sendRequest) throw new Error('MCP 客户端不支持 prompts/get')
+
+    const timeoutMs = Number(server?.timeout) || 30000
+    const result = await withTimeout(getMcpPrompt(client, promptName, args), timeoutMs, `获取 MCP 提示词：${server.name || server._id} / ${promptName}`)
+    releaseMCPClient(server, client)
+    client = null
+
+    insertTextIntoComposer(formatMcpPromptResultForComposer(result, item))
+    message.success('MCP 提示词已插入输入框，可编辑后发送')
+    return true
+  } catch (err) {
+    closeMcpClientSafely(server, client, pooled)
+    message.error('获取 MCP 提示词失败：' + (err?.message || String(err)))
+    return false
+  }
+}
+
+function normalizeOneLine(text, maxLen = 120) {
+  const s = String(text || '')
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!s) return ''
+  if (!maxLen || s.length <= maxLen) return s
+  return s.slice(0, Math.max(0, maxLen - 3)) + '...'
+}
+
+function buildToolArgsHint(tool) {
+  const schema = tool?.inputSchema
+  if (!schema || typeof schema !== 'object') return null
+
+  if (!isObjectLikeToolInputSchema(schema)) {
+    const rawType = Array.isArray(schema?.type) ? schema.type.filter(Boolean).join('|') : String(schema?.type || '').trim()
+    return rawType ? { input_type: rawType } : { input_type: 'any' }
+  }
+
+  const props = schema?.properties && typeof schema.properties === 'object' ? schema.properties : {}
+  const propKeys = Object.keys(props || {}).map((k) => String(k || '').trim()).filter(Boolean)
+
+  const requiredRaw = Array.isArray(schema?.required) ? schema.required : []
+  const required = requiredRaw.map((k) => String(k || '').trim()).filter(Boolean)
+  const requiredSet = new Set(required)
+
+  const optionalAll = propKeys.filter((k) => !requiredSet.has(k))
+  const optional = optionalAll.slice(0, MCP_CATALOG_MAX_OPTIONAL_KEYS_PER_TOOL)
+  const optionalTruncated = Math.max(0, optionalAll.length - optional.length)
+
+  const out = {}
+  if (required.length) out.required = required
+  if (optional.length) out.optional = optional
+  if (optionalTruncated > 0) out.optional_truncated = optionalTruncated
+
+  return Object.keys(out).length ? out : null
+}
+
+function buildMcpToolHint(tool) {
+  const name = String(tool?.name || '').trim()
+  if (!name) return null
+  const hint = { name }
+  const d = normalizeOneLine(tool?.description || '', 90)
+  if (d) hint.description = d
+  const argsHint = buildToolArgsHint(tool)
+  if (argsHint) Object.assign(hint, argsHint)
+  return hint
+}
+
+function upsertPinnedMcpToolHint(serverId, tool) {
+  const id = String(serverId || '').trim()
+  if (!id) return
+  const hint = buildMcpToolHint(tool)
+  if (!hint?.name) return
+
+  const prev = mcpPinnedToolHintsByServerId.get(id)
+  const list = Array.isArray(prev) ? prev : []
+  const next = [hint, ...list.filter((x) => String(x?.name || '') !== hint.name)]
+  if (next.length > MCP_PINNED_TOOL_HINTS_MAX_PER_SERVER) next.length = MCP_PINNED_TOOL_HINTS_MAX_PER_SERVER
+  mcpPinnedToolHintsByServerId.set(id, next)
+  mcpPinnedToolHintsRevision.value += 1
+}
+
+function clearPinnedMcpToolHints() {
+  try {
+    mcpPinnedToolHintsByServerId.clear()
+  } catch {
+    // ignore
+  }
+  mcpPinnedToolHintsRevision.value += 1
+}
+
+function buildMcpToolCatalogEntry(server, tools) {
+  const serverId = String(server?._id || '').trim()
+  const serverName = String(server?.name || serverId).trim() || serverId
+
+  const allow = Array.isArray(server?.allowTools) ? server.allowTools.map((x) => String(x || '').trim()).filter(Boolean) : []
+  const allowMode = allow.length ? 'whitelist' : 'all'
+
+  const allowed = filterAllowedMcpTools(server, tools)
+  const allNames = allowed.map((t) => String(t?.name || '').trim()).filter(Boolean)
+  const toolNames = allNames.slice(0, MCP_CATALOG_MAX_TOOL_NAMES_PER_SERVER)
+  const toolNamesTruncated = allNames.length > toolNames.length
+
+  const hints = []
+  for (const t of allowed) {
+    if (hints.length >= MCP_CATALOG_MAX_TOOL_HINTS_PER_SERVER) break
+    const hint = buildMcpToolHint(t)
+    // 只保留对参数有帮助的提示，避免无意义膨胀
+    if (hint && (hint.description || hint.required || hint.optional || hint.input_type)) hints.push(hint)
+  }
+
+  return {
+    ok: true,
+    server_id: serverId,
+    server_name: serverName,
+    keepAlive: !!server?.keepAlive,
+    allow_mode: allowMode,
+    allow_count: allow.length,
+    tool_count: allNames.length,
+    tool_names: toolNames,
+    tool_names_truncated: toolNamesTruncated,
+    tool_hints: hints,
+    updated_at: Date.now()
+  }
+}
+
+function setMcpToolCatalogEntry(serverId, entry) {
+  const id = String(serverId || '').trim()
+  if (!id) return
+  mcpToolCatalogByServerId.set(id, entry)
+  mcpToolCatalogRevision.value += 1
+}
+
+function clearMcpToolCatalog() {
+  try {
+    mcpToolCatalogByServerId.clear()
+  } catch {
+    // ignore
+  }
+  mcpToolCatalogRevision.value += 1
+}
+
+async function warmMcpToolCatalogForServers(servers, options = {}) {
+  const forceRefresh = !!options.forceRefresh
+  const abortState = options.abortState || null
+  const list = (Array.isArray(servers) ? servers : []).filter((s) => s && s._id && !s.disabled)
+  if (!list.length) return
+
+  throwIfAborted(abortState)
+  const results = await Promise.allSettled(list.map((s) => listMcpToolsForServer(s, { forceRefresh, silent: true, abortState })))
+  throwIfAborted(abortState)
+  list.forEach((server, idx) => {
+    const r = results[idx]
+    if (!r || r.status !== 'fulfilled' || !r.value?.ok) {
+      const err = r?.status === 'fulfilled' ? r.value?.error : r?.reason
+      setMcpToolCatalogEntry(String(server._id), {
+        ok: false,
+        server_id: String(server._id),
+        server_name: server.name || server._id,
+        keepAlive: !!server.keepAlive,
+        error: err?.message || String(err || 'listTools failed'),
+        updated_at: Date.now()
+      })
+      return
+    }
+
+    const entry = buildMcpToolCatalogEntry(server, r.value.tools)
+    setMcpToolCatalogEntry(String(server._id), entry)
+  })
+}
+
+function makeToolFunctionName(serverId, toolName) {
+  const raw = `mcp__${serverId}__${toolName}`
+  const safe = raw.replace(/[^a-zA-Z0-9_-]/g, '_')
+  if (safe.length <= 64) return safe
+  let hash = 0
+  for (let i = 0; i < safe.length; i++) hash = (hash * 31 + safe.charCodeAt(i)) >>> 0
+  return `${safe.slice(0, 55)}_${hash.toString(16).slice(0, 8)}`
+}
+
+function sanitizeToolInputSchemaForProvider(schemaRaw) {
+  const schema = deepCopyJson(schemaRaw, null)
+  const out = schema && typeof schema === 'object' && !Array.isArray(schema) ? schema : {}
+
+  // OpenAI/兼容接口限制：顶层 schema 必须是 object，且不允许 anyOf/oneOf/allOf/enum/not 等关键字
+  out.type = 'object'
+  if (!out.properties || typeof out.properties !== 'object' || Array.isArray(out.properties)) out.properties = {}
+  if (!('additionalProperties' in out)) out.additionalProperties = false
+  if (!Array.isArray(out.required)) delete out.required
+
+  delete out.oneOf
+  delete out.anyOf
+  delete out.allOf
+  delete out.enum
+  delete out.not
+
+  return out
+}
+
+function isObjectLikeToolInputSchema(schemaRaw) {
+  if (!schemaRaw || typeof schemaRaw !== 'object' || Array.isArray(schemaRaw)) return false
+  const type = schemaRaw.type
+  if (typeof type === 'string') return type === 'object'
+  if (Array.isArray(type)) return type.includes('object')
+  return !!(schemaRaw.properties && typeof schemaRaw.properties === 'object' && !Array.isArray(schemaRaw.properties))
+}
+
+function buildProviderToolDefinition(inputSchemaRaw) {
+  const fallback = { type: 'object', properties: {}, additionalProperties: false }
+  if (!inputSchemaRaw || typeof inputSchemaRaw !== 'object' || Array.isArray(inputSchemaRaw)) {
+    return {
+      parameters: fallback,
+      wrapped: false,
+      unwrapArgs(argsObj) {
+        return argsObj && typeof argsObj === 'object' && !Array.isArray(argsObj) ? argsObj : {}
+      }
+    }
+  }
+
+  if (isObjectLikeToolInputSchema(inputSchemaRaw)) {
+    return {
+      parameters: sanitizeToolInputSchemaForProvider(inputSchemaRaw) || fallback,
+      wrapped: false,
+      unwrapArgs(argsObj) {
+        return argsObj && typeof argsObj === 'object' && !Array.isArray(argsObj) ? argsObj : {}
+      }
+    }
+  }
+
+  const nested = deepCopyJson(inputSchemaRaw, null)
+  return {
+    parameters: {
+      type: 'object',
+      properties: {
+        input: nested
+      },
+      required: ['input'],
+      additionalProperties: false
+    },
+    wrapped: true,
+    unwrapArgs(argsObj) {
+      if (!argsObj || typeof argsObj !== 'object' || Array.isArray(argsObj)) return undefined
+      return argsObj.input
+    }
+  }
+}
+
+function buildProviderToolDescription(server, tool, definition) {
+  const base = tool?.description ? `[${server.name || server._id}] ${tool.description}` : `[${server.name || server._id}] ${tool?.name || ''}`
+  if (!definition?.wrapped) return base
+  return `${base} (the original inputSchema top level is not an object; call it with {"input": ...})`
+}
+
+async function buildToolsBundle() {
+  const functionMap = new Map()
+  const tools = []
+
+  // 内置工具：按需启用 agent 预设技能，并自动挂载对应 MCP
+  const agentSet = agentSkillIdSet.value
+  const hasAgentSkillsSelected = selectedSkillObjects.value.some((s) => {
+    const id = s?._id
+    return !!id && agentSet.has(id)
+  })
+  if (hasAgentSkillsSelected) {
+    functionMap.set('use_skill', { type: 'internal', internal: 'use_skill', serverName: 'Skill', toolName: 'use_skill' })
+    tools.push({
+      type: 'function',
+      function: {
+        name: 'use_skill',
+        description:
+          'Enable one of the already-selected skills. Prefer the skill id shown in the system prompt. After enabling, the full skill content will be injected into the system prompt.',
+        parameters: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', description: '技能 _id，强烈推荐，来自技能块中的 id' },
+            name: { type: 'string', description: '技能名称，兜底字段，不区分大小写，可能重名' },
+            skill_id: { type: 'string', description: 'Alias of id for compatibility' },
+            skill_name: { type: 'string', description: 'Alias of name for compatibility' }
+          },
+          additionalProperties: false
+        }
+      }
+    })
+  }
+
+  const servers = activeMcpServers.value.filter((s) => !s.disabled)
+
+  for (const server of servers) {
+    let client = null
+    let pooled = false
+    try {
+      ;({ client, pooled } = getOrCreateMCPClient(server))
+      if (!client?.listTools) {
+        throw new Error('MCP 客户端不可用（createMCPClient 未注入）')
+      }
+
+      const listTimeoutMs = Number(server?.timeout) || 10000
+      const list = await withTimeout(client.listTools(), listTimeoutMs, `获取 MCP 工具列表：${server.name || server._id}`)
+      releaseMCPClient(server, client)
+      client = null
+
+      const allow = Array.isArray(server.allowTools) ? server.allowTools : []
+      const enabledNames = allow.length ? new Set(allow) : null
+
+      ;(list || [])
+        .filter((t) => (enabledNames ? enabledNames.has(t.name) : true))
+        .forEach((t) => {
+          const fnName = makeToolFunctionName(server._id, t.name)
+          const toolDef = buildProviderToolDefinition(t.inputSchema)
+          functionMap.set(fnName, {
+            serverId: server._id,
+            toolName: t.name,
+            serverName: server.name || server._id,
+            unwrapArgs: toolDef.unwrapArgs
+          })
+
+          tools.push({
+            type: 'function',
+            function: {
+              name: fnName,
+              description: buildProviderToolDescription(server, t, toolDef),
+              parameters: toolDef.parameters
+            }
+          })
+        })
+    } catch (err) {
+      try {
+        if (pooled && server?._id) closePooledMCPClient(server._id)
+        else client?.close?.()
+      } catch {
+        // ignore
+      }
+      session.messages.push(
+        createDisplayMessage(
+          'tool',
+          `### MCP 工具加载失败\n- 服务：**${server.name || server._id}**\n- 错误：${err.message || String(err)}`,
+          { toolMeta: `${server.name || server._id} / MCP` }
+        )
+      )
+    }
+  }
+
+  return { tools, map: functionMap }
+}
+
+async function buildToolsBundleV2(options = {}) {
+  const abortState = options.abortState || null
+  const functionMap = new Map()
+  const tools = []
+  const finalizeBundle = () => {
+    syncLastBuiltRequestToolsStats(tools)
+    return { tools, map: functionMap }
+  }
+
+  throwIfAborted(abortState)
+
+  if (webSearchEnabled.value) {
+    functionMap.set('web_search', { type: 'internal', internal: 'web_search', serverName: '内置联网', toolName: 'web_search' })
+    functionMap.set('web_read', { type: 'internal', internal: 'web_read', serverName: '内置联网', toolName: 'web_read' })
+    tools.push(
+      {
+        type: 'function',
+        function: {
+          name: 'web_search',
+          description: INTERNAL_TOOL_SPECS.webSearch.description,
+          parameters: INTERNAL_TOOL_SPECS.webSearch.parameters
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'web_read',
+          description: INTERNAL_TOOL_SPECS.webRead.description,
+          parameters: INTERNAL_TOOL_SPECS.webRead.parameters
+        }
+      }
+    )
+  }
+
+  const agentSet = agentSkillIdSet.value
+  const hasAgentSkillsSelected = selectedSkillObjects.value.some((s) => {
+    const id = String(s?._id || '').trim()
+    return !!id && agentSet.has(id)
+  })
+  const hasDirectorySkillsSelected = selectedSkillObjects.value.some((skill) => isDirectorySkill(skill))
+  const hasRunnableSkillScriptsSelected = selectedSkillObjects.value.some((skill) => {
+    return isDirectorySkill(skill) && getSkillScriptCatalog(skill).length > 0
+  })
+  const hasActivatableSkillsSelected = selectedSkillObjects.value.some((skill) => {
+    const id = String(skill?._id || '').trim()
+    return !!id && (agentSet.has(id) || isDirectorySkill(skill))
+  })
+
+  if (hasActivatableSkillsSelected) {
+    functionMap.set('use_skill', { type: 'internal', internal: 'use_skill', serverName: 'Skill', toolName: 'use_skill' })
+    functionMap.set('use_skills', { type: 'internal', internal: 'use_skills', serverName: 'Skill', toolName: 'use_skills' })
+    functionMap.set('activate_all_agent_skills', {
+      type: 'internal',
+      internal: 'activate_all_agent_skills',
+      serverName: 'Skill',
+      toolName: 'activate_all_agent_skills'
+    })
+
+    tools.push({
+      type: 'function',
+      function: {
+        name: 'use_skill',
+        description: INTERNAL_TOOL_SPECS.useSkill.description,
+        parameters: INTERNAL_TOOL_SPECS.useSkill.parameters
+      }
+    })
+
+    tools.push({
+      type: 'function',
+      function: {
+        name: 'use_skills',
+        description: INTERNAL_TOOL_SPECS.useSkills.description,
+        parameters: INTERNAL_TOOL_SPECS.useSkills.parameters
+      }
+    })
+
+    if (hasDirectorySkillsSelected) {
+      functionMap.set('read_skill_file', {
+        type: 'internal',
+        internal: 'read_skill_file',
+        serverName: 'Skill',
+        toolName: 'read_skill_file'
+      })
+
+      tools.push({
+        type: 'function',
+        function: {
+          name: 'read_skill_file',
+          description: INTERNAL_TOOL_SPECS.readSkillFile.description,
+          parameters: INTERNAL_TOOL_SPECS.readSkillFile.parameters
+        }
+      })
+    }
+
+    if (hasRunnableSkillScriptsSelected) {
+      functionMap.set('run_skill_script', {
+        type: 'internal',
+        internal: 'run_skill_script',
+        serverName: 'Skill',
+        toolName: 'run_skill_script'
+      })
+
+      tools.push({
+        type: 'function',
+        function: {
+          name: 'run_skill_script',
+          description: INTERNAL_TOOL_SPECS.runSkillScript.description,
+          parameters: INTERNAL_TOOL_SPECS.runSkillScript.parameters
+        }
+      })
+    }
+
+    if (hasAgentSkillsSelected) {
+      tools.push({
+        type: 'function',
+        function: {
+          name: 'activate_all_agent_skills',
+          description: INTERNAL_TOOL_SPECS.activateAllAgentSkills.description,
+          parameters: INTERNAL_TOOL_SPECS.activateAllAgentSkills.parameters
+        }
+      })
+    }
+  }
+
+  const servers = activeMcpServers.value.filter((s) => s && !s.disabled && s._id)
+
+  const desiredMode = String(toolMode.value || 'auto')
+  let mode = desiredMode
+  if (mode !== 'expanded' && mode !== 'compact') mode = 'auto'
+
+  const addCompactMcpTools = () => {
+    functionMap.set('mcp_discover', { type: 'internal', internal: 'mcp_discover', serverName: 'MCP', toolName: 'mcp_discover' })
+    functionMap.set('mcp_call', { type: 'internal', internal: 'mcp_call', serverName: 'MCP', toolName: 'mcp_call' })
+
+    tools.push(
+      {
+        type: 'function',
+        function: {
+          name: 'mcp_discover',
+          description: INTERNAL_TOOL_SPECS.mcpDiscover.description,
+          parameters: INTERNAL_TOOL_SPECS.mcpDiscover.parameters
+        }
+      },
+      {
+        type: 'function',
+        function: {
+          name: 'mcp_call',
+          description: INTERNAL_TOOL_SPECS.mcpCall.description,
+          parameters: INTERNAL_TOOL_SPECS.mcpCall.parameters
+        }
+      }
+    )
+  }
+
+  if (mode === 'compact') {
+    effectiveToolMode.value = 'compact'
+
+    // 保持 keepAlive 行为：在精简模式下也尽量预连接需要长连接的 MCP
+    servers
+      .filter((s) => s && s.keepAlive)
+      .forEach((s) => {
+        try {
+          getOrCreateMCPClient(s)
+        } catch {
+          // ignore
+        }
+      })
+
+    addCompactMcpTools()
+    await warmMcpToolCatalogForServers(servers, { forceRefresh: false, abortState })
+    throwIfAborted(abortState)
+    return finalizeBundle()
+  }
+
+  const shouldUseCompactByAuto = async () => {
+    if (mode !== 'auto') return false
+    let total = 0
+    for (const server of servers) {
+      throwIfAborted(abortState)
+      const listResult = await listMcpToolsForServer(server, { silent: true, abortState })
+      if (!listResult.ok) continue
+      const allowed = filterAllowedMcpTools(server, listResult.tools)
+      total += allowed.length
+      if (total > MAX_EXPANDED_TOOL_COUNT) return true
+    }
+    return false
+  }
+
+  if (await shouldUseCompactByAuto()) {
+    effectiveToolMode.value = 'compact'
+    servers
+      .filter((s) => s && s.keepAlive)
+      .forEach((s) => {
+        try {
+          getOrCreateMCPClient(s)
+        } catch {
+          // ignore
+        }
+      })
+    addCompactMcpTools()
+    await warmMcpToolCatalogForServers(servers, { forceRefresh: false, abortState })
+    throwIfAborted(abortState)
+    return finalizeBundle()
+  }
+
+  effectiveToolMode.value = 'expanded'
+
+  for (const server of servers) {
+    throwIfAborted(abortState)
+    const listResult = await listMcpToolsForServer(server, { silent: true, abortState })
+    if (!listResult.ok) {
+      const err = listResult.error || new Error('listTools failed')
+      throwIfAborted(abortState)
+      session.messages.push(
+        createDisplayMessage(
+          'tool',
+          `### MCP 工具加载失败\n- 服务：**${server.name || server._id}**\n- 错误：${err.message || String(err)}`,
+          { toolMeta: `${server.name || server._id} / MCP` }
+        )
+      )
+      continue
+    }
+
+    const allowedTools = filterAllowedMcpTools(server, listResult.tools)
+    throwIfAborted(abortState)
+    for (const t of allowedTools) {
+      if (!t?.name) continue
+      const fnName = makeToolFunctionName(server._id, t.name)
+      const toolDef = buildProviderToolDefinition(t.inputSchema)
+      functionMap.set(fnName, {
+        serverId: server._id,
+        toolName: t.name,
+        serverName: server.name || server._id,
+        unwrapArgs: toolDef.unwrapArgs
+      })
+
+      tools.push({
+        type: 'function',
+        function: {
+          name: fnName,
+          description: buildProviderToolDescription(server, t, toolDef),
+          parameters: toolDef.parameters
+        }
+      })
+    }
+  }
+
+  throwIfAborted(abortState)
+  return finalizeBundle()
+}
+
+async function streamChatCompletion({ baseUrl, apiKey, body, signal, onDelta, abortState = null }) {
+  const base = normalizeBaseUrl(baseUrl)
+  const candidates = [`${base}/chat/completions`]
+  if (!/\/v1$/.test(base)) candidates.push(`${base}/v1/chat/completions`)
+  const throwIfStreamingAborted = () => {
+    if (abortState?.aborted || signal?.aborted) throw createAbortError()
+  }
+
+  let resp = null
+  let usedUrl = candidates[0]
+  let lastNetworkError = null
+
+  for (const url of candidates) {
+    usedUrl = url
+    try {
+      resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`
+        },
+        body: JSON.stringify(body),
+        signal
+      })
+
+      // 常见误配置：baseUrl 忘了带 /v1，会导致 404；此时自动尝试 /v1/chat/completions
+      if (resp.status === 404 && url !== candidates[candidates.length - 1]) continue
+      break
+    } catch (err) {
+      lastNetworkError = err
+      if (url !== candidates[candidates.length - 1]) continue
+      throw err
+    }
+  }
+
+  if (!resp) {
+    throw lastNetworkError || new Error('Request failed: no response received')
+  }
+
+  if (!resp.ok) {
+    const responseText = await resp.text()
+    const parsedResponse = safeJsonParse(responseText)
+    const errJson = parsedResponse.ok ? parsedResponse.value : null
+    const detail = errJson?.error?.message || (parsedResponse.ok ? stableStringify(errJson) : responseText)
+    throw new Error(`请求失败（HTTP ${resp.status}）：${detail || resp.statusText}\nURL：${usedUrl}`)
+  }
+
+  const toText = (val) => {
+    if (val == null) return ''
+    if (typeof val === 'string') return val
+    if (Array.isArray(val)) return val.map(toText).join('')
+    if (typeof val === 'object') {
+      if (typeof val.text === 'string') return val.text
+      if (typeof val.content === 'string') return val.content
+      return stableStringify(val)
+    }
+    return String(val)
+  }
+
+  let content = ''
+  let reasoning = ''
+  let finishReason = null
+  const toolCallsByIndex = new Map()
+  const payloadSnapshots = []
+
+  const finalize = () => ({
+    content,
+    reasoning,
+    toolCalls: Array.from(toolCallsByIndex.values()),
+    finishReason: finishReason || 'stop',
+    payloads: payloadSnapshots.slice()
+  })
+
+  const applyJson = (json) => {
+    throwIfStreamingAborted()
+    if (!json || typeof json !== 'object') return
+    payloadSnapshots.push(json)
+
+    if (json?.error) {
+      const errText = json?.error?.message || stableStringify(json.error)
+      throw new Error(`请求失败：${errText}\nURL：${usedUrl}`)
+    }
+
+    const choice = json?.choices?.[0] || {}
+    const delta = choice.delta || {}
+    const msg = choice.message || {}
+
+    if (choice.finish_reason) finishReason = choice.finish_reason
+
+    // content：优先处理 delta；若只有 message/text，则按全量内容补齐。
+    const deltaContent = delta.content ?? delta.text
+    if (deltaContent != null) {
+      const deltaText = toText(deltaContent)
+      if (deltaText) {
+        content += deltaText
+        onDelta?.({ type: 'content', delta: deltaText, content })
+      }
+    } else if (msg?.content != null) {
+      const next = toText(msg.content)
+      const deltaText = content && next.startsWith(content) ? next.slice(content.length) : next
+      content = next
+      if (deltaText) onDelta?.({ type: 'content', delta: deltaText, content })
+    } else if (choice?.text != null) {
+      const deltaText = toText(choice.text)
+      if (deltaText) {
+        content += deltaText
+        onDelta?.({ type: 'content', delta: deltaText, content })
+      }
+    } else if (json?.content != null || json?.text != null) {
+      const deltaText = toText(json.content ?? json.text)
+      if (deltaText) {
+        content += deltaText
+        onDelta?.({ type: 'content', delta: deltaText, content })
+      }
+    }
+
+    const deltaReasoning = delta.reasoning ?? delta.reasoning_content ?? delta.thinking ?? delta.thought
+    const msgReasoning = msg.reasoning ?? msg.reasoning_content ?? msg.thinking ?? msg.thought
+    if (deltaReasoning != null) {
+      const deltaText = toText(deltaReasoning)
+      if (deltaText) {
+        reasoning += deltaText
+        onDelta?.({ type: 'reasoning', delta: deltaText, reasoning })
+      }
+    } else if (msgReasoning != null) {
+      const next = toText(msgReasoning)
+      const deltaText = reasoning && next.startsWith(reasoning) ? next.slice(reasoning.length) : next
+      reasoning = next
+      if (deltaText) onDelta?.({ type: 'reasoning', delta: deltaText, reasoning })
+    }
+
+    const deltaToolCalls = delta.tool_calls
+    if (Array.isArray(deltaToolCalls)) {
+      deltaToolCalls.forEach((tc) => {
+        const index = tc.index ?? 0
+        const prev = toolCallsByIndex.get(index) || { id: '', type: 'function', function: { name: '', arguments: '' } }
+        if (tc.id) prev.id = tc.id
+        if (tc.type) prev.type = tc.type
+        if (tc.function?.name) prev.function.name = tc.function.name
+        if (tc.function?.arguments) prev.function.arguments += tc.function.arguments
+        toolCallsByIndex.set(index, prev)
+      })
+      onDelta?.({ type: 'tool_calls', toolCalls: Array.from(toolCallsByIndex.values()) })
+    } else if (Array.isArray(msg?.tool_calls)) {
+      // 兼容直接返回完整 message.tool_calls
+      msg.tool_calls.forEach((tc, i) => {
+        const index = tc.index ?? i
+        toolCallsByIndex.set(index, {
+          id: tc.id || '',
+          type: tc.type || 'function',
+          function: {
+            name: tc.function?.name || '',
+            arguments: tc.function?.arguments || ''
+          }
+        })
+      })
+      if (toolCallsByIndex.size) onDelta?.({ type: 'tool_calls', toolCalls: Array.from(toolCallsByIndex.values()) })
+    }
+  }
+
+  await consumeJsonEventStream({
+    response: resp,
+    signal,
+    isAborted: () => !!abortState?.aborted,
+    onJson: applyJson
+  })
+
+  if (!String(content || '').trim() && payloadSnapshots.length) {
+    content = extractAssistantTextFromPayloads(payloadSnapshots)
+  }
+
+  return finalize()
+}
+
+function createDisplayMessage(role, content = '', extra = {}) {
+  const defaultRender = role === 'assistant' || role === 'thinking' ? 'text' : 'md'
+  const base = { id: newId(), role, content, time: nextDisplayMessageTime(), render: defaultRender }
+  if (role === 'tool' || role === 'tool_call') {
+    base.toolExpanded = false
+    base.toolMeta = ''
+    base.toolStatus = role === 'tool_call' ? 'running' : 'success'
+    base.toolName = ''
+    base.toolServerName = ''
+    base.toolArgsText = ''
+    base.toolAutoApproved = false
+    base.toolSubMeta = ''
+    base.toolTraceStreamId = ''
+    base.toolLiveTrace = []
+    base.toolAgentName = ''
+    base.toolLiveFinalContent = ''
+    base.toolLiveFinalReasoning = ''
+    base.toolLiveRound = 0
+    base.toolResultPayload = null
+  }
+  return reactive({ ...base, ...extra })
+}
+
+async function confirmToolCall({
+  serverName,
+  toolName,
+  argsText,
+  reasoningText,
+  abortState = null,
+  titleText = '确认工具调用',
+  extraLines = []
+}) {
+  throwIfAborted(abortState)
+  return await new Promise((resolve) => {
+    let settled = false
+    let unregisterAbort = null
+    const finish = (value) => {
+      if (settled) return
+      settled = true
+      try {
+        unregisterAbort?.()
+      } catch {
+        // ignore
+      }
+      resolve(value)
+    }
+    const dialogReactive = dialog.warning({
+      title: titleText,
+      content: () =>
+        h('div', { style: { maxWidth: '900px' } }, [
+          h('div', { style: { marginBottom: '8px' } }, [
+            h('div', null, `服务：${serverName}`),
+            h('div', null, `工具：${toolName}`),
+            ...(Array.isArray(extraLines) ? extraLines.map((line) => h('div', null, String(line || '').trim())) : [])
+          ]),
+          reasoningText
+            ? h('div', { style: { marginBottom: '8px' } }, [
+                h('div', { style: { fontWeight: '600' } }, '思考（模型提供）：'),
+                h('pre', { style: { margin: 0, whiteSpace: 'pre-wrap' } }, reasoningText)
+              ])
+            : null,
+          h('div', { style: { fontWeight: '600' } }, '参数：'),
+          h('pre', { style: { margin: 0, whiteSpace: 'pre-wrap' } }, argsText)
+        ]),
+      positiveText: '同意',
+      negativeText: '拒绝',
+      onPositiveClick: () => finish(true),
+      onNegativeClick: () => finish(false),
+      onClose: () => finish(false)
+    })
+    unregisterAbort = abortState?.onAbort?.(() => {
+      try {
+        dialogReactive?.destroy?.()
+      } catch {
+        // ignore
+      }
+      finish(null)
+    }) || null
+  })
+}
+
+function resolveSelectedSkillTarget({ idCandidate = '', nameCandidate = '' } = {}) {
+  const available = Array.isArray(selectedSkillObjects.value) ? selectedSkillObjects.value : []
+
+  const id = String(idCandidate || '').trim()
+  if (id) {
+    const hit = available.find((s) => String(s?._id || '').trim() === id)
+    if (hit) return hit
+  }
+
+  const name = String(nameCandidate || '').trim()
+  if (name) {
+    const norm = name.toLowerCase()
+    return (
+      available.find((s) => String(s?.name || '').trim().toLowerCase() === norm) ||
+      available.find((s) => String(s?._id || '').trim().toLowerCase() === norm) ||
+      available.find((s) => String(s?.name || '').trim().toLowerCase().includes(norm)) ||
+      null
+    )
+  }
+
+  return null
+}
+
+function listSelectedSkillsBrief(limit = 30) {
+  const available = Array.isArray(selectedSkillObjects.value) ? selectedSkillObjects.value : []
+  return available
+    .map((s) => ({ id: s?._id, name: s?.name || s?._id }))
+    .filter((x) => x?.id)
+    .slice(0, limit)
+}
+
+function normalizeSkillScriptPathCandidate(value) {
+  return String(value || '').trim().replace(/\\/g, '/').replace(/^\/+/, '')
+}
+
+function buildSkillScriptChoiceList(skill, limit = 20) {
+  return getSkillScriptCatalog(skill)
+    .slice(0, limit)
+    .map((entry) => ({
+      path: entry.path,
+      name: entry.name || undefined,
+      entry: !!entry.isLikelyEntrypoint || undefined,
+      runtime: entry.runtime || undefined,
+      description: entry.description || undefined,
+      when_to_use: entry.whenToUse || undefined,
+      output_type: entry.outputType || undefined
+    }))
+}
+
+function resolveSkillScriptTarget(skill, pathCandidate = '') {
+  const catalog = getSkillScriptCatalog(skill)
+  if (!catalog.length) {
+    return {
+      ok: false,
+      error: '当前技能没有可执行脚本',
+      catalog: []
+    }
+  }
+
+  const raw = normalizeSkillScriptPathCandidate(pathCandidate)
+  if (!raw) {
+    if (catalog.length === 1) {
+      return {
+        ok: true,
+        path: catalog[0].path,
+        entry: catalog[0],
+        inferred: true
+      }
+    }
+    return {
+      ok: false,
+      error: `path 不能为空；可用脚本：${stableStringify(buildSkillScriptChoiceList(skill))}`,
+      catalog
+    }
+  }
+
+  const norm = raw.toLowerCase()
+  const prefixed = norm.startsWith('scripts/') ? norm : `scripts/${norm}`
+  const basename = norm.split('/').pop() || norm
+  const basenameNoExt = basename.replace(/\.[^.]+$/, '')
+  const pushUnique = (target, entry) => {
+    if (!entry?.path) return
+    if (target.some((item) => item.path === entry.path)) return
+    target.push(entry)
+  }
+
+  const matches = []
+
+  catalog.forEach((entry) => {
+    const entryPath = String(entry?.path || '').trim().toLowerCase()
+    if (entryPath === norm || entryPath === prefixed) pushUnique(matches, entry)
+  })
+
+  if (!matches.length) {
+    catalog.forEach((entry) => {
+      const entryName = String(entry?.name || '').trim().toLowerCase()
+      if (entryName && entryName === norm) pushUnique(matches, entry)
+    })
+  }
+
+  if (!matches.length) {
+    catalog.forEach((entry) => {
+      const entryBase = String(entry?.path || '').trim().toLowerCase().split('/').pop() || ''
+      const entryBaseNoExt = entryBase.replace(/\.[^.]+$/, '')
+      if (entryBase === basename || entryBaseNoExt === basenameNoExt) pushUnique(matches, entry)
+    })
+  }
+
+  if (matches.length === 1) {
+    return {
+      ok: true,
+      path: matches[0].path,
+      entry: matches[0],
+      inferred: normalizeSkillScriptPathCandidate(pathCandidate) !== matches[0].path
+    }
+  }
+
+  if (matches.length > 1) {
+    return {
+      ok: false,
+      error: `脚本路径不唯一，请改用完整 path。候选：${stableStringify(buildSkillScriptChoiceList({ cache: { scriptCatalog: matches } }))}`,
+      catalog
+    }
+  }
+
+  const normalizedFileIndex = getSkillFileIndex(skill)
+  const directPath = [raw, prefixed]
+    .map((item) => normalizeSkillScriptPathCandidate(item))
+    .find((candidate) => candidate && normalizedFileIndex.scripts.includes(candidate) && isRunnableSkillScriptPath(candidate))
+
+  if (directPath) {
+    return {
+      ok: true,
+      path: directPath,
+      entry: {
+        path: directPath,
+        name: directPath.split('/').pop()?.replace(/\.[^.]+$/, '') || directPath,
+        description: '',
+        whenToUse: '',
+        outputType: 'text'
+      },
+      inferred: normalizeSkillScriptPathCandidate(pathCandidate) !== directPath
+    }
+  }
+
+  return {
+    ok: false,
+    error: `未找到脚本：${raw}。可用脚本：${stableStringify(buildSkillScriptChoiceList(skill))}`,
+    catalog
+  }
+}
+
+function resolveActiveMcpServer({ idCandidate = '', nameCandidate = '' } = {}) {
+  const list = Array.isArray(activeMcpServers.value) ? activeMcpServers.value : []
+
+  const id = String(idCandidate || '').trim()
+  if (id) {
+    const hit = list.find((s) => String(s?._id || '').trim() === id)
+    if (hit) return hit
+  }
+
+  const name = String(nameCandidate || '').trim()
+  if (name) {
+    const norm = name.toLowerCase()
+    return (
+      list.find((s) => String(s?.name || '').trim().toLowerCase() === norm) ||
+      list.find((s) => String(s?._id || '').trim().toLowerCase() === norm) ||
+      list.find((s) => String(s?.name || '').trim().toLowerCase().includes(norm)) ||
+      null
+    )
+  }
+
+  return null
+}
+
+function listActiveMcpServersBrief(limit = 30) {
+  const list = Array.isArray(activeMcpServers.value) ? activeMcpServers.value : []
+  return list
+    .filter((s) => s && s._id && !s.disabled)
+    .map((s) => ({
+      id: s._id,
+      name: s.name || s._id,
+      keepAlive: !!s.keepAlive,
+      allowTools: Array.isArray(s.allowTools) && s.allowTools.length ? s.allowTools.length : 'all'
+    }))
+    .slice(0, limit)
+}
+
+function getSkillMcpStatus(skill) {
+  const mcpIds = Array.isArray(skill?.mcp) ? skill.mcp.map((x) => String(x || '').trim()).filter(Boolean) : []
+  const mcpList = Array.isArray(mcpServers.value) ? mcpServers.value : []
+  const mcpById = new Map(mcpList.filter((s) => s && s._id).map((s) => [String(s._id), s]))
+  const mountedMcpIds = mcpIds.filter((id) => mcpById.has(String(id)))
+  const missingMcpIds = mcpIds.filter((id) => !mcpById.has(String(id)))
+  const mountedNames = mountedMcpIds.map((id) => mcpById.get(String(id))?.name || id)
+  return { mcpIds, mountedMcpIds, missingMcpIds, mountedNames }
+}
+
+function getWebOperationsApi() {
+  return window?.webOperations || globalThis?.webOperations || null
+}
+
+function getWebToolMissingText() {
+  return '内置联网服务不可用：preload 未注入 webOperations。请在 uTools 插件环境中运行，或重新构建插件。'
+}
+
+const WEB_TOOL_RESULT_GUIDANCE = '这些结果来自本次运行的联网工具。请优先基于工具结果回答，不要因为模型知识截止时间更早而反复搜索同一问题；资料不足时说明不足。'
+
+function buildWebToolModelContent(result) {
+  const payload = result && typeof result === 'object' ? deepCopyJson(result, {}) : {}
+  return stableStringify({
+    guidance: WEB_TOOL_RESULT_GUIDANCE,
+    ...payload
+  })
+}
+
+function formatWebSearchDisplay(result) {
+  const query = String(result?.query || '').trim()
+  const items = Array.isArray(result?.results) ? result.results : []
+  const lines = [`### 联网搜索结果${query ? `：${query}` : ''}`]
+  if (!items.length) {
+    lines.push('', '未找到可用结果。')
+    if (result?.error) lines.push(`错误：${result.error}`)
+    return lines.join('\n')
+  }
+  items.forEach((item, index) => {
+    const title = String(item?.title || item?.url || `结果 ${index + 1}`).trim()
+    const url = String(item?.url || '').trim()
+    const snippet = truncateInlineText(item?.snippet || '', 360)
+    lines.push('', `${index + 1}. ${url ? `[${title}](${url})` : title}`)
+    if (snippet) lines.push(`   ${snippet}`)
+  })
+  return lines.join('\n')
+}
+
+function formatWebReadDisplay(result) {
+  const title = String(result?.title || result?.finalUrl || result?.url || '网页').trim()
+  const url = String(result?.finalUrl || result?.url || '').trim()
+  const description = truncateInlineText(result?.description || '', 280)
+  const totalChars = Number(result?.totalChars)
+  const text = truncateInlineText(result?.text || '', 1200)
+  const lines = [`### 网页读取结果：${title}`]
+  if (url) lines.push(`- 来源：${url}`)
+  if (description) lines.push(`- 描述：${description}`)
+  if (Number.isFinite(totalChars) && totalChars > 0) {
+    lines.push(`- 正文：${totalChars} 字${result?.truncated ? '（已截断）' : ''}`)
+  }
+  if (text) lines.push('', '#### 摘录', text)
+  return lines.join('\n')
+}
+
+function buildWebToolSubMeta(payload) {
+  if (!payload || typeof payload !== 'object') return ''
+  const kind = String(payload.kind || '').trim()
+  if (kind === 'web_search_result') {
+    const count = Array.isArray(payload.results) ? payload.results.length : 0
+    const engine = String(payload.engine || '').trim()
+    return [`结果 ${count} 条`, engine].filter(Boolean).join(' · ')
+  }
+  if (kind === 'web_read_result') {
+    const title = truncateInlineText(payload.title || payload.finalUrl || payload.url || '', 42)
+    const totalChars = Number(payload.totalChars)
+    return [title, Number.isFinite(totalChars) && totalChars > 0 ? `${totalChars} 字` : ''].filter(Boolean).join(' · ')
+  }
+  return ''
+}
+
+async function executeBuiltinWebTool({ mapping, argsObj, serverName, toolName, abortState = null }) {
+  const api = getWebOperationsApi()
+  if (!api) {
+    return { ok: false, content: getWebToolMissingText(), display: `### 联网工具结果\n- 错误：${getWebToolMissingText()}` }
+  }
+
+  const internal = String(mapping?.internal || '').trim()
+  if (internal === 'web_search') {
+    const query = String(argsObj?.query ?? argsObj?.q ?? '').trim()
+    const limit = Math.min(Math.max(1, Math.floor(Number(argsObj?.limit) || 5)), 10)
+    if (!query) {
+      const errorText = 'query 不能为空'
+      return { ok: false, content: errorText, display: `### 联网搜索结果\n- 错误：${errorText}` }
+    }
+    throwIfAborted(abortState)
+    const result = await waitForAbortable(Promise.resolve(api.webSearch({ query, limit })), abortState)
+    throwIfAborted(abortState)
+    return {
+      ok: result?.ok !== false,
+      content: buildWebToolModelContent(result),
+      display: formatWebSearchDisplay(result),
+      payload: {
+        kind: 'web_search_result',
+        ...(result && typeof result === 'object' ? deepCopyJson(result, {}) : {})
+      },
+      serverName,
+      toolName
+    }
+  }
+
+  if (internal === 'web_read') {
+    const url = String(argsObj?.url || '').trim()
+    const maxChars = Math.min(Math.max(1000, Math.floor(Number(argsObj?.maxChars) || 12000)), 40000)
+    if (!url) {
+      const errorText = 'url 不能为空'
+      return { ok: false, content: errorText, display: `### 网页读取结果\n- 错误：${errorText}` }
+    }
+    throwIfAborted(abortState)
+    const result = await waitForAbortable(Promise.resolve(api.webRead({ url, maxChars })), abortState)
+    throwIfAborted(abortState)
+    return {
+      ok: true,
+      content: buildWebToolModelContent(result),
+      display: formatWebReadDisplay(result),
+      payload: {
+        kind: 'web_read_result',
+        ...(result && typeof result === 'object' ? deepCopyJson(result, {}) : {})
+      },
+      serverName,
+      toolName
+    }
+  }
+
+  return { ok: false, content: `未知联网工具：${internal}`, display: `### 联网工具结果\n- 错误：未知联网工具：${internal}` }
+}
+
+async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState = null) {
+  throwIfAborted(abortState)
+  const fn = toolCall?.function?.name
+  const argsRaw = toolCall?.function?.arguments || ''
+  const mapping = toolMap.get(fn)
+  const serverName = mapping?.serverName || '未知'
+  const toolName = mapping?.toolName || fn
+
+  const parsedArgs = safeJsonParse(argsRaw)
+  const argsObj = parsedArgs.ok && parsedArgs.value && typeof parsedArgs.value === 'object' ? parsedArgs.value : {}
+  const argsText = parsedArgs.ok ? stableStringify(parsedArgs.value) : argsRaw
+
+  const pendingToolMessage = createPendingToolExecutionMessage({
+    serverName,
+    toolName,
+    argsText: argsText || '{}',
+    autoApproved: autoApproveTools.value,
+    argsObj
+  })
+  session.messages.push(pendingToolMessage)
+  await scrollToBottom()
+
+  if (!mapping) {
+    const errorText = `未在工具注册表中找到：${fn}`
+    session.messages.push(createDisplayMessage('tool', `### 工具结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+    return { ok: false, content: errorText }
+  }
+
+  if (!autoApproveTools.value) {
+    const ok = await confirmToolCall({
+      serverName,
+      toolName,
+      argsText: argsText || '{}',
+      reasoningText: lastReasoningText,
+      abortState
+    })
+    if (ok === null) throw createAbortError()
+    throwIfAborted(abortState)
+    if (!ok) {
+      session.messages.push(
+        createDisplayMessage('tool', `### 工具结果\n- 工具：\`${toolName}\`\n- 状态：**已拒绝**`, {
+          toolMeta: `${serverName} / ${toolName}`
+        })
+      )
+      return { ok: false, content: 'The user rejected the tool call' }
+    }
+  }
+
+  if (mapping?.type === 'internal' && (mapping.internal === 'web_search' || mapping.internal === 'web_read')) {
+    try {
+      const exec = await executeBuiltinWebTool({ mapping, argsObj, serverName, toolName, abortState })
+      throwIfAborted(abortState)
+      session.messages.push(
+        createDisplayMessage('tool', exec.display || `### 联网工具结果\n\n\`\`\`json\n${exec.content || ''}\n\`\`\``, {
+          toolMeta: `${serverName} / ${toolName}`,
+          toolName,
+          toolServerName: serverName,
+          toolResultPayload: exec.payload || null,
+          toolSubMeta: buildWebToolSubMeta(exec.payload)
+        })
+      )
+      await scrollToBottom()
+      return exec
+    } catch (err) {
+      if (isAbortError(err) || abortState?.aborted) throw createAbortError()
+      const errorText = err?.message || String(err)
+      session.messages.push(createDisplayMessage('tool', `### 联网工具结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await scrollToBottom()
+      return { ok: false, content: `错误：${errorText}` }
+    }
+  }
+
+  if (mapping?.type === 'internal' && mapping.internal === 'read_skill_file') {
+    const idCandidate = String(argsObj?.id ?? argsObj?._id ?? argsObj?.skillId ?? argsObj?.skill_id ?? '').trim()
+    const pathCandidate = String(argsObj?.path ?? argsObj?.file ?? argsObj?.filePath ?? '').trim()
+    const target = resolveSelectedSkillTarget({ idCandidate })
+
+    if (!target || !target._id) {
+      const errorText = `未找到要读取的技能文件。可用技能：${stableStringify(listSelectedSkillsBrief())}`
+      session.messages.push(createDisplayMessage('tool', `### 技能文件读取结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await scrollToBottom()
+      return { ok: false, content: errorText }
+    }
+
+    if (!pathCandidate) {
+      const errorText = 'path 不能为空'
+      session.messages.push(createDisplayMessage('tool', `### 技能文件读取结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await scrollToBottom()
+      return { ok: false, content: errorText }
+    }
+
+    try {
+      throwIfAborted(abortState)
+      const result = await waitForAbortable(Promise.resolve(readSkillRegistryFile(target._id, pathCandidate)), abortState)
+      throwIfAborted(abortState)
+      const skillId = String(target._id || '').trim()
+      const skillName = String(target.name || target._id || '').trim() || skillId
+      const resolvedPath = String(result?.path || pathCandidate).trim() || pathCandidate
+      const content = String(result?.content || '')
+      const current = getLoadedSkillFilePathSet(skillId)
+      current.add(resolvedPath)
+      loadedSkillFileCacheBySkillId[skillId] = Array.from(current)
+      if (resolvedPath === String(target?.entryFile || 'SKILL.md').trim() || resolvedPath === 'SKILL.md') {
+        loadedSkillContentById[skillId] = content.trim()
+      }
+
+      const resultText = ['OK: read_skill_file', `skill_id: ${skillId}`, `skill_name: ${skillName}`, `path: ${resolvedPath}`, '', content].join('\n')
+      throwIfAborted(abortState)
+      session.messages.push(
+        createDisplayMessage(
+          'tool',
+          `### 技能文件读取结果\n- 技能：**${skillName}**\n- 路径：\`${resolvedPath}\`\n\n\`\`\`\n${content}\n\`\`\``,
+          { toolMeta: `${serverName} / ${toolName}` }
+        )
+      )
+      await scrollToBottom()
+      return { ok: true, content: resultText }
+    } catch (err) {
+      if (isAbortError(err) || abortState?.aborted) throw createAbortError()
+      const errorText = err?.message || String(err)
+      session.messages.push(createDisplayMessage('tool', `### 技能文件读取结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await scrollToBottom()
+      return { ok: false, content: errorText }
+    }
+  }
+
+  if (mapping?.type === 'internal' && mapping.internal === 'run_skill_script') {
+    const idCandidate = String(argsObj?.id ?? argsObj?._id ?? argsObj?.skillId ?? argsObj?.skill_id ?? '').trim()
+    const pathCandidate = String(argsObj?.path ?? argsObj?.script ?? argsObj?.scriptPath ?? '').trim()
+    const nameCandidate = String(argsObj?.name ?? argsObj?.skillName ?? argsObj?.skill_name ?? argsObj?.skill ?? '').trim()
+    const target = resolveSelectedSkillTarget({ idCandidate, nameCandidate })
+
+    if (!target || !target._id) {
+      const errorText = `未找到要执行脚本的技能。可用技能：${stableStringify(listSelectedSkillsBrief())}`
+      session.messages.push(createDisplayMessage('tool', `### 技能脚本执行结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await scrollToBottom()
+      return { ok: false, content: errorText }
+    }
+
+    const resolvedScript = resolveSkillScriptTarget(target, pathCandidate)
+    if (!resolvedScript.ok) {
+      const errorText = resolvedScript.error || '脚本路径无效'
+      session.messages.push(createDisplayMessage('tool', `### 技能脚本执行结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await scrollToBottom()
+      return { ok: false, content: errorText }
+    }
+
+    let successfulScriptResult = null
+    try {
+      throwIfAborted(abortState)
+      const result = await waitForAbortable(
+        Promise.resolve(runSkillRegistryScript(target._id, resolvedScript.path, {
+          args: Array.isArray(argsObj?.args) ? argsObj.args : [],
+          input: argsObj?.input,
+          timeout_ms: argsObj?.timeout_ms
+        })),
+        abortState
+      )
+      throwIfAborted(abortState)
+
+      const skillId = String(target._id || '').trim()
+      const skillName = String(target.name || target._id || '').trim() || skillId
+      const resolvedPath = String(result?.path || resolvedScript.path).trim() || resolvedScript.path
+      const stdout = String(result?.stdout || '')
+      const stderr = String(result?.stderr || '')
+      const exitCode = Number.isFinite(Number(result?.exitCode)) ? Number(result.exitCode) : 0
+      const command = String(result?.command || '').trim()
+      const outputType = String(result?.outputType || (result?.output != null && typeof result.output === 'object' ? 'json' : 'text')).trim() || 'text'
+      const parsedOutput = result?.output === undefined ? null : result.output
+      const scriptMeta = result?.scriptMeta && typeof result.scriptMeta === 'object' ? result.scriptMeta : (resolvedScript.entry || null)
+      const images = extractChatImagesFromToolResult(result)
+      const resultObj = {
+        ok: true,
+        tool: 'run_skill_script',
+        skill_id: skillId,
+        skill_name: skillName,
+        path: resolvedPath,
+        inferred_path: !!resolvedScript.inferred,
+        command: command || '',
+        exit_code: exitCode,
+        output_type: outputType,
+        output: parsedOutput,
+        stdout,
+        stderr,
+        script_meta: scriptMeta
+      }
+      const resultText = stableStringify(resultObj)
+
+      const sections = [
+        `### 技能脚本执行结果\n- 技能：**${skillName}**\n- 路径：\`${resolvedPath}\`\n- 退出码：**${exitCode}**${command ? `\n- 命令：\`${command}\`` : ''}`
+      ]
+      if (scriptMeta?.description || scriptMeta?.whenToUse) {
+        sections.push(
+          [
+            '#### 脚本信息',
+            scriptMeta?.runtime ? `- 运行时：${scriptMeta.runtime}` : '',
+            scriptMeta?.description ? `- 描述：${scriptMeta.description}` : '',
+            scriptMeta?.whenToUse ? `- 使用场景：${scriptMeta.whenToUse}` : ''
+          ].filter(Boolean).join('\n')
+        )
+      } else if (scriptMeta?.runtime) {
+        sections.push(`#### 脚本信息\n- 运行时：${scriptMeta.runtime}`)
+      }
+      if (outputType === 'json' && parsedOutput !== null) {
+        sections.push(`#### 输出（JSON）\n\`\`\`json\n${stableStringify(parsedOutput)}\n\`\`\``)
+      }
+      if (images.length) sections.push(`#### 图片\n- ${images.length} 张（已在上方预览；base64/dataUrl 已省略）`)
+      if (stdout) sections.push(`#### 标准输出\n\`\`\`\n${stdout}\n\`\`\``)
+      if (stderr) sections.push(`#### 标准错误\n\`\`\`\n${stderr}\n\`\`\``)
+      if (!stdout && !stderr) sections.push('（脚本未产生输出）')
+
+      throwIfAborted(abortState)
+      const execResult = {
+        ok: true,
+        content: resultText,
+        images,
+        serverName,
+        toolName
+      }
+      session.messages.push(createDisplayMessage('tool', sections.join('\n\n'), {
+        toolMeta: `${serverName} / ${toolName}`,
+        images,
+        toolName,
+        toolServerName: serverName,
+        toolExpanded: false
+      }))
+      successfulScriptResult = execResult
+      await scrollToBottom()
+      return execResult
+    } catch (err) {
+      if (isAbortError(err) || abortState?.aborted) throw createAbortError()
+      if (successfulScriptResult) return successfulScriptResult
+      const errorText = err?.message || String(err)
+      session.messages.push(createDisplayMessage('tool', `### 技能脚本执行结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await scrollToBottom()
+      return { ok: false, content: errorText }
+    }
+  }
+
+  if (mapping?.type === 'internal' && mapping.internal === 'use_skill') {
+    const idCandidate = String(argsObj?.id ?? argsObj?._id ?? argsObj?.skillId ?? argsObj?.skill_id ?? '').trim()
+    const nameCandidate = String(argsObj?.name ?? argsObj?.skillName ?? argsObj?.skill_name ?? argsObj?.skill ?? '').trim()
+
+    const available = Array.isArray(selectedSkillObjects.value) ? selectedSkillObjects.value : []
+
+    let target = null
+    if (idCandidate) {
+      target = available.find((s) => String(s?._id || '') === idCandidate) || null
+    }
+    if (!target && nameCandidate) {
+      const norm = nameCandidate.toLowerCase()
+      target =
+        available.find((s) => String(s?.name || '').trim().toLowerCase() === norm) ||
+        available.find((s) => String(s?._id || '').trim().toLowerCase() === norm) ||
+        available.find((s) => String(s?.name || '').trim().toLowerCase().includes(norm)) ||
+        null
+    }
+
+    if (!target || !target._id) {
+      const list = available
+        .map((s) => ({ id: s?._id, name: s?.name || s?._id }))
+        .filter((x) => x?.id)
+        .slice(0, 30)
+      const errorText = `未找到要启用的技能（仅可启用当前已选择的技能）。可用技能：${stableStringify(list)}`
+      session.messages.push(createDisplayMessage('tool', `### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      return { ok: false, content: errorText }
+    }
+
+    const skillId = String(target._id || '').trim()
+    const skillName = String(target.name || target._id || '').trim() || skillId
+    const isAgentSkill = agentSkillIdSet.value.has(skillId)
+    const isDirectory = isDirectorySkill(target)
+    const wasLoaded = isDirectory ? hasLoadedSkillMainContent(skillId, target?.entryFile || 'SKILL.md') : true
+
+    if (isDirectory && !wasLoaded) {
+      try {
+        throwIfAborted(abortState)
+        await waitForAbortable(loadSkillMainContent(skillId), abortState)
+        throwIfAborted(abortState)
+      } catch (err) {
+        if (isAbortError(err) || abortState?.aborted) throw createAbortError()
+        const errorText = err?.message || String(err)
+        session.messages.push(createDisplayMessage('tool', `### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+        await scrollToBottom()
+        return { ok: false, content: errorText }
+      }
+    }
+
+    let changed = false
+    if (isAgentSkill) {
+      throwIfAborted(abortState)
+      const prev = Array.isArray(activatedAgentSkillIds.value) ? activatedAgentSkillIds.value : []
+      if (!prev.includes(skillId)) {
+        activatedAgentSkillIds.value = [...prev, skillId]
+        changed = true
+      }
+    }
+
+    const mcpIds = Array.isArray(target?.mcp) ? target.mcp.map((x) => String(x || '').trim()).filter(Boolean) : []
+    const mcpList = Array.isArray(mcpServers.value) ? mcpServers.value : []
+    const mcpById = new Map(mcpList.filter((s) => s && s._id).map((s) => [String(s._id), s]))
+    const mountedMcpIds = mcpIds.filter((id) => mcpById.has(String(id)))
+    const missingMcpIds = mcpIds.filter((id) => !mcpById.has(String(id)))
+    const mcpNameList = mountedMcpIds.map((id) => mcpById.get(String(id))?.name || id)
+
+    const resultText = [
+      'OK: use_skill',
+      `skill_id: ${skillId}`,
+      `skill_name: ${skillName}`,
+      `status: ${
+        isDirectory ? (wasLoaded ? 'already_loaded' : 'loaded') : (isAgentSkill ? (changed ? 'activated' : 'already_activated') : 'noop_not_agent_skill')
+      }`,
+      `activation_status: ${isAgentSkill ? (changed ? 'activated' : 'already_activated') : 'noop_not_agent_skill'}`,
+      `mounted_mcp: ${mcpNameList.length ? mcpNameList.join(', ') : 'none'}`,
+      ...(missingMcpIds.length ? [`missing_mcp: ${missingMcpIds.join(', ')}`] : []),
+      isAgentSkill
+        ? '说明：完整技能内容已注入系统提示词，并已按技能配置挂载 MCP 服务；如果工具列表还没刷新出来，请下一轮再调用一次。'
+        : 'Note: this skill is not an agent preset skill, or it was already enabled, so no extra activation was needed.'
+    ].join('\n')
+
+    throwIfAborted(abortState)
+    session.messages.push(
+      createDisplayMessage(
+        'tool',
+        `### 技能启用结果\n- 技能：**${skillName}**\n- 状态：**${isAgentSkill ? (changed ? '已启用' : '已启用过') : '无需启用'}**\n- MCP：${mcpNameList.length ? mcpNameList.map((n) => `\`${n}\``).join(', ') : '（无）'}${missingMcpIds.length ? `\n- 缺失的 MCP 配置：${missingMcpIds.map((id) => `\`${id}\``).join(', ')}` : ''}`,
+
+
+        { toolMeta: `${serverName} / ${toolName}` }
+      )
+    )
+    await scrollToBottom()
+    return { ok: true, content: resultText }
+  }
+
+  if (mapping?.type === 'internal' && mapping.internal === 'use_skills') {
+    const idsRaw = argsObj?.ids ?? argsObj?.skill_ids ?? argsObj?.skillIds ?? []
+    const namesRaw = argsObj?.names ?? argsObj?.skill_names ?? argsObj?.skillNames ?? []
+    const ids = Array.isArray(idsRaw) ? idsRaw.map((x) => String(x || '').trim()).filter(Boolean) : []
+    const names = Array.isArray(namesRaw) ? namesRaw.map((x) => String(x || '').trim()).filter(Boolean) : []
+
+    const resolvedById = ids.map((id) => resolveSelectedSkillTarget({ idCandidate: id })).filter(Boolean)
+    const resolvedByName = names.map((name) => resolveSelectedSkillTarget({ nameCandidate: name })).filter(Boolean)
+    const uniq = new Map()
+    ;[...resolvedById, ...resolvedByName].forEach((s) => {
+      const id = String(s?._id || '').trim()
+      if (id && !uniq.has(id)) uniq.set(id, s)
+    })
+
+    const targets = Array.from(uniq.values())
+    if (!targets.length) {
+      const errorText = `未找到要启用的技能（仅可启用当前已选择的技能）。可用技能：${stableStringify(listSelectedSkillsBrief())}`
+      session.messages.push(createDisplayMessage('tool', `### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await scrollToBottom()
+      return { ok: false, content: errorText }
+    }
+
+    const agentSet = agentSkillIdSet.value
+    const loaded = []
+    const alreadyLoaded = []
+    const loadFailed = []
+    for (const skill of targets) {
+      throwIfAborted(abortState)
+      const id = String(skill?._id || '').trim()
+      if (!id || !isDirectorySkill(skill)) continue
+      const wasLoaded = hasLoadedSkillMainContent(id, skill?.entryFile || 'SKILL.md')
+      if (wasLoaded) {
+        alreadyLoaded.push(id)
+        continue
+      }
+      try {
+        await waitForAbortable(loadSkillMainContent(id), abortState)
+        throwIfAborted(abortState)
+        loaded.push(id)
+      } catch (err) {
+        if (isAbortError(err) || abortState?.aborted) throw createAbortError()
+        loadFailed.push({ id, error: err?.message || String(err) })
+      }
+    }
+
+    const prev = new Set(Array.isArray(activatedAgentSkillIds.value) ? activatedAgentSkillIds.value : [])
+    const activated = []
+    const already = []
+    const noop = []
+    const mountedMcpNames = new Set()
+    const missingMcpIds = new Set()
+
+    targets.forEach((s) => {
+      const id = String(s?._id || '').trim()
+      if (!id) return
+      if (loadFailed.some((item) => item.id === id)) return
+      const isAgentSkill = agentSet.has(id)
+      if (!isAgentSkill) {
+        noop.push(id)
+        return
+      }
+      if (prev.has(id)) already.push(id)
+      else {
+        prev.add(id)
+        activated.push(id)
+      }
+
+      const mcpStatus = getSkillMcpStatus(s)
+      mcpStatus.mountedNames.forEach((n) => mountedMcpNames.add(n))
+      mcpStatus.missingMcpIds.forEach((x) => missingMcpIds.add(x))
+    })
+
+    throwIfAborted(abortState)
+    activatedAgentSkillIds.value = Array.from(prev)
+
+    const resultObj = {
+      ok: true,
+      tool: 'use_skills',
+      resolved_skills: targets.map((s) => ({ id: s?._id, name: s?.name || s?._id })),
+      status: {
+        activated,
+        already_activated: already,
+        noop_not_agent_skill: noop
+      },
+      content_status: {
+        loaded,
+        already_loaded: alreadyLoaded,
+        failed: loadFailed
+      },
+      mounted_mcp: Array.from(mountedMcpNames),
+      missing_mcp: Array.from(missingMcpIds)
+    }
+
+    const resultText = stableStringify(resultObj)
+    throwIfAborted(abortState)
+    session.messages.push(
+      createDisplayMessage(
+        'tool',
+        `### 技能启用结果\n- 已启用：${activated.length ? activated.length : 0}\n- 已启用过：${already.length ? already.length : 0}\n- 无需启用：${noop.length ? noop.length : 0}\n- MCP：${mountedMcpNames.size ? Array.from(mountedMcpNames).map((n) => `\`${n}\``).join(', ') : '（无）'}${missingMcpIds.size ? `\n- 缺失的 MCP 配置：${Array.from(missingMcpIds).map((id) => `\`${id}\``).join(', ')}` : ''}`,
+
+
+        { toolMeta: `${serverName} / ${toolName}` }
+      )
+    )
+    await scrollToBottom()
+    return {
+      ok: true,
+      content: resultText,
+      serverName,
+      toolName
+    }
+  }
+
+  if (mapping?.type === 'internal' && mapping.internal === 'activate_all_agent_skills') {
+    const confirm = argsObj?.confirm === true
+    if (!confirm) {
+      const errorText = '请在执行前传入 confirm=true，避免系统提示词被意外膨胀。'
+      session.messages.push(createDisplayMessage('tool', `### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await scrollToBottom()
+      return { ok: false, content: errorText }
+    }
+
+    const agentSet = agentSkillIdSet.value
+    const targets = (Array.isArray(selectedSkillObjects.value) ? selectedSkillObjects.value : []).filter((s) => {
+      const id = String(s?._id || '').trim()
+      return !!id && agentSet.has(id)
+    })
+    if (!targets.length) {
+      const errorText = '当前上下文中没有可启用的智能体预设技能。'
+      session.messages.push(createDisplayMessage('tool', `### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await scrollToBottom()
+      return { ok: false, content: errorText }
+    }
+
+    const loaded = []
+    const alreadyLoaded = []
+    const loadFailed = []
+    for (const skill of targets) {
+      throwIfAborted(abortState)
+      const id = String(skill?._id || '').trim()
+      if (!id || !isDirectorySkill(skill)) continue
+      const wasLoaded = hasLoadedSkillMainContent(id, skill?.entryFile || 'SKILL.md')
+      if (wasLoaded) {
+        alreadyLoaded.push(id)
+        continue
+      }
+      try {
+        await waitForAbortable(loadSkillMainContent(id), abortState)
+        throwIfAborted(abortState)
+        loaded.push(id)
+      } catch (err) {
+        if (isAbortError(err) || abortState?.aborted) throw createAbortError()
+        loadFailed.push({ id, error: err?.message || String(err) })
+      }
+    }
+
+    const prev = new Set(Array.isArray(activatedAgentSkillIds.value) ? activatedAgentSkillIds.value : [])
+    const activated = []
+    const already = []
+    const mountedMcpNames = new Set()
+    const missingMcpIds = new Set()
+
+    targets.forEach((s) => {
+      const id = String(s?._id || '').trim()
+      if (!id) return
+      if (loadFailed.some((item) => item.id === id)) return
+      if (prev.has(id)) already.push(id)
+      else {
+        prev.add(id)
+        activated.push(id)
+      }
+
+      const mcpStatus = getSkillMcpStatus(s)
+      mcpStatus.mountedNames.forEach((n) => mountedMcpNames.add(n))
+      mcpStatus.missingMcpIds.forEach((x) => missingMcpIds.add(x))
+    })
+
+    throwIfAborted(abortState)
+    activatedAgentSkillIds.value = Array.from(prev)
+
+    const resultObj = {
+      ok: true,
+      tool: 'activate_all_agent_skills',
+      total_agent_skills: targets.length,
+      status: {
+        activated,
+        already_activated: already
+      },
+      content_status: {
+        loaded,
+        already_loaded: alreadyLoaded,
+        failed: loadFailed
+      },
+      mounted_mcp: Array.from(mountedMcpNames),
+      missing_mcp: Array.from(missingMcpIds)
+    }
+    const resultText = stableStringify(resultObj)
+
+    throwIfAborted(abortState)
+    session.messages.push(
+      createDisplayMessage(
+        'tool',
+        `### 技能启用结果\n- 已启用：${activated.length}\n- 已启用过：${already.length}\n- MCP：${mountedMcpNames.size ? Array.from(mountedMcpNames).map((n) => `\`${n}\``).join(', ') : '（无）'}${missingMcpIds.size ? `\n- 缺失的 MCP 配置：${Array.from(missingMcpIds).map((id) => `\`${id}\``).join(', ')}` : ''}`,
+
+
+        { toolMeta: `${serverName} / ${toolName}` }
+      )
+    )
+    await scrollToBottom()
+    return { ok: true, content: resultText }
+  }
+
+  if (mapping?.type === 'internal' && mapping.internal === 'mcp_discover') {
+    const serverIdCandidate = String(argsObj?.server_id ?? argsObj?.serverId ?? argsObj?.id ?? '').trim()
+    const serverNameCandidate = String(argsObj?.server_name ?? argsObj?.serverName ?? argsObj?.server ?? '').trim()
+    const refresh = argsObj?.refresh === true
+    const toolFilter = String(argsObj?.tool || '').trim()
+    const searchRaw = String(argsObj?.search || '').trim()
+    const searchLower = searchRaw ? searchRaw.toLowerCase() : ''
+    const withSchema = argsObj?.with_schema === true
+    const limitRaw = Number(argsObj?.limit)
+
+    const hasServerSelector = !!serverIdCandidate || !!serverNameCandidate
+    const defaultLimit = hasServerSelector ? 200 : 30
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 500) : defaultLimit
+
+    const activeServers = (Array.isArray(activeMcpServers.value) ? activeMcpServers.value : []).filter((s) => s && s._id && !s.disabled)
+    const resolved = hasServerSelector ? resolveActiveMcpServer({ idCandidate: serverIdCandidate, nameCandidate: serverNameCandidate }) : null
+
+    const targetServers = resolved ? [resolved] : activeServers
+    if (!targetServers.length) {
+      const errorText = `当前没有可用的 MCP 服务。可用：${stableStringify(listActiveMcpServersBrief())}`
+      session.messages.push(createDisplayMessage('tool', `### MCP 发现\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await scrollToBottom()
+      return { ok: false, content: errorText }
+    }
+
+    if (toolFilter && targetServers.length !== 1) {
+      const errorText = '提供 tool 时也必须同时提供 server_id，避免在多个服务之间产生歧义。'
+      session.messages.push(createDisplayMessage('tool', `### MCP 发现\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await scrollToBottom()
+      return { ok: false, content: errorText }
+    }
+
+    const listResults = await Promise.all(
+      targetServers.map(async (s) => ({ server: s, result: await listMcpToolsForServer(s, { forceRefresh: refresh, silent: true, abortState }) }))
+    )
+    throwIfAborted(abortState)
+
+    if (refresh) {
+      throwIfAborted(abortState)
+      listResults.forEach(({ server, result }) => {
+        try {
+          if (result?.ok) {
+            const entry = buildMcpToolCatalogEntry(server, result.tools)
+            setMcpToolCatalogEntry(String(server?._id || ''), entry)
+          } else {
+            const err = result?.error || new Error('listTools failed')
+            setMcpToolCatalogEntry(String(server?._id || ''), {
+              ok: false,
+              server_id: String(server?._id || ''),
+              server_name: server?.name || server?._id,
+              keepAlive: !!server?.keepAlive,
+              error: err?.message || String(err),
+              updated_at: Date.now()
+            })
+          }
+        } catch {
+          // ignore
+        }
+      })
+    }
+
+    if (toolFilter) {
+      const { server, result } = listResults[0]
+      if (!result?.ok) {
+        const err = result?.error || new Error('listTools failed')
+        const errorText = err?.message || String(err)
+        session.messages.push(
+          createDisplayMessage(
+            'tool',
+            `### MCP 发现\n- 服务：**${server.name || server._id}**\n- 错误：${errorText}`,
+            { toolMeta: `${server.name || server._id} / MCP` }
+          )
+        )
+        await scrollToBottom()
+        return { ok: false, content: errorText }
+      }
+
+      const allowed = filterAllowedMcpTools(server, result.tools)
+      const exact = allowed.find((t) => String(t?.name || '') === toolFilter) || null
+      const norm = toolFilter.toLowerCase()
+      const fuzzy =
+        exact ||
+        allowed.find((t) => String(t?.name || '').toLowerCase() === norm) ||
+        allowed.find((t) => String(t?.name || '').toLowerCase().includes(norm)) ||
+        null
+      if (!fuzzy) {
+        const errorText = `未找到工具：${toolFilter}（服务：${server.name || server._id}）`
+        session.messages.push(createDisplayMessage('tool', `### MCP 发现\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / MCP` }))
+        await scrollToBottom()
+        return { ok: false, content: errorText }
+      }
+
+      try {
+        upsertPinnedMcpToolHint(server._id, fuzzy)
+      } catch {
+        // ignore
+      }
+
+      const resultObj = {
+        ok: true,
+        server_id: server._id,
+        server_name: server.name || server._id,
+        tool: {
+          name: fuzzy.name,
+          description: fuzzy.description || '',
+          inputSchema: fuzzy.inputSchema || null
+        }
+      }
+      const resultText = stableStringify(resultObj)
+      throwIfAborted(abortState)
+      session.messages.push(
+        createDisplayMessage('tool', `### MCP 工具详情\n\n\`\`\`json\n${resultText}\n\`\`\``, {
+          toolMeta: `${server.name || server._id} / ${fuzzy.name}`
+        })
+      )
+      await scrollToBottom()
+      return {
+        ok: true,
+        content: resultText,
+        serverName: server.name || server._id,
+        toolName: fuzzy.name || toolFilter
+      }
+    }
+
+    const serversPayload = []
+    for (const { server, result } of listResults) {
+      throwIfAborted(abortState)
+      if (!result?.ok) {
+        const err = result?.error || new Error('listTools failed')
+        serversPayload.push({
+          server_id: server?._id,
+          server_name: server?.name || server?._id,
+          ok: false,
+          error: err?.message || String(err)
+        })
+        continue
+      }
+
+      let allowed = filterAllowedMcpTools(server, result.tools)
+      if (searchLower) {
+        allowed = allowed.filter((t) => {
+          const n = String(t?.name || '').toLowerCase()
+          const d = String(t?.description || '').toLowerCase()
+          return n.includes(searchLower) || d.includes(searchLower)
+        })
+      }
+
+      const list = allowed.slice(0, limit).map((t) => ({
+        name: t?.name,
+        description: t?.description || '',
+        ...(withSchema ? { inputSchema: t?.inputSchema || null } : {})
+      }))
+
+      serversPayload.push({
+        server_id: server._id,
+        server_name: server.name || server._id,
+        ok: true,
+        total: allowed.length,
+        returned: list.length,
+        truncated: allowed.length > list.length,
+        tools: list
+      })
+    }
+
+    const resultObj = hasServerSelector
+      ? serversPayload[0]
+      : {
+          ok: true,
+          servers: serversPayload
+        }
+
+    const resultText = stableStringify(resultObj)
+    throwIfAborted(abortState)
+    session.messages.push(
+      createDisplayMessage('tool', `### MCP 发现\n\n\`\`\`json\n${resultText}\n\`\`\``, { toolMeta: `${serverName} / ${toolName}` })
+    )
+    await scrollToBottom()
+    return {
+      ok: true,
+      content: resultText,
+      serverName,
+      toolName
+    }
+  }
+
+  if (mapping?.type === 'internal' && mapping.internal === 'mcp_list_servers') {
+    const resultObj = { ok: true, servers: listActiveMcpServersBrief(100) }
+    const resultText = stableStringify(resultObj)
+    session.messages.push(
+      createDisplayMessage('tool', `### MCP 服务器\n\n\`\`\`json\n${resultText}\n\`\`\``, { toolMeta: `${serverName} / ${toolName}` })
+    )
+    await scrollToBottom()
+    return { ok: true, content: resultText }
+  }
+
+  if (mapping?.type === 'internal' && mapping.internal === 'mcp_list_tools') {
+    const serverIdCandidate = String(argsObj?.server_id ?? argsObj?.serverId ?? argsObj?.id ?? '').trim()
+    const serverNameCandidate = String(argsObj?.server_name ?? argsObj?.serverName ?? argsObj?.server ?? '').trim()
+    const server = resolveActiveMcpServer({ idCandidate: serverIdCandidate, nameCandidate: serverNameCandidate })
+    if (!server || !server._id) {
+      const errorText = `未找到 MCP 服务器。可用：${stableStringify(listActiveMcpServersBrief())}`
+      session.messages.push(createDisplayMessage('tool', `### MCP 工具列表\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await scrollToBottom()
+      return { ok: false, content: errorText }
+    }
+    if (server.disabled) {
+      const errorText = `MCP 服务器已禁用：${server.name || server._id}`
+      session.messages.push(createDisplayMessage('tool', `### MCP 工具列表\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / MCP` }))
+      await scrollToBottom()
+      return { ok: false, content: errorText }
+    }
+
+    const refresh = argsObj?.refresh === true
+    const toolFilter = String(argsObj?.tool || '').trim()
+    const withSchema = argsObj?.with_schema === true
+    const limitRaw = Number(argsObj?.limit)
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 200) : 60
+
+    const listResult = await listMcpToolsForServer(server, { forceRefresh: refresh, silent: true, abortState })
+    throwIfAborted(abortState)
+    if (!listResult.ok) {
+      const err = listResult.error || new Error('listTools failed')
+      const errorText = err?.message || String(err)
+      session.messages.push(
+        createDisplayMessage(
+          'tool',
+          `### MCP 工具列表\n- 服务：**${server.name || server._id}**\n- 错误：${errorText}`,
+          { toolMeta: `${server.name || server._id} / MCP` }
+        )
+      )
+      await scrollToBottom()
+      return { ok: false, content: errorText }
+    }
+
+    const allowed = filterAllowedMcpTools(server, listResult.tools)
+
+    if (toolFilter) {
+      const exact = allowed.find((t) => String(t?.name || '') === toolFilter) || null
+      const norm = toolFilter.toLowerCase()
+      const fuzzy =
+        exact ||
+        allowed.find((t) => String(t?.name || '').toLowerCase() === norm) ||
+        allowed.find((t) => String(t?.name || '').toLowerCase().includes(norm)) ||
+        null
+      if (!fuzzy) {
+        const errorText = `未找到工具：${toolFilter}（服务：${server.name || server._id}）`
+        session.messages.push(createDisplayMessage('tool', `### MCP 工具列表\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / MCP` }))
+        await scrollToBottom()
+        return { ok: false, content: errorText }
+      }
+
+      const resultObj = {
+        ok: true,
+        server_id: server._id,
+        server_name: server.name || server._id,
+        tool: {
+          name: fuzzy.name,
+          description: fuzzy.description || '',
+          inputSchema: fuzzy.inputSchema || null
+        }
+      }
+      const resultText = stableStringify(resultObj)
+      throwIfAborted(abortState)
+      session.messages.push(
+        createDisplayMessage('tool', `### MCP 工具详情\n\n\`\`\`json\n${resultText}\n\`\`\``, { toolMeta: `${server.name || server._id} / ${fuzzy.name}` })
+      )
+      await scrollToBottom()
+      return { ok: true, content: resultText }
+    }
+
+    const list = allowed.slice(0, limit).map((t) => ({
+      name: t?.name,
+      description: t?.description || '',
+      ...(withSchema ? { inputSchema: t?.inputSchema || null } : {})
+    }))
+
+    const resultObj = {
+      ok: true,
+      server_id: server._id,
+      server_name: server.name || server._id,
+      total: allowed.length,
+      returned: list.length,
+      tools: list
+    }
+    const resultText = stableStringify(resultObj)
+    throwIfAborted(abortState)
+    session.messages.push(
+      createDisplayMessage('tool', `### MCP 工具列表\n\n\`\`\`json\n${resultText}\n\`\`\``, { toolMeta: `${server.name || server._id} / MCP` })
+    )
+    await scrollToBottom()
+    return { ok: true, content: resultText }
+  }
+
+  if (mapping?.type === 'internal' && mapping.internal === 'mcp_call') {
+    const serverIdCandidate = String(argsObj?.server_id ?? argsObj?.serverId ?? argsObj?.id ?? '').trim()
+    const serverNameCandidate = String(argsObj?.server_name ?? argsObj?.serverName ?? argsObj?.server ?? '').trim()
+    const tool = String(argsObj?.tool || '').trim()
+    const hasArgsField = Object.prototype.hasOwnProperty.call(argsObj, 'args')
+    const hasArgumentsField = Object.prototype.hasOwnProperty.call(argsObj, 'arguments')
+    const toolArgs = hasArgsField ? argsObj.args : hasArgumentsField ? argsObj.arguments : {}
+
+    if (!tool) {
+      const errorText = '缺少 tool 字段。'
+      session.messages.push(createDisplayMessage('tool', `### MCP 工具调用\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await scrollToBottom()
+      return { ok: false, content: errorText }
+    }
+
+    const server = resolveActiveMcpServer({ idCandidate: serverIdCandidate, nameCandidate: serverNameCandidate })
+    if (!server || !server._id) {
+      const errorText = `未找到 MCP 服务。可用：${stableStringify(listActiveMcpServersBrief())}`
+      session.messages.push(createDisplayMessage('tool', `### MCP 工具调用\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await scrollToBottom()
+      return { ok: false, content: errorText }
+    }
+    if (server.disabled) {
+      const errorText = `MCP 服务已禁用：${server.name || server._id}`
+      session.messages.push(createDisplayMessage('tool', `### MCP 工具调用\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / MCP` }))
+      await scrollToBottom()
+      return { ok: false, content: errorText }
+    }
+
+    const allow = Array.isArray(server.allowTools) ? server.allowTools.map((x) => String(x || '').trim()).filter(Boolean) : []
+    if (allow.length && !allow.includes(tool)) {
+      const errorText = `该工具不在 allowTools 白名单中：${tool}`
+      session.messages.push(createDisplayMessage('tool', `### MCP 工具调用\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / ${tool}` }))
+      await scrollToBottom()
+      return { ok: false, content: errorText }
+    }
+
+    let client = null
+    let pooled = false
+    let unregisterAbort = null
+    try {
+      ;({ client, pooled } = getOrCreateMCPClient(server))
+      if (!client?.callTool) {
+        throw new Error('MCP 客户端不可用（未注入 createMCPClient）')
+      }
+
+      const callTimeoutMs = Number(server?.timeout) || 60000
+      const runtimeToolArgs = prepareBuiltinAgentToolCallArgs(server, tool, toolArgs, pendingToolMessage)
+      unregisterAbort = registerAbortableMcpClient(abortState, server, client, pooled)
+      const result = await waitForAbortable(
+        withTimeout(client.callTool(tool, runtimeToolArgs), callTimeoutMs, `Call tool: ${server.name || server._id} / ${tool}`),
+        abortState
+      )
+      try {
+        unregisterAbort?.()
+      } catch {
+        // ignore
+      }
+      unregisterAbort = null
+      throwIfAborted(abortState)
+      releaseMCPClient(server, client)
+      client = null
+
+      const images = extractChatImagesFromToolResult(result)
+      const toolResultPayload = isAgentRunToolResult(result) ? deepCopyJson(result, null) : null
+      const resultText = stringifyToolResultForLlm(result)
+      const imageHint = images.length ? `- 图片：${images.length}（已在上方预览；base64/dataUrl 已省略）\n` : ''
+      const displayText = formatToolResultDisplayContent(result, {
+        heading: '### MCP 工具结果',
+        serverName: server.name || server._id,
+        toolName: tool,
+        imageHint,
+        resultText,
+        truncateInlineText
+      })
+      throwIfAborted(abortState)
+      session.messages.push(
+        createDisplayMessage(
+          'tool',
+          displayText,
+          {
+            toolMeta: `${server.name || server._id} / ${tool}`,
+            images,
+            toolExpanded: false,
+            toolName: tool,
+            toolServerName: server.name || server._id,
+            toolSubMeta: buildToolExecutionResultSubMeta(result),
+            toolResultPayload
+          }
+        )
+      )
+      await scrollToBottom()
+      return {
+        ok: true,
+        content: resultText,
+        images,
+        serverName: server.name || server._id,
+        toolName: tool
+      }
+    } catch (err) {
+      try {
+        unregisterAbort?.()
+      } catch {
+        // ignore
+      }
+      unregisterAbort = null
+      if (isAbortError(err) || abortState?.aborted) throw createAbortError()
+      closeMcpClientSafely(server, client, pooled)
+      const errorText = err?.message || String(err)
+      session.messages.push(
+        createDisplayMessage('tool', `### MCP 工具结果\n- 工具：\`${tool}\`\n- 错误：${errorText}`, {
+          toolMeta: `${server.name || server._id} / ${tool}`
+        })
+      )
+      await scrollToBottom()
+      return { ok: false, content: `错误：${errorText}` }
+    } finally {
+      try {
+        unregisterAbort?.()
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  const server = activeMcpServers.value.find((s) => s._id === mapping.serverId)
+  if (!server) {
+    const errorText = `未找到 MCP 服务器：${mapping.serverId}`
+    session.messages.push(createDisplayMessage('tool', `### 工具结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+    return { ok: false, content: errorText }
+  }
+  if (server.disabled) {
+    const errorText = `MCP 服务器已禁用：${serverName}`
+    session.messages.push(createDisplayMessage('tool', `### 工具结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+    return { ok: false, content: errorText }
+  }
+
+  let client = null
+  let pooled = false
+  let unregisterAbort = null
+  try {
+    ;({ client, pooled } = getOrCreateMCPClient(server))
+    if (!client?.callTool) {
+      throw new Error('MCP 客户端不可用（createMCPClient 未注入）')
+    }
+
+    const callTimeoutMs = Number(server?.timeout) || 60000
+    const callArgs = typeof mapping?.unwrapArgs === 'function' ? mapping.unwrapArgs(argsObj) : argsObj
+    const runtimeCallArgs = prepareBuiltinAgentToolCallArgs(server, toolName, callArgs, pendingToolMessage)
+    unregisterAbort = registerAbortableMcpClient(abortState, server, client, pooled)
+    const result = await waitForAbortable(
+      withTimeout(client.callTool(mapping.toolName, runtimeCallArgs), callTimeoutMs, `Call tool: ${serverName} / ${toolName}`),
+      abortState
+    )
+    try {
+      unregisterAbort?.()
+    } catch {
+      // ignore
+    }
+    unregisterAbort = null
+    throwIfAborted(abortState)
+    releaseMCPClient(server, client)
+    client = null
+
+    const images = extractChatImagesFromToolResult(result)
+    const toolResultPayload = isAgentRunToolResult(result) ? deepCopyJson(result, null) : null
+    const resultText = stringifyToolResultForLlm(result)
+    const imageHint = images.length ? `- 图片：${images.length}（已在上方预览；base64/dataUrl 已省略）\n` : ''
+    const displayText = formatToolResultDisplayContent(result, {
+      heading: '### 工具结果',
+      serverName,
+      toolName,
+      imageHint,
+      resultText,
+      truncateInlineText
+    })
+    throwIfAborted(abortState)
+    session.messages.push(
+      createDisplayMessage(
+        'tool',
+        displayText,
+        {
+          toolMeta: `${serverName} / ${toolName}`,
+          images,
+          toolExpanded: false,
+          toolName,
+          toolServerName: serverName,
+          toolSubMeta: buildToolExecutionResultSubMeta(result),
+          toolResultPayload
+        }
+      )
+    )
+    await scrollToBottom()
+    return {
+      ok: true,
+      content: resultText,
+      serverName,
+      toolName
+    }
+  } catch (err) {
+    try {
+      unregisterAbort?.()
+    } catch {
+      // ignore
+    }
+    unregisterAbort = null
+    if (isAbortError(err) || abortState?.aborted) throw createAbortError()
+    closeMcpClientSafely(server, client, pooled)
+    const errorText = err?.message || String(err)
+    session.messages.push(
+      createDisplayMessage('tool', `### 工具结果\n- 工具：\`${toolName}\`\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` })
+    )
+    await scrollToBottom()
+    return { ok: false, content: `错误：${errorText}` }
+  } finally {
+    try {
+      unregisterAbort?.()
+    } catch {
+      // ignore
+    }
+  }
+}
+
+async function send() {
+  if (sending.value) return
+  clearAllUserEditingState()
+
+  const cfg = getRequestConfigOrHint()
+  if (!cfg) return
+
+  const text = String(input.value || '').trim()
+  const attachments = Array.isArray(pendingAttachments.value) ? pendingAttachments.value.slice() : []
+  if (!text && !attachments.length) return
+
+  // 智能体预设技能：根据 triggers 自动启用，并按需挂载 skill MCP
+  try {
+    const triggerText = text || attachments.map((a) => String(a?.name || '')).filter(Boolean).join(' ')
+    autoActivateAgentSkillsFromText(triggerText)
+  } catch {
+    // ignore
+  }
+
+  input.value = ''
+  resetComposerInput()
+  pendingAttachments.value = []
+
+  const userDisplay = createDisplayMessage('user', text || (attachments.length ? '(sent attachments)' : ''))
+  if (attachments.length) {
+    userDisplay.attachmentsExpanded = false
+    userDisplay.attachments = attachments
+  }
+  session.messages.push(userDisplay)
+  autoScrollEnabled.value = true
+  scheduleRefreshUserAnchorMeta()
+  await scrollToBottom({ force: true })
+  await runChatSession({
+    ...cfg,
+    prepare: async () => {
+      await scrollToBottom({ force: true })
+      await prepareUserApiMessage({
+        text,
+        attachments,
+        userDisplay,
+        preferVision: cfg.supportsVision !== false,
+        providerKind: cfg.providerKind || 'openai-compatible'
+      })
+    }
+  })
+}
+
+const lastEnterKey = ref('')
+watch(
+  utoolsEnterData,
+  (val) => {
+    if (val?.code !== 'Ai' || val?.type !== 'over') return
+    const payload = typeof val.payload === 'string' ? val.payload : ''
+    const key = `${val.code}|${val.type}|${payload}`
+    if (!payload || key === lastEnterKey.value) return
+    lastEnterKey.value = key
+
+    input.value = payload
+    if (!sending.value) send()
+  },
+  { immediate: true }
+)
+</script>
+
+<style scoped>
+.chat-page {
+  width: 100%;
+  max-width: 1000px;
+  margin: 0 auto;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.chat-header-card {
+  width: 100%;
+  border-radius: 22px;
+  overflow: hidden;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.84));
+  box-shadow: 0 18px 38px rgba(15, 23, 42, 0.06);
+}
+
+.chat-page.dark .chat-header-card {
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.82), rgba(15, 23, 42, 0.72));
+  box-shadow: 0 18px 38px rgba(2, 6, 23, 0.28);
+}
+
+.chat-empty-state {
+  min-height: min(52vh, 420px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px 18px 36px;
+}
+
+.chat-empty-state__panel {
+  width: min(100%, 760px);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 24px;
+  border-radius: 22px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background:
+    radial-gradient(circle at top right, rgba(32, 128, 240, 0.12), transparent 36%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.78));
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.08);
+  animation: chat-fade-up 420ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.chat-page.dark .chat-empty-state__panel {
+  border-color: rgba(255, 255, 255, 0.12);
+  background:
+    radial-gradient(circle at top right, rgba(56, 189, 248, 0.16), transparent 38%),
+    linear-gradient(180deg, rgba(15, 23, 42, 0.78), rgba(15, 23, 42, 0.58));
+  box-shadow: 0 18px 40px rgba(2, 6, 23, 0.32);
+}
+
+.chat-empty-state__hero {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-empty-state__icon {
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 14px;
+  color: rgb(32, 128, 240);
+  background: rgba(32, 128, 240, 0.12);
+}
+
+.chat-page.dark .chat-empty-state__icon {
+  color: rgba(125, 211, 252, 0.96);
+  background: rgba(56, 189, 248, 0.16);
+}
+
+.chat-empty-state__title {
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.chat-empty-state__description,
+.chat-empty-state__hint {
+  font-size: 13px;
+  line-height: 1.65;
+  opacity: 0.78;
+}
+
+.chat-empty-state__summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 10px;
+}
+
+.chat-empty-state__summary-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 11px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.chat-page.dark .chat-empty-state__summary-item {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.chat-empty-state__summary-label {
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.72;
+}
+
+.chat-empty-state__summary-value {
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.chat-empty-state__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chat-messages {
+  width: 100%;
+  flex: 1;
+  margin-top: 8px;
+  min-height: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+.chat-scroll-wrapper {
+  position: relative;
+  height: 100%;
+}
+
+
+.chat-scroll-to-bottom {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 5;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+.chat-sticky-bubble {
+  position: absolute;
+  top: 8px;
+  left: 48px;
+  right: 48px;
+  z-index: 9;
+  width: fit-content;
+  max-width: min(720px, calc(100% - 96px));
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px 7px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
+  cursor: pointer;
+}
+
+.chat-sticky-bubble.is-dark {
+  border-color: rgba(148, 163, 184, 0.24);
+  background: rgba(15, 23, 42, 0.98);
+  box-shadow: 0 12px 28px rgba(2, 6, 23, 0.34);
+}
+
+.chat-sticky-bubble__main {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.chat-sticky-bubble__label {
+  flex: 0 0 auto;
+  font-weight: 700;
+}
+
+.chat-sticky-bubble__meta {
+  min-width: 0;
+  opacity: 0.72;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-sticky-bubble__status {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(100, 116, 139, 0.12);
+}
+
+.chat-sticky-bubble__status.is-running {
+  color: rgb(180, 83, 9);
+  background: rgba(245, 166, 35, 0.14);
+}
+
+.chat-sticky-bubble__status.is-success {
+  color: rgb(8, 145, 178);
+  background: rgba(14, 165, 233, 0.12);
+}
+
+.chat-sticky-bubble__status.is-error {
+  color: rgb(208, 48, 80);
+  background: rgba(208, 48, 80, 0.10);
+}
+
+.chat-sticky-bubble__status.is-rejected {
+  color: rgb(71, 85, 105);
+  background: rgba(100, 116, 139, 0.12);
+}
+
+.chat-page.dark .chat-scroll-to-bottom {
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+}
+
+.chat-anchor-rail {
+  position: absolute;
+  right: 10px;
+  top: 12px;
+  bottom: 56px;
+  width: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-end;
+  pointer-events: auto;
+  z-index: 4;
+  overflow: hidden auto;
+}
+
+.chat-anchor-marker {
+  width: 10px;
+  height: 6px;
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.18);
+  cursor: pointer;
+  transition: transform 120ms ease, background-color 120ms ease, width 120ms ease;
+}
+
+.chat-anchor-marker:hover {
+  transform: translateX(-1px);
+  background: rgba(0, 0, 0, 0.26);
+}
+
+.chat-anchor-marker.active {
+  width: 12px;
+  background: rgba(32, 128, 240, 0.95);
+}
+
+.chat-page.dark .chat-anchor-marker {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.chat-page.dark .chat-anchor-marker:hover {
+  background: rgba(255, 255, 255, 0.32);
+}
+
+.chat-page.dark .chat-anchor-marker.active {
+  background: rgba(32, 128, 240, 0.95);
+}
+
+:deep(.chat-session-sider) {
+  background: transparent;
+}
+
+:deep(.chat-session-sider .n-layout-sider__border) {
+  display: none;
+}
+
+:deep(.chat-session-sider .n-layout-toggle-button) {
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+}
+
+.chat-session-sider :deep(.n-layout-sider-scroll-container) {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(248, 250, 252, 0.92));
+  border-radius: 24px;
+}
+
+.chat-session-sider :deep(.n-layout-toggle-button) {
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.chat-session-sider.is-dark :deep(.n-layout-sider-scroll-container) {
+  background: linear-gradient(180deg, rgba(17, 24, 39, 0.88), rgba(15, 23, 42, 0.96));
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.08);
+}
+
+.chat-session-sider.is-dark :deep(.n-layout-toggle-button) {
+  background: rgba(17, 24, 39, 0.94);
+  box-shadow: 0 12px 26px rgba(2, 6, 23, 0.34);
+}
+
+.chat-file-attachments {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chat-file-attachment-card {
+  min-width: 0;
+  max-width: min(100%, 320px);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.chat-page.dark .chat-file-attachment-card {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.chat-file-attachment-card.is-processing {
+  border-color: rgba(240, 160, 32, 0.28);
+  background: rgba(240, 160, 32, 0.08);
+}
+
+.chat-page.dark .chat-file-attachment-card.is-processing {
+  border-color: rgba(240, 160, 32, 0.36);
+  background: rgba(240, 160, 32, 0.12);
+}
+
+.chat-file-attachment-card.is-error {
+  border-color: rgba(208, 48, 80, 0.24);
+  background: rgba(208, 48, 80, 0.06);
+}
+
+.chat-page.dark .chat-file-attachment-card.is-error {
+  border-color: rgba(255, 143, 163, 0.3);
+  background: rgba(255, 143, 163, 0.12);
+}
+
+.chat-file-attachment-card__icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.chat-page.dark .chat-file-attachment-card__icon {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.chat-file-attachment-card__content {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chat-file-attachment-card__name {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+.chat-file-attachment-card__meta {
+  font-size: 12px;
+  line-height: 1.4;
+  opacity: 0.68;
+}
+
+.chat-file-attachment-card__close {
+  flex: 0 0 auto;
+}
+
+.chat-image-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 6px 0 10px;
+}
+
+.chat-image-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 220px;
+}
+
+.chat-image-grid--tool {
+  margin: 0 0 10px;
+}
+
+.chat-image-placeholder {
+  width: 132px;
+  min-height: 96px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-size: 12px;
+  padding: 10px;
+  border-radius: 10px;
+  color: rgba(0, 0, 0, 0.55);
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.chat-page.dark .chat-image-placeholder {
+  color: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.chat-image-caption {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chat-image-name {
+  font-size: 12px;
+  font-weight: 500;
+  word-break: break-all;
+}
+
+.chat-image-meta-line,
+.chat-image-note,
+.chat-image-status {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.chat-image-meta-line {
+  opacity: 0.72;
+}
+
+.chat-image-note {
+  opacity: 0.68;
+}
+
+.chat-image-status {
+  color: #d03050;
+}
+
+.chat-page.dark .chat-image-status {
+  color: #ff8fa3;
+}
+
+.chat-image-actions {
+  width: 100%;
+}
+
+.chat-image-frame {
+  overflow: hidden;
+  border-radius: 14px;
+}
+
+.chat-list {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.chat-list__spacer {
+  flex: 0 0 auto;
+  width: 100%;
+}
+
+@keyframes chat-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes assistant-avatar-bob {
+  0%, 100% { transform: translateY(0) scale(1); }
+  35% { transform: translateY(-2px) scale(1.03); }
+  70% { transform: translateY(1px) scale(0.99); }
+}
+
+@keyframes assistant-icon-glow {
+  0%, 100% { opacity: 0.86; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.08); }
+}
+
+@keyframes tool-icon-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.chat-item {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  animation: chat-fade-up 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.chat-item.user {
+  align-items: flex-end;
+}
+
+.chat-item__row {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  max-width: 100%;
+}
+
+.chat-item.user .chat-item__row {
+  flex-direction: row-reverse;
+}
+
+.chat-item__avatar {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(0, 0, 0, 0.10);
+  background: rgba(0, 0, 0, 0.04);
+  color: rgba(0, 0, 0, 0.65);
+  transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease, background 160ms ease, color 160ms ease;
+}
+
+.chat-page.dark .chat-item__avatar {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.chat-item__avatar-icon {
+  transition: transform 160ms ease, opacity 160ms ease;
+}
+
+.chat-item.assistant .chat-item__avatar {
+  border-color: rgba(32, 128, 240, 0.28);
+  background: rgba(32, 128, 240, 0.16);
+  color: rgb(32, 128, 240);
+}
+
+.chat-item.user .chat-item__avatar {
+  border-color: rgba(24, 160, 88, 0.28);
+  background: rgba(24, 160, 88, 0.16);
+  color: rgb(24, 160, 88);
+}
+
+.chat-item.thinking .chat-item__avatar {
+  border-color: rgba(245, 166, 35, 0.32);
+  background: rgba(245, 166, 35, 0.18);
+  color: rgb(245, 166, 35);
+}
+
+.chat-item.tool_call .chat-item__avatar {
+  border-color: rgba(159, 122, 234, 0.34);
+  background: rgba(159, 122, 234, 0.18);
+  color: rgb(159, 122, 234);
+}
+
+.chat-item.assistant.is-streaming .chat-item__avatar,
+.chat-item__avatar.is-streaming {
+  animation: assistant-avatar-bob 1.05s ease-in-out infinite;
+  box-shadow: 0 0 0 6px rgba(32, 128, 240, 0.08);
+}
+
+.chat-page.dark .chat-item.assistant.is-streaming .chat-item__avatar,
+.chat-page.dark .chat-item__avatar.is-streaming {
+  box-shadow: 0 0 0 6px rgba(94, 169, 255, 0.12);
+}
+
+.chat-item__avatar-icon.is-streaming {
+  animation: assistant-icon-glow 1.1s ease-in-out infinite;
+}
+
+.chat-item__avatar-icon.is-spinning {
+  animation: tool-icon-spin 0.9s linear infinite;
+}
+
+.chat-item.tool.is-tool-running .chat-item__avatar,
+.chat-item.tool_call.is-tool-running .chat-item__avatar,
+.chat-item__avatar.is-running {
+  border-color: rgba(245, 166, 35, 0.34);
+  background: rgba(245, 166, 35, 0.16);
+  color: rgb(245, 166, 35);
+}
+
+.chat-item.tool.is-tool-success .chat-item__avatar,
+.chat-item__avatar.is-success {
+  border-color: rgba(14, 165, 233, 0.3);
+  background: rgba(14, 165, 233, 0.15);
+  color: rgb(8, 145, 178);
+}
+
+.chat-item.tool.is-tool-error .chat-item__avatar,
+.chat-item__avatar.is-error {
+  border-color: rgba(208, 48, 80, 0.32);
+  background: rgba(208, 48, 80, 0.14);
+  color: rgb(208, 48, 80);
+}
+
+.chat-item.tool.is-tool-rejected .chat-item__avatar,
+.chat-item__avatar.is-rejected {
+  border-color: rgba(100, 116, 139, 0.34);
+  background: rgba(100, 116, 139, 0.16);
+  color: rgb(71, 85, 105);
+}
+
+.chat-item__bubble {
+  max-width: min(calc(100% - 44px), 780px);
+  width: fit-content;
+  border-radius: 16px;
+  padding: 10px 12px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(255, 255, 255, 0.78));
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+  transition: box-shadow 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.chat-item__bubble:hover {
+  box-shadow: 0 16px 30px rgba(15, 23, 42, 0.10);
+}
+
+.chat-item__actions {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed rgba(0, 0, 0, 0.10);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 0.78;
+  transition: opacity 120ms ease;
+}
+
+.chat-item.user .chat-item__actions {
+  justify-content: flex-end;
+}
+
+.chat-item.assistant .chat-item__actions {
+  justify-content: flex-start;
+}
+
+.chat-item__bubble:hover .chat-item__actions {
+  opacity: 1;
+}
+
+.chat-page.dark .chat-item__actions {
+  border-top-color: rgba(255, 255, 255, 0.14);
+}
+
+.chat-page.dark .chat-item__bubble {
+  border-color: rgba(255, 255, 255, 0.10);
+  background: linear-gradient(180deg, rgba(30, 41, 59, 0.88), rgba(15, 23, 42, 0.78));
+  box-shadow: 0 12px 26px rgba(2, 6, 23, 0.30);
+}
+
+.chat-page.dark .chat-item__bubble:hover {
+  box-shadow: 0 18px 34px rgba(2, 6, 23, 0.40);
+}
+
+.chat-item.user .chat-item__bubble {
+  border-color: rgba(24, 160, 88, 0.20);
+}
+
+.chat-item.assistant .chat-item__bubble {
+  border-color: rgba(32, 128, 240, 0.20);
+}
+
+.chat-item.assistant.is-streaming .chat-item__bubble {
+  border-color: rgba(32, 128, 240, 0.28);
+  box-shadow: 0 10px 26px rgba(32, 128, 240, 0.10);
+  overflow-anchor: none;
+}
+
+.chat-item.thinking .chat-item__bubble {
+  border-color: rgba(245, 166, 35, 0.24);
+}
+
+.chat-item.tool_call .chat-item__bubble {
+  border-color: rgba(159, 122, 234, 0.26);
+}
+
+.chat-item.tool .chat-item__bubble {
+  border-color: rgba(0, 0, 0, 0.06);
+}
+
+.chat-item.tool.is-tool-running .chat-item__bubble,
+.chat-item.tool_call.is-tool-running .chat-item__bubble {
+  border-color: rgba(245, 166, 35, 0.28);
+  box-shadow: 0 10px 26px rgba(245, 166, 35, 0.08);
+}
+
+.chat-item.tool.is-tool-success .chat-item__bubble {
+  border-color: rgba(14, 165, 233, 0.22);
+}
+
+.chat-item.tool.is-tool-error .chat-item__bubble {
+  border-color: rgba(208, 48, 80, 0.24);
+}
+
+.chat-item.tool.is-tool-rejected .chat-item__bubble {
+  border-color: rgba(100, 116, 139, 0.26);
+}
+
+.chat-item.tool.is-agent-run .chat-item__bubble {
+  background:
+    radial-gradient(circle at top right, rgba(14, 165, 233, 0.12), transparent 32%),
+    linear-gradient(180deg, rgba(14, 165, 233, 0.06), rgba(14, 165, 233, 0.015));
+}
+
+.chat-page.dark .chat-item.tool .chat-item__bubble {
+  border-color: rgba(255, 255, 255, 0.10);
+}
+
+.chat-page.dark .chat-item.assistant.is-streaming .chat-item__bubble {
+  border-color: rgba(94, 169, 255, 0.28);
+  box-shadow: 0 12px 28px rgba(30, 64, 175, 0.25);
+}
+
+.chat-page.dark .chat-item.tool.is-tool-running .chat-item__bubble,
+.chat-page.dark .chat-item.tool_call.is-tool-running .chat-item__bubble {
+  border-color: rgba(245, 166, 35, 0.34);
+  box-shadow: 0 10px 28px rgba(146, 64, 14, 0.22);
+}
+
+.chat-page.dark .chat-item.tool.is-tool-success .chat-item__bubble {
+  border-color: rgba(34, 211, 238, 0.24);
+}
+
+.chat-page.dark .chat-item.tool.is-tool-error .chat-item__bubble {
+  border-color: rgba(251, 113, 133, 0.28);
+}
+
+.chat-page.dark .chat-item.tool.is-tool-rejected .chat-item__bubble {
+  border-color: rgba(148, 163, 184, 0.26);
+}
+
+.chat-page.dark .chat-item.tool.is-agent-run .chat-item__bubble {
+  background:
+    radial-gradient(circle at top right, rgba(56, 189, 248, 0.16), transparent 34%),
+    linear-gradient(180deg, rgba(14, 165, 233, 0.11), rgba(14, 165, 233, 0.03));
+}
+
+.chat-item__time {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.2;
+  opacity: 0.75;
+}
+
+.chat-item.user .chat-item__time {
+  text-align: right;
+}
+
+.chat-plain {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-plain--deferred {
+  opacity: 0.92;
+  contain: content;
+}
+
+.assistant-thinking {
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px dashed rgba(0, 0, 0, 0.10);
+}
+
+.md-editor {
+  background-color: transparent !important;
+}
+
+.chat-page.dark .assistant-thinking {
+  border-bottom-color: rgba(255, 255, 255, 0.14);
+}
+
+.assistant-thinking__toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  line-height: 1.2;
+  color: rgba(0, 0, 0, 0.65);
+}
+
+.chat-page.dark .assistant-thinking__toggle {
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.assistant-thinking__label {
+  font-weight: 600;
+}
+
+.assistant-thinking__hint {
+  margin-left: auto;
+  opacity: 0.7;
+  font-size: 12px;
+}
+
+.assistant-thinking__text {
+  margin: 8px 0 0;
+  padding-left: 12px;
+  border-left: 2px solid rgba(0, 0, 0, 0.10);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  opacity: 0.9;
+}
+
+.chat-page.dark .assistant-thinking__text {
+  border-left-color: rgba(255, 255, 255, 0.16);
+}
+
+.chat-item__content :deep(.md-editor-preview-wrapper) {
+  padding: 0;
+}
+
+.chat-item__content :deep(.md-editor-preview) {
+  font-size: 14px;
+  line-height: 1.65;
+  background: transparent;
+}
+
+@media (max-width: 960px) {
+  .chat-page {
+    max-width: none;
+  }
+
+  .chat-list {
+    padding: 12px 10px;
+  }
+
+  .chat-item__bubble {
+    max-width: calc(100% - 40px);
+  }
+}
+
+@media (max-width: 720px) {
+  .chat-empty-state {
+    min-height: 360px;
+    padding: 20px 10px 28px;
+  }
+
+  .chat-empty-state__panel {
+    padding: 18px;
+    border-radius: 18px;
+  }
+
+  .chat-empty-state__summary {
+    grid-template-columns: 1fr;
+  }
+
+  .chat-empty-state__actions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  }
+
+  .chat-list {
+    padding: 8px;
+    gap: 12px;
+  }
+
+  .chat-item__row {
+    gap: 8px;
+  }
+
+  .chat-item__avatar {
+    width: 28px;
+    height: 28px;
+  }
+
+  .chat-item__bubble {
+    max-width: calc(100% - 36px);
+    padding: 10px;
+    border-radius: 14px;
+  }
+
+  .chat-file-attachments {
+    flex-direction: column;
+  }
+
+  .chat-file-attachment-card {
+    max-width: 100%;
+  }
+}
+</style>

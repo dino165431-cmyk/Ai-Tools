@@ -1,0 +1,432 @@
+﻿.md-editor-mermaid-action {
+  display: none !important;
+}
+
+.note-preview-diagram {
+  position: relative;
+  overflow: hidden;
+  border-radius: 18px;
+}
+
+.note-preview-diagram--clickable {
+  cursor: zoom-in;
+}
+
+.note-preview-diagram-actions {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  gap: 6px;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.note-preview-diagram:hover .note-preview-diagram-actions,
+.note-preview-diagram:focus-within .note-preview-diagram-actions {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.note-preview-diagram-action {
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #0f172a;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.note-preview-diagram-action:hover,
+.note-preview-diagram-action:focus-visible {
+  transform: translateY(-1px);
+  border-color: rgba(59, 130, 246, 0.34);
+}
+
+.note-preview-diagram-action:focus-visible {
+  outline: 2px solid rgba(59, 130, 246, 0.28);
+  outline-offset: 2px;
+}
+
+.note-preview-diagram-action__icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  pointer-events: none;
+}
+
+.chat-page.dark .note-preview-diagram-action,
+.markdown-diagram-lightbox.is-dark .note-preview-diagram-action,
+.editor-container.is-dark .note-preview-diagram-action {
+  background: rgba(15, 23, 42, 0.88);
+  color: #e2e8f0;
+  border-color: rgba(148, 163, 184, 0.18);
+}
+
+.note-preview-diagram-error {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 16px;
+  border: 1px solid rgba(248, 113, 113, 0.28);
+  border-radius: 16px;
+  background: rgba(254, 242, 242, 0.94);
+  color: #7f1d1d;
+}
+
+.chat-page.dark .note-preview-diagram-error,
+.editor-container.is-dark .note-preview-diagram-error {
+  background: rgba(69, 10, 10, 0.55);
+  border-color: rgba(248, 113, 113, 0.24);
+  color: #fecaca;
+}
+
+.note-preview-diagram-error__title {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.note-preview-diagram-error__message {
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.note-preview-diagram-error__meta {
+  margin-top: 4px;
+  font-size: 12px;
+  opacity: 0.86;
+}
+
+.note-preview-diagram-error__details {
+  margin-top: 10px;
+}
+
+.note-preview-diagram-error__details summary {
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.note-preview-diagram-error pre {
+  margin-top: 8px;
+  padding: 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.6);
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-page.dark .note-preview-diagram-error pre,
+.editor-container.is-dark .note-preview-diagram-error pre {
+  background: rgba(15, 23, 42, 0.52);
+}
+
+.markdown-diagram-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 4000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+  box-sizing: border-box;
+}
+
+.markdown-diagram-lightbox.is-hidden {
+  display: none;
+}
+
+.markdown-diagram-lightbox__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.58);
+  backdrop-filter: blur(8px);
+}
+
+.markdown-diagram-lightbox__dialog {
+  position: relative;
+  z-index: 1;
+  width: min(94vw, 1480px);
+  height: min(90vh, 1100px);
+  display: flex;
+  flex-direction: column;
+  border-radius: 24px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.97);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  box-shadow: 0 28px 80px rgba(15, 23, 42, 0.28);
+  transform: translateY(8px) scale(0.98);
+  opacity: 0;
+  transition: transform 0.18s ease, opacity 0.18s ease;
+}
+
+.markdown-diagram-lightbox.is-open .markdown-diagram-lightbox__dialog {
+  transform: translateY(0) scale(1);
+  opacity: 1;
+}
+
+.markdown-diagram-lightbox.is-dark .markdown-diagram-lightbox__dialog {
+  background: rgba(15, 23, 42, 0.96);
+  border-color: rgba(148, 163, 184, 0.16);
+}
+
+.markdown-diagram-lightbox__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.markdown-diagram-lightbox__title {
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.markdown-diagram-lightbox.is-dark .markdown-diagram-lightbox__title {
+  color: #e2e8f0;
+}
+
+.markdown-diagram-lightbox__header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.markdown-diagram-lightbox__hint {
+  font-size: 12px;
+  color: rgba(71, 85, 105, 0.9);
+  white-space: nowrap;
+}
+
+.markdown-diagram-lightbox.is-dark .markdown-diagram-lightbox__hint {
+  color: rgba(191, 219, 254, 0.82);
+}
+
+.markdown-diagram-lightbox__action-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.12);
+}
+
+.markdown-diagram-lightbox.is-dark .markdown-diagram-lightbox__action-group {
+  background: rgba(30, 41, 59, 0.9);
+}
+
+.markdown-diagram-lightbox__icon-button,
+.markdown-diagram-lightbox__close {
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.86);
+  color: #0f172a;
+  min-height: 36px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  cursor: pointer;
+  transition: transform 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.markdown-diagram-lightbox__icon-button {
+  min-width: 36px;
+}
+
+.markdown-diagram-lightbox__icon-button:hover,
+.markdown-diagram-lightbox__icon-button:focus-visible,
+.markdown-diagram-lightbox__close:hover,
+.markdown-diagram-lightbox__close:focus-visible {
+  transform: translateY(-1px);
+  border-color: rgba(59, 130, 246, 0.34);
+}
+
+.markdown-diagram-lightbox__icon-button:focus-visible,
+.markdown-diagram-lightbox__close:focus-visible {
+  outline: 2px solid rgba(59, 130, 246, 0.28);
+  outline-offset: 2px;
+}
+
+.markdown-diagram-lightbox__zoom-button {
+  min-width: 88px;
+  justify-content: space-between;
+}
+
+.markdown-diagram-lightbox__zoom-value {
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.markdown-diagram-lightbox.is-dark .markdown-diagram-lightbox__icon-button,
+.markdown-diagram-lightbox.is-dark .markdown-diagram-lightbox__close {
+  background: rgba(15, 23, 42, 0.88);
+  color: #e2e8f0;
+  border-color: rgba(148, 163, 184, 0.18);
+}
+
+.markdown-diagram-lightbox__content {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 16px;
+}
+
+.markdown-diagram-lightbox__viewport {
+  height: 100%;
+  overflow: auto;
+  border-radius: 20px;
+  overscroll-behavior: contain;
+  contain: layout paint;
+  will-change: scroll-position;
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.9), rgba(241, 245, 249, 0.92));
+}
+
+.markdown-diagram-lightbox__viewport.is-pannable {
+  cursor: grab;
+  touch-action: none;
+}
+
+.markdown-diagram-lightbox__viewport.is-dragging {
+  cursor: grabbing;
+}
+
+.markdown-diagram-lightbox__viewport.is-dragging,
+.markdown-diagram-lightbox__viewport.is-dragging * {
+  user-select: none;
+}
+
+.markdown-diagram-lightbox.is-dark .markdown-diagram-lightbox__viewport {
+  background: linear-gradient(180deg, rgba(2, 6, 23, 0.92), rgba(15, 23, 42, 0.88));
+}
+
+.markdown-diagram-lightbox__surface {
+  min-width: 100%;
+  min-height: 100%;
+  padding: 16px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  contain: layout paint;
+}
+
+.markdown-diagram-lightbox__canvas {
+  width: auto;
+  height: auto;
+  flex: none;
+  contain: layout paint;
+  transform: translateZ(0);
+  will-change: transform;
+}
+
+.markdown-diagram-lightbox__rendered {
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0 auto;
+  object-fit: contain;
+  -webkit-user-drag: none;
+  transform: translateZ(0);
+  will-change: transform;
+}
+
+.markdown-diagram-lightbox__svg-host svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0 auto;
+  object-fit: contain;
+  transform: translateZ(0);
+  will-change: transform;
+}
+
+.markdown-diagram-lightbox__svg-host {
+  width: 100%;
+  height: 100%;
+  flex: none;
+}
+
+.markdown-diagram-lightbox__status {
+  min-width: min(520px, 100%);
+  padding: 20px 22px;
+  border-radius: 18px;
+  border: 1px dashed rgba(148, 163, 184, 0.28);
+  background: rgba(248, 250, 252, 0.9);
+  color: rgba(51, 65, 85, 0.92);
+  font-size: 14px;
+  line-height: 1.7;
+  text-align: center;
+}
+
+.markdown-diagram-lightbox__status.is-error {
+  border-color: rgba(248, 113, 113, 0.28);
+  background: rgba(254, 242, 242, 0.94);
+  color: #7f1d1d;
+}
+
+.markdown-diagram-lightbox.is-dark .markdown-diagram-lightbox__status {
+  background: rgba(15, 23, 42, 0.82);
+  color: rgba(226, 232, 240, 0.92);
+  border-color: rgba(125, 211, 252, 0.14);
+}
+
+.markdown-diagram-lightbox.is-dark .markdown-diagram-lightbox__status.is-error {
+  background: rgba(69, 10, 10, 0.55);
+  border-color: rgba(248, 113, 113, 0.24);
+  color: #fecaca;
+}
+
+@media (hover: none) {
+  .note-preview-diagram-actions {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 720px) {
+  .markdown-diagram-lightbox {
+    padding: 12px;
+  }
+
+  .markdown-diagram-lightbox__dialog {
+    width: 100%;
+    max-height: 92vh;
+    border-radius: 18px;
+  }
+
+  .markdown-diagram-lightbox__header {
+    padding: 12px 14px;
+  }
+
+  .markdown-diagram-lightbox__content {
+    padding: 14px;
+  }
+}
+
+
+
+
+
+

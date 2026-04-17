@@ -1,0 +1,28 @@
+{
+  "main": "index.html",
+  "preload": "preload/services.js",
+  "logo": "logo.png",
+  "development": {
+    "main": "http://localhost:5173"
+  },
+  "features": [
+    {
+      "code": "Ai Tools",
+      "explain": "Ai Tools",
+      "cmds": [
+        "AI Tools"
+      ]
+    },
+    {
+      "code": "Ai",
+      "explain": "Ai 问答",
+      "cmds": [
+        {
+          "type": "over",
+          "label": "问 AI",
+          "maxLength": 1000000
+        }
+      ]
+    }
+  ]
+}
