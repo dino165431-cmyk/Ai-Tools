@@ -137,6 +137,7 @@
           :modelValue="msg.content"
           previewTheme="github"
           :theme="theme"
+          :deferBlockLayout="false"
           :code-foldable="true"
           :auto-fold-threshold="CHAT_CODE_AUTO_FOLD_THRESHOLD"
         />
@@ -218,8 +219,9 @@ function toolImageTitle(img, index) {
 .tool-message__toggle {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
+  min-width: 0;
   cursor: pointer;
   user-select: none;
   font-size: 12px;
@@ -234,6 +236,9 @@ function toolImageTitle(img, index) {
 
 .tool-message__label {
   font-weight: 600;
+  flex: 0 0 auto;
+  min-width: 0;
+  white-space: nowrap;
 }
 
 .tool-message__status {
@@ -269,20 +274,32 @@ function toolImageTitle(img, index) {
 }
 
 .tool-message__submeta {
+  min-width: 0;
+  flex: 0 1 auto;
   opacity: 0.82;
   font-size: 12px;
   font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tool-message__meta {
+  min-width: 0;
+  flex: 1 1 auto;
   opacity: 0.75;
   font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tool-message__hint {
   margin-left: auto;
+  flex: 0 0 auto;
   opacity: 0.7;
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .tool-message__body {

@@ -54,6 +54,10 @@ const props = defineProps({
   streamThrottleMs: {
     type: Number,
     default: 0
+  },
+  deferBlockLayout: {
+    type: Boolean,
+    default: true
   }
 })
 </script>

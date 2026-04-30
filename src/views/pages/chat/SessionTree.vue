@@ -28,19 +28,24 @@
       {{ runtimeIssue }}
     </n-alert>
 
-    <n-tree
-      class="session-tree__list"
-      block-line
-      expand-on-click
-      ellipsis
-      :data="treeData"
-      :node-props="nodeProps"
-      v-model:expanded-keys="expandedKeys"
-      v-model:selected-keys="selectedKeys"
-      style="width: 100%;"
-      :render-prefix="renderPrefix"
-      :render-label="renderLabel"
-    />
+    <div class="session-tree__scroll">
+      <n-tree
+        class="session-tree__list"
+        block-line
+        virtual-scroll
+        :animated="false"
+        expand-on-click
+        ellipsis
+        :data="treeData"
+        :node-props="nodeProps"
+        v-model:expanded-keys="expandedKeys"
+        v-model:selected-keys="selectedKeys"
+        style="width: 100%; height: 100%; min-height: 0;"
+        :scrollbar-props="{ trigger: 'none' }"
+        :render-prefix="renderPrefix"
+        :render-label="renderLabel"
+      />
+    </div>
 
     <n-dropdown
       placement="bottom-start"
@@ -763,6 +768,34 @@ function upsertTreeNode(parentPath, node) {
   return findNodeByKey(treeData.value, nextNode.key)
 }
 
+function touchPath(entryPath, options = {}) {
+  const normalizedPath = String(entryPath || '').trim().replace(/\\/g, '/')
+  if (!normalizedPath) return null
+
+  const parentPath = normalizedPath.includes('/')
+    ? normalizedPath.substring(0, normalizedPath.lastIndexOf('/'))
+    : props.root
+  const existingNode = findNodeByKey(treeData.value, normalizedPath)
+  const now = Date.now()
+  const fallbackLabel = stripGeneratedTimePrefix(
+    String(normalizedPath.split('/').pop() || normalizedPath).replace(/\.json$/i, '')
+  )
+  const nextLabel = String(options.label || '').trim() || existingNode?.label || fallbackLabel
+  const nextNode = existingNode
+    ? {
+        ...existingNode,
+        label: nextLabel,
+        metaLabel: formatTreeMetaDate(now),
+        sortTimeMs: now
+      }
+    : {
+        ...createTreeNode(normalizedPath, false),
+        label: nextLabel
+      }
+
+  return upsertTreeNode(parentPath || props.root, nextNode)
+}
+
 function updateTreeStateAfterPathChange(oldBase, newBase) {
   expandedKeys.value = uniqueStrings(expandedKeys.value.map((k) => replacePathPrefix(k, oldBase, newBase)))
   folderExpandedKeys.value = uniqueStrings(folderExpandedKeys.value.map((k) => replacePathPrefix(k, oldBase, newBase)))
@@ -1088,9 +1121,8 @@ async function saveSessionInSelectedFolder() {
     expandedKeys.value = nextExpanded
     folderExpandedKeys.value = nextFolderExpanded
 
-    upsertTreeNode(folderPath, createTreeNode(fullPath, false))
+    touchPath(fullPath, { label: name })
     await selectPath(fullPath)
-    void refreshTree({ silent: true })
     emit('saved', fullPath)
     message.success('会话已保存')
   } catch (err) {
@@ -1102,6 +1134,7 @@ defineExpose({
   refreshTree,
   openSaveSessionModal,
   selectPath,
+  touchPath,
   clearSelection() {
     selectedKeys.value = []
   }
@@ -1145,32 +1178,37 @@ defineExpose({
   border-color: rgba(148, 163, 184, 0.14);
 }
 
-.session-tree__list,
+.session-tree__scroll,
 .session-tree__picker-list {
-  width: 100%;
-  max-width: 100%;
-  min-width: 0;
   border-radius: 16px;
-  box-sizing: border-box;
   padding: 4px;
-  overflow-x: hidden;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.48), rgba(246, 248, 250, 0.56));
 }
 
-.session-tree__list {
-  flex: 1 1 auto;
+.session-tree__scroll {
+  flex: 1 1 0;
   min-height: 0;
-  overflow-y: auto;
+  overflow: hidden;
   overscroll-behavior: contain;
-  scrollbar-gutter: stable;
+}
+
+.session-tree__list {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
 }
 
 .session-tree__picker-list {
+  max-height: 320px;
+  overflow: auto;
+  width: 100%;
+  min-width: 0;
   overflow-y: auto;
   scrollbar-gutter: stable;
 }
 
-.session-tree.is-dark .session-tree__list,
+.session-tree.is-dark .session-tree__scroll,
 .session-tree.is-dark .session-tree__picker-list {
   border: none;
   background: transparent !important;

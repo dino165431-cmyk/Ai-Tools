@@ -1288,6 +1288,7 @@ onBeforeUnmount(() => {
   contain: layout;
   position: relative;
   z-index: 20;
+  margin-left: 12px;
   height: 100%;
   min-height: 0;
   overflow: visible;

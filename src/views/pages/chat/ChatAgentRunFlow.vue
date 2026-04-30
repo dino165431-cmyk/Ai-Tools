@@ -76,6 +76,7 @@
         previewTheme="github"
         codeTheme="github"
         :theme="theme"
+        :deferBlockLayout="false"
         :code-foldable="true"
         :auto-fold-threshold="CHAT_CODE_AUTO_FOLD_THRESHOLD"
       />

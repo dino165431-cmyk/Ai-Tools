@@ -1,6 +1,6 @@
 ﻿<template>
-  <n-space vertical size="large">
-    <n-layout embedded has-sider sider-placement="right">
+  <n-space vertical size="large" class="chat-shell">
+    <n-layout embedded has-sider sider-placement="right" class="chat-shell__layout">
       <n-layout-content class="chat-layout__content" :content-style="layoutContentStyle">
         <n-flex
           vertical
@@ -147,10 +147,11 @@
       </n-flex>
     </n-card>
 
-    <n-card class="chat-messages" :bordered="false" content-style="padding: 0; height: 100%;">
-      <div class="chat-scroll-wrapper">
-        <n-scrollbar ref="scrollbarRef" style="height: 100%;" @scroll="handleChatScroll">
-          <div ref="chatListRef" class="chat-list">
+    <div class="chat-messages-shell">
+      <n-card class="chat-messages" :bordered="false" content-style="padding: 0; height: 100%;">
+        <div class="chat-scroll-wrapper">
+          <n-scrollbar ref="scrollbarRef" style="height: 100%;" @scroll="handleChatScroll">
+            <div ref="chatListRef" class="chat-list">
             <div v-if="!session.messages.length" class="chat-empty-state">
               <div class="chat-empty-state__panel">
                 <div class="chat-empty-state__hero">
@@ -197,7 +198,7 @@
               v-for="msg in renderedChatMessages"
               :key="msg.id"
               class="chat-item"
-              :class="[msg.role, chatItemStateClasses(msg)]"
+              :class="[msg.role, chatItemStateClasses(msg), { 'is-virtualized': chatVirtualizedEnabled }]"
               :id="msg.role === 'user' ? `q-${msg.id}` : undefined"
               :ref="(el) => setChatItemEl(msg.id, msg.role, el)"
             >
@@ -232,8 +233,9 @@
                       :modelValue="msg.content"
                       previewTheme="github"
                       :theme="theme"
+                      :deferBlockLayout="false"
                       :streaming="msg.streaming"
-                      :stream-throttle-ms="180"
+                      :stream-throttle-ms="CHAT_STREAM_RENDER_THROTTLE_MS"
                       :code-foldable="true"
                       :auto-fold-threshold="CHAT_CODE_AUTO_FOLD_THRESHOLD"
                     />
@@ -258,8 +260,9 @@
                       :modelValue="msg.content"
                       previewTheme="github"
                       :theme="theme"
+                      :deferBlockLayout="false"
                       :streaming="msg.streaming"
-                      :stream-throttle-ms="180"
+                      :stream-throttle-ms="CHAT_STREAM_RENDER_THROTTLE_MS"
                       :code-foldable="true"
                       :auto-fold-threshold="CHAT_CODE_AUTO_FOLD_THRESHOLD"
                     />
@@ -274,7 +277,26 @@
                   </template>
 
                   <template v-else-if="msg.role === 'tool_call' || msg.role === 'tool'">
+                    <div
+                      v-if="shouldRenderCompactToolMessage(msg)"
+                      class="chat-tool-compact"
+                      :class="`is-${getToolMessageStatus(msg)}`"
+                      @click="toggleToolExpanded(msg)"
+                    >
+                      <n-icon
+                        :component="msg.toolExpanded ? ChevronUpOutline : ChevronDownOutline"
+                        size="14"
+                        class="chat-tool-compact__chevron"
+                      />
+                      <span class="chat-tool-compact__label">{{ toolMessageLabel(msg) }}</span>
+                      <span class="chat-tool-compact__status" :class="`is-${getToolMessageStatus(msg)}`">
+                        {{ toolMessageStatusLabel(msg) }}
+                      </span>
+                      <span v-if="msg.toolMeta" class="chat-tool-compact__meta">{{ msg.toolMeta }}</span>
+                      <span class="chat-tool-compact__hint">点击展开</span>
+                    </div>
                     <ChatToolMessage
+                      v-else
                       :msg="msg"
                       :theme="theme"
                       :helpers="toolMessageHelpers"
@@ -290,8 +312,9 @@
                       :modelValue="msg.content"
                       previewTheme="github"
                       :theme="theme"
+                      :deferBlockLayout="false"
                       :streaming="msg.streaming"
-                      :stream-throttle-ms="180"
+                      :stream-throttle-ms="CHAT_STREAM_RENDER_THROTTLE_MS"
                       :code-foldable="true"
                       :auto-fold-threshold="CHAT_CODE_AUTO_FOLD_THRESHOLD"
                     />
@@ -359,58 +382,59 @@
               aria-hidden="true"
             />
           </div>
-        </n-scrollbar>
+          </n-scrollbar>
 
-        <div
-          v-if="stickyChatBubble"
-          class="chat-sticky-bubble"
-          :class="[`is-${stickyChatBubble.type}`, { 'is-dark': theme === 'dark' }]"
-          @click="handleStickyChatBubbleAction"
-        >
-          <div class="chat-sticky-bubble__main">
-            <n-icon :component="ChevronUpOutline" size="14" />
-            <span class="chat-sticky-bubble__label">{{ stickyChatBubble.label }}</span>
-            <span v-if="stickyChatBubble.statusText" class="chat-sticky-bubble__status" :class="`is-${stickyChatBubble.status}`">
-              {{ stickyChatBubble.statusText }}
-            </span>
-            <span v-if="stickyChatBubble.meta" class="chat-sticky-bubble__meta">{{ stickyChatBubble.meta }}</span>
+          <div
+            v-if="stickyChatBubble"
+            class="chat-sticky-bubble"
+            :class="[`is-${stickyChatBubble.type}`, { 'is-dark': theme === 'dark' }]"
+            @click="handleStickyChatBubbleAction"
+          >
+            <div class="chat-sticky-bubble__main">
+              <n-icon :component="ChevronUpOutline" size="14" />
+              <span class="chat-sticky-bubble__label">{{ stickyChatBubble.label }}</span>
+              <span v-if="stickyChatBubble.statusText" class="chat-sticky-bubble__status" :class="`is-${stickyChatBubble.status}`">
+                {{ stickyChatBubble.statusText }}
+              </span>
+              <span v-if="stickyChatBubble.meta" class="chat-sticky-bubble__meta">{{ stickyChatBubble.meta }}</span>
+            </div>
+            <n-button size="tiny" tertiary round @click.stop="handleStickyChatBubbleAction">
+              {{ stickyChatBubble.actionText }}
+            </n-button>
           </div>
-          <n-button size="tiny" tertiary round @click.stop="handleStickyChatBubbleAction">
-            {{ stickyChatBubble.actionText }}
-          </n-button>
-        </div>
 
-        <div v-if="showAnchorRail" class="chat-anchor-rail">
-          <n-tooltip v-for="a in userAnchors" :key="a.id" trigger="hover">
+          <n-tooltip v-if="showScrollToBottomButton" trigger="hover">
             <template #trigger>
-              <div
-                class="chat-anchor-marker"
-                :class="{ active: a.id === activeAnchorId }"
-                @click="scrollToUserAnchor(a.id)"
-              />
+              <n-button
+                class="chat-scroll-to-bottom"
+                size="small"
+                tertiary
+                circle
+                @click="activateAutoScroll"
+              >
+                <template #icon>
+                  <n-icon :component="ArrowDownOutline" size="18" />
+                </template>
+              </n-button>
             </template>
-            第{{ a.index }} 问：{{ a.preview }}
+            回到底部
           </n-tooltip>
         </div>
+      </n-card>
 
-        <n-tooltip v-if="showScrollToBottomButton" trigger="hover">
+      <div v-if="showAnchorRail" class="chat-anchor-rail">
+        <n-tooltip v-for="a in userAnchors" :key="a.id" trigger="hover">
           <template #trigger>
-            <n-button
-              class="chat-scroll-to-bottom"
-              size="small"
-              tertiary
-              circle
-              @click="activateAutoScroll"
-            >
-              <template #icon>
-                <n-icon :component="ArrowDownOutline" size="18" />
-              </template>
-            </n-button>
+            <div
+              class="chat-anchor-marker"
+              :class="{ active: a.id === activeAnchorId }"
+              @click="scrollToUserAnchor(a.id)"
+            />
           </template>
-          回到底部
+          第{{ a.index }} 问：{{ a.preview }}
         </n-tooltip>
       </div>
-    </n-card>
+    </div>
 
     <ChatComposerPanel
       ref="composerPanelRef"
@@ -980,7 +1004,7 @@
         :width="sessionSiderWidth"
         :collapsed-width="sessionSiderCollapsedWidth"
         :content-style="sessionSiderContentStyle"
-        :show-trigger="isCompactChatLayout ? false : 'arrow-circle'"
+        show-trigger="arrow-circle"
         bordered
         v-model:collapsed="sessionSiderCollapsed"
       >
@@ -1029,6 +1053,7 @@ import {
   useMessage
 } from 'naive-ui'
 import LazyMarkdownPreview from '@/components/LazyMarkdownPreview.vue'
+import { ensureMarkdownPreviewRuntime } from '@/utils/mdEditorRuntime'
 import { ChatMultiple24Filled } from '@vicons/fluent'
 import { FlowModelerReference, SkillLevelIntermediate, BareMetalServer02 } from '@vicons/carbon'
 import { Magento } from '@vicons/fa'
@@ -1585,7 +1610,7 @@ async function maybeScrollToBottomForRun(abortState = null, options = {}) {
 }
 
 function maybeScheduleScrollToBottomForRun(abortState = null) {
-  if (isRunRecordActive(abortState)) scheduleScrollToBottom()
+  if (isRunRecordActive(abortState)) maybeScheduleStreamingScroll()
 }
 
 function getMemorySessionForMessage(msg) {
@@ -1615,6 +1640,10 @@ function saveActiveMemorySessionDraft() {
 function restoreMemorySession(record, options = {}) {
   if (!record) return
   if (!options.skipSaveCurrent) saveActiveMemorySessionDraft()
+  primeHydratedHeavyChatMessages(record.messages, {
+    replace: true,
+    fromStart: options.fromStart === true
+  })
   activeMemorySessionId.value = record.id
   session.messages = Array.isArray(record.messages) ? record.messages : []
   session.apiMessages = Array.isArray(record.apiMessages) ? record.apiMessages : []
@@ -1693,8 +1722,18 @@ const hasAppliedDefaultModel = ref(false)
 const COMPACT_CHAT_BREAKPOINT = 980
 const DENSE_CHAT_BREAKPOINT = 720
 const CHAT_VIRTUALIZATION_MIN_MESSAGES = 40
-const CHAT_VIRTUALIZATION_OVERSCAN_PX = 960
+const CHAT_VIRTUALIZATION_OVERSCAN_PX = 720
+const CHAT_LIST_GAP_PX = 14
 const CHAT_DEFAULT_MESSAGE_HEIGHT = 180
+const CHAT_RECENT_HEAVY_RENDER_COUNT = 24
+const CHAT_HEAVY_RENDER_SEED_COUNT = 32
+const CHAT_HEAVY_RENDER_VIEWPORT_BUFFER = 6
+const CHAT_HEAVY_RENDER_ROOT_MARGIN_PX = 720
+const CHAT_SCROLL_COMPENSATION_SUSPEND_MS = 160
+const CHAT_TOOL_COMPACT_MIN_MESSAGES = 120
+const CHAT_TOOL_COMPACT_MIN_TOOL_MESSAGES = 32
+const CHAT_TOOL_COMPACT_ITEM_FIXED_HEIGHT = 72
+const CHAT_STREAM_RENDER_THROTTLE_MS = 72
 
 function syncChatResponsiveState() {
   if (typeof window === 'undefined') return
@@ -1705,13 +1744,15 @@ function syncChatResponsiveState() {
 
 const layoutContentStyle = computed(() => {
   const padding = isCompactChatLayout.value ? '8px' : '8px 44px 8px 8px'
-  return `padding: ${padding}; height: calc(100vh - 30px);`
+  return `padding: ${padding}; height: calc(var(--app-viewport-height) - (var(--app-shell-padding) * 2)); box-sizing: border-box; overflow: hidden;`
 })
 
 const sessionSiderWidth = computed(() => (isCompactChatLayout.value ? 280 : 320))
 const sessionSiderCollapsedWidth = computed(() => (isCompactChatLayout.value ? 0 : 15))
 const sessionSiderContentStyle = computed(() => {
-  return isCompactChatLayout.value ? 'padding: 16px 12px;' : 'padding: 24px;'
+  return isCompactChatLayout.value
+    ? 'padding: 16px 12px; height: 100%; box-sizing: border-box; overflow: hidden;'
+    : 'padding: 24px; height: 100%; box-sizing: border-box; overflow: hidden;'
 })
 
 watch(
@@ -5395,7 +5436,7 @@ function coalesceToolExecutionDisplayMessages(messages = []) {
 
 const activeAgentRunToolMessageByStreamId = new Map()
 const pendingBuiltinAgentsEventsByStreamId = new Map()
-const BUILTIN_AGENTS_EVENT_FLUSH_INTERVAL_MS = 33
+const BUILTIN_AGENTS_EVENT_FLUSH_INTERVAL_MS = 80
 let pendingBuiltinAgentsEventsFlushTimer = null
 
 function resolveActiveAgentRunToolMessage(streamId) {
@@ -5430,21 +5471,24 @@ function updateAgentRunToolMessageTraceBatch(streamId, entries) {
   const latestEntry = nextEntries[nextEntries.length - 1]
   const agentName = String(latestEntry?.agent_name || messageRef.toolAgentName || '').trim()
   if (agentName) messageRef.toolAgentName = agentName
+  const isAgentRun = String(messageRef.toolName || '').trim() === 'agent_run'
+  const isExpanded = messageRef.toolExpanded === true
   const subMeta = [
     messageRef.toolAgentName ? `智能体：${messageRef.toolAgentName}` : '',
-    mergedTrace.length ? `${mergedTrace.length} 个轨迹步骤` : ''
+    (!isAgentRun || isExpanded) && mergedTrace.length ? `${mergedTrace.length} 个轨迹步骤` : ''
   ].filter(Boolean).join(' · ')
   messageRef.toolSubMeta = subMeta
+  const traceItemsForDisplay = isAgentRun && !isExpanded ? [] : mergedTrace
   messageRef.content = buildToolExecutionMessageContent({
     serverName: messageRef.toolServerName || extractServerNameFromToolMeta(messageRef.toolMeta),
     toolName: messageRef.toolName,
     argsText: messageRef.toolArgsText || '{}',
     autoApproved: messageRef.toolAutoApproved,
     status: 'running',
-    traceItems: mergedTrace
+    traceItems: traceItemsForDisplay
   })
-  scheduleRefreshUserAnchorMeta()
-  if (autoScrollEnabled.value && (isAtBottom.value || sending.value)) scheduleScrollToBottom()
+  if (isExpanded) scheduleRefreshUserAnchorMeta()
+  maybeScheduleStreamingScroll()
 }
 
 function updateAgentRunToolMessageLiveUpdate(streamId, live) {
@@ -5482,8 +5526,8 @@ function updateAgentRunToolMessageLiveUpdate(streamId, live) {
   nextPayload.trace = Array.isArray(messageRef.toolLiveTrace) ? messageRef.toolLiveTrace : []
   messageRef.toolResultPayload = nextPayload
 
-  scheduleRefreshUserAnchorMeta()
-  if (autoScrollEnabled.value && (isAtBottom.value || sending.value)) scheduleScrollToBottom()
+  if (messageRef.toolExpanded === true) scheduleRefreshUserAnchorMeta()
+  maybeScheduleStreamingScroll()
 }
 
 function mergeAgentRunLivePayload(base, incoming) {
@@ -5976,10 +6020,12 @@ const chatViewportHeight = ref(0)
 const chatScrollDistanceFromBottom = ref(Number.POSITIVE_INFINITY)
 const isChatScrollable = ref(false)
 const visibleHeavyChatMessageIds = ref(new Set())
+const hydratedHeavyChatMessageIds = ref(new Set())
+const chatSessionOpeningHeavyRender = ref(false)
 const chatMessageMetricsVersion = ref(0)
 const recentHeavyChatMessageIds = computed(() => {
   const ids = new Set()
-  const tail = Array.isArray(session.messages) ? session.messages.slice(-14) : []
+  const tail = Array.isArray(session.messages) ? session.messages.slice(-CHAT_RECENT_HEAVY_RENDER_COUNT) : []
   tail.forEach((msg) => {
     const id = String(msg?.id || '').trim()
     if (id) ids.add(id)
@@ -5991,18 +6037,271 @@ let chatMessageVisibilityObserver = null
 let chatMessageResizeObserver = null
 const chatMessageElMap = new Map()
 const chatMessageHeightCache = new Map()
+const chatMessageByIdMap = new Map()
 const intersectingHeavyChatMessageIds = new Set()
+const pendingChatItemHeightMeasureMap = new Map()
+let pendingChatItemHeightMeasureRafId = 0
+let pendingChatScrollCompensationPx = 0
+let pendingChatScrollCompensationRafId = 0
+let lastProcessedChatScrollTop = 0
+let didProcessChatScroll = false
+let lastActiveUserChatScrollAt = 0
 
 function estimateChatMessageHeight(msg) {
+  if (isFixedCompactToolMessage(msg)) return CHAT_TOOL_COMPACT_ITEM_FIXED_HEIGHT
   const role = String(msg?.role || '')
-  const contentLength = String(msg?.content || '').length
   const attachmentCount = Array.isArray(msg?.attachments) ? msg.attachments.length : 0
   const thinkingLength = String(msg?.thinking || '').length
-  const base = role === 'tool_call' || role === 'tool' ? 168 : role === 'assistant' ? 156 : 140
-  const contentExtra = Math.min(520, Math.ceil(contentLength / 9))
+  const isToolRole = role === 'tool_call' || role === 'tool'
+  const toolCollapsed = isToolRole && !msg?.toolExpanded
+  if (toolCollapsed) return estimateCollapsedToolMessageHeight(msg)
+  const content = String(msg?.content || '')
+  const base = isToolRole ? 168 : role === 'assistant' ? 156 : 140
+  const contentExtra = estimateChatMessageContentHeight(content)
   const attachmentExtra = attachmentCount * 76
   const thinkingExtra = msg?.thinkingExpanded ? Math.min(320, Math.ceil(thinkingLength / 10)) : 0
   return Math.max(112, base + contentExtra + attachmentExtra + thinkingExtra)
+}
+
+function estimateChatMessageContentHeight(content) {
+  const text = String(content || '').replace(/\r\n/g, '\n')
+  if (!text) return 0
+
+  const charsPerLine = isCompactChatLayout.value ? 24 : isDenseChatLayout.value ? 30 : 44
+  const lines = text.split('\n')
+  let estimatedLines = 0
+  let blockBonus = 0
+  let inCodeFence = false
+
+  lines.forEach((rawLine) => {
+    const line = String(rawLine || '')
+    const trimmed = line.trim()
+
+    if (!trimmed) {
+      estimatedLines += 0.6
+      return
+    }
+
+    if (/^```/.test(trimmed)) {
+      inCodeFence = !inCodeFence
+      estimatedLines += 1
+      blockBonus += 10
+      return
+    }
+
+    const effectiveCharsPerLine = inCodeFence ? Math.max(14, charsPerLine - 10) : charsPerLine
+    const visualLength = line.length + (inCodeFence ? 6 : 0)
+    estimatedLines += Math.max(1, Math.ceil(visualLength / effectiveCharsPerLine))
+    if (/^(#{1,6}\s+|>\s+|[-*+]\s+|\d+\.\s+|\|)/.test(trimmed)) blockBonus += 6
+  })
+
+  const lengthFloor = Math.ceil(text.length / 9)
+  const lineBased = Math.ceil(estimatedLines * 18) + Math.min(360, blockBonus)
+  // 长正文如果估得太矮，首次进入可视区时会触发很大的滚动补偿跳变。
+  return Math.min(2400, Math.max(lengthFloor, lineBased))
+}
+
+function estimateCollapsedToolMessageHeight(msg) {
+  const summary = [
+    toolMessageLabel(msg),
+    toolMessageStatusLabel(msg),
+    String(msg?.toolSubMeta || '').trim(),
+    String(msg?.toolMeta || '').trim()
+  ].filter(Boolean).join(' · ')
+  const charsPerLine = isCompactChatLayout.value ? 26 : isDenseChatLayout.value ? 34 : 48
+  const lineCount = Math.max(1, Math.min(4, Math.ceil(summary.length / charsPerLine)))
+  const runningExtra = getToolMessageStatus(msg) === 'running' ? 4 : 0
+  // 折叠态工具消息只展示一行摘要和时间，不应该按隐藏正文长度估高。
+  return 52 + ((lineCount - 1) * 18) + runningExtra
+}
+
+function resolveChatMessageById(messageId) {
+  const id = String(messageId || '').trim()
+  if (!id) return null
+  if (chatMessageByIdMap.has(id)) return chatMessageByIdMap.get(id)
+  const fallback = (session.messages || []).find((msg) => String(msg?.id || '').trim() === id) || null
+  if (fallback) chatMessageByIdMap.set(id, fallback)
+  return fallback
+}
+
+function isMarkdownHeavyRenderCandidate(msg) {
+  if (!msg || typeof msg !== 'object') return false
+  if (String(msg.render || '').trim() === 'text') return false
+  return !!String(msg.content || '').trim()
+}
+
+function collectHeavyRenderSeedMessageIds(messages, options = {}) {
+  const list = Array.isArray(messages) ? messages : []
+  if (!list.length) return new Set()
+
+  const requestedLimit = Number(options.limit)
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.max(0, Math.round(requestedLimit))
+    : CHAT_HEAVY_RENDER_SEED_COUNT
+  if (limit <= 0) return new Set()
+
+  const fromStart = options.fromStart === true
+  const ids = new Set()
+  if (fromStart) {
+    for (let i = 0; i < list.length && ids.size < limit; i += 1) {
+      const msg = list[i]
+      const id = String(msg?.id || '').trim()
+      if (!id || !isMarkdownHeavyRenderCandidate(msg)) continue
+      ids.add(id)
+    }
+    return ids
+  }
+
+  for (let i = list.length - 1; i >= 0 && ids.size < limit; i -= 1) {
+    const msg = list[i]
+    const id = String(msg?.id || '').trim()
+    if (!id || !isMarkdownHeavyRenderCandidate(msg)) continue
+    ids.add(id)
+  }
+  return ids
+}
+
+function areStringSetsEqual(a, b) {
+  if (a === b) return true
+  const left = a instanceof Set ? a : new Set()
+  const right = b instanceof Set ? b : new Set()
+  if (left.size !== right.size) return false
+  for (const value of left) {
+    if (!right.has(value)) return false
+  }
+  return true
+}
+
+function replaceHydratedHeavyChatMessageIds(ids) {
+  const next = ids instanceof Set ? ids : new Set()
+  if (areStringSetsEqual(hydratedHeavyChatMessageIds.value, next)) return false
+  hydratedHeavyChatMessageIds.value = next
+  return true
+}
+
+function mergeHydratedHeavyChatMessageIds(ids) {
+  const next = new Set(hydratedHeavyChatMessageIds.value)
+  let changed = false
+  const source = ids instanceof Set ? ids : new Set(Array.isArray(ids) ? ids : [])
+  source.forEach((value) => {
+    const id = String(value || '').trim()
+    if (!id || next.has(id)) return
+    next.add(id)
+    changed = true
+  })
+  if (!changed) return false
+  hydratedHeavyChatMessageIds.value = next
+  return true
+}
+
+function rememberHydratedHeavyChatMessage(messageId) {
+  const id = String(messageId || '').trim()
+  return !!id && mergeHydratedHeavyChatMessageIds([id])
+}
+
+let chatSessionOpeningHeavyRenderToken = 0
+
+function beginChatSessionOpeningHeavyRender() {
+  chatSessionOpeningHeavyRenderToken += 1
+  chatSessionOpeningHeavyRender.value = true
+  return chatSessionOpeningHeavyRenderToken
+}
+
+function endChatSessionOpeningHeavyRender(token) {
+  if (!token || token !== chatSessionOpeningHeavyRenderToken) return
+  chatSessionOpeningHeavyRender.value = false
+}
+
+async function withChatSessionOpeningHeavyRender(task) {
+  const token = beginChatSessionOpeningHeavyRender()
+  try {
+    return await task()
+  } finally {
+    endChatSessionOpeningHeavyRender(token)
+  }
+}
+
+function primeHydratedHeavyChatMessages(messages, options = {}) {
+  const seedIds = collectHeavyRenderSeedMessageIds(messages, options)
+  if (options.replace !== false) return replaceHydratedHeavyChatMessageIds(seedIds)
+  return mergeHydratedHeavyChatMessageIds(seedIds)
+}
+
+async function maybeWarmMarkdownPreviewRuntimeForMessages(messages, options = {}) {
+  const seedIds = collectHeavyRenderSeedMessageIds(messages, options)
+  if (!seedIds.size) return false
+  await ensureMarkdownPreviewRuntime()
+  return true
+}
+
+function primeHydratedRenderedChatMessages(options = {}) {
+  const items = Array.isArray(chatVirtualLayout.value?.items) ? chatVirtualLayout.value.items : []
+  if (!items.length) return false
+
+  const range = renderedChatRange.value || { start: 0, end: -1 }
+  const requestedBuffer = Number(options.buffer)
+  const buffer = Number.isFinite(requestedBuffer)
+    ? Math.max(0, Math.round(requestedBuffer))
+    : CHAT_HEAVY_RENDER_VIEWPORT_BUFFER
+  const start = Math.max(0, Number(range.start || 0) - buffer)
+  const end = Math.min(items.length - 1, Number(range.end || -1) + buffer)
+  if (end < start) return false
+
+  const ids = new Set()
+  for (let i = start; i <= end; i += 1) {
+    const msg = items[i]?.msg
+    const id = String(msg?.id || '').trim()
+    if (!id || !isMarkdownHeavyRenderCandidate(msg)) continue
+    ids.add(id)
+  }
+  if (!ids.size) return false
+  return mergeHydratedHeavyChatMessageIds(ids)
+}
+
+function primeHydratedMountedHeavyChatMessages() {
+  const ids = new Set()
+  for (const [id, el] of chatMessageElMap.entries()) {
+    if (!(el instanceof HTMLElement) || !el.isConnected) continue
+    const msg = resolveChatMessageById(id)
+    if (!isMarkdownHeavyRenderCandidate(msg)) continue
+    ids.add(id)
+  }
+  if (!ids.size) return false
+  return mergeHydratedHeavyChatMessageIds(ids)
+}
+
+function findFirstItemBottomGte(items, targetBottom) {
+  const list = Array.isArray(items) ? items : []
+  let left = 0
+  let right = list.length - 1
+  let answer = list.length
+  while (left <= right) {
+    const mid = (left + right) >> 1
+    if (Number(list[mid]?.bottom) >= targetBottom) {
+      answer = mid
+      right = mid - 1
+    } else {
+      left = mid + 1
+    }
+  }
+  return answer
+}
+
+function findLastItemTopLte(items, targetTop, startIndex = 0) {
+  const list = Array.isArray(items) ? items : []
+  let left = Math.max(0, Number.isInteger(startIndex) ? startIndex : 0)
+  let right = list.length - 1
+  let answer = left - 1
+  while (left <= right) {
+    const mid = (left + right) >> 1
+    if (Number(list[mid]?.top) <= targetTop) {
+      answer = mid
+      left = mid + 1
+    } else {
+      right = mid - 1
+    }
+  }
+  return answer
 }
 
 const chatVirtualizedEnabled = computed(() => (session.messages?.length || 0) >= CHAT_VIRTUALIZATION_MIN_MESSAGES)
@@ -6026,25 +6325,28 @@ const chatVirtualLayout = computed(() => {
   ;(session.messages || []).forEach((msg, index) => {
     const id = String(msg?.id || '').trim()
     const height = Math.max(96, Number(chatMessageHeightCache.get(id)) || estimateChatMessageHeight(msg) || CHAT_DEFAULT_MESSAGE_HEIGHT)
+    const top = offset
+    const bottom = top + height
     items.push({
       id,
       index,
-      top: offset,
-      bottom: offset + height,
+      top,
+      bottom,
       height,
       msg
     })
     if (id) {
       idToIndex.set(id, index)
-      topById.set(id, offset)
+      topById.set(id, top)
     }
-    offset += height
+    offset = bottom + CHAT_LIST_GAP_PX
   })
+  const totalHeight = items.length ? Math.max(0, offset - CHAT_LIST_GAP_PX) : 0
   return {
     items,
     idToIndex,
     topById,
-    totalHeight: offset
+    totalHeight
   }
 })
 
@@ -6057,15 +6359,12 @@ function resolveChatRenderRange(layout, scrollTop, viewportHeight) {
   const viewportTop = Math.max(0, Number(scrollTop) - overscan)
   const viewportBottom = Math.max(0, Number(scrollTop) + Math.max(0, Number(viewportHeight) || 0) + overscan)
 
-  let start = 0
-  while (start < items.length && items[start].bottom < viewportTop) start += 1
-  let end = Math.max(start, 0)
-  while (end < items.length - 1 && items[end].top <= viewportBottom) end += 1
+  let start = findFirstItemBottomGte(items, viewportTop)
+  if (start >= items.length) start = Math.max(0, items.length - 1)
+  let end = findLastItemTopLte(items, viewportBottom, start)
+  if (end < start) end = start
 
-  if (start >= items.length) {
-    start = Math.max(0, items.length - 1)
-    end = items.length - 1
-  }
+  if (start >= items.length) end = items.length - 1
 
   const forcedIds = forcedRenderedChatMessageIdSet.value
   let forcedStart = start
@@ -6087,6 +6386,18 @@ const renderedChatRange = computed(() =>
   resolveChatRenderRange(chatVirtualLayout.value, chatScrollTop.value, chatViewportHeight.value)
 )
 
+const renderedChatMessageIdSet = computed(() => {
+  const ids = new Set()
+  const { items } = chatVirtualLayout.value
+  const { start, end } = renderedChatRange.value
+  if (!items.length || end < start) return ids
+  for (let i = start; i <= end; i += 1) {
+    const id = String(items[i]?.id || '').trim()
+    if (id) ids.add(id)
+  }
+  return ids
+})
+
 const renderedChatMessages = computed(() => {
   const { items } = chatVirtualLayout.value
   const { start, end } = renderedChatRange.value
@@ -6096,22 +6407,50 @@ const renderedChatMessages = computed(() => {
 
 const chatVirtualTopSpacerHeight = computed(() => {
   if (!chatVirtualizedEnabled.value) return 0
-  const first = chatVirtualLayout.value.items[renderedChatRange.value.start]
-  return first ? Math.max(0, Math.round(first.top)) : 0
+  const items = chatVirtualLayout.value.items
+  const start = renderedChatRange.value.start
+  const first = items[start]
+  if (!first) return 0
+  // `gap` 会自动插入 spacer 与消息项之间，因此这里要扣掉那一段间距，避免坐标系累计偏移。
+  const leadingGap = start > 0 ? CHAT_LIST_GAP_PX : 0
+  return Math.max(0, Math.round(first.top - leadingGap))
 })
 
 const chatVirtualBottomSpacerHeight = computed(() => {
   if (!chatVirtualizedEnabled.value) return 0
   const items = chatVirtualLayout.value.items
-  const last = items[renderedChatRange.value.end]
+  const end = renderedChatRange.value.end
+  const last = items[end]
   if (!last) return 0
-  return Math.max(0, Math.round(chatVirtualLayout.value.totalHeight - last.bottom))
+  const trailingGap = end < items.length - 1 ? CHAT_LIST_GAP_PX : 0
+  return Math.max(0, Math.round(chatVirtualLayout.value.totalHeight - last.bottom - trailingGap))
 })
 
 function getDistanceFromBottom(elMaybe) {
   const el = elMaybe || chatScrollEl.value || resolveScrollbarContainerEl()
   if (!el) return Number.POSITIVE_INFINITY
   return Math.max(0, el.scrollHeight - (el.scrollTop + el.clientHeight))
+}
+
+function shouldFollowStreamingScroll(options = {}) {
+  const allowNearBottom = options.allowNearBottom !== false
+  const el = chatScrollEl.value || resolveScrollbarContainerEl()
+  if (!el) return false
+  const distanceFromBottom = getDistanceFromBottom(el)
+  const nearBottom = distanceFromBottom <= SCROLL_AUTO_DISABLE_DISTANCE_PX
+  if (!nearBottom) {
+    if (autoScrollEnabled.value) autoScrollEnabled.value = false
+    return false
+  }
+  if (!autoScrollEnabled.value) return false
+  if (!allowNearBottom) return distanceFromBottom <= SCROLL_BOTTOM_THRESHOLD_PX
+  return true
+}
+
+function maybeScheduleStreamingScroll(options = {}) {
+  if (!shouldFollowStreamingScroll(options)) return false
+  scheduleScrollToBottom()
+  return true
 }
 
 function updateAtBottomState(elMaybe) {
@@ -6247,13 +6586,16 @@ function syncStickyChatBubble() {
   const threshold = Math.max(0, Number(chatScrollTop.value) || 0) + 8
   const minVisibleBottom = threshold + 64
   let next = null
+  const rightMostVisibleIndex = findLastItemTopLte(items, threshold, 0)
 
-  for (const item of items) {
-    if (!item || item.top > threshold) break
-    if (item.bottom <= minVisibleBottom) continue
-    const msg = item.msg
-    const state = getStickyChatBubbleState(msg)
-    if (state) next = state
+  for (let index = rightMostVisibleIndex; index >= 0; index -= 1) {
+    const item = items[index]
+    if (!item || item.bottom <= minVisibleBottom) break
+    const state = getStickyChatBubbleState(item.msg)
+    if (state) {
+      next = state
+      break
+    }
   }
 
   if (!next && stickyChatBubble.value?.id) {
@@ -6318,6 +6660,72 @@ function updateChatMessageHeight(messageId, el) {
   bumpChatMessageMetricsVersion()
 }
 
+function queueChatItemHeightMeasure(messageId, el) {
+  const id = String(messageId || '').trim()
+  if (!id || !(el instanceof HTMLElement)) return
+  pendingChatItemHeightMeasureMap.set(id, el)
+  if (pendingChatItemHeightMeasureRafId) return
+  const raf = window?.requestAnimationFrame || ((cb) => window.setTimeout(cb, 16))
+  pendingChatItemHeightMeasureRafId = raf(() => {
+    pendingChatItemHeightMeasureRafId = 0
+    let changed = false
+    const entries = Array.from(pendingChatItemHeightMeasureMap.entries())
+    pendingChatItemHeightMeasureMap.clear()
+    entries.forEach(([measureId, targetEl]) => {
+      if (!(targetEl instanceof HTMLElement)) return
+      const nextHeight = Math.max(96, Math.ceil(targetEl.getBoundingClientRect().height || targetEl.offsetHeight || 0))
+      if (!nextHeight || chatMessageHeightCache.get(measureId) === nextHeight) return
+      chatMessageHeightCache.set(measureId, nextHeight)
+      changed = true
+    })
+    if (changed) {
+      bumpChatMessageMetricsVersion()
+      scheduleRefreshUserAnchorMeta()
+    }
+  })
+}
+
+function clearPendingChatItemHeightMeasure() {
+  pendingChatItemHeightMeasureMap.clear()
+  if (!pendingChatItemHeightMeasureRafId) return
+  if (typeof window?.cancelAnimationFrame === 'function') window.cancelAnimationFrame(pendingChatItemHeightMeasureRafId)
+  else clearTimeout(pendingChatItemHeightMeasureRafId)
+  pendingChatItemHeightMeasureRafId = 0
+}
+
+function queueChatScrollCompensation(deltaPx) {
+  const delta = Number(deltaPx) || 0
+  if (!delta) return
+  pendingChatScrollCompensationPx += delta
+  if (pendingChatScrollCompensationRafId) return
+  const raf = window?.requestAnimationFrame || ((cb) => window.setTimeout(cb, 16))
+  pendingChatScrollCompensationRafId = raf(() => {
+    pendingChatScrollCompensationRafId = 0
+    const totalDelta = pendingChatScrollCompensationPx
+    pendingChatScrollCompensationPx = 0
+    if (!totalDelta) return
+    const el = chatScrollEl.value || resolveScrollbarContainerEl()
+    if (!el) return
+    const nextTop = Math.max(0, Number(el.scrollTop || 0) + totalDelta)
+    el.scrollTop = nextTop
+    updateAtBottomState(el)
+  })
+}
+
+function clearQueuedChatScrollCompensation() {
+  pendingChatScrollCompensationPx = 0
+  if (!pendingChatScrollCompensationRafId) return
+  if (typeof window?.cancelAnimationFrame === 'function') window.cancelAnimationFrame(pendingChatScrollCompensationRafId)
+  else clearTimeout(pendingChatScrollCompensationRafId)
+  pendingChatScrollCompensationRafId = 0
+}
+
+function shouldApplyChatScrollCompensation() {
+  if (isAtBottom.value) return false
+  if (!lastActiveUserChatScrollAt) return true
+  return (Date.now() - lastActiveUserChatScrollAt) > CHAT_SCROLL_COMPENSATION_SUSPEND_MS
+}
+
 function disconnectChatMessageResizeObserver() {
   if (!chatMessageResizeObserver) return
   try {
@@ -6331,21 +6739,40 @@ function disconnectChatMessageResizeObserver() {
 function ensureChatMessageResizeObserver() {
   if (chatMessageResizeObserver || typeof ResizeObserver === 'undefined') return
   chatMessageResizeObserver = new ResizeObserver((entries) => {
+    const layoutBefore = chatVirtualLayout.value
+    const viewportTop = Number(chatScrollTop.value || 0)
+    let deltaAboveViewport = 0
     let changed = false
     entries.forEach((entry) => {
       const target = entry?.target
       if (!(target instanceof HTMLElement)) return
       const id = String(target.dataset.messageId || '').trim()
       if (!id) return
+      const msg = resolveChatMessageById(id)
+      if (isFixedCompactToolMessage(msg)) {
+        const fixedHeight = CHAT_TOOL_COMPACT_ITEM_FIXED_HEIGHT
+        const cachedHeight = Number(chatMessageHeightCache.get(id) || 0)
+        if (cachedHeight !== fixedHeight) {
+          chatMessageHeightCache.set(id, fixedHeight)
+          changed = true
+        }
+        return
+      }
+      const prevHeight = Number(chatMessageHeightCache.get(id) || 0)
       const nextHeight = Math.max(96, Math.ceil(entry.contentRect?.height || target.getBoundingClientRect().height || target.offsetHeight || 0))
-      if (!nextHeight || chatMessageHeightCache.get(id) === nextHeight) return
+      if (!nextHeight || prevHeight === nextHeight) return
       chatMessageHeightCache.set(id, nextHeight)
+      const top = Number(layoutBefore?.topById?.get(id))
+      if (Number.isFinite(top) && top < viewportTop - 1) {
+        deltaAboveViewport += (nextHeight - prevHeight)
+      }
       changed = true
     })
     if (changed) {
       bumpChatMessageMetricsVersion()
       scheduleRefreshUserAnchorMeta()
-      if (autoScrollEnabled.value && (isAtBottom.value || sending.value)) scheduleScrollToBottom()
+      if (deltaAboveViewport && shouldApplyChatScrollCompensation()) queueChatScrollCompensation(deltaAboveViewport)
+      maybeScheduleStreamingScroll()
     }
   })
 }
@@ -6388,6 +6815,7 @@ function setupChatMessageVisibilityObserver() {
             intersectingHeavyChatMessageIds.add(id)
             changed = true
           }
+          rememberHydratedHeavyChatMessage(id)
         } else if (intersectingHeavyChatMessageIds.delete(id)) {
           changed = true
         }
@@ -6396,7 +6824,7 @@ function setupChatMessageVisibilityObserver() {
     },
     {
       root,
-      rootMargin: '480px 0px'
+      rootMargin: `${CHAT_HEAVY_RENDER_ROOT_MARGIN_PX}px 0px`
     }
   )
 
@@ -6434,16 +6862,27 @@ function setChatItemEl(messageId, role, el) {
     ensureChatMessageResizeObserver()
     el.dataset.messageId = k
     chatMessageElMap.set(k, el)
-    updateChatMessageHeight(k, el)
+    const msg = resolveChatMessageById(k)
+    if (isFixedCompactToolMessage(msg)) {
+      const fixedHeight = CHAT_TOOL_COMPACT_ITEM_FIXED_HEIGHT
+      if (chatMessageHeightCache.get(k) !== fixedHeight) {
+        chatMessageHeightCache.set(k, fixedHeight)
+        bumpChatMessageMetricsVersion()
+      }
+    } else if (!chatMessageHeightCache.has(k)) {
+      queueChatItemHeightMeasure(k, el)
+    }
     try {
       chatMessageVisibilityObserver?.observe(el)
     } catch {
       // ignore
     }
-    try {
-      chatMessageResizeObserver?.observe(el)
-    } catch {
-      // ignore
+    if (!isFixedCompactToolMessage(msg)) {
+      try {
+        chatMessageResizeObserver?.observe(el)
+      } catch {
+        // ignore
+      }
     }
   } else {
     chatMessageElMap.delete(k)
@@ -6456,8 +6895,26 @@ function shouldRenderHeavyChatMessage(msg) {
   const id = String(msg.id || '').trim()
   if (!id) return true
   if (msg.streaming || msg.editing || msg.thinkingExpanded || msg.toolExpanded || msg.attachmentsExpanded) return true
+  if (renderedChatMessageIdSet.value.has(id)) return true
+  if (chatSessionOpeningHeavyRender.value && String(msg.render || '').trim() !== 'text') return true
+  if (hydratedHeavyChatMessageIds.value.has(id)) return true
   if (recentHeavyChatMessageIds.value.has(id)) return true
   return visibleHeavyChatMessageIds.value.has(id)
+}
+
+function shouldRenderCompactToolMessage(msg) {
+  if (!compactToolMessageMode.value) return false
+  if (!isToolMessage(msg)) return false
+  const id = String(msg?.id || '').trim()
+  if (!id) return false
+  if (msg.toolExpanded || msg.streaming || msg.editing || msg.attachmentsExpanded || msg.thinkingExpanded) return false
+  if (recentHeavyChatMessageIds.value.has(id)) return false
+  if (getToolMessageStatus(msg) === 'running') return false
+  return true
+}
+
+function isFixedCompactToolMessage(msg) {
+  return shouldRenderCompactToolMessage(msg)
 }
 
 function refreshUserAnchorMeta() {
@@ -6470,6 +6927,24 @@ function refreshUserAnchorMeta() {
     .filter(Boolean)
 
   userAnchorMeta.value = next
+}
+
+function findLastAnchorTopLte(meta, targetTop) {
+  const list = Array.isArray(meta) ? meta : []
+  let left = 0
+  let right = list.length - 1
+  let answer = -1
+  while (left <= right) {
+    const mid = (left + right) >> 1
+    const top = Number(list[mid]?.top)
+    if (Number.isFinite(top) && top <= targetTop) {
+      answer = mid
+      left = mid + 1
+    } else {
+      right = mid - 1
+    }
+  }
+  return answer
 }
 
 function updateActiveAnchorFromScroll(container) {
@@ -6488,15 +6963,26 @@ function updateActiveAnchorFromScroll(container) {
   const margin = 8
 
   let active = null
-  for (const m of meta) {
-    if (m.top == null) continue
-    if (m.top <= scrollTop + margin) active = m.id
-    else break
-  }
+  const currentTop = scrollTop + margin
+  const activeIndex = findLastAnchorTopLte(meta, currentTop)
+  if (activeIndex >= 0) active = meta[activeIndex]?.id || null
 
   if (!active) {
-    const firstInView = meta.find((m) => m.top != null && m.top >= scrollTop - margin && m.top <= viewBottom + margin)
-    active = firstInView?.id || meta[0]?.id || null
+    const lowerBound = scrollTop - margin
+    const upperBound = viewBottom + margin
+    let firstInViewIndex = findLastAnchorTopLte(meta, lowerBound)
+    firstInViewIndex = Math.max(0, firstInViewIndex)
+    if (Number(meta[firstInViewIndex]?.top) < lowerBound) firstInViewIndex += 1
+
+    for (let i = firstInViewIndex; i < meta.length; i += 1) {
+      const top = Number(meta[i]?.top)
+      if (!Number.isFinite(top)) continue
+      if (top > upperBound) break
+      active = meta[i]?.id || null
+      break
+    }
+
+    if (!active) active = meta[0]?.id || null
   }
 
   activeAnchorId.value = active
@@ -6571,7 +7057,7 @@ function setupChatLayoutResizeObserver() {
   chatScrollEl.value = container
   chatLayoutResizeObserver = new ResizeObserver(() => {
     scheduleRefreshUserAnchorMeta()
-    if (autoScrollEnabled.value && (isAtBottom.value || sending.value)) scheduleScrollToBottom()
+    maybeScheduleStreamingScroll()
   })
   chatLayoutResizeObserver.observe(container)
   chatLayoutResizeObserver.observe(list)
@@ -6602,7 +7088,26 @@ async function refreshChatViewportState(options = {}) {
   refreshUserAnchorMeta()
   updateActiveAnchorFromScroll(container)
   updateAtBottomState(container)
+  primeHydratedRenderedChatMessages()
+  primeHydratedMountedHeavyChatMessages()
   syncStickyChatBubble()
+}
+
+async function settleChatViewportAfterSessionOpen(options = {}) {
+  await refreshChatViewportState({ reconnectObserver: options.reconnectObserver === true })
+  await nextTick()
+  await waitForLayoutFrame()
+
+  const container = chatScrollEl.value || resolveScrollbarContainerEl()
+  if (!container) return
+
+  updateAtBottomState(container)
+  const requestedBuffer = Number(options.buffer)
+  const buffer = Number.isFinite(requestedBuffer)
+    ? Math.max(0, Math.round(requestedBuffer))
+    : CHAT_HEAVY_RENDER_VIEWPORT_BUFFER + 2
+  primeHydratedRenderedChatMessages({ buffer })
+  primeHydratedMountedHeavyChatMessages()
 }
 
 watch(
@@ -6626,11 +7131,27 @@ watch(
 
 watch(
   () => session.messages.map((msg) => String(msg?.id || '')).join('|'),
-  (signature) => {
-    const validIds = new Set(String(signature || '').split('|').filter(Boolean))
+  () => {
+    const validIds = new Set()
+    chatMessageByIdMap.clear()
+    ;(session.messages || []).forEach((msg) => {
+      const id = String(msg?.id || '').trim()
+      if (!id) return
+      validIds.add(id)
+      chatMessageByIdMap.set(id, msg)
+    })
     Array.from(chatMessageHeightCache.keys()).forEach((id) => {
       if (!validIds.has(id)) chatMessageHeightCache.delete(id)
     })
+    if (hydratedHeavyChatMessageIds.value.size) {
+      const nextHydratedIds = new Set()
+      hydratedHeavyChatMessageIds.value.forEach((id) => {
+        if (validIds.has(id)) nextHydratedIds.add(id)
+      })
+      if (nextHydratedIds.size !== hydratedHeavyChatMessageIds.value.size) {
+        hydratedHeavyChatMessageIds.value = nextHydratedIds
+      }
+    }
     Array.from(chatMessageElMap.keys()).forEach((id) => {
       if (!validIds.has(id)) chatMessageElMap.delete(id)
     })
@@ -6670,6 +7191,9 @@ onDeactivated(() => {
   disconnectChatLayoutResizeObserver()
   disconnectChatMessageVisibilityObserver()
   disconnectChatMessageResizeObserver()
+  clearPendingChatItemHeightMeasure()
+  clearQueuedChatScrollCompensation()
+  clearQueuedChatScrollProcessing()
   clearStickyChatBubbleSync()
   setStickyChatBubbleState(null)
   cleanupChatPreviewLinkHandlers()
@@ -6686,21 +7210,37 @@ function activateAutoScroll() {
 }
 
 function handleChatScroll(e) {
-  const el = resolveScrollbarContainerEl() || e?.target
+  queueProcessChatScroll(resolveScrollbarContainerEl() || e?.target)
+}
+
+let pendingChatScrollEl = null
+let chatScrollProcessScheduled = false
+let chatScrollProcessRafId = 0
+
+function processChatScroll(elMaybe) {
+  const el = elMaybe || chatScrollEl.value || resolveScrollbarContainerEl()
   if (!el) return
   chatScrollEl.value = el
   if (!chatLayoutResizeObserver) setupChatLayoutResizeObserver()
   if (!chatMessageVisibilityObserver) setupChatMessageVisibilityObserver()
 
+  const prevScrollTop = didProcessChatScroll ? lastProcessedChatScrollTop : Number(chatScrollTop.value || 0)
   const { distanceFromBottom, atBottom } = updateAtBottomState(el)
+  primeHydratedRenderedChatMessages()
+  const nextScrollTop = Number(chatScrollTop.value || 0)
+  const isUserScrollingUp = didProcessChatScroll && (nextScrollTop + 1 < prevScrollTop)
+  const isUserScrollingDown = didProcessChatScroll && (nextScrollTop > prevScrollTop + 1)
+  if (isUserScrollingUp || isUserScrollingDown) lastActiveUserChatScrollAt = Date.now()
+  lastProcessedChatScrollTop = nextScrollTop
+  didProcessChatScroll = true
 
   if (atBottom) {
     const wasDisabled = !autoScrollEnabled.value
     autoScrollEnabled.value = true
     if (wasDisabled) scrollToBottom({ force: true })
   } else if (autoScrollEnabled.value) {
-    if (distanceFromBottom > SCROLL_AUTO_DISABLE_DISTANCE_PX) autoScrollEnabled.value = false
-  } else if (sending.value && distanceFromBottom <= SCROLL_AUTO_DISABLE_DISTANCE_PX) {
+    if (isUserScrollingUp || distanceFromBottom > SCROLL_AUTO_DISABLE_DISTANCE_PX) autoScrollEnabled.value = false
+  } else if (sending.value && distanceFromBottom <= SCROLL_AUTO_DISABLE_DISTANCE_PX && isUserScrollingDown) {
     // 用户从上方滚回接近底部时，如果模型仍在回复，则恢复自动滚动
     autoScrollEnabled.value = true
     scrollToBottom({ force: true })
@@ -6708,6 +7248,33 @@ function handleChatScroll(e) {
 
   updateActiveAnchorFromScroll(el)
   scheduleStickyChatBubbleSync()
+}
+
+function queueProcessChatScroll(elMaybe) {
+  if (elMaybe) pendingChatScrollEl = elMaybe
+  if (chatScrollProcessScheduled) return
+  chatScrollProcessScheduled = true
+  const raf = window?.requestAnimationFrame || ((cb) => window.setTimeout(cb, 16))
+  chatScrollProcessRafId = raf(() => {
+    chatScrollProcessRafId = 0
+    chatScrollProcessScheduled = false
+    const targetEl = pendingChatScrollEl
+    pendingChatScrollEl = null
+    processChatScroll(targetEl)
+  })
+}
+
+function clearQueuedChatScrollProcessing() {
+  if (chatScrollProcessRafId) {
+    if (typeof window?.cancelAnimationFrame === 'function') window.cancelAnimationFrame(chatScrollProcessRafId)
+    else clearTimeout(chatScrollProcessRafId)
+  }
+  chatScrollProcessRafId = 0
+  chatScrollProcessScheduled = false
+  pendingChatScrollEl = null
+  lastProcessedChatScrollTop = 0
+  didProcessChatScroll = false
+  lastActiveUserChatScrollAt = 0
 }
 
 async function scrollToBottom(options = {}) {
@@ -6741,6 +7308,7 @@ async function scrollToBottom(options = {}) {
     }
 
     updateAtBottomState(el)
+    primeHydratedRenderedChatMessages()
   })().finally(() => {
     scrollToBottomPromise = null
   })
@@ -6762,8 +7330,8 @@ function scheduleScrollToBottom(options = {}) {
   })
 }
 
-const TYPEWRITER_INTERVAL_MS = 24
-const DEFERRED_TEXT_APPEND_INTERVAL_MS = 48
+const TYPEWRITER_INTERVAL_MS = 16
+const DEFERRED_TEXT_APPEND_INTERVAL_MS = 32
 const typewriterStates = new Map()
 const deferredMessageFieldStates = new Map()
 
@@ -6782,12 +7350,13 @@ function takeUnicodeChunk(text, count = 1) {
 
 function getTypewriterChunkSize(text) {
   const length = String(text || '').length
-  if (length > 6000) return 160
-  if (length > 2400) return 96
-  if (length > 1200) return 48
-  if (length > 480) return 24
-  if (length > 180) return 10
-  if (length > 80) return 3
+  if (length > 6000) return 96
+  if (length > 2400) return 56
+  if (length > 1200) return 32
+  if (length > 480) return 16
+  if (length > 180) return 8
+  if (length > 80) return 4
+  if (length > 24) return 2
   return 1
 }
 
@@ -7091,7 +7660,7 @@ async function autoPersistMemorySession(record, options = {}) {
         activeSessionTitle.value = allocated.title
         void sessionTreeRef.value?.selectPath?.(allocated.filePath)
       }
-      void sessionTreeRef.value?.refreshTree?.({ silent: true })
+      void sessionTreeRef.value?.touchPath?.(allocated.filePath, { label: allocated.title })
       pruneDormantMemorySessions()
       return allocated.filePath
     } catch (err) {
@@ -7283,7 +7852,15 @@ async function switchMemorySession(id) {
   }
 
   await persistActiveMemorySessionBeforeLeaving()
-  restoreMemorySession(record, { skipSaveCurrent: true })
+  await withChatSessionOpeningHeavyRender(async () => {
+    await maybeWarmMarkdownPreviewRuntimeForMessages(record.messages)
+    restoreMemorySession(record, { skipSaveCurrent: true, skipScroll: true })
+    await scrollToBottom({ force: true })
+    await settleChatViewportAfterSessionOpen({
+      reconnectObserver: true,
+      buffer: CHAT_HEAVY_RENDER_VIEWPORT_BUFFER + 8
+    })
+  })
   pruneDormantMemorySessions({ keepId: record.id })
 }
 
@@ -7507,7 +8084,7 @@ async function persistMemorySessionToBoundPath(record, options = {}) {
 
     await writeFile(filePath, JSON.stringify(payload, null, 2))
     record.updatedAt = Date.now()
-    void sessionTreeRef.value?.refreshTree?.({ silent: true })
+    void sessionTreeRef.value?.touchPath?.(filePath, { label: title })
     return filePath
   } catch (err) {
     if (options.notify !== false) message.error('自动保存失败：' + (err?.message || String(err)))
@@ -7861,17 +8438,63 @@ async function closeActiveSession() {
   message.info('已关闭会话绑定并清空当前会话')
 }
 
+function isLikelyMarkdownContent(content) {
+  const text = String(content || '').replace(/\r\n/g, '\n').trim()
+  if (!text) return false
+  if (/^#{1,6}\s+\S/m.test(text)) return true
+  if (/^>\s+\S/m.test(text)) return true
+  if (/^```[\w-]*\s*$/m.test(text) || /^~~~[\w-]*\s*$/m.test(text)) return true
+  if (/(^|\n)\s*(?:[-*+]\s+\S|\d+\.\s+\S)/.test(text)) return true
+  if (/!\[[^\]]*]\([^)]+\)|\[[^\]]+\]\([^)]+\)/.test(text)) return true
+  if (/`[^`\n]+`/.test(text)) return true
+  if (/\*\*[^*]+\*\*|__[^_]+__/.test(text)) return true
+  if (/^\|.+\|\s*$/m.test(text) && /^\|?[\s:-]+\|[\s|:-]*$/m.test(text)) return true
+  return false
+}
+
+function shouldKeepLoadedAssistantTextRender(raw, content) {
+  const text = String(content || '').trim()
+  if (!text) return false
+  if (raw?.transientRequestPlaceholder === true) return true
+  if (raw?.imageTask || raw?.videoTask) return true
+  if (raw?.imageBubblePlaceholder || raw?.videoBubblePlaceholder) return true
+  if (/^(图片|视频)生成(?:生成中|处理中|排队中|等待中|进行中|失败|已取消|已受理|已完成)/.test(text)) return true
+  if (!isLikelyMarkdownContent(text) && text.includes('\n') && (/\t/.test(text) || / {2,}/.test(text))) return true
+  return false
+}
+
+function inferLoadedDisplayMessageRender(raw, content) {
+  const role = String(raw?.role || '').trim()
+  if (role === 'assistant' || role === 'thinking') {
+    return shouldKeepLoadedAssistantTextRender(raw, content) ? 'text' : 'md'
+  }
+  return 'md'
+}
+
 function normalizeLoadedDisplayMessage(msg) {
   const raw = msg && typeof msg === 'object' ? { ...msg } : {}
   raw.id = String(raw.id || '').trim() || newId()
   raw.role = String(raw.role || 'assistant').trim() || 'assistant'
   raw.time = typeof raw.time === 'number' ? raw.time : Date.now()
+  if (typeof raw.content !== 'string') raw.content = stableStringify(raw.content)
+  const content = String(raw.content || '')
 
   if (typeof raw.render !== 'string' || !raw.render.trim()) {
-    raw.render = raw.role === 'assistant' || raw.role === 'thinking' ? 'text' : 'md'
+    raw.render = inferLoadedDisplayMessageRender(raw, content)
+  } else {
+    const normalizedRender = raw.render.trim().toLowerCase()
+    raw.render = normalizedRender === 'text' || normalizedRender === 'md'
+      ? normalizedRender
+      : inferLoadedDisplayMessageRender(raw, content)
+    if (
+      (raw.role === 'assistant' || raw.role === 'thinking') &&
+      raw.render === 'text' &&
+      !shouldKeepLoadedAssistantTextRender(raw, content) &&
+      isLikelyMarkdownContent(content)
+    ) {
+      raw.render = 'md'
+    }
   }
-
-  if (typeof raw.content !== 'string') raw.content = stableStringify(raw.content)
 
   if (raw.role === 'assistant') {
     raw.streaming = false
@@ -8005,17 +8628,24 @@ async function loadSessionFromFile(filePath) {
       }
     }
 
-    restoreMemorySession(runningTargetRecord, { skipSaveCurrent: true })
-    await nextTick()
-    await sessionTreeRef.value?.selectPath?.(relPath)
-    activeSessionFilePath.value = relPath
-    activeSessionTitle.value =
-      String(runningTargetRecord.activeSessionTitle || runningTargetRecord.title || '').trim() ||
-      getSessionTitleFromPath(relPath)
-    syncActiveRequestUiState(runningTargetRecord)
-    pruneDormantMemorySessions({ keepId: runningTargetRecord.id })
-    scheduleRefreshUserAnchorMeta()
-    await scrollToBottom({ force: true })
+    await withChatSessionOpeningHeavyRender(async () => {
+      await maybeWarmMarkdownPreviewRuntimeForMessages(runningTargetRecord.messages)
+      restoreMemorySession(runningTargetRecord, { skipSaveCurrent: true, skipScroll: true })
+      await nextTick()
+      await sessionTreeRef.value?.selectPath?.(relPath)
+      activeSessionFilePath.value = relPath
+      activeSessionTitle.value =
+        String(runningTargetRecord.activeSessionTitle || runningTargetRecord.title || '').trim() ||
+        getSessionTitleFromPath(relPath)
+      syncActiveRequestUiState(runningTargetRecord)
+      pruneDormantMemorySessions({ keepId: runningTargetRecord.id })
+      scheduleRefreshUserAnchorMeta()
+      await scrollToBottom({ force: true })
+      await settleChatViewportAfterSessionOpen({
+        reconnectObserver: true,
+        buffer: CHAT_HEAVY_RENDER_VIEWPORT_BUFFER + 8
+      })
+    })
     message.success('正在运行的会话已加载')
     return
   }
@@ -8068,7 +8698,6 @@ async function loadSessionFromFile(filePath) {
       : []
 
     const displaySafe = normalizeLoadedDisplayMessages(displayMessages)
-    await hydrateChatSessionMediaAssets({ messages: displaySafe }, { sessionFilePath: relPath })
 
     // 兼容：早期定时任务会话默认按 text 保存，加载到聊天页后需要切回 md 渲染
     const isTimedTaskSession =
@@ -8078,6 +8707,11 @@ async function loadSessionFromFile(filePath) {
         if (m?.role === 'assistant' && m.render === 'text') m.render = 'md'
       })
     }
+
+    await Promise.all([
+      hydrateChatSessionMediaAssets({ messages: displaySafe }, { sessionFilePath: relPath }),
+      maybeWarmMarkdownPreviewRuntimeForMessages(displaySafe)
+    ])
 
     const loadedTitle =
       typeof data?.title === 'string' && data.title.trim() ? data.title.trim() : getSessionTitleFromPath(relPath)
@@ -8107,16 +8741,23 @@ async function loadSessionFromFile(filePath) {
     }
 
     activeMemorySessionId.value = record.id
+    primeHydratedHeavyChatMessages(displaySafe, { replace: true })
     session.messages = record.messages
     session.apiMessages = record.apiMessages
     input.value = ''
     pendingAttachments.value = []
     if (state) applyLoadedChatState(state)
 
-    await nextTick()
-    await sessionTreeRef.value?.selectPath?.(relPath)
-    scheduleRefreshUserAnchorMeta()
-    await scrollToBottom({ force: true })
+    await withChatSessionOpeningHeavyRender(async () => {
+      await nextTick()
+      await sessionTreeRef.value?.selectPath?.(relPath)
+      scheduleRefreshUserAnchorMeta()
+      await scrollToBottom({ force: true })
+      await settleChatViewportAfterSessionOpen({
+        reconnectObserver: true,
+        buffer: CHAT_HEAVY_RENDER_VIEWPORT_BUFFER + 8
+      })
+    })
 
     activeSessionFilePath.value = relPath
     activeSessionTitle.value = loadedTitle
@@ -9412,6 +10053,17 @@ const trackedMessageIdSet = computed(() => {
   })
   return ids
 })
+const sessionToolMessageCount = computed(() =>
+  (Array.isArray(session.messages) ? session.messages : []).reduce(
+    (count, msg) => count + (isToolMessage(msg) ? 1 : 0),
+    0
+  )
+)
+const compactToolMessageMode = computed(
+  () =>
+    (session.messages?.length || 0) >= CHAT_TOOL_COMPACT_MIN_MESSAGES &&
+    sessionToolMessageCount.value >= CHAT_TOOL_COMPACT_MIN_TOOL_MESSAGES
+)
 
 function isDisplayMessageInActiveSession(msg) {
   if (!msg || typeof msg !== 'object') return false
@@ -14679,6 +15331,30 @@ watch(
 </script>
 
 <style scoped>
+.chat-shell {
+  height: calc(var(--app-viewport-height) - (var(--app-shell-padding) * 2));
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chat-shell :deep(> .n-space-item) {
+  height: 100%;
+  min-height: 0;
+}
+
+.chat-shell__layout {
+  background: transparent;
+  height: 100%;
+  min-height: 0;
+  overflow: visible;
+}
+
+.chat-shell__layout :deep(> .n-layout-scroll-container) {
+  height: 100%;
+  min-height: 0;
+  overflow: visible;
+}
+
 .chat-layout__content {
   min-width: 0;
   min-height: 0;
@@ -14692,7 +15368,7 @@ watch(
   height: 100%;
   min-width: 0;
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
   position: relative;
 }
 
@@ -14817,14 +15493,33 @@ watch(
   gap: 8px;
 }
 
-.chat-messages {
+.chat-messages-shell {
   width: 100%;
   flex: 1;
+  display: flex;
   margin-top: 8px;
   min-width: 0;
   min-height: 0;
+  height: 100%;
+  max-height: 100%;
+  position: relative;
   overflow: visible;
+}
+
+.chat-messages {
+  width: 100%;
+  flex: 1;
+  height: 100%;
+  max-height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   background: transparent;
+}
+
+.chat-messages :deep(.n-card__content) {
+  height: 100%;
+  min-height: 0;
 }
 
 .chat-scroll-wrapper {
@@ -14832,7 +15527,7 @@ watch(
   height: 100%;
   min-width: 0;
   min-height: 0;
-  overflow: visible;
+  overflow: hidden;
 }
 
 
@@ -14930,48 +15625,118 @@ watch(
 
 .chat-anchor-rail {
   position: absolute;
-  right: -18px;
-  top: 12px;
-  bottom: 56px;
-  width: 14px;
+  right: 0;
+  top: 18px;
+  bottom: 64px;
+  width: 32px;
+  padding: 10px 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  align-items: flex-end;
+  gap: 8px;
+  align-items: center;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(248, 250, 252, 0.88));
+  box-shadow:
+    0 14px 30px rgba(15, 23, 42, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(14px);
+  transform: translateX(calc(100% + 12px));
+  transition:
+    transform 0.18s ease,
+    box-shadow 0.18s ease,
+    background-color 0.18s ease;
   pointer-events: auto;
-  z-index: 4;
+  z-index: 8;
   overflow: hidden auto;
+  scrollbar-width: none;
+}
+
+.chat-anchor-rail:hover {
+  transform: translateX(calc(100% + 8px));
+}
+
+.chat-anchor-rail::-webkit-scrollbar {
+  display: none;
+}
+
+.chat-anchor-rail::before {
+  content: '';
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(148, 163, 184, 0.14), rgba(148, 163, 184, 0.34), rgba(148, 163, 184, 0.12));
 }
 
 .chat-anchor-marker {
-  width: 10px;
-  height: 6px;
-  border-radius: 2px;
-  background: rgba(0, 0, 0, 0.18);
+  position: relative;
+  z-index: 1;
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.08);
   cursor: pointer;
-  transition: transform 120ms ease, background-color 120ms ease, width 120ms ease;
+  transition:
+    transform 120ms ease,
+    background-color 120ms ease,
+    border-color 120ms ease,
+    box-shadow 120ms ease,
+    width 120ms ease,
+    height 120ms ease;
 }
 
 .chat-anchor-marker:hover {
-  transform: translateX(-1px);
-  background: rgba(0, 0, 0, 0.26);
+  transform: scale(1.12);
+  border-color: rgba(14, 116, 144, 0.24);
+  background: rgba(240, 249, 255, 0.98);
+  box-shadow: 0 6px 14px rgba(14, 116, 144, 0.16);
 }
 
 .chat-anchor-marker.active {
-  width: 12px;
+  width: 10px;
+  height: 20px;
+  border-color: rgba(32, 128, 240, 0.24);
+  border-radius: 999px;
   background: rgba(32, 128, 240, 0.95);
+  box-shadow:
+    0 8px 18px rgba(32, 128, 240, 0.28),
+    0 0 0 3px rgba(32, 128, 240, 0.14);
+}
+
+.chat-page.dark .chat-anchor-rail {
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.92), rgba(15, 23, 42, 0.82));
+  box-shadow:
+    0 18px 34px rgba(2, 6, 23, 0.4),
+    inset 0 1px 0 rgba(148, 163, 184, 0.14);
+}
+
+.chat-page.dark .chat-anchor-rail::before {
+  background: linear-gradient(180deg, rgba(71, 85, 105, 0.18), rgba(148, 163, 184, 0.36), rgba(71, 85, 105, 0.16));
 }
 
 .chat-page.dark .chat-anchor-marker {
-  background: rgba(255, 255, 255, 0.22);
+  border-color: rgba(148, 163, 184, 0.24);
+  background: rgba(30, 41, 59, 0.96);
+  box-shadow: 0 4px 12px rgba(2, 6, 23, 0.3);
 }
 
 .chat-page.dark .chat-anchor-marker:hover {
-  background: rgba(255, 255, 255, 0.32);
+  border-color: rgba(125, 211, 252, 0.28);
+  background: rgba(30, 64, 175, 0.28);
+  box-shadow: 0 8px 16px rgba(30, 64, 175, 0.24);
 }
 
 .chat-page.dark .chat-anchor-marker.active {
   background: rgba(32, 128, 240, 0.95);
+  box-shadow:
+    0 10px 20px rgba(30, 64, 175, 0.34),
+    0 0 0 3px rgba(32, 128, 240, 0.18);
 }
 
 :deep(.chat-session-sider) {
@@ -14979,8 +15744,9 @@ watch(
   flex-direction: column;
   position: relative;
   z-index: 12;
-  height: calc(100vh - 30px);
-  max-height: calc(100vh - 30px);
+  margin-left: 12px;
+  height: 100%;
+  max-height: 100%;
   min-width: 0;
   min-height: 0;
   max-width: 100%;
@@ -14993,8 +15759,8 @@ watch(
 }
 
 :deep(.chat-session-sider .n-layout-toggle-button) {
-  position: relative;
-  z-index: 14;
+  z-index: 60;
+  pointer-events: auto;
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
 }
 
@@ -15007,7 +15773,7 @@ watch(
   min-width: 0;
   min-height: 0;
   max-width: 100%;
-  overflow: hidden;
+  overflow: hidden !important;
   scrollbar-gutter: stable;
   box-sizing: border-box;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(248, 250, 252, 0.92));
@@ -15023,18 +15789,9 @@ watch(
   overflow: hidden;
 }
 
-.chat-session-sider :deep(.n-layout-toggle-button) {
-  background: rgba(255, 255, 255, 0.92);
-}
-
 .chat-session-sider.is-dark :deep(.n-layout-sider-scroll-container) {
   background: linear-gradient(180deg, rgba(17, 24, 39, 0.88), rgba(15, 23, 42, 0.96));
   box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.08);
-}
-
-.chat-session-sider.is-dark :deep(.n-layout-toggle-button) {
-  background: rgba(17, 24, 39, 0.94);
-  box-shadow: 0 12px 26px rgba(2, 6, 23, 0.34);
 }
 
 .chat-file-attachments {
@@ -15108,7 +15865,8 @@ watch(
   font-size: 12px;
   font-weight: 500;
   line-height: 1.4;
-  word-break: break-all;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .chat-file-attachment-card__meta {
@@ -15167,7 +15925,8 @@ watch(
 .chat-image-name {
   font-size: 12px;
   font-weight: 500;
-  word-break: break-all;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .chat-image-meta-line,
@@ -15211,6 +15970,7 @@ watch(
   width: 100%;
   max-width: 100%;
   overflow-x: hidden;
+  overflow-anchor: none;
 }
 
 .chat-list__spacer {
@@ -15250,7 +16010,12 @@ watch(
   display: flex;
   flex-direction: column;
   align-items: flex-start;
+  contain: layout paint style;
   animation: chat-fade-up 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.chat-item.is-virtualized {
+  animation: none;
 }
 
 .chat-item.user {
@@ -15525,6 +16290,81 @@ watch(
   contain: content;
 }
 
+.chat-tool-compact {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: min(100%, 680px);
+  padding: 4px 6px;
+  border-radius: 10px;
+  border: 1px dashed rgba(148, 163, 184, 0.32);
+  background: rgba(248, 250, 252, 0.82);
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.chat-page.dark .chat-tool-compact {
+  border-color: rgba(148, 163, 184, 0.24);
+  background: rgba(30, 41, 59, 0.58);
+}
+
+.chat-tool-compact__chevron {
+  opacity: 0.76;
+}
+
+.chat-tool-compact__label {
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+
+.chat-tool-compact__status {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(100, 116, 139, 0.10);
+}
+
+.chat-tool-compact__status.is-running {
+  color: rgb(180, 83, 9);
+  background: rgba(245, 166, 35, 0.14);
+}
+
+.chat-tool-compact__status.is-success {
+  color: rgb(8, 145, 178);
+  background: rgba(14, 165, 233, 0.12);
+}
+
+.chat-tool-compact__status.is-error {
+  color: rgb(208, 48, 80);
+  background: rgba(208, 48, 80, 0.10);
+}
+
+.chat-tool-compact__status.is-rejected {
+  color: rgb(71, 85, 105);
+  background: rgba(100, 116, 139, 0.12);
+}
+
+.chat-tool-compact__meta {
+  min-width: 0;
+  flex: 1;
+  opacity: 0.72;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-tool-compact__hint {
+  flex: 0 0 auto;
+  opacity: 0.62;
+}
+
 .assistant-thinking {
   margin-bottom: 10px;
   padding-bottom: 10px;
@@ -15683,6 +16523,10 @@ watch(
 }
 
 @media (max-width: 720px) {
+  :deep(.chat-session-sider) {
+    margin-left: 8px;
+  }
+
   .chat-empty-state {
     min-height: 360px;
     padding: 20px 10px 28px;

@@ -66,6 +66,8 @@ onBeforeUnmount(() => {
 
 <style>
 :root {
+  --app-viewport-height: 100vh;
+  --app-shell-padding: 15px;
   --app-scrollbar-size: 9px;
   --app-scrollbar-radius: 999px;
   --app-scrollbar-track: rgba(148, 163, 184, 0.12);
@@ -78,6 +80,12 @@ onBeforeUnmount(() => {
   --app-scrollbar-rail: rgba(148, 163, 184, 0.12);
   --app-scrollbar-rail-hover: rgba(148, 163, 184, 0.18);
   color-scheme: light;
+}
+
+@supports (height: 100dvh) {
+  :root {
+    --app-viewport-height: 100dvh;
+  }
 }
 
 :root.app-theme-dark,
@@ -384,5 +392,11 @@ body.app-theme-dark .n-image-preview {
   box-shadow:
     inset 0 0 0 1px rgba(148, 163, 184, 0.16),
     0 28px 72px rgba(2, 6, 23, 0.42);
+}
+
+@media (max-width: 720px) {
+  :root {
+    --app-shell-padding: 10px;
+  }
 }
 </style>

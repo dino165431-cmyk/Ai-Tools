@@ -1,5 +1,14 @@
 <template>
-  <div ref="previewHostRef" :class="['markdown-preview-renderer', { 'is-streaming': streaming }]">
+  <div
+    ref="previewHostRef"
+    :class="[
+      'markdown-preview-renderer',
+      {
+        'is-streaming': streaming,
+        'is-deferred-block-layout': deferBlockLayout
+      }
+    ]"
+  >
     <MdPreview
       :editor-id="editorId"
       :model-value="renderedModelValue"
@@ -69,6 +78,10 @@ const props = defineProps({
   streamThrottleMs: {
     type: Number,
     default: 0
+  },
+  deferBlockLayout: {
+    type: Boolean,
+    default: true
   }
 })
 
@@ -329,11 +342,11 @@ onBeforeUnmount(() => {
   contain: paint;
 }
 
-.markdown-preview-renderer :deep(.md-editor-preview pre),
-.markdown-preview-renderer :deep(.md-editor-preview table),
-.markdown-preview-renderer :deep(.md-editor-preview blockquote),
-.markdown-preview-renderer :deep(.md-editor-preview .note-preview-diagram),
-.markdown-preview-renderer :deep(.md-editor-preview img) {
+.markdown-preview-renderer.is-deferred-block-layout :deep(.md-editor-preview pre),
+.markdown-preview-renderer.is-deferred-block-layout :deep(.md-editor-preview table),
+.markdown-preview-renderer.is-deferred-block-layout :deep(.md-editor-preview blockquote),
+.markdown-preview-renderer.is-deferred-block-layout :deep(.md-editor-preview .note-preview-diagram),
+.markdown-preview-renderer.is-deferred-block-layout :deep(.md-editor-preview img) {
   content-visibility: auto;
   contain-intrinsic-size: auto 280px;
 }

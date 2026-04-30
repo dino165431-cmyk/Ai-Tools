@@ -19,7 +19,7 @@
                     @update:value="handleMenuSelect"
                 />
             </n-layout-sider>
-            <n-layout :native-scrollbar="false" :scrollbar-props="{ trigger: 'none' }" class="app-shell__content" style="height: 100vh;padding: 15px;">
+            <n-layout :native-scrollbar="false" :scrollbar-props="{ trigger: 'none' }" class="app-shell__content">
                 <router-view v-slot="{ Component, route }">
                     <keep-alive :include="keepAliveComponentNames">
                         <component :is="Component" :key="route.name" />
@@ -96,7 +96,9 @@ watch(
 
 <style scoped>
 .app-shell {
-  min-height: 100vh;
+  min-height: var(--app-viewport-height);
+  height: var(--app-viewport-height);
+  overflow: hidden;
   background:
     radial-gradient(circle at top left, rgba(56, 189, 248, 0.08), transparent 28%),
     radial-gradient(circle at bottom right, rgba(16, 185, 129, 0.08), transparent 24%),
@@ -112,11 +114,14 @@ watch(
 
 .app-shell__layout {
   background: transparent;
+  height: 100%;
+  min-height: 0;
 }
 
 
 .app-shell__sider {
-  height: 100vh;
+  height: 100%;
+  min-height: 0;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(248, 250, 252, 0.94));
   box-shadow: inset -1px 0 0 rgba(15, 23, 42, 0.04);
   position: relative;
@@ -132,10 +137,17 @@ watch(
 .app-shell__content {
   position: relative;
   z-index: 1;
+  height: 100%;
+  min-height: 0;
+  padding: var(--app-shell-padding);
+  box-sizing: border-box;
+  overflow: hidden;
   background: transparent;
 }
 
 .app-shell__content :deep(> .n-layout-scroll-container) {
+  height: 100%;
+  min-height: 0;
   background: transparent;
 }
 
@@ -178,5 +190,11 @@ watch(
 
 .app-shell.is-dark .app-shell__sider :deep(.n-menu-item-content--selected) {
   box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.2);
+}
+
+@media (max-width: 720px) {
+  .app-shell__sider :deep(.n-menu) {
+    padding: 10px 6px;
+  }
 }
 </style>
