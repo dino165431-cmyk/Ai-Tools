@@ -3,13 +3,24 @@
     <div class="session-tree__toolbar" @contextmenu.stop.prevent>
       <n-tooltip trigger="hover">
         <template #trigger>
-          <n-button class="session-tree__refresh" size="small" tertiary circle :loading="refreshing" @click="refreshTree">
+          <n-button class="session-tree__refresh" size="small" tertiary circle :loading="refreshing" title="刷新目录" @click="refreshTree">
             <template #icon>
               <n-icon :component="RefreshOutline" size="14" />
             </template>
           </n-button>
         </template>
         刷新目录
+      </n-tooltip>
+
+      <n-tooltip trigger="hover">
+        <template #trigger>
+          <n-button class="session-tree__cleanup" size="small" tertiary circle title="清理 3 天前的历史会话" @click="emit('cleanup-auto-sessions')">
+            <template #icon>
+              <n-icon :component="TrashOutline" size="14" />
+            </template>
+          </n-button>
+        </template>
+        清理 3 天前的历史会话
       </n-tooltip>
     </div>
 
@@ -97,7 +108,8 @@
 import { ref, h, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { FileTrayFullOutline, Folder, FolderOpenOutline, RefreshOutline, CreateOutline, TrashOutline } from '@vicons/ionicons5'
 import { NIcon, NTree, NDropdown, useMessage, useDialog, NInput, NButton, NModal, NTooltip, NAlert } from 'naive-ui'
-import { createDirectory, writeFile, listDirectory, exists, stat, deleteItem, moveItem, openInFileManager, describeFileOperationsError } from '@/utils/fileOperations'
+import { createDirectory, writeFile, readFile, listDirectory, exists, stat, deleteItem, moveItem, openInFileManager, describeFileOperationsError } from '@/utils/fileOperations'
+import { buildChatSessionAssetsDirectory, isChatSessionAssetsDirectoryPath } from '@/utils/chatMediaAssets.js'
 
 const props = defineProps({
   root: {
@@ -110,7 +122,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['select', 'saved', 'rename', 'delete'])
+const emit = defineEmits(['select', 'saved', 'rename', 'delete', 'cleanup-auto-sessions'])
 
 const message = useMessage()
 const dialog = useDialog()
@@ -136,12 +148,93 @@ const selectedFolderKeys = ref([props.root])
 const newSessionName = ref('')
 
 const pendingPayload = ref(null)
+const pendingSaveOptions = ref({})
 
-const protectedTimedTaskDir = computed(() => `${props.root}/Timed Task`)
-function isProtectedPath(p) {
-  const path = String(p || '').trim()
+const TIMED_TASK_DIR_NAME = '定时任务'
+const AUTO_CHAT_DIR_NAME = '历史会话'
+
+const protectedSystemDirs = computed(() => [
+  `${props.root}/${TIMED_TASK_DIR_NAME}`,
+  `${props.root}/${AUTO_CHAT_DIR_NAME}`
+])
+
+function normalizeTreePath(p) {
+  return String(p || '').trim().replace(/\\/g, '/')
+}
+
+function isPathInside(target, base) {
+  const path = normalizeTreePath(target)
+  const root = normalizeTreePath(base)
+  return !!path && !!root && (path === root || path.startsWith(`${root}/`))
+}
+
+function isProtectedSystemDir(p) {
+  const path = normalizeTreePath(p)
   if (!path) return false
-  return path === protectedTimedTaskDir.value
+  return protectedSystemDirs.value.some((dir) => path === normalizeTreePath(dir))
+}
+
+function isInsideProtectedSystemDir(p) {
+  const path = normalizeTreePath(p)
+  if (!path) return false
+  return protectedSystemDirs.value.some((dir) => isPathInside(path, dir))
+}
+
+function isProtectedPath(p) {
+  return isProtectedSystemDir(p)
+}
+
+function isJsonSessionPath(p) {
+  return String(p || '').trim().toLowerCase().endsWith('.json')
+}
+
+async function readDeletedSessionPayload(p) {
+  if (!isJsonSessionPath(p)) return null
+  try {
+    return JSON.parse(String(await readFile(p, 'utf-8') || ''))
+  } catch {
+    return null
+  }
+}
+
+async function collectDeletedSessionPayloads(p) {
+  const startPath = String(p || '').trim()
+  if (!startPath) return []
+
+  const payloads = []
+
+  async function walk(entryPath) {
+    if (isChatSessionAssetsDirectoryPath(entryPath)) return
+
+    try {
+      const statInfo = await stat(entryPath)
+      if (statInfo?.isDirectory?.()) {
+        const entries = await listDirectory(entryPath).catch(() => [])
+        for (const entry of entries) await walk(entry)
+        return
+      }
+    } catch {
+      // If stat fails, still try to read it as a session file.
+    }
+
+    const payload = await readDeletedSessionPayload(entryPath)
+    if (payload) payloads.push({ path: entryPath, payload })
+  }
+
+  await walk(startPath)
+  return payloads
+}
+
+async function moveSessionAssetDirectoryForRename(oldPath, newPath) {
+  const from = buildChatSessionAssetsDirectory(oldPath)
+  const to = buildChatSessionAssetsDirectory(newPath)
+  if (!from || !to || from === to) return
+  try {
+    if (!(await exists(from))) return
+    await moveItem(from, to, { overwrite: true })
+  } catch (err) {
+    message.warning('会话资源目录移动失败：' + (err?.message || String(err)))
+  }
 }
 
 function handleExternalSessionFilesChanged(e) {
@@ -349,31 +442,129 @@ function findNodeByKey(nodes, key) {
   return null
 }
 
+function pad2(n) {
+  return String(n).padStart(2, '0')
+}
+
+function parseTimeMs(value) {
+  if (!value) return 0
+  const ms = value instanceof Date ? value.getTime() : new Date(value).getTime()
+  return Number.isFinite(ms) && ms > 0 ? ms : 0
+}
+
+function startOfLocalDayMs(ms) {
+  const d = new Date(ms)
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
+}
+
+function formatTreeMetaDate(ms, options = {}) {
+  if (!ms) return ''
+  const withTime = options.withTime === true
+  const d = new Date(ms)
+  const today = startOfLocalDayMs(Date.now())
+  const day = startOfLocalDayMs(ms)
+  let dateLabel = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+  if (day === today) dateLabel = '今天'
+  else if (day === today - 24 * 60 * 60 * 1000) dateLabel = '昨天'
+  if (!withTime) return dateLabel
+  return `${dateLabel} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+}
+
+function displaySystemDirName(name) {
+  return name
+}
+
+function stripGeneratedTimePrefix(name) {
+  return String(name || '').replace(/^\d{8}-\d{6}-/, '').trim()
+}
+
+function isTimedTaskPath(entryPath, data = null) {
+  const sourceType = String(data?.source?.type || '').trim()
+  if (sourceType === 'timed_task') return true
+  return protectedSystemDirs.value
+    .filter((dir) => dir.endsWith(`/${TIMED_TASK_DIR_NAME}`))
+    .some((dir) => isPathInside(entryPath, dir))
+}
+
+function isAutoChatPath(entryPath, data = null) {
+  const sourceType = String(data?.source?.type || '').trim()
+  if (sourceType === 'auto_chat_session') return true
+  return protectedSystemDirs.value
+    .filter((dir) => dir.endsWith(`/${AUTO_CHAT_DIR_NAME}`))
+    .some((dir) => isPathInside(entryPath, dir))
+}
+
+function statTimeMs(statInfo) {
+  const direct = Number(statInfo?.mtimeMs)
+  if (Number.isFinite(direct) && direct > 0) return direct
+  return parseTimeMs(statInfo?.mtime)
+}
+
+async function readSessionFileMeta(entryPath, statInfo) {
+  const fileName = String(entryPath || '').split('/').pop() || ''
+  const fallbackName = String(fileName || '').replace(/\.json$/i, '')
+  const maxMetaReadBytes = 1024 * 1024
+  let data = null
+
+  try {
+    const size = Number(statInfo?.size)
+    if (!Number.isFinite(size) || size <= maxMetaReadBytes) {
+      data = JSON.parse(String(await readFile(entryPath, 'utf-8') || ''))
+    }
+  } catch {
+    data = null
+  }
+
+  const timedTask = isTimedTaskPath(entryPath, data)
+  const autoChat = isAutoChatPath(entryPath, data)
+  const titleRaw = String(data?.title || '').trim()
+  const title = titleRaw || stripGeneratedTimePrefix(fallbackName)
+  const timeMs =
+    parseTimeMs(data?.source?.startedAt) ||
+    parseTimeMs(data?.source?.createdAt) ||
+    parseTimeMs(data?.createdAt) ||
+    parseTimeMs(data?.savedAt) ||
+    statTimeMs(statInfo)
+
+  const metaLabel = formatTreeMetaDate(timeMs)
+
+  return {
+    label: title || fallbackName || '未命名会话',
+    metaLabel,
+    sortTimeMs: timeMs,
+    sessionKind: timedTask ? 'timed-task' : autoChat ? 'history-session' : 'session'
+  }
+}
+
 async function loadDirectory(relativePath, parentNode) {
   try {
     const entries = await listDirectory(relativePath)
     const children = []
 
     for (const entry of entries) {
+      if (isChatSessionAssetsDirectoryPath(entry)) continue
+
       const statInfo = await stat(entry)
       const isDirectory = statInfo.isDirectory()
       const fileName = entry.split('/').pop()
 
       if (!isDirectory && !String(fileName || '').endsWith('.json')) continue
 
-      const label = isDirectory ? fileName : String(fileName || '').slice(0, -5)
+      const fileMeta = isDirectory ? null : await readSessionFileMeta(entry, statInfo)
+      const label = isDirectory ? displaySystemDirName(fileName) : fileMeta.label
       children.push({
         key: entry,
         label,
+        metaLabel: fileMeta?.metaLabel || '',
+        sortTimeMs: fileMeta?.sortTimeMs || statTimeMs(statInfo),
+        sessionKind: fileMeta?.sessionKind || '',
         isLeaf: !isDirectory,
         children: isDirectory ? [] : undefined
       })
     }
 
-    children.sort((a, b) => {
-      if (a.isLeaf === b.isLeaf) return a.label.localeCompare(b.label)
-      return a.isLeaf ? 1 : -1
-    })
+    children.sort(compareTreeNodes)
 
     if (parentNode === null) treeData.value = children
     else parentNode.children = children
@@ -434,10 +625,11 @@ async function openNodeInFileManager(node) {
 }
 
 function folderNodeProps({ option }) {
+  const disabled = !option.children || isInsideProtectedSystemDir(option.key)
   return {
-    disabled: !option.children,
+    disabled,
     onClick() {
-      if (option.children) selectedFolderKeys.value = [option.key]
+      if (!disabled && option.children) selectedFolderKeys.value = [option.key]
     }
   }
 }
@@ -456,7 +648,52 @@ function renderPrefix({ option }) {
 
 function renderLabel({ option }) {
   const labelText = typeof option.label === 'string' ? option.label : String(option.label ?? '')
-  return h('span', { class: 'tree-node-label', title: labelText }, labelText)
+  const metaText = String(option.metaLabel || '').trim()
+  const title = labelText
+  const metaColor = props.theme === 'dark' ? 'rgba(148, 163, 184, 0.9)' : 'rgba(100, 116, 139, 0.86)'
+  return h('span', {
+    class: 'tree-node-label-wrap',
+    title,
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      minWidth: '0',
+      width: '100%',
+      maxWidth: '100%',
+      gap: metaText ? '10px' : '0'
+    }
+  }, [
+    h('span', {
+      class: 'tree-node-label',
+      style: {
+        display: 'block',
+        flex: '1 1 auto',
+        minWidth: '0',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+        lineHeight: '22px'
+      }
+    }, labelText),
+    metaText
+      ? h('span', {
+          class: 'tree-node-meta',
+          style: {
+            display: 'block',
+            flex: '0 0 auto',
+            marginLeft: 'auto',
+            maxWidth: '88px',
+            minWidth: '0',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            fontSize: '11px',
+            lineHeight: '22px',
+            color: metaColor
+          }
+        }, metaText)
+      : null
+  ])
 }
 
 function replacePathPrefix(targetPath, oldBase, newBase) {
@@ -470,19 +707,34 @@ function uniqueStrings(list) {
   return Array.from(new Set(Array.isArray(list) ? list : []))
 }
 
+function compareTreeNodes(a, b) {
+  if (!!a?.isLeaf !== !!b?.isLeaf) return a?.isLeaf ? 1 : -1
+  if (a?.isLeaf && b?.isLeaf) {
+    const at = Number(a?.sortTimeMs || 0)
+    const bt = Number(b?.sortTimeMs || 0)
+    if (at !== bt) return bt - at
+  }
+  return String(a?.label || '').localeCompare(String(b?.label || ''), 'zh-Hans-CN')
+}
+
 function sortTreeChildren(children = []) {
   return [...children].sort((a, b) => {
-    if (!!a?.isLeaf === !!b?.isLeaf) return String(a?.label || '').localeCompare(String(b?.label || ''))
-    return a?.isLeaf ? 1 : -1
+    return compareTreeNodes(a, b)
   })
 }
 
 function createTreeNode(entryPath, isDirectory) {
   const normalizedPath = String(entryPath || '').trim().replace(/\\/g, '/')
   const fileName = normalizedPath.split('/').pop() || normalizedPath
+  const now = Date.now()
+  const label = isDirectory
+    ? displaySystemDirName(fileName)
+    : stripGeneratedTimePrefix(String(fileName || '').replace(/\.json$/i, ''))
   return {
     key: normalizedPath,
-    label: isDirectory ? fileName : String(fileName || '').replace(/\.json$/i, ''),
+    label,
+    metaLabel: isDirectory ? '' : formatTreeMetaDate(now),
+    sortTimeMs: isDirectory ? 0 : now,
     isLeaf: !isDirectory,
     children: isDirectory ? [] : undefined
   }
@@ -530,7 +782,7 @@ async function renameNode(node) {
   const oldPath = String(node.key || '').trim()
   if (!oldPath) return
   if (isProtectedPath(oldPath)) {
-    message.warning('Timed Task 目录不支持重命名')
+    message.warning('系统目录不支持重命名')
     return
   }
 
@@ -576,6 +828,7 @@ async function renameNode(node) {
 
       try {
         await moveItem(oldPath, newPath)
+        if (isFile) await moveSessionAssetDirectoryForRename(oldPath, newPath)
         message.success('重命名成功')
 
         if (selectedKeys.value.includes(oldPath)) selectedKeys.value = [newPath]
@@ -601,8 +854,8 @@ async function deleteNode(node) {
   }
 
   const protectedPath = String(node?.key || '').trim()
-  if (isProtectedPath(protectedPath)) {
-    message.warning('Timed Task 目录不支持删除')
+  if (isProtectedSystemDir(protectedPath)) {
+    message.warning('系统目录不支持删除')
     return
   }
 
@@ -630,6 +883,7 @@ async function deleteNode(node) {
       try {
         const p = String(node?.key || '').trim()
         if (!p) return
+        const deletedSessionPayloads = await collectDeletedSessionPayloads(p)
         await deleteItem(p)
         message.success('删除成功')
 
@@ -646,7 +900,7 @@ async function deleteNode(node) {
           (k) => k !== p && !String(k || '').startsWith(p + '/')
         )
 
-        emit('delete', p)
+        emit('delete', p, deletedSessionPayloads)
         await refreshTree({ silent: true })
       } catch (err) {
         message.error('删除失败：' + (err?.message || String(err)))
@@ -657,6 +911,10 @@ async function deleteNode(node) {
 
 async function openNewFolderDialog() {
   const parentPath = selectedFolderKeys.value[0] || props.root
+  if (isInsideProtectedSystemDir(parentPath)) {
+    message.warning('系统目录不支持新建子文件夹')
+    return
+  }
   const inputValue = ref('')
 
   dialog.create({
@@ -715,21 +973,24 @@ async function openNewFolderDialog() {
 
 async function openSaveSessionModal(payload, options = {}) {
   pendingPayload.value = payload
+  pendingSaveOptions.value = options && typeof options === 'object' ? options : {}
 
   const defaultFolder = String(options?.defaultFolder || '').trim()
-  selectedFolderKeys.value = [defaultFolder || props.root]
+  const safeDefaultFolder = defaultFolder && !isInsideProtectedSystemDir(defaultFolder) ? defaultFolder : props.root
+  selectedFolderKeys.value = [safeDefaultFolder]
 
   newSessionName.value = String(options?.defaultName || '').trim()
 
   showFolderPicker.value = true
   await refreshTree({ silent: true })
   await nextTick()
-  await selectFolderPath(defaultFolder || props.root)
+  await selectFolderPath(safeDefaultFolder)
 }
 
 async function selectPath(filePath) {
   const p = String(filePath || '').trim().replace(/\\/g, '/')
   if (!p || (p !== props.root && !p.startsWith(`${props.root}/`))) return
+  if (isChatSessionAssetsDirectoryPath(p)) return
 
   const ancestors = listAncestorDirs(p).filter((dir) => dir !== props.root)
   if (ancestors.length) {
@@ -751,6 +1012,8 @@ async function selectPath(filePath) {
 async function selectFolderPath(folderPath) {
   const p = String(folderPath || '').trim().replace(/\\/g, '/')
   if (!p || (p !== props.root && !p.startsWith(`${props.root}/`))) return
+  if (isChatSessionAssetsDirectoryPath(p)) return
+  if (isInsideProtectedSystemDir(p)) return
 
   const ancestors = listAncestorDirs(p).filter((dir) => dir !== props.root)
   if (ancestors.length) {
@@ -777,6 +1040,10 @@ async function saveSessionInSelectedFolder() {
     return
   }
   const folderPath = selectedFolderKeys.value[0] || props.root
+  if (isInsideProtectedSystemDir(folderPath)) {
+    message.warning('系统目录不支持手动保存')
+    return
+  }
   const name = newSessionName.value.trim()
   if (!name) {
     message.warning('会话名称不能为空')
@@ -798,8 +1065,13 @@ async function saveSessionInSelectedFolder() {
   }
 
   try {
-    const payload = JSON.parse(JSON.stringify(pendingPayload.value))
+    const preparePayload = pendingSaveOptions.value?.preparePayload
+    const preparedPayload = typeof preparePayload === 'function'
+      ? await preparePayload(fullPath, { name, folderPath })
+      : pendingPayload.value
+    const payload = JSON.parse(JSON.stringify(preparedPayload || {}))
     payload.title = payload.title || name
+    payload.createdAt = payload.createdAt || new Date().toISOString()
     payload.savedAt = new Date().toISOString()
     const json = JSON.stringify(payload, null, 2)
 
@@ -807,6 +1079,7 @@ async function saveSessionInSelectedFolder() {
 
     showFolderPicker.value = false
     pendingPayload.value = null
+    pendingSaveOptions.value = {}
     newSessionName.value = ''
 
     const dirs = listAncestorDirs(fullPath).filter((d) => d !== props.root)
@@ -839,8 +1112,13 @@ defineExpose({
 .session-tree {
   display: flex;
   flex-direction: column;
-  height: 99%;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
   padding: 4px 2px 2px;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .session-tree.is-dark {
@@ -848,26 +1126,48 @@ defineExpose({
 }
 
 .session-tree__toolbar {
+  flex: 0 0 auto;
   display: flex;
   justify-content: flex-end;
+  gap: 6px;
   margin-bottom: 10px;
 }
 
-.session-tree__refresh {
+.session-tree__refresh,
+.session-tree__cleanup {
   box-shadow: 0 10px 22px rgba(24, 43, 48, 0.08);
   border: 1px solid rgba(87, 126, 139, 0.14);
 }
 
-.session-tree.is-dark .session-tree__refresh {
+.session-tree.is-dark .session-tree__refresh,
+.session-tree.is-dark .session-tree__cleanup {
   box-shadow: 0 10px 22px rgba(2, 6, 23, 0.28);
   border-color: rgba(148, 163, 184, 0.14);
 }
 
 .session-tree__list,
 .session-tree__picker-list {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   border-radius: 16px;
+  box-sizing: border-box;
   padding: 4px;
+  overflow-x: hidden;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.48), rgba(246, 248, 250, 0.56));
+}
+
+.session-tree__list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.session-tree__picker-list {
+  overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 .session-tree.is-dark .session-tree__list,
@@ -879,11 +1179,26 @@ defineExpose({
 
 .session-tree :deep(.n-tree-node-wrapper) {
   margin: 2px 0;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .session-tree :deep(.n-tree-node-content) {
   border-radius: 12px;
+  height: 32px;
+  min-height: 32px;
+  min-width: 0;
+  max-width: 100%;
+  align-items: center;
+  overflow: hidden;
   transition: background-color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+.session-tree :deep(.n-tree-node-content__text) {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .session-tree.is-dark :deep(.n-tree-node-content) {
@@ -915,8 +1230,39 @@ defineExpose({
   box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.16);
 }
 
+.tree-node-label-wrap {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+}
+
 .tree-node-label {
-  display: inline-block;
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 22px;
+}
+
+.tree-node-meta {
+  display: block;
+  flex: 0 0 auto;
+  margin-left: auto;
+  max-width: 88px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 22px;
+  color: rgba(100, 116, 139, 0.86);
+}
+
+.session-tree.is-dark .tree-node-meta {
+  color: rgba(148, 163, 184, 0.9);
 }
 .folder-picker-content {
   display: flex;

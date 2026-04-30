@@ -17,23 +17,6 @@
         <n-flex align="center" wrap :size="8">
           <n-tooltip trigger="hover">
             <template #trigger>
-              <n-button
-                size="small"
-                tertiary
-                circle
-                :type="sessionSiderCollapsed ? 'default' : 'primary'"
-                @click="toggleSessionSider"
-              >
-                <template #icon>
-                  <n-icon :component="DocumentTextOutline" size="16" />
-                </template>
-              </n-button>
-            </template>
-            {{ sessionSiderTooltipText }}
-          </n-tooltip>
-
-          <n-tooltip trigger="hover">
-            <template #trigger>
               <n-button size="small" tertiary circle @click="showModelModal = true">
                 <template #icon>
                   <n-icon :component="FlowModelerReference" size="16" />
@@ -63,6 +46,31 @@
               </n-button>
             </template>
             保存会话
+          </n-tooltip>
+
+          <n-dropdown trigger="click" :options="memorySessionDropdownOptions" @select="handleMemorySessionSelect">
+            <n-tooltip trigger="hover">
+              <template #trigger>
+                <n-button size="small" tertiary title="新建会话">
+                  <template #icon>
+                    <n-icon :component="ChatMultiple24Filled" size="16" />
+                  </template>
+                  {{ runningMemorySessionCount || '新建' }}
+                </n-button>
+              </template>
+              新建会话；运行中的会话会显示在这里
+            </n-tooltip>
+          </n-dropdown>
+
+          <n-tooltip trigger="hover">
+            <template #trigger>
+              <n-button size="small" tertiary circle :disabled="!sessionMediaItemCount" @click="showMediaLibraryModal = true">
+                <template #icon>
+                  <n-icon :component="ImageOutline" size="16" />
+                </template>
+              </n-button>
+            </template>
+            媒体库（{{ sessionMediaItemCount }}）
           </n-tooltip>
         </n-flex>
       </n-flex>
@@ -426,7 +434,7 @@
       :pending-attachments="pendingAttachments"
       :pending-image-attachments="pendingImageAttachments"
       :pending-file-attachments="pendingFileAttachments"
-      :show-builtin-hint="!!(selectedProvider && isUtoolsBuiltinProvider(selectedProvider))"
+      :show-builtin-hint="!!(selectedProvider && isUtoolsBuiltinProvider(selectedProvider) && pendingImageAttachments.length)"
       :pending-attachment-helpers="pendingAttachmentHelpers"
       :pending-attachment-actions="pendingAttachmentActions"
       :show-input-mode-tags="showInputModeTags"
@@ -436,6 +444,12 @@
       :image-generation-mode-label="imageGenerationModeLabel"
       :video-generation-mode="videoGenerationMode"
       :video-generation-mode-label="videoGenerationModeLabel"
+      :image-generation-params-enabled="imageGenerationParamsEnabled"
+      :image-generation-params="imageGenerationParams"
+      :image-generation-params-summary="imageGenerationParamsSummary"
+      :video-generation-params-enabled="videoGenerationParamsEnabled"
+      :video-generation-params="videoGenerationParams"
+      :video-generation-params-summary="videoGenerationParamsSummary"
       :session-messages-length="session.messages.length"
       :web-search-enabled="webSearchEnabled"
       :auto-approve-tools="autoApproveTools"
@@ -447,6 +461,7 @@
       :thinking-effort-button-type="thinkingEffortButtonType"
       :image-generation-button-type="imageGenerationButtonType"
       :video-generation-button-type="videoGenerationButtonType"
+      :media-generation-preset-options="mediaGenerationPresetOptions"
       :can-send="canSend"
       :footer-hint="footerHint"
       @update:input-value="input = $event"
@@ -462,6 +477,12 @@
       @set-thinking-effort="thinkingEffort = $event"
       @set-image-generation-mode="setImageGenerationMode"
       @set-video-generation-mode="setVideoGenerationMode"
+      @set-image-generation-params-enabled="setImageGenerationParamsEnabled"
+      @update-image-generation-params="assignImageGenerationParams"
+      @reset-image-generation-params="resetImageGenerationParams"
+      @set-video-generation-params-enabled="setVideoGenerationParamsEnabled"
+      @update-video-generation-params="assignVideoGenerationParams"
+      @reset-video-generation-params="resetVideoGenerationParams"
       @clear-session="clearSession"
       @reset-chat-setup="resetChatSetup"
       @open-agent-modal="openAgentModal"
@@ -476,9 +497,104 @@
       @cycle-thinking-effort="cycleThinkingEffort"
       @cycle-image-generation-mode="cycleImageGenerationMode"
       @cycle-video-generation-mode="cycleVideoGenerationMode"
+      @apply-media-preset="applyMediaGenerationPreset"
       @stop="stop"
       @send="send"
     />
+
+    <n-modal
+      v-model:show="showMediaLibraryModal"
+      :mask-closable="true"
+      preset="card"
+      title="媒体库"
+      style="width: 920px; max-width: 95%;"
+    >
+      <n-flex vertical :size="12">
+        <n-flex align="center" justify="space-between" wrap :size="8">
+          <n-flex align="center" wrap :size="6">
+            <n-button size="tiny" :type="mediaLibraryFilter === 'all' ? 'primary' : 'default'" @click="mediaLibraryFilter = 'all'">
+              全部
+            </n-button>
+            <n-button size="tiny" :type="mediaLibraryFilter === 'image' ? 'primary' : 'default'" @click="mediaLibraryFilter = 'image'">
+              图片
+            </n-button>
+            <n-button size="tiny" :type="mediaLibraryFilter === 'video' ? 'primary' : 'default'" @click="mediaLibraryFilter = 'video'">
+              视频
+            </n-button>
+          </n-flex>
+          <n-text depth="3" style="font-size: 12px;">{{ filteredSessionMediaItems.length }} / {{ sessionMediaItemCount }}</n-text>
+        </n-flex>
+
+        <n-scrollbar style="max-height: 70vh;">
+          <div v-if="filteredSessionMediaItems.length" class="session-media-library-grid">
+            <div
+              v-for="item in filteredSessionMediaItems"
+              :key="item.key"
+              class="session-media-library-item"
+              @click.stop
+            >
+              <div class="session-media-library-item__preview">
+                <n-image
+                  v-if="item.kind === 'image'"
+                  :src="item.src"
+                  :alt="item.name"
+                  object-fit="cover"
+                  width="100%"
+                  :img-props="{ loading: 'lazy', decoding: 'async' }"
+                />
+                <video
+                  v-else
+                  class="session-media-library-item__video"
+                  :src="item.src"
+                  controls
+                  controlslist="nofullscreen"
+                  preload="metadata"
+                  playsinline
+                />
+              </div>
+              <div class="session-media-library-item__body">
+                <div class="session-media-library-item__title">{{ item.name }}</div>
+                <div v-if="item.meta" class="session-media-library-item__meta">{{ item.meta }}</div>
+                <div v-if="item.prompt" class="session-media-library-item__prompt">{{ item.prompt }}</div>
+                <n-flex align="center" justify="flex-end" :size="6" class="session-media-library-item__actions">
+                  <n-tooltip v-if="item.prompt" trigger="hover">
+                    <template #trigger>
+                      <n-button size="tiny" tertiary circle @click.stop="copyMediaPrompt(item)">
+                        <template #icon>
+                          <n-icon :component="CopyOutline" size="14" />
+                        </template>
+                      </n-button>
+                    </template>
+                    复制提示词
+                  </n-tooltip>
+                  <n-tooltip trigger="hover">
+                    <template #trigger>
+                      <n-button size="tiny" tertiary circle @click.stop="regenerateMedia(item.message, item.kind)">
+                        <template #icon>
+                          <n-icon :component="RefreshOutline" size="14" />
+                        </template>
+                      </n-button>
+                    </template>
+                    再次生成
+                  </n-tooltip>
+                  <n-tooltip trigger="hover">
+                    <template #trigger>
+                      <n-button size="tiny" tertiary circle @click.stop="item.kind === 'image' ? downloadChatImage(item.media) : downloadChatVideo(item.media)">
+                        <template #icon>
+                          <n-icon :component="DownloadOutline" size="14" />
+                        </template>
+                      </n-button>
+                    </template>
+                    下载
+                  </n-tooltip>
+                </n-flex>
+              </div>
+            </div>
+          </div>
+          <n-text v-else depth="3">当前会话还没有可展示的媒体结果</n-text>
+        </n-scrollbar>
+      </n-flex>
+    </n-modal>
 
     <!-- 模型设置 -->
     <n-modal
@@ -875,6 +991,7 @@
           @saved="handleSessionSaved"
           @rename="handleSessionPathRenamed"
           @delete="handleSessionPathDeleted"
+          @cleanup-auto-sessions="cleanupAutoChatSessions({ notify: true })"
         />
       </n-layout-sider>
     </n-layout>
@@ -906,6 +1023,7 @@ import {
   NFormItem,
   NCollapse,
   NCollapseItem,
+  NDropdown,
   NTooltip,
   useDialog,
   useMessage
@@ -913,7 +1031,7 @@ import {
 import LazyMarkdownPreview from '@/components/LazyMarkdownPreview.vue'
 import { ChatMultiple24Filled } from '@vicons/fluent'
 import { FlowModelerReference, SkillLevelIntermediate, BareMetalServer02 } from '@vicons/carbon'
-import { Trash, Magento } from '@vicons/fa'
+import { Magento } from '@vicons/fa'
 import { Prompt as PromptIcon } from '@vicons/tabler'
 import {
   SendOutline,
@@ -985,6 +1103,16 @@ import {
   shouldIncludeReasoningContent
 } from '@/utils/chatRequestCompat'
 import {
+  applyResponsesStreamEvent,
+  buildResponsesRequestBodyFromChatBody,
+  createResponsesStreamAccumulator,
+  finalizeResponsesStreamAccumulator,
+  shouldFallbackChatCompletionsToResponses,
+  shouldFallbackResponsesToChatCompletions,
+  shouldPreferResponsesApiForModel,
+  shouldRetryResponsesWithoutStreaming
+} from '@/utils/openaiResponsesCompat.js'
+import {
   collectImageGenerationRevisedPrompts,
   extractImageOutputEntries,
   extractVideoOutputEntries,
@@ -994,13 +1122,74 @@ import {
   isLikelyVideoGenerationModel
 } from '@/utils/chatImageGeneration.js'
 import {
+  buildImageMetaLine,
+  formatMediaElapsed,
+  formatAttachmentSize,
+  getImageKindLabel,
+  imageMetaLabel,
+  normalizeMediaDimension,
+  videoMetaLabel
+} from '@/utils/chatMediaMetadata.js'
+import {
+  buildMediaGenerationPresetOptions,
+  applyMediaGenerationPresetToInput
+} from '@/utils/chatMediaPresets.js'
+import {
+  buildImageGenerationManualRequestOptions,
+  buildMediaGenerationManualRequestOptions,
+  buildVideoGenerationManualRequestOptions,
+  createDefaultImageGenerationParams,
+  createDefaultVideoGenerationParams,
+  normalizeImageGenerationParams,
+  normalizeMediaGenerationParamsEnabled,
+  normalizeVideoGenerationParams,
+  summarizeImageGenerationParams,
+  summarizeVideoGenerationParams
+} from '@/utils/chatMediaGenerationParams.js'
+import {
+  collectSessionMediaItems,
+  countSessionMediaItems,
+  filterSessionMediaItems
+} from '@/utils/chatMediaLibrary.js'
+import {
+  collectChatMediaAssetPathsFromPayload,
+  deleteChatSessionAssetDirectory,
+  deleteChatMediaAssetPaths,
+  hydrateChatSessionMediaAssets,
+  persistChatMediaListAssets,
+  persistChatSessionMediaAssets,
+  resolveChatMediaAssetPath,
+  serializeChatMediaForSave
+} from '@/utils/chatMediaAssets.js'
+import {
+  VIDEO_GENERATION_RESULT_TIMEOUT_MS,
+  buildImageGenerationCompatibilityError,
+  buildManualImageGenerationRequestInfo,
+  buildManualVideoGenerationRequestInfo,
+  buildVideoGenerationCompatibilityError,
+  extractImageGenerationTaskState,
+  extractVideoGenerationTaskState,
+  requestImageGeneration,
+  requestVideoGeneration,
+  shouldFetchVideoGenerationContent,
+  shouldFallbackMediaRequestToChat,
+  waitForVideoGenerationResult
+} from '@/utils/chatMediaGenerationRequest.js'
+import {
+  createAbortError,
+  isAbortError,
+  throwIfAborted,
+  waitForAbortable,
+  withTimeout
+} from '@/utils/abortableRequest.js'
+import {
   extractInlineAgentContext,
   extractInlineCommandContext,
   getInlinePickerMatchScore,
   INLINE_COMMAND_DEFINITIONS,
   INLINE_COMMAND_KIND_LABELS
 } from '@/utils/chatInlinePicker'
-import { exists, readFile, writeFile } from '@/utils/fileOperations'
+import { createDirectory, deleteItem, exists, listDirectory, readFile, resolvePath, stat, writeFile } from '@/utils/fileOperations'
 import { requestOpenNoteFile } from '@/utils/noteOpenBridge'
 import { buildNoteHrefFromPath, resolveNoteAbsPathFromHref, splitMarkdownLinkDestination } from '@/utils/notePathUtils'
 import {
@@ -1021,7 +1210,7 @@ import {
 } from '@/utils/chatToolDisplay'
 import { isAgentRunToolName, mergeAgentRunTraceEntries } from '@/utils/chatAgentRun'
 import { CHAT_CODE_AUTO_FOLD_THRESHOLD } from '@/utils/chatMarkdownPreview'
-import { extractAssistantTextFromPayloads } from '@/utils/chatAssistantResponse'
+import { extractAssistantTextFromPayload, extractAssistantTextFromPayloads } from '@/utils/chatAssistantResponse'
 import { stringifyToolResultForModel as stringifyToolResultForLlm } from '@/utils/toolResultForModel'
 import { consumeJsonEventStream } from '@/utils/streamJsonEvents'
 import { buildMcpArgsFromForm, normalizeMcpPromptArgumentDefinitions, resetMcpArgFormData } from '@/utils/mcpArgumentForm'
@@ -1069,6 +1258,17 @@ function enableFcToolCallIdCompat(baseUrl) {
   toolCallIdCompatByBaseUrl.set(getCompatKey(baseUrl), 'fc')
 }
 
+const CHAT_SESSION_ROOT = 'session'
+const AUTO_CHAT_SESSION_DIR_NAME = '历史会话'
+const TIMED_TASK_SESSION_DIR_NAME = '定时任务'
+const AUTO_CHAT_SESSION_ROOT = `${CHAT_SESSION_ROOT}/${AUTO_CHAT_SESSION_DIR_NAME}`
+const TIMED_TASK_SESSION_ROOT = `${CHAT_SESSION_ROOT}/${TIMED_TASK_SESSION_DIR_NAME}`
+const AUTO_CHAT_SESSION_RETENTION_DAYS = 3
+const AUTO_CHAT_SESSION_RETENTION_MS = AUTO_CHAT_SESSION_RETENTION_DAYS * 24 * 60 * 60 * 1000
+const AUTO_CHAT_SESSION_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000
+const AUTO_CHAT_SESSION_SOURCE_TYPE = 'auto_chat_session'
+const DEFAULT_MEMORY_SESSION_TITLE = '新建会话'
+
 const session = reactive({
   messages: [],
   apiMessages: []
@@ -1088,6 +1288,7 @@ const selectedModel = ref('')
 const basePromptMode = ref('custom') // prompt | custom
 const selectedPromptId = ref(null)
 const customSystemPrompt = ref('')
+const customSystemPromptExplicit = ref(false)
 
 const hasInitializedDefaultSystemPrompt = ref(false)
 const lastLoadedDefaultSystemPrompt = ref('')
@@ -1101,6 +1302,7 @@ function applyBasePromptSelection(promptId) {
   selectedPromptId.value = nextState.selectedPromptId
   basePromptMode.value = nextState.basePromptMode
   customSystemPrompt.value = nextState.customSystemPrompt
+  customSystemPromptExplicit.value = false
 
   if (nextState.basePromptMode === 'custom') {
     lastLoadedDefaultSystemPrompt.value = normalizePromptText(nextState.customSystemPrompt)
@@ -1116,13 +1318,18 @@ watch(
     if (!hasInitializedDefaultSystemPrompt.value) {
       basePromptMode.value = 'custom'
       customSystemPrompt.value = rawNext
+      customSystemPromptExplicit.value = false
       lastLoadedDefaultSystemPrompt.value = nextNormalized
       hasInitializedDefaultSystemPrompt.value = true
       return
     }
 
     const currentNormalized = normalizePromptText(customSystemPrompt.value)
-    if (basePromptMode.value === 'custom' && currentNormalized === normalizePromptText(lastLoadedDefaultSystemPrompt.value)) {
+    if (
+      basePromptMode.value === 'custom' &&
+      !customSystemPromptExplicit.value &&
+      currentNormalized === normalizePromptText(lastLoadedDefaultSystemPrompt.value)
+    ) {
       customSystemPrompt.value = rawNext
       lastLoadedDefaultSystemPrompt.value = nextNormalized
     }
@@ -1178,6 +1385,10 @@ const loadedSkillFileCacheBySkillId = reactive({})
 const showModelModal = ref(false)
 const showSystemPromptModal = ref(false)
 const showContextWindowModal = ref(false)
+const showMediaLibraryModal = ref(false)
+const mediaLibraryFilter = ref('all')
+const resumingMediaTaskKeys = ref([])
+const detachedMediaAbortStates = new Set()
 const systemPromptDraft = ref('')
 const contextWindowDraft = reactive({ ...DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG })
 const contextWindowPreviewOmittedFilter = ref('all')
@@ -1213,11 +1424,269 @@ const inlineCommandMatchEnd = ref(-1)
 const inlineCommandActiveIndex = ref(0)
 const sending = ref(false)
 const abortController = ref(null)
+const runRecordByAbortState = new WeakMap()
 const pendingAttachments = ref([])
+
+const memorySessions = ref([])
+const activeMemorySessionId = ref('')
+const autoPersistMemorySessionInFlight = new Map()
+let autoChatCleanupTimer = null
+
+function createMemorySessionRecord(options = {}) {
+  const now = Date.now()
+  const id = String(options.id || '').trim() || `mem-${newId()}`
+  return {
+    id,
+    title: String(options.title || '').trim() || DEFAULT_MEMORY_SESSION_TITLE,
+    createdAt: Number(options.createdAt || 0) || now,
+    updatedAt: Number(options.updatedAt || 0) || now,
+    messages: Array.isArray(options.messages) ? options.messages : [],
+    apiMessages: Array.isArray(options.apiMessages) ? options.apiMessages : [],
+    input: String(options.input || ''),
+    pendingAttachments: Array.isArray(options.pendingAttachments) ? options.pendingAttachments : [],
+    activeSessionFilePath: String(options.activeSessionFilePath || '').trim(),
+    activeSessionTitle: String(options.activeSessionTitle || '').trim(),
+    state: options.state && typeof options.state === 'object' ? deepCopyJson(options.state, {}) : null,
+    runningTaskCount: Number(options.runningTaskCount || 0) || 0,
+    chatRunCount: Number(options.chatRunCount || 0) || 0,
+    activeRequestAbortState: options.activeRequestAbortState || null,
+    autoManaged: options.autoManaged === true
+  }
+}
+
+function getActiveMemorySession() {
+  const id = String(activeMemorySessionId.value || '').trim()
+  let record = memorySessions.value.find((item) => String(item?.id || '') === id)
+  if (!record) {
+    record = createMemorySessionRecord({
+      messages: session.messages,
+      apiMessages: session.apiMessages,
+      activeSessionFilePath: activeSessionFilePath.value,
+      activeSessionTitle: activeSessionTitle.value
+    })
+    memorySessions.value = [...memorySessions.value, record]
+    activeMemorySessionId.value = record.id
+  }
+  return record
+}
+
+function getMemorySessionById(id) {
+  const target = String(id || '').trim()
+  return memorySessions.value.find((item) => String(item?.id || '') === target) || null
+}
+
+function getMemorySessionRunningCount(record) {
+  return Math.max(0, Number(record?.runningTaskCount || 0) || 0)
+}
+
+function getMemorySessionChatRunCount(record) {
+  return Math.max(0, Number(record?.chatRunCount || 0) || 0)
+}
+
+function isMemorySessionRunning(record) {
+  return getMemorySessionRunningCount(record) > 0 || getMemorySessionChatRunCount(record) > 0
+}
+
+function isMemorySessionChatRunning(record) {
+  return getMemorySessionChatRunCount(record) > 0
+}
+
+function isMemorySessionEmptyDraft(record) {
+  if (!record) return false
+  if (isMemorySessionRunning(record)) return false
+  if (String(record.activeSessionFilePath || '').trim()) return false
+  return !(record.messages?.length || record.apiMessages?.length)
+}
+
+function syncActiveRequestUiState(record = getMemorySessionById(activeMemorySessionId.value)) {
+  const activeRecord = record && isMemorySessionActive(record) ? record : getMemorySessionById(activeMemorySessionId.value)
+  if (isMemorySessionChatRunning(activeRecord)) {
+    sending.value = true
+    abortController.value = activeRecord.activeRequestAbortState || null
+    return
+  }
+  sending.value = false
+  abortController.value = null
+}
+
+function syncSessionTreeSelectionForRecord(record) {
+  const recordId = String(record?.id || '').trim()
+  const filePath = String(record?.activeSessionFilePath || '').trim()
+  try {
+    if (filePath) {
+      const selection = sessionTreeRef.value?.selectPath?.(filePath)
+      if (selection && typeof selection.then === 'function') {
+        void selection.then(() => {
+          if (!recordId || String(activeMemorySessionId.value || '') === recordId) return
+          const activeRecord = getMemorySessionById(activeMemorySessionId.value)
+          const activePath = String(activeRecord?.activeSessionFilePath || '').trim()
+          try {
+            if (activePath) void sessionTreeRef.value?.selectPath?.(activePath)
+            else sessionTreeRef.value?.clearSelection?.()
+          } catch {
+            // ignore tree selection sync failures
+          }
+        }).catch(() => {})
+      }
+    } else {
+      sessionTreeRef.value?.clearSelection?.()
+    }
+  } catch {
+    // ignore tree selection sync failures
+  }
+}
+
+function removeMemorySessionById(id) {
+  const target = String(id || '').trim()
+  if (!target) return false
+  const before = memorySessions.value.length
+  memorySessions.value = memorySessions.value.filter((item) => String(item?.id || '') !== target)
+  return memorySessions.value.length !== before
+}
+
+function getMemorySessionAutoPersistKey(record) {
+  const id = String(record?.id || '').trim()
+  if (id) return `id:${id}`
+  const filePath = String(record?.activeSessionFilePath || '').trim()
+  if (filePath) return `path:${filePath}`
+  return ''
+}
+
+function pruneDormantMemorySessions(options = {}) {
+  const keepId = String(options.keepId || activeMemorySessionId.value || '').trim()
+  memorySessions.value = memorySessions.value.filter((record) => {
+    const id = String(record?.id || '').trim()
+    if (!id) return false
+    if (id === keepId) return true
+    if (isMemorySessionRunning(record)) return true
+    if (isMemorySessionEmptyDraft(record)) return false
+    if (record.autoManaged && isAutoChatSessionPath(record.activeSessionFilePath)) return false
+    return true
+  })
+}
+
+function getRunRecord(abortState = null) {
+  if (!abortState || typeof abortState !== 'object') return null
+  return runRecordByAbortState.get(abortState) || null
+}
+
+function getRunSessionTarget(abortState = null) {
+  return getRunRecord(abortState) || session
+}
+
+function isRunRecordActive(abortState = null) {
+  const record = getRunRecord(abortState)
+  if (!record) return true
+  return isMemorySessionActive(record)
+}
+
+async function maybeScrollToBottomForRun(abortState = null, options = {}) {
+  if (isRunRecordActive(abortState)) await scrollToBottom(options)
+}
+
+function maybeScheduleScrollToBottomForRun(abortState = null) {
+  if (isRunRecordActive(abortState)) scheduleScrollToBottom()
+}
+
+function getMemorySessionForMessage(msg) {
+  if (!msg || typeof msg !== 'object') return getActiveMemorySession()
+  const id = String(msg.id || '').trim()
+  return (
+    memorySessions.value.find((item) =>
+      (item?.messages || []).some((candidate) => candidate === msg || (id && String(candidate?.id || '').trim() === id))
+    ) || getActiveMemorySession()
+  )
+}
+
+function saveActiveMemorySessionDraft() {
+  const record = getActiveMemorySession()
+  record.messages = session.messages
+  record.apiMessages = session.apiMessages
+  record.input = String(input.value || '')
+  record.pendingAttachments = Array.isArray(pendingAttachments.value) ? pendingAttachments.value : []
+  record.activeSessionFilePath = String(activeSessionFilePath.value || '').trim()
+  record.activeSessionTitle = String(activeSessionTitle.value || '').trim()
+  record.state = buildCurrentChatState()
+  record.updatedAt = Date.now()
+  record.title = inferMemorySessionTitle(record)
+  return record
+}
+
+function restoreMemorySession(record, options = {}) {
+  if (!record) return
+  if (!options.skipSaveCurrent) saveActiveMemorySessionDraft()
+  activeMemorySessionId.value = record.id
+  session.messages = Array.isArray(record.messages) ? record.messages : []
+  session.apiMessages = Array.isArray(record.apiMessages) ? record.apiMessages : []
+  input.value = String(record.input || '')
+  pendingAttachments.value = Array.isArray(record.pendingAttachments) ? record.pendingAttachments : []
+  activeSessionFilePath.value = String(record.activeSessionFilePath || '').trim()
+  activeSessionTitle.value = String(record.activeSessionTitle || '').trim()
+  if (record.state) applyLoadedChatState(record.state)
+  resetComposerInput()
+  syncActiveRequestUiState(record)
+  if (options.syncTreeSelection !== false) syncSessionTreeSelectionForRecord(record)
+  scheduleRefreshUserAnchorMeta()
+  if (!options.skipScroll) void nextTick(() => scrollToBottom({ force: true }))
+}
+
+function isAutoChatSessionPath(filePath) {
+  const p = String(filePath || '').trim().replace(/\\/g, '/')
+  return p === AUTO_CHAT_SESSION_ROOT || p.startsWith(`${AUTO_CHAT_SESSION_ROOT}/`)
+}
+
+function isTimedTaskSessionPath(filePath) {
+  const p = String(filePath || '').trim().replace(/\\/g, '/')
+  return p === TIMED_TASK_SESSION_ROOT || p.startsWith(`${TIMED_TASK_SESSION_ROOT}/`)
+}
+
+function isMemorySessionActive(record) {
+  return !!record && String(record.id || '') === String(activeMemorySessionId.value || '')
+}
+
+function inferMemorySessionTitle(record) {
+  const pathTitle = getSessionTitleFromPath(record?.activeSessionFilePath || '')
+  if (pathTitle) return pathTitle
+  const firstUser = (record?.messages || []).find((msg) => msg?.role === 'user')
+  const text = extractEditableUserTextFromContent(firstUser?.content ?? '')
+  const compact = extractAutoSessionTitle(text)
+  return compact || DEFAULT_MEMORY_SESSION_TITLE
+}
+
+function memorySessionOptionLabel(record) {
+  const base = inferMemorySessionTitle(record)
+  const running = Math.max(getMemorySessionRunningCount(record), getMemorySessionChatRunCount(record))
+  return running > 0 ? `${base}（${running} 个任务）` : base
+}
+
+const runningMemorySessions = computed(() => memorySessions.value.filter((record) => isMemorySessionRunning(record)))
+const runningMemorySessionCount = computed(() => runningMemorySessions.value.length)
+
+const memorySessionDropdownOptions = computed(() => {
+  const runningOptions = runningMemorySessions.value.map((record) => ({
+    label: `${String(record.id || '') === String(activeMemorySessionId.value || '') ? '✓ ' : ''}${memorySessionOptionLabel(record)}`,
+    key: record.id
+  }))
+  return [
+    { label: '新建会话', key: '__new__' },
+    ...(runningOptions.length ? [{ type: 'divider', key: '__divider__' }, ...runningOptions] : [])
+  ]
+})
+
+const initialMemorySession = createMemorySessionRecord({
+  messages: session.messages,
+  apiMessages: session.apiMessages
+})
+memorySessions.value = [initialMemorySession]
+activeMemorySessionId.value = initialMemorySession.id
 
 const thinkingEffort = ref('auto') // auto | low | medium | high
 const imageGenerationMode = ref('auto') // auto | on | off
 const videoGenerationMode = ref('auto') // auto | on | off
+const imageGenerationParamsEnabled = ref(false)
+const imageGenerationParams = reactive(createDefaultImageGenerationParams())
+const videoGenerationParamsEnabled = ref(false)
+const videoGenerationParams = reactive(createDefaultVideoGenerationParams())
 
 const hasAppliedDefaultModel = ref(false)
 
@@ -1235,13 +1704,15 @@ function syncChatResponsiveState() {
 }
 
 const layoutContentStyle = computed(() => {
-  const padding = isCompactChatLayout.value ? '8px' : '8px 24px 8px 8px'
+  const padding = isCompactChatLayout.value ? '8px' : '8px 44px 8px 8px'
   return `padding: ${padding}; height: calc(100vh - 30px);`
 })
 
 const sessionSiderWidth = computed(() => (isCompactChatLayout.value ? 280 : 320))
 const sessionSiderCollapsedWidth = computed(() => (isCompactChatLayout.value ? 0 : 15))
-const sessionSiderContentStyle = computed(() => (isCompactChatLayout.value ? 'padding: 16px 12px;' : 'padding: 24px;'))
+const sessionSiderContentStyle = computed(() => {
+  return isCompactChatLayout.value ? 'padding: 16px 12px;' : 'padding: 24px;'
+})
 
 watch(
   () => chatConfig.value?.contextWindow,
@@ -1485,21 +1956,119 @@ function fileToDataUrl(file) {
   })
 }
 
-function formatAttachmentSize(bytes) {
-  const value = Number(bytes)
-  if (!Number.isFinite(value) || value <= 0) return ''
+function getMediaReferenceImageUrl(item) {
+  if (typeof item === 'string') return item.trim()
+  return String(item?.dataUrl || item?.src || item?.url || item?.image_url?.url || '').trim()
+}
 
-  const units = ['B', 'KB', 'MB', 'GB']
-  let size = value
-  let unitIndex = 0
+function normalizeMediaReferenceImagesForRequest(items = []) {
+  const seen = new Set()
+  const out = []
+  ;(Array.isArray(items) ? items : [items]).forEach((item, index) => {
+    const dataUrl = getMediaReferenceImageUrl(item)
+    if (!dataUrl || seen.has(dataUrl)) return
+    seen.add(dataUrl)
+    out.push({
+      dataUrl,
+      name: String(item?.name || item?.filename || `reference_${index + 1}.png`).trim() || `reference_${index + 1}.png`,
+      mime: String(item?.mime || item?.type || '').trim(),
+      size: Number(item?.size || 0),
+      width: Number(item?.width || 0),
+      height: Number(item?.height || 0),
+      metaLine: String(item?.metaLine || '').trim()
+    })
+  })
+  return out
+}
 
-  while (size >= 1024 && unitIndex < units.length - 1) {
-    size /= 1024
-    unitIndex += 1
+function getReferenceImagesFromRequestOptions(options = {}) {
+  if (!options || typeof options !== 'object') return []
+  const candidates = [
+    options.referenceImages,
+    options.reference_images,
+    options.inputImages,
+    options.input_images,
+    options.input_reference,
+    options.inputReference
+  ]
+  for (const candidate of candidates) {
+    const refs = normalizeMediaReferenceImagesForRequest(candidate)
+    if (refs.length) return refs
+  }
+  return []
+}
+
+function mergeReferenceImagesIntoRequestOptions(options = {}, referenceImages = [], kind = 'image') {
+  const refs = normalizeMediaReferenceImagesForRequest(referenceImages)
+  const out = options && typeof options === 'object' ? { ...options } : {}
+  if (!refs.length) return out
+
+  out.referenceImages = refs
+  if (kind === 'video' && !out.input_reference && !out.inputReference) {
+    out.input_reference = refs.length === 1 ? refs[0] : refs
+  }
+  return out
+}
+
+function buildImageGenerationRequestOptionsWithReferences(requestOptionsOverride = null) {
+  const source = requestOptionsOverride && typeof requestOptionsOverride === 'object' ? requestOptionsOverride : {}
+  return mergeReferenceImagesIntoRequestOptions(
+    buildImageGenerationManualRequestOptions(source),
+    getReferenceImagesFromRequestOptions(source),
+    'image'
+  )
+}
+
+function buildVideoGenerationRequestOptionsWithReferences(requestOptionsOverride = null) {
+  const source = requestOptionsOverride && typeof requestOptionsOverride === 'object' ? requestOptionsOverride : {}
+  return mergeReferenceImagesIntoRequestOptions(
+    buildVideoGenerationManualRequestOptions(source),
+    getReferenceImagesFromRequestOptions(source),
+    'video'
+  )
+}
+
+function buildDisplayImagesFromReferenceAttachments(referenceImages = []) {
+  return normalizeMediaReferenceImagesForRequest(referenceImages).map((img) => ({
+    id: newId(),
+    src: img.dataUrl,
+    name: img.name || 'image',
+    mime: img.mime || '',
+    size: Number(img.size || 0),
+    width: Number(img.width || 0),
+    height: Number(img.height || 0),
+    metaLine: img.metaLine || ''
+  }))
+}
+
+function clearAttachmentFileReferences(attachments = []) {
+  try {
+    ;(Array.isArray(attachments) ? attachments : []).forEach((a) => {
+      if (a && typeof a === 'object') a.file = null
+    })
+  } catch {
+    // ignore
+  }
+}
+
+async function collectAttachmentMediaReferenceImages(attachments = [], userDisplay = null) {
+  const list = Array.isArray(attachments) ? attachments : []
+  if (list.length) {
+    await Promise.all(list.map((a) => ensureAttachmentParsed(a)))
   }
 
-  const precision = size >= 100 || unitIndex === 0 ? 0 : size >= 10 ? 1 : 2
-  return `${size.toFixed(precision)} ${units[unitIndex]}`
+  const refs = []
+  for (const a of list) {
+    if (a?.status === 'ready' && a.kind === 'image' && a.dataUrl) {
+      refs.push(a)
+    }
+  }
+
+  const normalized = normalizeMediaReferenceImagesForRequest(refs)
+  if (userDisplay && normalized.length && !(Array.isArray(userDisplay.images) && userDisplay.images.length)) {
+    userDisplay.images = buildDisplayImagesFromReferenceAttachments(normalized)
+  }
+  return normalized
 }
 
 function truncateInlineText(text, maxChars = 160) {
@@ -1549,39 +2118,6 @@ function isSupportedAttachmentFile(file) {
   if (isImageAttachmentLike({ mime, ext })) return true
   if (SUPPORTED_ATTACHMENT_EXTENSIONS.has(ext)) return true
   return !ext && isTextAttachmentMime(mime)
-}
-
-function getImageKindLabel({ mime = '', ext = '' } = {}) {
-  if (isSvgAttachmentLike({ mime, ext })) return 'SVG'
-
-  const normalizedMime = String(mime || '').trim().toLowerCase()
-  if (normalizedMime.startsWith('image/')) {
-    const subtype = normalizedMime.slice('image/'.length).trim()
-    if (subtype) return subtype.toUpperCase()
-  }
-
-  const normalizedExt = String(ext || '').trim().toLowerCase()
-  if (normalizedExt) {
-    if (normalizedExt === 'jpg') return 'JPEG'
-    return normalizedExt.toUpperCase()
-  }
-
-  return '图片'
-}
-
-function buildImageMetaLine({ mime = '', ext = '', size = 0, width = 0, height = 0 } = {}) {
-  const parts = []
-  const kindLabel = getImageKindLabel({ mime, ext })
-  if (kindLabel) parts.push(kindLabel)
-
-  const sizeText = formatAttachmentSize(size)
-  if (sizeText) parts.push(sizeText)
-
-  const w = Number(width)
-  const h = Number(height)
-  if (w > 0 && h > 0) parts.push(`${w} x ${h}`)
-
-  return parts.join(' · ')
 }
 
 function parseSvgDimensionValue(raw) {
@@ -1800,18 +2336,6 @@ function attachmentCardTitle(att) {
   return name
 }
 
-function imageMetaLabel(item) {
-  if (!item || typeof item !== 'object') return ''
-  if (String(item.metaLine || '').trim()) return String(item.metaLine || '').trim()
-  return buildImageMetaLine({
-    mime: item?.mime,
-    ext: item?.ext,
-    size: item?.size,
-    width: item?.width,
-    height: item?.height
-  })
-}
-
 function imageInsightLabel(item) {
   const text = truncateInlineText(item?.svgTextPreview || '', 140)
   return text ? `SVG 文本：${text}` : ''
@@ -1830,7 +2354,8 @@ function assistantImagePromptLabel(msg) {
 }
 
 function assistantImageTaskStatusLabel(msg) {
-  const status = String(msg?.imageTask?.status || '').trim().toLowerCase()
+  const status = String(msg?.imageTask?.stage || msg?.imageTask?.status || '').trim().toLowerCase()
+  if (status === 'submitting') return '提交中'
   if (status === 'queued' || status === 'submitted' || status === 'pending' || status === 'accepted') return '已提交'
   if (status === 'processing' || status === 'running' || status === 'in_progress') return '生成中'
   if (status === 'completed' || status === 'succeeded' || status === 'success') return '已完成'
@@ -1839,7 +2364,7 @@ function assistantImageTaskStatusLabel(msg) {
 }
 
 function assistantImageTaskTagType(msg) {
-  const status = String(msg?.imageTask?.status || '').trim().toLowerCase()
+  const status = String(msg?.imageTask?.stage || msg?.imageTask?.status || '').trim().toLowerCase()
   if (status === 'failed' || status === 'error' || status === 'cancelled') return 'error'
   if (status === 'completed' || status === 'succeeded' || status === 'success') return 'success'
   if (status === 'queued' || status === 'submitted' || status === 'pending' || status === 'accepted') return 'warning'
@@ -1857,11 +2382,45 @@ function assistantImageTaskMetaLabel(msg) {
   const parts = []
   if (taskId) parts.push(`任务 ID：${taskId}`)
   if (endpoint) parts.push(`接口：${endpoint}`)
+  const progress = mediaTaskProgressLabel(msg, 'image')
+  if (progress) parts.push(progress)
   return parts.join(' · ')
 }
 
 function assistantImageTaskNote(msg) {
   return String(msg?.imageTask?.note || '').trim()
+}
+
+function mediaTaskStageLabel(task, kind = 'image') {
+  const status = String(task?.stage || task?.status || '').trim().toLowerCase()
+  if (status === 'submitting') return '提交中'
+  if (['queued', 'submitted', 'pending', 'accepted'].includes(status)) return '排队中'
+  if (['processing', 'running', 'in_progress', 'polling'].includes(status)) return kind === 'video' ? '生成中' : '处理中'
+  if (status === 'fetching_result') return '拉取结果中'
+  if (['completed', 'succeeded', 'success'].includes(status)) return '已完成'
+  if (['failed', 'error', 'cancelled', 'canceled'].includes(status)) return '失败'
+  return status ? status : ''
+}
+
+function isTerminalMediaTaskStatus(status) {
+  const normalized = String(status || '').trim().toLowerCase()
+  return ['completed', 'succeeded', 'success', 'failed', 'error', 'cancelled', 'canceled'].includes(normalized)
+}
+
+function mediaTaskProgressLabel(messageLike, kind = 'image') {
+  const task = kind === 'video' ? messageLike?.videoTask : messageLike?.imageTask
+  if (!task) return ''
+
+  const parts = []
+  const stage = mediaTaskStageLabel(task, kind)
+  if (stage) parts.push(`阶段：${stage}`)
+
+  const startedAt = Number(task.startedAt || messageLike?.mediaRequest?.startedAt || 0)
+  if (startedAt > 0 && !isTerminalMediaTaskStatus(task.status)) {
+    parts.push(`已等待：${formatMediaElapsed(Date.now() - startedAt)}`)
+  }
+
+  return parts.join(' · ')
 }
 
 async function parseAttachment(att) {
@@ -2369,6 +2928,20 @@ const selectedAgentModelParams = computed(() => normalizeAgentModelParams(select
 const selectedProvider = computed(() => {
   if (!selectedProviderId.value) return null
   return (providers.value || []).find((p) => p._id === selectedProviderId.value) || null
+})
+
+const mediaGenerationPresetOptions = computed(() => buildMediaGenerationPresetOptions())
+
+const sessionMediaItemCount = computed(() => countSessionMediaItems(session.messages))
+
+const sessionMediaItems = computed(() => {
+  if (!showMediaLibraryModal.value || !sessionMediaItemCount.value) return []
+  return collectSessionMediaItems(session.messages, { imageMetaLabel, videoMetaLabel })
+})
+
+const filteredSessionMediaItems = computed(() => {
+  if (!showMediaLibraryModal.value) return []
+  return filterSessionMediaItems(sessionMediaItems.value, mediaLibraryFilter.value)
 })
 
 const pendingImageAttachments = computed(() => {
@@ -3065,6 +3638,15 @@ const systemContent = computed(() => {
   return blocks.join('\n\n').trim()
 })
 
+function shouldIncludeSystemPromptForMediaGeneration() {
+  if (basePromptMode.value === 'prompt') return !!selectedPromptId.value
+  return customSystemPromptExplicit.value && !!normalizePromptText(customSystemPrompt.value)
+}
+
+function getMediaGenerationSystemContent() {
+  return shouldIncludeSystemPromptForMediaGeneration() ? String(systemContent.value || '').trim() : ''
+}
+
  const modelButtonText = computed(() => {
   const providerName = selectedProvider.value?.name || selectedProvider.value?._id || ''
   if (providerName && selectedModel.value) return `${providerName} / ${selectedModel.value}`
@@ -3139,8 +3721,8 @@ const systemButtonText = computed(() => {
     const current = normalizePromptText(customSystemPrompt.value)
     if (!current) return '系统：空'
     const globalDefault = normalizePromptText(chatConfig.value?.defaultSystemPrompt || '')
-    if (globalDefault && current === globalDefault) return 'System: default'
-    return 'System: temporary'
+    if (globalDefault && current === globalDefault) return '系统：默认'
+    return '系统：临时'
   }
   if (!selectedPromptId.value) return '系统：无'
   return `提示词：${activePromptLabel.value}`
@@ -3148,11 +3730,11 @@ const systemButtonText = computed(() => {
 
 const systemTooltipText = computed(() => {
   const raw = String(systemButtonText.value || '').trim()
-  if (!raw) return 'System prompt'
+  if (!raw) return '系统提示词'
   let label = raw
-  if (label.startsWith('System: ')) label = label.slice('System: '.length)
+  if (label.startsWith('系统：')) label = label.slice('系统：'.length)
   if (label.startsWith('提示词：')) label = label.slice('提示词：'.length)
-  return label ? `System prompt: ${label}` : 'System prompt'
+  return label ? `系统提示词：${label}` : '系统提示词'
 })
 
 const basePromptSourceText = computed(() => {
@@ -3191,7 +3773,7 @@ const effectiveHeaderHint = computed(() => {
   }
 
   if (pendingImageAttachments.value.length) {
-    return 'uTools AI does not read image pixels directly here. Image uploads are sent with extracted metadata only.'
+    return 'uTools AI 聊天不会直接读取图片像素，上传图片只会作为元数据发送；图片/视频生成请切换到 OpenAI 兼容服务商。'
   }
 
   return ''
@@ -3785,12 +4367,6 @@ const footerHint = computed(() => {
 const composerShortcutHint =
   '按回车发送，Shift+回车换行，@ 选择智能体，/prompt、/skill、/mcp 快速插入配置。'
 
-const sessionSiderTooltipText = computed(() => {
-  const title = activeSessionTitle.value || getSessionTitleFromPath(activeSessionFilePath.value)
-  const action = sessionSiderCollapsed.value ? '打开会话列表' : '收起会话列表'
-  return title ? `${action}（当前会话：${title}）` : action
-})
-
 const chatEmptyStateDescription = computed(() => {
   if (effectiveHeaderHint.value) return effectiveHeaderHint.value
 
@@ -3849,11 +4425,30 @@ const videoGenerationModeLabel = computed(() => {
   return '自动'
 })
 
+const imageGenerationParamsSummary = computed(() =>
+  summarizeImageGenerationParams(imageGenerationParamsEnabled.value, imageGenerationParams)
+)
+
+const videoGenerationParamsSummary = computed(() =>
+  summarizeVideoGenerationParams(videoGenerationParamsEnabled.value, videoGenerationParams)
+)
+
+const mediaGenerationParamsAutosaveKey = computed(() =>
+  JSON.stringify({
+    imageEnabled: imageGenerationParamsEnabled.value,
+    image: normalizeImageGenerationParams(imageGenerationParams),
+    videoEnabled: videoGenerationParamsEnabled.value,
+    video: normalizeVideoGenerationParams(videoGenerationParams)
+  })
+)
+
 const showInputModeTags = computed(() => {
   return (
     thinkingEffort.value !== 'auto' ||
     normalizeImageGenerationMode(imageGenerationMode.value) !== 'auto' ||
-    normalizeImageGenerationMode(videoGenerationMode.value) !== 'auto'
+    normalizeImageGenerationMode(videoGenerationMode.value) !== 'auto' ||
+    imageGenerationParamsEnabled.value ||
+    videoGenerationParamsEnabled.value
   )
 })
 
@@ -3889,6 +4484,33 @@ function copyToClipboard(text) {
     .writeText(t)
     .then(() => message.success('已复制到剪贴板'))
     .catch((err) => message.error('复制失败：' + (err?.message || String(err))))
+}
+
+function copyMediaPrompt(item) {
+  copyToClipboard(item?.prompt || '')
+}
+
+function applyMediaGenerationPreset(key) {
+  if (sending.value) return
+  const result = applyMediaGenerationPresetToInput(input.value, key)
+  if (!result) return
+
+  input.value = result.text
+  resetComposerInput()
+  if (result.kind === 'video') {
+    videoGenerationMode.value = 'on'
+    if (result.paramsEnabled) {
+      setVideoGenerationParamsEnabled(true)
+      assignVideoGenerationParams(result.params)
+    }
+  } else {
+    imageGenerationMode.value = 'on'
+    if (result.paramsEnabled) {
+      setImageGenerationParamsEnabled(true)
+      assignImageGenerationParams(result.params)
+    }
+  }
+  nextTick(() => composerPanelRef.value?.focusComposer?.())
 }
 
 function copyAssistantMessage(msg) {
@@ -4036,7 +4658,14 @@ function extractChatImagesFromToolResult(result) {
     id: newId(),
     name: String(img?.name || `image_${index + 1}`).trim() || `image_${index + 1}`,
     src: String(img?.src || '').trim(),
-    mime: String(img?.mime || '').trim()
+    mime: String(img?.mime || '').trim(),
+    size: Number(img?.size || 0),
+    width: Number(img?.width || 0),
+    height: Number(img?.height || 0),
+    resolution: String(img?.resolution || '').trim(),
+    requestSize: String(img?.requestSize || '').trim(),
+    generationTimeMs: Number(img?.generationTimeMs || 0),
+    createdAt: img?.createdAt || ''
   }))
 }
 
@@ -4045,27 +4674,36 @@ function extractChatVideosFromToolResult(result) {
     id: newId(),
     name: String(video?.name || `video_${index + 1}`).trim() || `video_${index + 1}`,
     src: String(video?.src || '').trim(),
-    mime: String(video?.mime || '').trim()
+    mime: String(video?.mime || '').trim(),
+    size: Number(video?.size || 0),
+    width: Number(video?.width || 0),
+    height: Number(video?.height || 0),
+    resolution: String(video?.resolution || '').trim(),
+    durationSeconds: Number(video?.durationSeconds || 0),
+    generationTimeMs: Number(video?.generationTimeMs || 0),
+    createdAt: video?.createdAt || ''
   }))
 }
 
-function createAssistantImageBubblePlaceholder(note = '图片生成中，结果就绪后会展示在这里。') {
+function createAssistantImageBubblePlaceholder(note = '图片生成中，结果就绪后会展示在这里。', metaLine = '') {
   return {
     id: `assistant-image-placeholder-${newId()}`,
     name: '图片生成中',
     src: '',
     mime: '',
-    note: String(note || '').trim() || '图片生成中，结果就绪后会展示在这里。'
+    note: String(note || '').trim() || '图片生成中，结果就绪后会展示在这里。',
+    metaLine: String(metaLine || '').trim()
   }
 }
 
-function createAssistantVideoBubblePlaceholder(note = '视频生成中，结果就绪后会展示在这里。') {
+function createAssistantVideoBubblePlaceholder(note = '视频生成中，结果就绪后会展示在这里。', metaLine = '') {
   return {
     id: `assistant-video-placeholder-${newId()}`,
     name: '视频生成中',
     src: '',
     mime: '',
-    note: String(note || '').trim() || '视频生成中，结果就绪后会展示在这里。'
+    note: String(note || '').trim() || '视频生成中，结果就绪后会展示在这里。',
+    metaLine: String(metaLine || '').trim()
   }
 }
 
@@ -4148,6 +4786,14 @@ function removeDisplayMessageById(messageId) {
   if (index !== -1) session.messages.splice(index, 1)
 }
 
+function removeRunDisplayMessageById(abortState, messageId) {
+  const id = String(messageId || '').trim()
+  if (!id) return
+  const targetSession = getRunSessionTarget(abortState)
+  const index = targetSession.messages.findIndex((msg) => msg?.id === id)
+  if (index !== -1) targetSession.messages.splice(index, 1)
+}
+
 function assistantVideoBlockEyebrow(msg) {
   return assistantVisibleVideoCount(msg) ? '视频结果' : '视频占位'
 }
@@ -4171,16 +4817,28 @@ function assistantVideoInsightLabel(msg, video) {
 }
 
 function assistantVideoPromptLabel(msg) {
-  return String(msg?.videoPrompt || '').trim()
+  const prompt = truncateInlineText(msg?.videoPrompt || '', 220)
+  if (!prompt) return ''
+  return `提示词：${prompt}`
 }
 
 function assistantVideoTaskStatusLabel(messageLike) {
-  const status = String(messageLike?.videoTask?.status || '').trim().toLowerCase()
+  const status = String(messageLike?.videoTask?.stage || messageLike?.videoTask?.status || '').trim().toLowerCase()
+  if (status === 'submitting') return '提交中'
   if (['queued', 'submitted', 'pending', 'accepted'].includes(status)) return '排队中'
-  if (['processing', 'running', 'in_progress'].includes(status)) return '处理中'
+  if (['processing', 'running', 'in_progress', 'polling'].includes(status)) return '生成中'
+  if (status === 'fetching_result') return '拉取结果中'
   if (['completed', 'succeeded', 'success'].includes(status)) return '已完成'
-  if (['failed', 'error'].includes(status)) return '失败'
+  if (['failed', 'error', 'cancelled', 'canceled'].includes(status)) return '失败'
   return status ? status : '处理中'
+}
+
+function assistantVideoTaskTagType(messageLike) {
+  const status = String(messageLike?.videoTask?.stage || messageLike?.videoTask?.status || '').trim().toLowerCase()
+  if (['failed', 'error', 'cancelled', 'canceled'].includes(status)) return 'error'
+  if (['completed', 'succeeded', 'success'].includes(status)) return 'success'
+  if (['queued', 'submitted', 'pending', 'accepted'].includes(status)) return 'warning'
+  return 'info'
 }
 
 function assistantVideoTaskTitle(messageLike) {
@@ -4193,6 +4851,8 @@ function assistantVideoTaskMetaLabel(messageLike) {
   const parts = []
   if (task.id) parts.push(`任务 ID：${task.id}`)
   if (task.endpointKind) parts.push(`接口：${task.endpointKind}`)
+  const progress = mediaTaskProgressLabel(messageLike, 'video')
+  if (progress) parts.push(progress)
   return parts.join(' · ')
 }
 
@@ -4200,25 +4860,8 @@ function assistantVideoTaskNote(messageLike) {
   return String(messageLike?.videoTask?.note || '').trim()
 }
 
-function videoMetaLabel(video) {
-  const parts = []
-  if (video?.mime) parts.push(video.mime)
-  return parts.join(' · ')
-}
-
 function videoInsightLabel(video) {
   return String(video?.note || '').trim()
-}
-
-function summarizeImageGenerationPayload(payload) {
-  if (payload == null) return ''
-  if (typeof payload === 'string') return truncateText(payload, 600, '(response truncated)')
-
-  try {
-    return truncateText(stableStringify(payload), 800, '(response truncated)')
-  } catch {
-    return truncateText(String(payload), 600, '(response truncated)')
-  }
 }
 
 function sanitizeToolResultForLLM(result) {
@@ -4338,6 +4981,24 @@ async function loadChatVideoBlob(video) {
   return blob
 }
 
+function normalizeClipboardMediaMime(mime, fallbackMime, kindPrefix) {
+  const normalized = String(mime || '').trim().toLowerCase()
+  if (normalized && normalized !== 'application/octet-stream' && (!kindPrefix || normalized.startsWith(kindPrefix))) {
+    return normalized
+  }
+  return String(fallbackMime || '').trim().toLowerCase()
+}
+
+function withPreferredBlobMime(blob, mime) {
+  const preferred = String(mime || '').trim()
+  if (!preferred || String(blob?.type || '').trim().toLowerCase() === preferred.toLowerCase()) return blob
+  try {
+    return new Blob([blob], { type: preferred })
+  } catch {
+    return blob
+  }
+}
+
 async function copyChatImage(img) {
   const src = String(img?.src || '').trim()
   if (!src) return
@@ -4350,10 +5011,11 @@ async function copyChatImage(img) {
 
   try {
     const blob = await loadChatImageBlob(img)
-    const mime = String(blob.type || img?.mime || 'image/png').trim() || 'image/png'
+    const mime = normalizeClipboardMediaMime(blob.type || img?.mime, 'image/png', 'image/') || 'image/png'
+    const clipboardBlob = withPreferredBlobMime(blob, mime)
     await clipboardApi.write([
       new ClipboardItem({
-        [mime]: blob
+        [mime]: clipboardBlob
       })
     ])
     message.success('图片已复制到剪贴板')
@@ -4363,11 +5025,88 @@ async function copyChatImage(img) {
   }
 }
 
-function copyChatVideo(video) {
+function getActiveChatVideoAssetPath(video) {
+  const sessionFilePath = String(activeSessionFilePath.value || '').trim()
+  return (
+    resolveChatMediaAssetPath(video, { sessionFilePath }) ||
+    String(video?.assetPath || video?.localPath || video?.fileRelPath || '').trim()
+  )
+}
+
+async function ensureChatVideoAssetPath(video) {
+  let assetPath = getActiveChatVideoAssetPath(video)
+  if (assetPath) return assetPath
+
+  const sessionFilePath = String(activeSessionFilePath.value || '').trim()
+  const src = String(video?.src || '').trim()
+  if (!sessionFilePath || !src) return ''
+
+  const persisted = await persistChatMediaListAssets([video], {
+    kind: 'video',
+    messageId: video?.messageId || video?.id || 'video',
+    sessionFilePath
+  })
+  const next = persisted?.[0]
+  assetPath = getActiveChatVideoAssetPath(next)
+  if (assetPath && next && typeof video === 'object') {
+    Object.assign(video, next)
+    scheduleSessionAutosave()
+  }
+  return assetPath || ''
+}
+
+async function copyChatVideoFile(video) {
+  const copyFile = globalThis?.utools?.copyFile
+  if (typeof copyFile !== 'function') return false
+
+  const assetPath = await ensureChatVideoAssetPath(video)
+  if (!assetPath) return false
+
+  const absPath = String(await resolvePath(assetPath) || '').trim()
+  if (!absPath) return false
+  return !!copyFile(absPath)
+}
+
+async function copyChatVideoBlob(video) {
+  const clipboardApi = navigator?.clipboard
+  if (!clipboardApi?.write || typeof ClipboardItem === 'undefined') return false
+
+  const blob = await loadChatVideoBlob(video)
+  const mime = normalizeClipboardMediaMime(blob.type || video?.mime, 'video/mp4', 'video/') || 'video/mp4'
+  if (typeof ClipboardItem.supports === 'function' && !ClipboardItem.supports(mime)) return false
+  const clipboardBlob = withPreferredBlobMime(blob, mime)
+  await clipboardApi.write([
+    new ClipboardItem({
+      [mime]: clipboardBlob
+    })
+  ])
+  return true
+}
+
+async function copyChatVideo(video) {
   const src = String(video?.src || '').trim()
   if (!src) return
+
+  try {
+    if (await copyChatVideoFile(video)) {
+      message.success('视频文件已复制到剪贴板')
+      return
+    }
+  } catch {
+    // 继续尝试浏览器剪贴板写入。
+  }
+
+  try {
+    if (await copyChatVideoBlob(video)) {
+      message.success('视频已复制到剪贴板')
+      return
+    }
+  } catch {
+    // 继续降级为复制链接。
+  }
+
   copyChatVideoLink(video)
-  message.success('视频链接已复制到剪贴板')
+  message.warning('当前环境不支持直接复制视频文件，已改为复制视频链接')
 }
 
 function isToolMessage(msgOrRole) {
@@ -4921,12 +5660,24 @@ function downloadChatImage(img) {
     }
   }
 
+  if (/^blob:/i.test(src)) {
+    try {
+      triggerDownload(src, filename)
+      return
+    } catch (err) {
+      message.error('下载失败：' + (err?.message || String(err)))
+      return
+    }
+  }
+
   if (/^https?:\/\//i.test(src)) {
     loadChatImageBlob(img)
       .then((blob) => {
-        const objectUrl = URL.createObjectURL(blob)
+        const mime = normalizeClipboardMediaMime(blob.type || img?.mime, 'image/png', 'image/') || 'image/png'
+        const downloadableBlob = withPreferredBlobMime(blob, mime)
+        const objectUrl = URL.createObjectURL(downloadableBlob)
         try {
-          triggerDownload(objectUrl, ensureFilenameExt(img?.name, blob.type || img?.mime))
+          triggerDownload(objectUrl, ensureFilenameExt(img?.name, mime))
         } finally {
           window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1200)
         }
@@ -4940,18 +5691,6 @@ function downloadChatImage(img) {
         }
         message.info('已复制图片链接。如无法直接下载，请在浏览器中打开后再保存。' + ((err && err.message) ? `（${err.message}）` : ''))
       })
-    return
-  }
-
-  // 远程链接：复制链接并尝试打开
-  if (/^https?:\/\//i.test(src)) {
-    copyToClipboard(src)
-    try {
-      globalThis?.utools?.shellOpenExternal?.(src)
-    } catch {
-      // ignore
-    }
-    message.info('已复制图片链接。如无法直接下载，请在浏览器中打开后再保存。')
     return
   }
 
@@ -4986,12 +5725,24 @@ function downloadChatVideo(video) {
     }
   }
 
+  if (/^blob:/i.test(src)) {
+    try {
+      triggerDownload(src, filename)
+      return
+    } catch (err) {
+      message.error('下载失败：' + (err?.message || String(err)))
+      return
+    }
+  }
+
   if (/^https?:\/\//i.test(src)) {
     loadChatVideoBlob(video)
       .then((blob) => {
-        const objectUrl = URL.createObjectURL(blob)
+        const mime = normalizeClipboardMediaMime(blob.type || video?.mime, 'video/mp4', 'video/') || 'video/mp4'
+        const downloadableBlob = withPreferredBlobMime(blob, mime)
+        const objectUrl = URL.createObjectURL(downloadableBlob)
         try {
-          triggerDownload(objectUrl, ensureFilenameExt(fallbackName, blob.type || video?.mime || 'video/mp4'))
+          triggerDownload(objectUrl, ensureFilenameExt(fallbackName, mime))
         } finally {
           window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1200)
         }
@@ -5011,6 +5762,59 @@ function downloadChatVideo(video) {
   message.warning('暂不支持下载该视频来源')
 }
 
+function updateChatImageMetadata(img, event) {
+  if (!img || typeof img !== 'object') return
+  const el = event?.target
+  if (!(el instanceof HTMLImageElement)) return
+  const width = normalizeMediaDimension(el.naturalWidth || el.width)
+  const height = normalizeMediaDimension(el.naturalHeight || el.height)
+  let changed = false
+  if (width > 0 && !normalizeMediaDimension(img.width)) {
+    img.width = width
+    changed = true
+  }
+  if (height > 0 && !normalizeMediaDimension(img.height)) {
+    img.height = height
+    changed = true
+  }
+  if (changed) {
+    img.resolution = `${normalizeMediaDimension(img.width)}x${normalizeMediaDimension(img.height)}`
+    img.metaLine = ''
+    bumpChatMessageMetricsVersion()
+    scheduleRefreshUserAnchorMeta()
+  }
+}
+
+function updateChatVideoMetadata(video, event) {
+  if (!video || typeof video !== 'object') return
+  const el = event?.target
+  if (!(el instanceof HTMLVideoElement)) return
+  const width = normalizeMediaDimension(el.videoWidth)
+  const height = normalizeMediaDimension(el.videoHeight)
+  const duration = Number(el.duration)
+  let changed = false
+  if (width > 0 && !normalizeMediaDimension(video.width)) {
+    video.width = width
+    changed = true
+  }
+  if (height > 0 && !normalizeMediaDimension(video.height)) {
+    video.height = height
+    changed = true
+  }
+  if (Number.isFinite(duration) && duration > 0 && !(Number(video.durationSeconds) > 0)) {
+    video.durationSeconds = duration
+    changed = true
+  }
+  if (changed) {
+    if (normalizeMediaDimension(video.width) && normalizeMediaDimension(video.height)) {
+      video.resolution = `${normalizeMediaDimension(video.width)}x${normalizeMediaDimension(video.height)}`
+    }
+    video.metaLine = ''
+    bumpChatMessageMetricsVersion()
+    scheduleRefreshUserAnchorMeta()
+  }
+}
+
 const assistantMediaHelpers = {
   assistantImageTaskTitle,
   assistantImageTaskTagType,
@@ -5028,9 +5832,17 @@ const assistantMediaHelpers = {
   assistantVisibleVideoCount,
   assistantVideoBlockEyebrow,
   assistantVideoDisplayTitle,
+  assistantVideoTaskTitle,
+  assistantVideoTaskTagType,
+  assistantVideoTaskStatusLabel,
+  assistantVideoTaskMetaLabel,
+  assistantVideoTaskNote,
   assistantVideoPromptLabel,
   assistantVideoPlaceholderText,
   assistantVideoInsightLabel,
+  canRegenerateMedia,
+  canResumeMediaTask,
+  isMediaTaskResuming,
   imageMetaLabel,
   videoMetaLabel
 }
@@ -5039,7 +5851,11 @@ const assistantMediaActions = {
   copyChatImage,
   downloadChatImage,
   copyChatVideo,
-  downloadChatVideo
+  downloadChatVideo,
+  regenerateMedia,
+  resumeMediaTask,
+  updateChatImageMetadata,
+  updateChatVideoMetadata
 }
 
 const userAttachmentHelpers = {
@@ -5838,6 +6654,10 @@ onMounted(async () => {
   window?.addEventListener?.('resize', syncChatResponsiveState)
   window?.addEventListener?.(BUILTIN_AGENTS_TRACE_EVENT, handleBuiltinAgentsTraceEvent)
   window?.addEventListener?.(BUILTIN_AGENTS_TOOL_APPROVAL_REQUEST_EVENT, handleBuiltinAgentsToolApprovalRequest)
+  void cleanupAutoChatSessions()
+  autoChatCleanupTimer = window.setInterval(() => {
+    void cleanupAutoChatSessions()
+  }, AUTO_CHAT_SESSION_CLEANUP_INTERVAL_MS)
   await refreshChatViewportState({ reconnectObserver: true })
 })
 
@@ -5942,8 +6762,10 @@ function scheduleScrollToBottom(options = {}) {
   })
 }
 
-const TYPEWRITER_INTERVAL_MS = 16
+const TYPEWRITER_INTERVAL_MS = 24
+const DEFERRED_TEXT_APPEND_INTERVAL_MS = 48
 const typewriterStates = new Map()
+const deferredMessageFieldStates = new Map()
 
 function takeUnicodeChunk(text, count = 1) {
   if (!text) return { chunk: '', rest: '' }
@@ -5960,9 +6782,11 @@ function takeUnicodeChunk(text, count = 1) {
 
 function getTypewriterChunkSize(text) {
   const length = String(text || '').length
-  if (length > 1200) return 16
-  if (length > 480) return 10
-  if (length > 180) return 6
+  if (length > 6000) return 160
+  if (length > 2400) return 96
+  if (length > 1200) return 48
+  if (length > 480) return 24
+  if (length > 180) return 10
   if (length > 80) return 3
   return 1
 }
@@ -5978,6 +6802,10 @@ function ensureTypewriterState(messageId) {
 function typewriterEnqueue(message, text) {
   const chunk = String(text || '')
   if (!chunk) return
+  if (!isDisplayMessageInActiveSession(message)) {
+    message.content += chunk
+    return
+  }
   const state = ensureTypewriterState(message.id)
   state.message = message
   state.buffer += chunk
@@ -5987,6 +6815,16 @@ function typewriterEnqueue(message, text) {
 
   const tick = () => {
     if (!state.buffer) {
+      state.running = false
+      state.timer = null
+      const resolvers = state.idleResolvers.splice(0, state.idleResolvers.length)
+      resolvers.forEach((r) => r())
+      return
+    }
+
+    if (!isDisplayMessageInActiveSession(message)) {
+      message.content += state.buffer
+      state.buffer = ''
       state.running = false
       state.timer = null
       const resolvers = state.idleResolvers.splice(0, state.idleResolvers.length)
@@ -6012,6 +6850,91 @@ function typewriterWaitIdle(messageId) {
   return new Promise((resolve) => state.idleResolvers.push(resolve))
 }
 
+function deferredMessageFieldKey(messageId, field) {
+  return `${String(messageId || '').trim()}:${String(field || '').trim()}`
+}
+
+function ensureDeferredMessageFieldState(messageId, field) {
+  const key = deferredMessageFieldKey(messageId, field)
+  let state = deferredMessageFieldStates.get(key)
+  if (state) return state
+  state = { key, field, buffer: '', timer: null, idleResolvers: [], message: null }
+  deferredMessageFieldStates.set(key, state)
+  return state
+}
+
+function deferredAppendMessageField(message, field, text, options = {}) {
+  const chunk = String(text || '')
+  if (!chunk || !message || typeof message !== 'object') return
+  const targetField = String(field || '').trim()
+  if (!targetField) return
+  const intervalMs = Math.max(16, Number(options.intervalMs) || DEFERRED_TEXT_APPEND_INTERVAL_MS)
+  const scheduleScroll = options.scheduleScroll === true
+
+  if (!isDisplayMessageInActiveSession(message)) {
+    message[targetField] = String(message[targetField] || '') + chunk
+    return
+  }
+
+  const state = ensureDeferredMessageFieldState(message.id, targetField)
+  state.message = message
+  state.buffer += chunk
+
+  if (state.timer) return
+  state.timer = window.setTimeout(() => {
+    state.timer = null
+    if (state.message && state.buffer) {
+      state.message[targetField] = String(state.message[targetField] || '') + state.buffer
+      state.buffer = ''
+      if (scheduleScroll && isDisplayMessageInActiveSession(state.message)) {
+        maybeScheduleScrollToBottomForRun()
+      }
+    }
+    const resolvers = state.idleResolvers.splice(0, state.idleResolvers.length)
+    resolvers.forEach((resolve) => resolve())
+  }, intervalMs)
+}
+
+function deferredMessageFieldWaitIdle(messageId, field) {
+  const state = deferredMessageFieldStates.get(deferredMessageFieldKey(messageId, field))
+  if (!state) return Promise.resolve()
+  if (!state.timer && !state.buffer) return Promise.resolve()
+  return new Promise((resolve) => state.idleResolvers.push(resolve))
+}
+
+function flushDeferredMessageFieldsForMessage(messageId) {
+  const targetId = String(messageId || '').trim()
+  if (!targetId) return
+  for (const [key, state] of deferredMessageFieldStates.entries()) {
+    if (!key.startsWith(`${targetId}:`)) continue
+    if (state.timer) window.clearTimeout(state.timer)
+    state.timer = null
+    if (state.message && state.buffer) {
+      state.message[state.field] = String(state.message[state.field] || '') + state.buffer
+      state.buffer = ''
+    }
+    const resolvers = state.idleResolvers.splice(0, state.idleResolvers.length)
+    resolvers.forEach((resolve) => resolve())
+    deferredMessageFieldStates.delete(key)
+  }
+}
+
+function deferredMessageFieldFlushAll() {
+  for (const [key, state] of deferredMessageFieldStates.entries()) {
+    if (state.timer) window.clearTimeout(state.timer)
+    state.timer = null
+
+    if (state.message && state.buffer) {
+      state.message[state.field] = String(state.message[state.field] || '') + state.buffer
+      state.buffer = ''
+    }
+
+    const resolvers = state.idleResolvers.splice(0, state.idleResolvers.length)
+    resolvers.forEach((resolve) => resolve())
+    deferredMessageFieldStates.delete(key)
+  }
+}
+
 function typewriterFlushAll() {
   for (const [id, state] of typewriterStates.entries()) {
     if (state.timer) window.clearTimeout(state.timer)
@@ -6028,6 +6951,7 @@ function typewriterFlushAll() {
 
     typewriterStates.delete(id)
   }
+  deferredMessageFieldFlushAll()
 }
 
 function clearSessionData() {
@@ -6053,16 +6977,334 @@ function deepCopyJson(value, fallback) {
   }
 }
 
-function buildDefaultSessionName() {
-  const d = new Date()
-  const pad = (n) => String(n).padStart(2, '0')
-  const yyyy = d.getFullYear()
-  const mm = pad(d.getMonth() + 1)
-  const dd = pad(d.getDate())
-  const hh = pad(d.getHours())
-  const mi = pad(d.getMinutes())
-  const ss = pad(d.getSeconds())
-  return `会话-${yyyy}${mm}${dd}-${hh}${mi}${ss}`
+function buildDefaultSessionName(sessionLike = session) {
+  const firstUser = (sessionLike?.messages || []).find((msg) => msg?.role === 'user')
+  const prompt = extractEditableUserTextFromContent(firstUser?.content ?? '')
+  return extractAutoSessionTitle(prompt) || '会话'
+}
+
+function sanitizeAutoSessionTitle(text, maxLength = 42) {
+  const compact = String(text || '')
+    .replace(/\s+/g, ' ')
+    .replace(/[\\/:*?"<>|#%{}~&]/g, ' ')
+    .replace(/\.+/g, '.')
+    .trim()
+  if (!compact) return ''
+  return compact.slice(0, maxLength).trim() || ''
+}
+
+function extractAutoSessionTitle(text, maxLength = 32) {
+  const raw = String(text || '')
+    .replace(/【附件内容】[\s\S]*$/g, ' ')
+    .replace(/https?:\/\/\S+/gi, ' ')
+    .replace(/[`*_>#\[\]{}()（）]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!raw) return ''
+
+  const cleaned = raw
+    .replace(/^(请|麻烦|帮我|请帮我|能不能|可以的话|我想要|我希望)\s*/u, '')
+    .trim()
+  const segments = cleaned
+    .split(/[。！？!?；;\n\r]+/)
+    .map((item) => sanitizeAutoSessionTitle(item, maxLength))
+    .filter(Boolean)
+  const picked = segments.find((item) => item.length >= 6) || segments[0] || sanitizeAutoSessionTitle(cleaned, maxLength)
+  return sanitizeAutoSessionTitle(picked, maxLength)
+}
+
+function buildAutoSessionTitle(record) {
+  const firstUser = (record?.messages || []).find((msg) => msg?.role === 'user')
+  const prompt = extractEditableUserTextFromContent(firstUser?.content ?? '')
+  const title = extractAutoSessionTitle(prompt)
+  return title || AUTO_CHAT_SESSION_DIR_NAME
+}
+
+async function ensureAutoChatSessionRoot() {
+  const rootExists = await exists(CHAT_SESSION_ROOT)
+  if (!rootExists) await createDirectory(CHAT_SESSION_ROOT)
+  const autoExists = await exists(AUTO_CHAT_SESSION_ROOT)
+  if (!autoExists) await createDirectory(AUTO_CHAT_SESSION_ROOT)
+}
+
+async function allocateAutoChatSessionPath(record) {
+  await ensureAutoChatSessionRoot()
+  const title = buildAutoSessionTitle(record)
+  const baseName = sanitizeAutoSessionTitle(title, 96) || AUTO_CHAT_SESSION_DIR_NAME
+  let candidate = `${AUTO_CHAT_SESSION_ROOT}/${baseName}.json`
+  let index = 2
+  while (await exists(candidate)) {
+    candidate = `${AUTO_CHAT_SESSION_ROOT}/${baseName}-${index}.json`
+    index += 1
+  }
+  return { filePath: candidate, title }
+}
+
+async function autoPersistMemorySession(record, options = {}) {
+  if (!record || !Array.isArray(record.messages) || !record.messages.length) return ''
+  const currentPath = String(record.activeSessionFilePath || '').trim()
+  if (currentPath && !isAutoChatSessionPath(currentPath)) return currentPath
+
+  const persistKey = getMemorySessionAutoPersistKey(record)
+  const existingPersist = persistKey ? autoPersistMemorySessionInFlight.get(persistKey) : null
+  if (existingPersist) return existingPersist
+
+  const persistTask = (async () => {
+    try {
+      const allocated = currentPath ? { filePath: currentPath, title: record.activeSessionTitle || buildAutoSessionTitle(record) } : await allocateAutoChatSessionPath(record)
+      await prepareSessionMediaAssetsForSave(record, { notify: options.notify, sessionFilePath: allocated.filePath })
+      const payload = buildSessionSavePayload({
+        sessionLike: record,
+        state: record.state && typeof record.state === 'object' ? record.state : buildCurrentChatState()
+      })
+      let previousPayload = null
+      if (currentPath) {
+        try {
+          previousPayload = JSON.parse(String(await readFile(currentPath, 'utf-8') || ''))
+        } catch {
+          previousPayload = null
+        }
+      }
+
+      const previousCreatedAt = String(previousPayload?.createdAt || previousPayload?.savedAt || '').trim()
+      const createdAtMs = Number(record.createdAt || 0)
+      const createdAtIso = Number.isFinite(createdAtMs) && createdAtMs > 0 ? new Date(createdAtMs).toISOString() : new Date().toISOString()
+      payload.title = allocated.title
+      payload.createdAt = previousCreatedAt || payload.createdAt || createdAtIso
+      if (previousCreatedAt) payload.savedAt = String(previousPayload?.savedAt || previousCreatedAt)
+      payload.updatedAt = new Date().toISOString()
+      payload.source = {
+        type: AUTO_CHAT_SESSION_SOURCE_TYPE,
+        retentionDays: AUTO_CHAT_SESSION_RETENTION_DAYS,
+        managed: true,
+        createdAt: payload.createdAt
+      }
+      await writeFile(allocated.filePath, JSON.stringify(payload, null, 2))
+
+      record.activeSessionFilePath = allocated.filePath
+      record.activeSessionTitle = allocated.title
+      record.autoManaged = true
+      record.updatedAt = Date.now()
+
+      if (isMemorySessionActive(record)) {
+        activeSessionFilePath.value = allocated.filePath
+        activeSessionTitle.value = allocated.title
+        void sessionTreeRef.value?.selectPath?.(allocated.filePath)
+      }
+      void sessionTreeRef.value?.refreshTree?.({ silent: true })
+      pruneDormantMemorySessions()
+      return allocated.filePath
+    } catch (err) {
+      if (options.notify !== false) message.error('自动归档会话失败：' + (err?.message || String(err)))
+      return ''
+    }
+  })()
+
+  if (!persistKey) return persistTask
+  autoPersistMemorySessionInFlight.set(persistKey, persistTask)
+  try {
+    return await persistTask
+  } finally {
+    if (autoPersistMemorySessionInFlight.get(persistKey) === persistTask) {
+      autoPersistMemorySessionInFlight.delete(persistKey)
+    }
+  }
+}
+
+function autoPersistMemorySessionWhenIdle(record, options = {}) {
+  if (isMemorySessionRunning(record)) return ''
+  const currentPath = String(record?.activeSessionFilePath || '').trim()
+  if (currentPath && !isAutoChatSessionPath(currentPath)) {
+    return persistMemorySessionToBoundPath(record, options)
+  }
+  return autoPersistMemorySession(record, options)
+}
+
+function getStatMtimeMs(statInfo) {
+  const direct = Number(statInfo?.mtimeMs)
+  if (Number.isFinite(direct) && direct > 0) return direct
+  const mtime = statInfo?.mtime ? new Date(statInfo.mtime).getTime() : 0
+  if (Number.isFinite(mtime) && mtime > 0) return mtime
+  return 0
+}
+
+async function cleanupAutoChatSessions(options = {}) {
+  const notify = options.notify === true
+  const now = Date.now()
+  const cutoff = now - AUTO_CHAT_SESSION_RETENTION_MS
+  let removed = 0
+
+  try {
+    await ensureAutoChatSessionRoot()
+    const entries = await listDirectory(AUTO_CHAT_SESSION_ROOT)
+    for (const entry of entries) {
+      const entryPath = String(entry || '').trim().replace(/\\/g, '/')
+      if (!entryPath || !entryPath.toLowerCase().endsWith('.json')) continue
+
+      const inMemory = memorySessions.value.some((record) => String(record?.activeSessionFilePath || '').trim() === entryPath)
+      if (inMemory) continue
+
+      let mtimeMs = 0
+      try {
+        mtimeMs = getStatMtimeMs(await stat(entryPath))
+      } catch {
+        mtimeMs = 0
+      }
+      if (!mtimeMs || mtimeMs >= cutoff) continue
+
+      try {
+        let payload = null
+        try {
+          payload = JSON.parse(String(await readFile(entryPath, 'utf-8') || ''))
+        } catch {
+          payload = null
+        }
+        await deleteItem(entryPath)
+        if (payload) await deleteChatMediaAssetPaths(collectChatMediaAssetPathsFromPayload(payload, { sessionFilePath: entryPath }))
+        await deleteChatSessionAssetDirectory(entryPath)
+        removed += 1
+      } catch {
+        // ignore individual cleanup failures
+      }
+    }
+    if (removed) void sessionTreeRef.value?.refreshTree?.({ silent: true })
+    if (notify) message.success(removed ? `已清理 ${removed} 个历史会话` : '没有需要清理的历史会话')
+  } catch (err) {
+    if (notify) message.error('清理历史会话失败：' + (err?.message || String(err)))
+  }
+}
+
+async function persistActiveMemorySessionBeforeLeaving(options = {}) {
+  const targetPath = String(options.targetPath || '').trim()
+  const previous = saveActiveMemorySessionDraft()
+
+  if (isMemorySessionRunning(previous)) return previous
+  if (isMemorySessionEmptyDraft(previous)) {
+    removeMemorySessionById(previous.id)
+    return null
+  }
+
+  const previousPath = String(previous.activeSessionFilePath || '').trim()
+  if (previousPath && previousPath === targetPath) return previous
+
+  if (previousPath && !isAutoChatSessionPath(previousPath)) {
+    await runSessionAutosave()
+  } else {
+    await autoPersistMemorySession(previous, { notify: false })
+  }
+  return previous
+}
+
+async function detachRunningSessionToHistory({ nextRecord = null, notify = true, restoreTarget = true } = {}) {
+  const activeRecord = getActiveMemorySession()
+  if (!isMemorySessionRunning(activeRecord)) return false
+
+  const previous = saveActiveMemorySessionDraft()
+  const previousPath = String(previous.activeSessionFilePath || '').trim()
+  const preserveBoundPath = !!previousPath
+  previous.autoManaged = preserveBoundPath ? isAutoChatSessionPath(previousPath) : true
+  previous.title = inferMemorySessionTitle(previous)
+  previous.state = previous.state && typeof previous.state === 'object' ? previous.state : buildCurrentChatState()
+  if (!preserveBoundPath) {
+    previous.activeSessionFilePath = ''
+    previous.activeSessionTitle = ''
+  }
+
+  activeSessionFilePath.value = ''
+  activeSessionTitle.value = ''
+  sending.value = false
+  abortController.value = null
+
+  if (!restoreTarget) {
+    if (notify) message.info('当前生成已转入后台，完成后会自动保存')
+    return true
+  }
+
+  let target = nextRecord
+  if (!target) {
+    target = createMemorySessionRecord({ title: DEFAULT_MEMORY_SESSION_TITLE, state: buildDefaultChatState() })
+    memorySessions.value = [...memorySessions.value, target]
+  }
+
+  restoreMemorySession(target, { skipScroll: !nextRecord, skipSaveCurrent: true })
+  if (!nextRecord) {
+    try {
+      sessionTreeRef.value?.clearSelection?.()
+    } catch {
+      // ignore
+    }
+  }
+  pruneDormantMemorySessions({ keepId: target.id })
+  if (notify) message.info('当前生成已转入后台，完成后会自动保存')
+  return true
+}
+
+async function startNewMemorySession(options = {}) {
+  const activeRecord = getActiveMemorySession()
+  if (isMemorySessionEmptyDraft(activeRecord)) {
+    restoreMemorySession(activeRecord, { skipScroll: true, skipSaveCurrent: true })
+    activeRecord.title = DEFAULT_MEMORY_SESSION_TITLE
+    activeRecord.state = applyDefaultChatState()
+    activeRecord.updatedAt = Date.now()
+    try {
+      sessionTreeRef.value?.clearSelection?.()
+    } catch {
+      // ignore
+    }
+    return
+  }
+
+  if (isMemorySessionRunning(activeRecord)) {
+    await detachRunningSessionToHistory({ notify: options.notify !== false })
+    return
+  }
+
+  await persistActiveMemorySessionBeforeLeaving()
+  const record = createMemorySessionRecord({ title: DEFAULT_MEMORY_SESSION_TITLE, state: buildDefaultChatState() })
+  memorySessions.value = [...memorySessions.value.filter((item) => !isMemorySessionEmptyDraft(item)), record]
+  restoreMemorySession(record, { skipScroll: true, skipSaveCurrent: true })
+  try {
+    sessionTreeRef.value?.clearSelection?.()
+  } catch {
+    // ignore
+  }
+  if (options.notify !== false) message.info('已新建会话')
+}
+
+async function switchMemorySession(id) {
+  const record = getMemorySessionById(id)
+  if (!record || String(record.id || '') === String(activeMemorySessionId.value || '')) return
+
+  const activeRecord = getActiveMemorySession()
+  if (isMemorySessionRunning(activeRecord)) {
+    await detachRunningSessionToHistory({ nextRecord: record, notify: false })
+    message.info('当前生成已转入后台，已切换会话')
+    return
+  }
+
+  await persistActiveMemorySessionBeforeLeaving()
+  restoreMemorySession(record, { skipSaveCurrent: true })
+  pruneDormantMemorySessions({ keepId: record.id })
+}
+
+function handleMemorySessionSelect(key) {
+  const id = String(key || '').trim()
+  if (id === '__new__') {
+    void startNewMemorySession()
+    return
+  }
+  void switchMemorySession(id)
+}
+
+async function prepareSessionMediaAssetsForSave(sessionLike, options = {}) {
+  try {
+    const sessionFilePath = String(options.sessionFilePath || sessionLike?.activeSessionFilePath || '').trim()
+    await persistChatSessionMediaAssets(sessionLike, { sessionFilePath })
+  } catch (err) {
+    if (options.notify !== false) {
+      message.warning('媒体文件持久化失败，部分图片/视频可能只能在当前页面临时预览：' + (err?.message || String(err)))
+    }
+  }
 }
 
 function serializeDisplayMessageForSave(msg) {
@@ -6103,37 +7345,114 @@ function serializeDisplayMessageForSave(msg) {
       .filter(Boolean)
   }
 
+  if (Array.isArray(out.images)) {
+    out.images = out.images.map((media) => serializeChatMediaForSave(media, 'image')).filter(Boolean)
+  }
+
+  if (Array.isArray(out.videos)) {
+    out.videos = out.videos.map((media) => serializeChatMediaForSave(media, 'video')).filter(Boolean)
+  }
+
   return out
 }
 
-function buildSessionSavePayload() {
+function buildCurrentChatState() {
+  return {
+    selectedAgentId: selectedAgentId.value,
+    selectedProviderId: selectedProviderId.value,
+    selectedModel: selectedModel.value,
+    basePromptMode: basePromptMode.value,
+    selectedPromptId: selectedPromptId.value,
+    customSystemPrompt: customSystemPrompt.value,
+    customSystemPromptExplicit: customSystemPromptExplicit.value,
+    selectedSkillIds: deepCopyJson(selectedSkillIds.value, []),
+    agentSkillIds: deepCopyJson(agentSkillIds.value, []),
+    activatedAgentSkillIds: deepCopyJson(activatedAgentSkillIds.value, []),
+    manualMcpIds: deepCopyJson(manualMcpIds.value, []),
+    webSearchEnabled: webSearchEnabled.value,
+    autoApproveTools: autoApproveTools.value,
+    autoActivateAgentSkills: autoActivateAgentSkills.value,
+    toolMode: toolMode.value,
+    effectiveToolMode: effectiveToolMode.value,
+    thinkingEffort: thinkingEffort.value,
+    imageGenerationMode: imageGenerationMode.value,
+    videoGenerationMode: videoGenerationMode.value,
+    imageGenerationParamsEnabled: imageGenerationParamsEnabled.value,
+    imageGenerationParams: deepCopyJson(imageGenerationParams, createDefaultImageGenerationParams()),
+    videoGenerationParamsEnabled: videoGenerationParamsEnabled.value,
+    videoGenerationParams: deepCopyJson(videoGenerationParams, createDefaultVideoGenerationParams())
+  }
+}
+
+function buildDefaultChatState() {
+  const rawDefaultSystemPrompt = String(chatConfig.value?.defaultSystemPrompt || '')
+  const defaultModel = resolveDefaultModelSelectionFromConfig()
+  return {
+    selectedAgentId: null,
+    selectedProviderId: defaultModel.providerId || null,
+    selectedModel: defaultModel.model || '',
+    basePromptMode: 'custom',
+    selectedPromptId: null,
+    customSystemPrompt: rawDefaultSystemPrompt,
+    customSystemPromptExplicit: false,
+    selectedSkillIds: [],
+    agentSkillIds: [],
+    activatedAgentSkillIds: [],
+    manualMcpIds: [],
+    webSearchEnabled: false,
+    autoApproveTools: true,
+    autoActivateAgentSkills: true,
+    toolMode: 'auto',
+    effectiveToolMode: 'expanded',
+    thinkingEffort: 'auto',
+    imageGenerationMode: normalizeImageGenerationMode(chatConfig.value?.imageGenerationMode),
+    videoGenerationMode: normalizeImageGenerationMode(chatConfig.value?.videoGenerationMode),
+    imageGenerationParamsEnabled: false,
+    imageGenerationParams: createDefaultImageGenerationParams(),
+    videoGenerationParamsEnabled: false,
+    videoGenerationParams: createDefaultVideoGenerationParams()
+  }
+}
+
+function applyDefaultChatState() {
+  const state = buildDefaultChatState()
+  applyLoadedChatState(state)
+
+  const rawDefaultSystemPrompt = String(state.customSystemPrompt || '')
+  lastLoadedDefaultSystemPrompt.value = normalizePromptText(rawDefaultSystemPrompt)
+  customSystemPromptExplicit.value = false
+  hasInitializedDefaultSystemPrompt.value = true
+  systemPromptDraft.value = ''
+  agentModalSelectedId.value = null
+  promptModalSelectedId.value = null
+  skillModalSelectedIds.value = []
+  mcpModalSelectedIds.value = []
+  hasAppliedDefaultModel.value = !!(state.selectedProviderId && state.selectedModel)
+
+  try {
+    mcpListToolsCache.clear()
+    mcpListToolsInFlight.clear()
+    mcpToolsRevision.value += 1
+    clearMcpToolCatalog()
+    clearPinnedMcpToolHints()
+  } catch {
+    // ignore
+  }
+
+  return state
+}
+
+function buildSessionSavePayload(options = {}) {
+  const sessionLike = options.sessionLike || options.session || session
+  const state = options.state && typeof options.state === 'object' ? options.state : buildCurrentChatState()
   return {
     version: 1,
     type: 'chat_session',
     savedAt: new Date().toISOString(),
-    state: {
-      selectedAgentId: selectedAgentId.value,
-      selectedProviderId: selectedProviderId.value,
-      selectedModel: selectedModel.value,
-      basePromptMode: basePromptMode.value,
-      selectedPromptId: selectedPromptId.value,
-      customSystemPrompt: customSystemPrompt.value,
-      selectedSkillIds: deepCopyJson(selectedSkillIds.value, []),
-      agentSkillIds: deepCopyJson(agentSkillIds.value, []),
-      activatedAgentSkillIds: deepCopyJson(activatedAgentSkillIds.value, []),
-      manualMcpIds: deepCopyJson(manualMcpIds.value, []),
-      webSearchEnabled: webSearchEnabled.value,
-      autoApproveTools: autoApproveTools.value,
-      autoActivateAgentSkills: autoActivateAgentSkills.value,
-      toolMode: toolMode.value,
-      effectiveToolMode: effectiveToolMode.value,
-      thinkingEffort: thinkingEffort.value,
-      imageGenerationMode: imageGenerationMode.value,
-      videoGenerationMode: videoGenerationMode.value
-    },
+    state,
     session: {
-      messages: (session.messages || []).map(serializeDisplayMessageForSave).filter(Boolean),
-      apiMessages: deepCopyJson(session.apiMessages || [], [])
+      messages: (sessionLike.messages || []).map(serializeDisplayMessageForSave).filter(Boolean),
+      apiMessages: deepCopyJson(sessionLike.apiMessages || [], [])
     }
   }
 }
@@ -6145,11 +7464,55 @@ function replacePathPrefix(targetPath, oldBase, newBase) {
   return t
 }
 
+function isPathEqualOrInside(targetPath, basePath) {
+  const target = String(targetPath || '').trim()
+  const base = String(basePath || '').trim()
+  if (!target || !base) return false
+  return target === base || target.startsWith(base + '/')
+}
+
 function getSessionTitleFromPath(filePath) {
   const p = String(filePath || '').trim()
   const name = p.split('/').filter(Boolean).pop() || ''
   if (!name) return ''
   return name.toLowerCase().endsWith('.json') ? name.slice(0, -5) : name
+}
+
+async function persistMemorySessionToBoundPath(record, options = {}) {
+  if (!record || !Array.isArray(record.messages) || !record.messages.length) return ''
+  const filePath = String(record.activeSessionFilePath || '').trim()
+  if (!filePath || isAutoChatSessionPath(filePath)) return ''
+
+  try {
+    await prepareSessionMediaAssetsForSave(record, { notify: options.notify, sessionFilePath: filePath })
+    const payload = buildSessionSavePayload({
+      sessionLike: record,
+      state: record.state && typeof record.state === 'object' ? record.state : buildCurrentChatState()
+    })
+    let previousPayload = null
+    try {
+      previousPayload = JSON.parse(String(await readFile(filePath, 'utf-8') || ''))
+    } catch {
+      previousPayload = null
+    }
+
+    const createdAt = String(previousPayload?.createdAt || previousPayload?.savedAt || '').trim()
+    if (createdAt) {
+      payload.createdAt = createdAt
+      payload.savedAt = String(previousPayload?.savedAt || createdAt)
+    }
+    const title = String(record.activeSessionTitle || record.title || getSessionTitleFromPath(filePath)).trim()
+    if (title) payload.title = title
+    payload.updatedAt = new Date().toISOString()
+
+    await writeFile(filePath, JSON.stringify(payload, null, 2))
+    record.updatedAt = Date.now()
+    void sessionTreeRef.value?.refreshTree?.({ silent: true })
+    return filePath
+  } catch (err) {
+    if (options.notify !== false) message.error('自动保存失败：' + (err?.message || String(err)))
+    return ''
+  }
 }
 
 let sessionAutosaveTimer = null
@@ -6169,17 +7532,32 @@ function unbindSessionAutosave(options = {}) {
     sessionAutosaveTimer = null
   }
 
-  if (!silent) message.info('Auto-save unbound from the current session file')
+  if (!silent) message.info('已解除当前会话文件的自动保存绑定')
 }
 
 async function runSessionAutosave() {
   const filePath = String(activeSessionFilePath.value || '').trim()
   if (!filePath) return
   if (sessionAutosaveInFlight) return
+  const activeRecord = getMemorySessionById(activeMemorySessionId.value)
+  if (isMemorySessionChatRunning(activeRecord)) return
+  if (isAutoChatSessionPath(filePath) && isMemorySessionRunning(activeRecord)) return
 
   sessionAutosaveInFlight = true
   try {
+    await prepareSessionMediaAssetsForSave(session, { notify: false, sessionFilePath: filePath })
     const payload = buildSessionSavePayload()
+    let previousPayload = null
+    try {
+      previousPayload = JSON.parse(String(await readFile(filePath, 'utf-8') || ''))
+    } catch {
+      previousPayload = null
+    }
+    const createdAt = String(previousPayload?.createdAt || previousPayload?.savedAt || '').trim()
+    if (createdAt) {
+      payload.createdAt = createdAt
+      payload.savedAt = String(previousPayload?.savedAt || createdAt)
+    }
     const title = String(activeSessionTitle.value || '').trim()
     if (title) payload.title = title
     payload.updatedAt = new Date().toISOString()
@@ -6210,6 +7588,9 @@ function scheduleSessionAutosave(options = {}) {
   if (!filePath) return
 
   const force = !!options.force
+  const activeRecord = getMemorySessionById(activeMemorySessionId.value)
+  if (!force && isMemorySessionChatRunning(activeRecord)) return
+  if (!force && isAutoChatSessionPath(filePath) && isMemorySessionRunning(activeRecord)) return
   const debounceMs = 900
   const maxWaitMs = 12000
   const now = Date.now()
@@ -6247,6 +7628,21 @@ function resetChatRuntimeState() {
   input.value = ''
   pendingAttachments.value = []
   abortController.value = null
+  const record = getActiveMemorySession()
+  record.messages = session.messages
+  record.apiMessages = session.apiMessages
+  record.input = ''
+  record.pendingAttachments = []
+  record.activeSessionFilePath = ''
+  record.activeSessionTitle = ''
+  record.title = DEFAULT_MEMORY_SESSION_TITLE
+  record.runningTaskCount = 0
+  record.chatRunCount = 0
+  record.activeRequestAbortState = null
+  record.autoManaged = false
+  record.state = applyDefaultChatState()
+  record.updatedAt = Date.now()
+  syncActiveRequestUiState(record)
 }
 
 function hasUncommittedChatDraft(targetPath = '') {
@@ -6274,8 +7670,8 @@ async function confirmSwitchSessionWithDraft(targetPath = '') {
   const content = hasUnsavedConversation
     ? '当前对话尚未保存，切换历史会话会丢失这段对话内容，是否继续？'
     : hasComposerDraft
-      ? 'There is still unsent text or attachments in the composer. Switching history sessions will discard this draft. Continue?'
-      : 'Switching history sessions will discard the current unsaved content. Continue?'
+      ? '输入框里还有未发送的文字或附件，切换历史会话会丢弃这份草稿，是否继续？'
+      : '切换历史会话会丢弃当前未保存内容，是否继续？'
 
   return new Promise((resolve) => {
     dialog.warning({
@@ -6296,6 +7692,13 @@ async function clearSession() {
   const hasContent = (session.messages && session.messages.length) || (session.apiMessages && session.apiMessages.length)
   if (!hasContent) return
 
+  const record = getActiveMemorySession()
+  if (Number(record?.runningTaskCount || 0) > 0) {
+    await detachRunningSessionToHistory({ notify: false })
+    message.info('当前会话仍有后台任务，已转入后台并新建会话')
+    return
+  }
+
   const boundPath = String(activeSessionFilePath.value || '').trim()
   if (boundPath) {
     await closeActiveSession()
@@ -6314,7 +7717,13 @@ async function openSaveSessionModal() {
   }
 
   const payload = buildSessionSavePayload()
-  const options = { defaultName: buildDefaultSessionName() }
+  const options = {
+    defaultName: buildDefaultSessionName(),
+    preparePayload: async (filePath) => {
+      await prepareSessionMediaAssetsForSave(session, { sessionFilePath: filePath })
+      return buildSessionSavePayload()
+    }
+  }
 
   if (sessionTreeRef.value?.openSaveSessionModal) {
     await sessionTreeRef.value.openSaveSessionModal(payload, options)
@@ -6336,6 +7745,10 @@ function handleSessionSaved(filePath) {
   if (!rel) return
   activeSessionFilePath.value = rel
   activeSessionTitle.value = getSessionTitleFromPath(rel)
+  const record = getActiveMemorySession()
+  record.activeSessionFilePath = rel
+  record.activeSessionTitle = activeSessionTitle.value
+  record.autoManaged = isAutoChatSessionPath(rel)
   void sessionTreeRef.value?.selectPath?.(rel)
 }
 
@@ -6343,23 +7756,66 @@ function handleSessionPathRenamed(oldPath, newPath) {
   const cur = String(activeSessionFilePath.value || '').trim()
   const from = String(oldPath || '').trim()
   const to = String(newPath || '').trim()
-  if (!cur || !from || !to) return
+  if (!from || !to) return
 
-  const next = replacePathPrefix(cur, from, to)
-  if (next === cur) return
+  const next = cur ? replacePathPrefix(cur, from, to) : cur
+  const activeChanged = !!cur && next !== cur
+  if (activeChanged) {
+    activeSessionFilePath.value = next
+    activeSessionTitle.value = getSessionTitleFromPath(next)
+  }
 
-  activeSessionFilePath.value = next
-  activeSessionTitle.value = getSessionTitleFromPath(next)
-  void sessionTreeRef.value?.selectPath?.(next)
+  memorySessions.value.forEach((record) => {
+    const recordPath = String(record?.activeSessionFilePath || '').trim()
+    const recordNext = replacePathPrefix(recordPath, from, to)
+    if (recordPath && recordNext !== recordPath) {
+      record.activeSessionFilePath = recordNext
+      record.activeSessionTitle = getSessionTitleFromPath(recordNext)
+      record.autoManaged = isAutoChatSessionPath(recordNext)
+      record.updatedAt = Date.now()
+    }
+  })
+  if (activeChanged) void sessionTreeRef.value?.selectPath?.(next)
 }
 
-function handleSessionPathDeleted(deletedPath) {
+async function handleSessionPathDeleted(deletedPath, deletedSessionPayloads = []) {
   const cur = String(activeSessionFilePath.value || '').trim()
   const p = String(deletedPath || '').trim()
-  if (!cur || !p) return
+  if (!p) return
 
-  if (cur === p || cur.startsWith(p + '/')) {
+  if (Array.isArray(deletedSessionPayloads) && deletedSessionPayloads.length) {
+    const mediaAssetPaths = new Set()
+    deletedSessionPayloads.forEach((item) => {
+      const payload = item?.payload && typeof item.payload === 'object' ? item.payload : item
+      const sessionFilePath = String(item?.path || item?.filePath || '').trim()
+      collectChatMediaAssetPathsFromPayload(payload, { sessionFilePath }).forEach((assetPath) => mediaAssetPaths.add(assetPath))
+    })
+    if (mediaAssetPaths.size) {
+      await deleteChatMediaAssetPaths(Array.from(mediaAssetPaths))
+    }
+    await Promise.all(
+      deletedSessionPayloads
+        .map((item) => String(item?.path || item?.filePath || '').trim())
+        .filter(Boolean)
+        .map((filePath) => deleteChatSessionAssetDirectory(filePath))
+    )
+  }
+
+  memorySessions.value.forEach((record) => {
+    const recordPath = String(record?.activeSessionFilePath || '').trim()
+    if (!isPathEqualOrInside(recordPath, p)) return
+    record.activeSessionFilePath = ''
+    record.activeSessionTitle = ''
+    record.autoManaged = isMemorySessionRunning(record)
+    record.updatedAt = Date.now()
+  })
+
+  if (isPathEqualOrInside(cur, p)) {
     unbindSessionAutosave({ silent: true })
+    const record = getActiveMemorySession()
+    record.activeSessionFilePath = ''
+    record.activeSessionTitle = ''
+    record.autoManaged = isMemorySessionRunning(record)
     try {
       sessionTreeRef.value?.clearSelection?.()
     } catch {
@@ -6372,6 +7828,13 @@ function handleSessionPathDeleted(deletedPath) {
 async function closeActiveSession() {
   if (sending.value) {
     message.warning('正在生成中，无法关闭会话绑定')
+    return
+  }
+
+  const record = getActiveMemorySession()
+  if (Number(record?.runningTaskCount || 0) > 0) {
+    await detachRunningSessionToHistory({ notify: false })
+    message.info('当前会话仍有后台任务，已转入后台并新建会话')
     return
   }
 
@@ -6484,6 +7947,7 @@ function applyLoadedChatState(state) {
 
   if ('selectedPromptId' in state) selectedPromptId.value = state.selectedPromptId || null
   if ('customSystemPrompt' in state) customSystemPrompt.value = String(state.customSystemPrompt || '')
+  customSystemPromptExplicit.value = state.customSystemPromptExplicit === true
   if (basePromptMode.value === 'prompt' && !selectedPromptId.value) {
     applyBasePromptSelection(null)
   }
@@ -6514,26 +7978,72 @@ function applyLoadedChatState(state) {
 
   imageGenerationMode.value = normalizeImageGenerationMode(state.imageGenerationMode)
   videoGenerationMode.value = normalizeImageGenerationMode(state.videoGenerationMode)
+  setImageGenerationParamsEnabled(state.imageGenerationParamsEnabled === true)
+  assignImageGenerationParams(state.imageGenerationParams || createDefaultImageGenerationParams())
+  setVideoGenerationParamsEnabled(state.videoGenerationParamsEnabled === true)
+  assignVideoGenerationParams(state.videoGenerationParams || createDefaultVideoGenerationParams())
 }
 
 async function loadSessionFromFile(filePath) {
   const relPath = String(filePath || '').trim()
   if (!relPath) return
 
-  if (sending.value) {
-    message.warning('正在生成中，请先停止后再加载历史会话。')
+  let activeRecord = getActiveMemorySession()
+  let detachedRunningRecord = null
+  const runningTargetRecord = memorySessions.value.find((item) =>
+    String(item?.activeSessionFilePath || '').trim() === relPath && isMemorySessionRunning(item)
+  )
+
+  if (runningTargetRecord) {
+    const switchingRecord = String(activeRecord?.id || '') !== String(runningTargetRecord.id || '')
+    if (switchingRecord) {
+      if (isMemorySessionRunning(activeRecord)) {
+        await detachRunningSessionToHistory({ notify: false, restoreTarget: false })
+        message.info('当前生成已转入后台，完成后会自动保存')
+      } else {
+        await persistActiveMemorySessionBeforeLeaving({ targetPath: relPath })
+      }
+    }
+
+    restoreMemorySession(runningTargetRecord, { skipSaveCurrent: true })
+    await nextTick()
+    await sessionTreeRef.value?.selectPath?.(relPath)
+    activeSessionFilePath.value = relPath
+    activeSessionTitle.value =
+      String(runningTargetRecord.activeSessionTitle || runningTargetRecord.title || '').trim() ||
+      getSessionTitleFromPath(relPath)
+    syncActiveRequestUiState(runningTargetRecord)
+    pruneDormantMemorySessions({ keepId: runningTargetRecord.id })
+    scheduleRefreshUserAnchorMeta()
+    await scrollToBottom({ force: true })
+    message.success('正在运行的会话已加载')
     return
   }
 
-  const confirmed = await confirmSwitchSessionWithDraft(relPath)
-  if (!confirmed) return
+  activeRecord = getActiveMemorySession()
+  if (
+    String(activeRecord?.activeSessionFilePath || '').trim() === relPath &&
+    String(activeRecord?.id || '') === String(activeMemorySessionId.value || '') &&
+    !isMemorySessionRunning(activeRecord)
+  ) {
+    await sessionTreeRef.value?.selectPath?.(relPath)
+    syncActiveRequestUiState(activeRecord)
+    return
+  }
+
+  if (isMemorySessionRunning(activeRecord)) {
+    detachedRunningRecord = activeRecord
+    await detachRunningSessionToHistory({ notify: false, restoreTarget: false })
+    message.info('当前生成已转入后台，完成后会自动保存')
+  } else {
+    await persistActiveMemorySessionBeforeLeaving({ targetPath: relPath })
+  }
 
   try {
     const content = await readFile(relPath)
     const parsed = safeJsonParse(String(content || ''))
     if (!parsed.ok) {
-      message.error('解析会话文件失败：' + (parsed.error?.message || '未知错误'))
-      return
+      throw new Error('解析会话文件失败：' + (parsed.error?.message || '未知错误'))
     }
 
     const data = parsed.value
@@ -6551,37 +8061,57 @@ async function loadSessionFromFile(filePath) {
         ? data.apiMessages
         : []
 
-    const previousPath = String(activeSessionFilePath.value || '').trim()
-    if (previousPath && previousPath !== relPath) {
-      try {
-        await runSessionAutosave()
-      } catch {
-        // ignore
-      }
-    }
-
     unbindSessionAutosave({ silent: true })
-    resetChatRuntimeState()
-
-    if (state) applyLoadedChatState(state)
 
     const apiSafe = Array.isArray(apiMessages)
       ? apiMessages.filter((m) => m && typeof m === 'object' && typeof m.role === 'string')
       : []
-    session.apiMessages.push(...deepCopyJson(apiSafe, []))
 
     const displaySafe = normalizeLoadedDisplayMessages(displayMessages)
+    await hydrateChatSessionMediaAssets({ messages: displaySafe }, { sessionFilePath: relPath })
 
     // 兼容：早期定时任务会话默认按 text 保存，加载到聊天页后需要切回 md 渲染
     const isTimedTaskSession =
-      String(data?.source?.type || '').trim() === 'timed_task' || String(relPath || '').includes('/Timed Task/')
+      String(data?.source?.type || '').trim() === 'timed_task' || isTimedTaskSessionPath(relPath)
     if (isTimedTaskSession) {
       displaySafe.forEach((m) => {
         if (m?.role === 'assistant' && m.render === 'text') m.render = 'md'
       })
     }
 
-    session.messages.push(...displaySafe)
+    const loadedTitle =
+      typeof data?.title === 'string' && data.title.trim() ? data.title.trim() : getSessionTitleFromPath(relPath)
+    let record = memorySessions.value.find((item) => String(item?.activeSessionFilePath || '').trim() === relPath)
+    if (!record) {
+      record = createMemorySessionRecord({
+        title: loadedTitle,
+        messages: displaySafe,
+        apiMessages: deepCopyJson(apiSafe, []),
+        activeSessionFilePath: relPath,
+        activeSessionTitle: loadedTitle,
+        state: state || null,
+        autoManaged: isAutoChatSessionPath(relPath)
+      })
+      memorySessions.value = [...memorySessions.value, record]
+    } else {
+      record.title = loadedTitle
+      record.messages = displaySafe
+      record.apiMessages = deepCopyJson(apiSafe, [])
+      record.input = ''
+      record.pendingAttachments = []
+      record.activeSessionFilePath = relPath
+      record.activeSessionTitle = loadedTitle
+      record.state = state && typeof state === 'object' ? deepCopyJson(state, {}) : null
+      record.autoManaged = isAutoChatSessionPath(relPath)
+      record.updatedAt = Date.now()
+    }
+
+    activeMemorySessionId.value = record.id
+    session.messages = record.messages
+    session.apiMessages = record.apiMessages
+    input.value = ''
+    pendingAttachments.value = []
+    if (state) applyLoadedChatState(state)
 
     await nextTick()
     await sessionTreeRef.value?.selectPath?.(relPath)
@@ -6589,11 +8119,19 @@ async function loadSessionFromFile(filePath) {
     await scrollToBottom({ force: true })
 
     activeSessionFilePath.value = relPath
-    activeSessionTitle.value =
-      typeof data?.title === 'string' && data.title.trim() ? data.title.trim() : getSessionTitleFromPath(relPath)
+    activeSessionTitle.value = loadedTitle
+    syncActiveRequestUiState(record)
+    pruneDormantMemorySessions({ keepId: record.id })
 
     message.success('历史会话已加载')
+    const resumableCount = countResumableMediaTasks()
+    if (resumableCount) {
+      message.info(`检测到 ${resumableCount} 个可继续轮询的视频任务，可在任务卡片中恢复。`)
+    }
   } catch (err) {
+    if (detachedRunningRecord && isMemorySessionRunning(detachedRunningRecord)) {
+      restoreMemorySession(detachedRunningRecord, { skipSaveCurrent: true })
+    }
     message.error('加载会话失败：' + (err?.message || String(err)))
   }
 }
@@ -6631,12 +8169,14 @@ watch(
     basePromptMode,
     selectedPromptId,
     customSystemPrompt,
+    customSystemPromptExplicit,
     selectedSkillIds,
     manualMcpIds,
     toolMode,
     thinkingEffort,
     imageGenerationMode,
-    videoGenerationMode
+    videoGenerationMode,
+    mediaGenerationParamsAutosaveKey
   ],
   () => scheduleSessionAutosave(),
   { flush: 'post' }
@@ -6676,15 +8216,7 @@ function applyAgent(agentId) {
   if (reasoningEffortOverride) thinkingEffort.value = reasoningEffortOverride
 }
 
-function tryApplyDefaultModelFromConfig(options = {}) {
-  const force = !!options.force
-  if (!force && hasAppliedDefaultModel.value) return false
-
-  if (!force && (selectedAgentId.value || selectedProviderId.value || selectedModel.value)) {
-    hasAppliedDefaultModel.value = true
-    return false
-  }
-
+function resolveDefaultModelSelectionFromConfig() {
   const cfg = chatConfig.value
   const configuredProviderId = String(cfg?.defaultProviderId || '').trim()
   const modelId = String(cfg?.defaultModel || '').trim()
@@ -6699,14 +8231,32 @@ function tryApplyDefaultModelFromConfig(options = {}) {
     (configuredProviderId ? list.find((p) => p?._id === configuredProviderId) : null) ||
     list.find((p) => isUtoolsBuiltinProvider(p)) ||
     list[0]
-  if (!provider) return false
+  if (!provider) return { providerId: '', model: '' }
 
   const models = Array.isArray(provider?.selectModels) ? provider.selectModels : []
-  if (!models.length) return false
+  if (!models.length) return { providerId: '', model: '' }
 
   const finalModel = modelId && models.includes(modelId) ? modelId : models[0]
-  selectedProviderId.value = String(provider._id || '').trim()
-  selectedModel.value = String(finalModel || '').trim()
+  return {
+    providerId: String(provider._id || '').trim(),
+    model: String(finalModel || '').trim()
+  }
+}
+
+function tryApplyDefaultModelFromConfig(options = {}) {
+  const force = !!options.force
+  if (!force && hasAppliedDefaultModel.value) return false
+
+  if (!force && (selectedAgentId.value || selectedProviderId.value || selectedModel.value)) {
+    hasAppliedDefaultModel.value = true
+    return false
+  }
+
+  const next = resolveDefaultModelSelectionFromConfig()
+  if (!next.providerId || !next.model) return false
+
+  selectedProviderId.value = next.providerId
+  selectedModel.value = next.model
   hasAppliedDefaultModel.value = true
   return true
 }
@@ -6756,6 +8306,14 @@ onBeforeUnmount(() => {
   } catch {
     // ignore
   }
+  try {
+    if (autoChatCleanupTimer) {
+      window.clearInterval(autoChatCleanupTimer)
+      autoChatCleanupTimer = null
+    }
+  } catch {
+    // ignore
+  }
   disconnectChatLayoutResizeObserver()
   disconnectChatMessageVisibilityObserver()
   disconnectChatMessageResizeObserver()
@@ -6767,6 +8325,14 @@ onBeforeUnmount(() => {
   } catch {
     // ignore
   }
+  detachedMediaAbortStates.forEach((state) => {
+    try {
+      state?.abort?.()
+    } catch {
+      // ignore
+    }
+  })
+  detachedMediaAbortStates.clear()
   try {
     typewriterFlushAll()
   } catch {
@@ -6936,6 +8502,12 @@ function getRequestConfigOrHint() {
         : useAutoImageGeneration
           ? 'image-generation'
           : 'chat'
+  const imageGenerationRequestOptions = (useManualImageGeneration || useAutoImageGeneration)
+    ? getCurrentImageGenerationRequestOptions()
+    : {}
+  const videoGenerationRequestOptions = (useManualVideoGeneration || useAutoVideoGeneration)
+    ? getCurrentVideoGenerationRequestOptions()
+    : {}
 
   return {
     providerKind: 'openai-compatible',
@@ -6945,6 +8517,8 @@ function getRequestConfigOrHint() {
     requestMode,
     imageGenerationPlaceholderMode: useManualImageGeneration ? 'image' : 'text',
     videoGenerationPlaceholderMode: useManualVideoGeneration ? 'video' : 'text',
+    imageGenerationRequestOptionsOverride: imageGenerationRequestOptions,
+    videoGenerationRequestOptionsOverride: videoGenerationRequestOptions,
     supportsVision: requestMode === 'chat'
   }
 }
@@ -7007,13 +8581,14 @@ async function runChatRounds({
   assistantPlaceholderMode = 'text',
   supportsVision = false
 }) {
+  const targetSession = getRunSessionTarget(abortState)
   let tools = []
   let toolMap = new Map()
   let lastToolsKey = ''
 
   const refreshToolsBundleIfNeeded = async () => {
+    if (lastToolsKey) return
     const key = getCurrentToolsKey()
-    if (key === lastToolsKey) return
     const bundle = await buildToolsBundleV2({ abortState })
     tools = Array.isArray(bundle?.tools) ? bundle.tools : []
     toolMap = bundle?.map instanceof Map ? bundle.map : new Map()
@@ -7040,7 +8615,7 @@ async function runChatRounds({
       transientRequestPlaceholder: String(assistantPlaceholderMode || 'text').trim().toLowerCase() !== 'text'
     })
     applyAssistantRequestPlaceholderMode(assistantDisplay, assistantPlaceholderMode)
-    session.messages.push(assistantDisplay)
+    targetSession.messages.push(assistantDisplay)
     setCurrentAssistantDisplay(assistantDisplay)
 
     let lastReasoningText = ''
@@ -7053,9 +8628,8 @@ async function runChatRounds({
       }
 
       if (evt?.type === 'reasoning' && evt.delta) {
-        assistantDisplay.thinking = String(assistantDisplay.thinking || '') + String(evt.delta)
-        lastReasoningText = String(evt.reasoning || assistantDisplay.thinking || '')
-        scheduleScrollToBottom()
+        deferredAppendMessageField(assistantDisplay, 'thinking', String(evt.delta), { scheduleScroll: true })
+        lastReasoningText = String(evt.reasoning || '')
       }
     }
 
@@ -7072,6 +8646,7 @@ async function runChatRounds({
             compatToolCallIdAsFc: compatFcToolCallId,
             fallbackAllVisionMessages: imagesFallbackToText,
             tools: activeTools,
+            apiMessages: buildRequestApiMessages('openai-compatible', { tools: activeTools, apiMessages: targetSession.apiMessages }),
             plainTextToolFallback
           }),
           ...(activeTools.length ? { tools: activeTools, tool_choice: 'auto' } : {}),
@@ -7100,7 +8675,7 @@ async function runChatRounds({
           continue
         }
 
-        const hasVision = (session.apiMessages || []).some((msg) => messageContentHasImageUrl(msg?.content))
+        const hasVision = (targetSession.apiMessages || []).some((msg) => messageContentHasImageUrl(msg?.content))
         if (!imagesFallbackToText && hasVision && shouldFallbackVisionInputToText(errText)) {
           imagesFallbackToText = true
           message.warning('当前端点不支持 image_url 输入。本次请求已自动改为纯文本发送，模型将无法直接理解图片。')
@@ -7113,7 +8688,7 @@ async function runChatRounds({
           continue
         }
 
-        if (!plainTextToolFallback && hasToolStateMessages(session.apiMessages) && shouldRetryToolContinuationAsPlainText(errText)) {
+        if (!plainTextToolFallback && hasToolStateMessages(targetSession.apiMessages) && shouldRetryToolContinuationAsPlainText(errText)) {
           plainTextToolFallback = true
           message.warning('当前端点的工具续跑接口临时不可用，已改为用纯文本工具结果继续回答。')
           continue
@@ -7142,12 +8717,21 @@ async function runChatRounds({
       typewriterEnqueue(assistantDisplay, String(result.content || ''))
     }
 
-    await typewriterWaitIdle(assistantDisplay.id)
+    await Promise.all([
+      typewriterWaitIdle(assistantDisplay.id),
+      deferredMessageFieldWaitIdle(assistantDisplay.id, 'thinking')
+    ])
     assistantDisplay.streaming = false
     assistantDisplay.render = 'md'
     typewriterStates.delete(assistantDisplay.id)
-    const assistantImages = extractChatImagesFromToolResult(result?.payloads?.length ? result.payloads : result)
-    const assistantVideos = extractChatVideosFromToolResult(result?.payloads?.length ? result.payloads : result)
+    const assistantImages = await persistChatMediaListAssets(
+      extractChatImagesFromToolResult(result?.payloads?.length ? result.payloads : result),
+      { kind: 'image', messageId: assistantDisplay.id }
+    )
+    const assistantVideos = await persistChatMediaListAssets(
+      extractChatVideosFromToolResult(result?.payloads?.length ? result.payloads : result),
+      { kind: 'video', messageId: assistantDisplay.id }
+    )
     if (assistantImages.length) {
       assistantDisplay.images = assistantImages
       assistantDisplay.transientRequestPlaceholder = false
@@ -7158,7 +8742,7 @@ async function runChatRounds({
       assistantDisplay.transientRequestPlaceholder = false
       clearAssistantMediaBubblePlaceholders(assistantDisplay)
     }
-    scheduleScrollToBottom()
+    maybeScheduleScrollToBottomForRun(abortState)
 
     const toolCalls = Array.isArray(result.toolCalls) ? result.toolCalls : []
     const normalizedToolCalls = toolCalls.map((tc) => {
@@ -7173,17 +8757,17 @@ async function runChatRounds({
       }
     })
 
-    session.apiMessages.push({
+    targetSession.apiMessages.push({
       role: 'assistant',
       content: String(result.content || ''),
       ...(normalizedToolCalls.length ? { tool_calls: normalizedToolCalls } : {}),
       reasoning_content: String(result.reasoning ?? '')
     })
-    assistantDisplay.apiIndex = session.apiMessages.length - 1
+    assistantDisplay.apiIndex = targetSession.apiMessages.length - 1
 
     if (!assistantDisplay.content.trim() && normalizedToolCalls.length && !String(assistantDisplay.thinking || '').trim()) {
-      const idx = session.messages.findIndex((m) => m.id === assistantDisplay.id)
-      if (idx !== -1) session.messages.splice(idx, 1)
+      const idx = targetSession.messages.findIndex((m) => m.id === assistantDisplay.id)
+      if (idx !== -1) targetSession.messages.splice(idx, 1)
     }
     if (
       !assistantDisplay.content.trim() &&
@@ -7191,16 +8775,16 @@ async function runChatRounds({
       !(Array.isArray(assistantDisplay.images) && assistantDisplay.images.length) &&
       !(Array.isArray(assistantDisplay.videos) && assistantDisplay.videos.length)
     ) {
-      assistantDisplay.content = buildEmptyAssistantResponseText()
+      assistantDisplay.content = buildEmptyAssistantResponseText(targetSession.apiMessages)
     }
 
     setCurrentAssistantDisplay(null)
-    await scrollToBottom()
+    await maybeScrollToBottomForRun(abortState)
 
     if (!normalizedToolCalls.length) break
 
     if (round === maxRounds - 1) {
-      session.messages.push(createDisplayMessage('assistant', 'Tool-call round limit reached.'))
+      targetSession.messages.push(createDisplayMessage('assistant', '工具调用轮次已达到上限。'))
       break
     }
 
@@ -7208,12 +8792,12 @@ async function runChatRounds({
       throwIfAborted(abortState)
       const exec = await executeToolCall(toolCall, toolMap, lastReasoningText || String(result.reasoning || ''), abortState)
       throwIfAborted(abortState)
-      session.apiMessages.push({
+      targetSession.apiMessages.push({
         role: 'tool',
         tool_call_id: toolCall.id,
         content: String(exec?.content || '')
       })
-      const latestUserPrompt = getLatestRealUserPromptText()
+      const latestUserPrompt = getLatestRealUserPromptText(targetSession.apiMessages)
       const shouldAttachToolImages =
         String(exec?.toolName || '').trim() === 'notes_read' ||
         shouldAutoAttachToolImagesForVision(latestUserPrompt)
@@ -7225,7 +8809,7 @@ async function runChatRounds({
           userPrompt: latestUserPrompt
         })
         if (syntheticVisionMessage) {
-          session.apiMessages.push(syntheticVisionMessage)
+          targetSession.apiMessages.push(syntheticVisionMessage)
         }
       }
     }
@@ -7260,6 +8844,7 @@ async function runUtoolsAiChatRound({ model, setCurrentAssistantDisplay, setAbor
     throw new Error('当前环境不支持 uTools 官方 AI')
   }
 
+  const targetSession = getRunSessionTarget(abortState)
   throwIfAborted(abortState)
   const bundle = await buildToolsBundleV2({ abortState })
   const tools = Array.isArray(bundle?.tools) ? bundle.tools : []
@@ -7276,7 +8861,7 @@ async function runUtoolsAiChatRound({ model, setCurrentAssistantDisplay, setAbor
     })
     assistantSegments.push(msg)
     assistantDisplay = msg
-    session.messages.push(msg)
+    targetSession.messages.push(msg)
     setCurrentAssistantDisplay(msg)
     return msg
   }
@@ -7290,19 +8875,22 @@ async function runUtoolsAiChatRound({ model, setCurrentAssistantDisplay, setAbor
     const current = assistantDisplay
     if (!current) return null
 
-    await typewriterWaitIdle(current.id)
+    await Promise.all([
+      typewriterWaitIdle(current.id),
+      deferredMessageFieldWaitIdle(current.id, 'thinking')
+    ])
     current.streaming = false
     current.render = 'md'
     typewriterStates.delete(current.id)
 
     if (removeIfEmpty && !hasVisibleAssistantContent(current)) {
-      const idx = session.messages.findIndex((m) => m.id === current.id)
-      if (idx !== -1) session.messages.splice(idx, 1)
+      const idx = targetSession.messages.findIndex((m) => m.id === current.id)
+      if (idx !== -1) targetSession.messages.splice(idx, 1)
     }
 
     assistantDisplay = null
     setCurrentAssistantDisplay(null)
-    scheduleScrollToBottom()
+    maybeScheduleScrollToBottomForRun(abortState)
     return current
   }
 
@@ -7320,8 +8908,8 @@ async function runUtoolsAiChatRound({ model, setCurrentAssistantDisplay, setAbor
       .map((record, index) => {
         const serverName = String(record.serverName || '').trim()
         const toolName = String(record.toolName || record.name || '').trim()
-        const args = truncateText(record.argsText || '{}', 1200, '(tool arguments truncated)')
-        const content = truncateText(record.content || '', 24000, '(tool result truncated)')
+        const args = truncateText(record.argsText || '{}', 1200, '（工具参数已截断）')
+        const content = truncateText(record.content || '', 24000, '（工具结果已截断）')
         return [
           `### 工具结果 ${index + 1}`,
           serverName || toolName ? `工具：${[serverName, toolName].filter(Boolean).join(' / ')}` : '',
@@ -7363,8 +8951,7 @@ async function runUtoolsAiChatRound({ model, setCurrentAssistantDisplay, setAbor
         streamedReasoning = reasoningState.total
         if (reasoningState.delta) {
           ensureStreamingAssistantDisplay()
-          assistantDisplay.thinking = String(assistantDisplay.thinking || '') + reasoningState.delta
-          scheduleScrollToBottom()
+          deferredAppendMessageField(assistantDisplay, 'thinking', reasoningState.delta, { scheduleScroll: true })
         }
       }
     )
@@ -7409,7 +8996,7 @@ async function runUtoolsAiChatRound({ model, setCurrentAssistantDisplay, setAbor
   })
 
   try {
-    const requestApiMessages = buildRequestApiMessages('utools-ai', { tools })
+    const requestApiMessages = buildRequestApiMessages('utools-ai', { tools, apiMessages: targetSession.apiMessages })
     let request = requestUtoolsAi(requestApiMessages, tools)
     setAbortHandle(request)
     let result = null
@@ -7447,30 +9034,30 @@ async function runUtoolsAiChatRound({ model, setCurrentAssistantDisplay, setAbor
     streamedReasoning = finalReasoningState.total
     if (finalReasoningState.delta) {
       ensureStreamingAssistantDisplay()
-      assistantDisplay.thinking = String(assistantDisplay.thinking || '') + finalReasoningState.delta
+      deferredAppendMessageField(assistantDisplay, 'thinking', finalReasoningState.delta, { scheduleScroll: true })
     }
 
     await finalizeStreamingAssistantDisplay({ removeIfEmpty: true })
 
-    session.apiMessages.push({
+    targetSession.apiMessages.push({
       role: 'assistant',
       content: String(streamedContent || ''),
       ...(streamedReasoning ? { reasoning_content: streamedReasoning } : {})
     })
-    const assistantApiIndex = session.apiMessages.length - 1
-    const visibleSegments = assistantSegments.filter((segment) => session.messages.some((m) => m.id === segment.id))
+    const assistantApiIndex = targetSession.apiMessages.length - 1
+    const visibleSegments = assistantSegments.filter((segment) => targetSession.messages.some((m) => m.id === segment.id))
     visibleSegments.forEach((segment) => {
       segment.apiIndex = assistantApiIndex
     })
 
     if (!visibleSegments.some((segment) => hasVisibleAssistantContent(segment)) && toolInvokeCount === 0) {
-      const emptyMsg = createDisplayMessage('assistant', buildEmptyAssistantResponseText())
+      const emptyMsg = createDisplayMessage('assistant', buildEmptyAssistantResponseText(targetSession.apiMessages))
       emptyMsg.apiIndex = assistantApiIndex
-      session.messages.push(emptyMsg)
+      targetSession.messages.push(emptyMsg)
     }
 
     setCurrentAssistantDisplay(null)
-    await scrollToBottom()
+    await maybeScrollToBottomForRun(abortState)
   } finally {
     unregisterToolFns()
     setAbortHandle(null)
@@ -7492,116 +9079,61 @@ function buildImageGenerationApiSummary({ imageCount, revisedPrompts }) {
   return lines.join('\n')
 }
 
-function collectImageGenerationResponseOutputTypes(payload) {
-  if (!payload || typeof payload !== 'object') return []
-  const output = Array.isArray(payload.output) ? payload.output : []
-  const labels = []
-  const push = (value) => {
-    const text = String(value || '').trim()
-    if (!text || labels.includes(text)) return
-    labels.push(text)
-  }
-  output.forEach((item) => {
-    if (!item || typeof item !== 'object') return
-    push(item.type)
-    if (Array.isArray(item.content)) {
-      item.content.forEach((part) => {
-        const partType = String(part?.type || '').trim()
-        if (!partType) return
-        push(partType)
-        if (item.type) push(`${item.type}:${partType}`)
-      })
-    }
-  })
-  return labels
-}
-
-function isLikelyXaiImageModel(model) {
-  return /grok-imagine/i.test(String(model || '').trim())
-}
-
-function extractImageGenerationTaskState(payload, requestMeta = null) {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null
-  const status = String(payload.status ?? payload.state ?? payload.task_status ?? payload.taskStatus ?? '')
-    .trim()
-    .toLowerCase()
-  if (!status) return null
-
-  if (!['queued', 'submitted', 'pending', 'accepted', 'processing', 'running', 'in_progress'].includes(status)) {
-    return null
-  }
-
-  const id = String(payload.task_id ?? payload.taskId ?? payload.job_id ?? payload.jobId ?? payload.id ?? '')
-    .trim()
-  const endpointKind = requestMeta?.kind === 'responses-api' ? 'responses' : requestMeta?.kind === 'images-api' ? 'images' : ''
-  const note = status === 'queued' || status === 'submitted' || status === 'pending' || status === 'accepted'
-    ? 'The provider accepted the image task, but the current compatibility layer has not polled the final image result yet.'
-    : '服务商仍在处理图片任务，最终结果返回后会显示在这里。'
-
-  return { id, status, endpointKind, note }
-}
-
-function isResponsesApiImageSoftFailure(payload) {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false
-  if (String(payload.object || '').trim().toLowerCase() !== 'response') return false
-  if (extractImageGenerationTaskState(payload, { kind: 'responses-api' })) return false
-  if (extractChatImagesFromToolResult(payload).length) return false
-
-  const status = String(payload.status || '').trim().toLowerCase()
-  if (status && !['completed', 'succeeded', 'success'].includes(status)) return false
-
-  const outputTypes = collectImageGenerationResponseOutputTypes(payload)
-  if (!outputTypes.length) return true
-
-  if (extractImageGenerationTextResult(payload)) return false
-
-  return outputTypes.every((type) => /^(message|output_text|message:output_text)$/i.test(String(type || '').trim()))
-}
-
-function buildImageGenerationCompatibilityError(payload, requestMeta = null, diagnostics = {}) {
-  const payloadPreview = summarizeImageGenerationPayload(payload)
-  const outputTypes = collectImageGenerationResponseOutputTypes(payload)
-  const model = String(diagnostics?.model || '').trim()
-  const lines = []
-  const image404 =
-    Array.isArray(diagnostics?.attempts) &&
-    diagnostics.attempts.some((item) => item?.kind === 'images-api' && Number(item?.status) === 404)
-
-  if (requestMeta?.kind === 'responses-api' && isResponsesApiImageSoftFailure(payload)) {
-    lines.push('兼容层已判定请求完成，但没有返回可展示的图片结果。')
-    lines.push('当前服务商可能只支持文本响应，不支持真正的 image_generation 结果载荷。')
-    if (outputTypes.length) lines.push(`输出类型：${outputTypes.join(', ')}`)
-    if (isLikelyXaiImageModel(model) && image404) {
-      lines.push('当前网关对 xAI 图片接口的兼容可能不完整：/v1/images/generations 不可用，而 /v1/responses 只返回文本。')
-      lines.push('如果使用 xAI，优先选择 grok-imagine-image 模型并走 /v1/images/generations 端点。')
-    }
-  } else {
-    lines.push('图片生成接口没有返回可展示的图片数据。')
-    if (outputTypes.length) lines.push(`输出类型：${outputTypes.join(', ')}`)
-  }
-
-  if (requestMeta?.url) lines.push(`接口：${requestMeta.url}`)
-  if (payloadPreview) lines.push(`返回预览：\n${payloadPreview}`)
-  return lines.join('\n')
-}
-
 function buildImageGenerationPendingText(imageTask = null) {
   const statusLabel = imageTask ? assistantImageTaskStatusLabel({ imageTask }) : '生成中'
   const taskId = String(imageTask?.id || '').trim()
   return `图片生成${statusLabel}${taskId ? `（任务 ID：${taskId}）` : '……'}`
 }
 
-function createImageGenerationPlaceholderDisplay(userPrompt, placeholderMode = 'text') {
+function buildMediaRequestSnapshot(kind, {
+  baseUrl = '',
+  model = '',
+  prompt = '',
+  requestOptions = null,
+  requestMeta = null,
+  placeholderMode = 'text',
+  startedAt = Date.now()
+} = {}) {
+  return {
+    kind,
+    baseUrl: String(baseUrl || '').trim(),
+    model: String(model || '').trim(),
+    prompt: String(prompt || '').trim(),
+    requestOptions: requestOptions && typeof requestOptions === 'object' ? deepCopyJson(requestOptions, {}) : {},
+    requestMeta: requestMeta && typeof requestMeta === 'object' ? deepCopyJson(requestMeta, {}) : null,
+    placeholderMode: String(placeholderMode || 'text').trim() || 'text',
+    startedAt: Number(startedAt) || Date.now()
+  }
+}
+
+function attachMediaRequestSnapshot(assistantDisplay, kind, patch = {}) {
+  if (!assistantDisplay || typeof assistantDisplay !== 'object') return
+  const previous = assistantDisplay.mediaRequest && typeof assistantDisplay.mediaRequest === 'object'
+    ? assistantDisplay.mediaRequest
+    : {}
+  assistantDisplay.mediaRequest = {
+    ...previous,
+    ...patch,
+    kind
+  }
+}
+
+function createImageGenerationPlaceholderDisplay(userPrompt, placeholderMode = 'text', options = {}) {
+  const requestInfo = String(options?.requestInfo || '').trim()
   const assistantDisplay = createDisplayMessage('assistant', placeholderMode === 'image' ? '' : buildImageGenerationPendingText(), {
     streaming: false,
     render: 'text',
     imagePrompt: userPrompt,
+    imageRequestInfo: requestInfo,
     transientRequestPlaceholder: true
   })
 
   if (placeholderMode === 'image') {
     assistantDisplay.imageBubblePlaceholder = true
-    assistantDisplay.imageBubblePlaceholderImage = createAssistantImageBubblePlaceholder()
+    assistantDisplay.imageBubblePlaceholderImage = createAssistantImageBubblePlaceholder(
+      '图片生成中，结果就绪后会展示在这里。',
+      requestInfo
+    )
   }
 
   return assistantDisplay
@@ -7614,11 +9146,13 @@ function applyImageGenerationTaskToDisplay(assistantDisplay, imageTask, placehol
   assistantDisplay.transientRequestPlaceholder = false
 
   if (placeholderMode === 'image') {
+    const requestInfo = String(assistantDisplay.imageRequestInfo || '').trim()
     assistantDisplay.content = ''
     assistantDisplay.imageTask = imageTask
     assistantDisplay.imageBubblePlaceholder = true
     assistantDisplay.imageBubblePlaceholderImage = createAssistantImageBubblePlaceholder(
-      imageTask?.note || '图片生成中，结果就绪后会展示在这里。'
+      imageTask?.note || '图片生成中，结果就绪后会展示在这里。',
+      requestInfo
     )
     return
   }
@@ -7658,149 +9192,6 @@ function applyImageGenerationImagesToDisplay(assistantDisplay, { images, userPro
   })
 }
 
-async function postImageGeneration({ baseUrl, apiKey, body, signal }) {
-  const base = normalizeBaseUrl(baseUrl)
-  let lastError = null
-  const triedUrls = []
-  const attemptDiagnostics = []
-  const uniqueUrls = (list = []) => Array.from(new Set((Array.isArray(list) ? list : []).filter(Boolean)))
-  const imageApiCandidates = uniqueUrls([
-    `${base}/images/generations`,
-    !/\/v1$/i.test(base) ? `${base}/v1/images/generations` : ''
-  ])
-  const responsesApiCandidates = uniqueUrls([
-    `${base}/responses`,
-    !/\/v1$/i.test(base) ? `${base}/v1/responses` : ''
-  ])
-  const attempts = [
-    ...imageApiCandidates.flatMap((url) => [
-      {
-        kind: 'images-api',
-        url,
-        payload: { ...body, response_format: 'b64_json' }
-      },
-      {
-        kind: 'images-api',
-        url,
-        payload: body
-      }
-    ]),
-    ...responsesApiCandidates.flatMap((url) => [
-      {
-        kind: 'responses-api',
-        url,
-        payload: {
-          model: body.model,
-          input: String(body.prompt || ''),
-          tools: [{ type: 'image_generation' }],
-          tool_choice: { type: 'image_generation' }
-        }
-      },
-      {
-        kind: 'responses-api',
-        url,
-        payload: {
-          model: body.model,
-          input: String(body.prompt || ''),
-          tools: [{ type: 'image_generation' }],
-          tool_choice: 'required'
-        }
-      },
-      {
-        kind: 'responses-api',
-        url,
-        payload: {
-          model: body.model,
-          input: String(body.prompt || ''),
-          tools: [{ type: 'image_generation' }]
-        }
-      }
-    ])
-  ]
-
-  for (const attempt of attempts) {
-    const { kind, url, payload } = attempt
-    triedUrls.push(url)
-    try {
-      let resp = null
-      try {
-        resp = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${apiKey}`
-          },
-          body: JSON.stringify(payload),
-          signal
-        })
-      } catch (err) {
-        lastError = err
-        continue
-      }
-
-      if (resp.status === 404) {
-        attemptDiagnostics.push({ kind, url, status: resp.status })
-        lastError = new Error(`图片生成接口不存在（HTTP 404）：${url}`)
-        continue
-      }
-
-      const responseText = await resp.text()
-      const parsedResponse = safeJsonParse(responseText)
-
-      if (!resp.ok) {
-        const errJson = parsedResponse.ok ? parsedResponse.value : null
-        const detail = errJson?.error?.message || (parsedResponse.ok ? stableStringify(errJson) : responseText)
-        const detailText = String(detail || '').toLowerCase()
-
-        if (
-          kind === 'images-api' &&
-          payload.response_format === 'b64_json' &&
-          (detailText.includes('response_format') || detailText.includes('b64_json') || detailText.includes('unsupported'))
-        ) {
-          attemptDiagnostics.push({ kind, url, status: resp.status, detail: String(detail || '') })
-          lastError = new Error(`图片生成请求失败（HTTP ${resp.status}）：${detail || resp.statusText}`)
-          continue
-        }
-
-        if (kind === 'images-api' && detailText.includes('not found')) {
-          attemptDiagnostics.push({ kind, url, status: resp.status, detail: String(detail || '') })
-          lastError = new Error(`图片生成接口不存在（HTTP ${resp.status}）：${url}`)
-          continue
-        }
-
-        throw new Error(`图片生成请求失败（HTTP ${resp.status}）：${detail || resp.statusText}\nURL: ${url}`)
-      }
-
-      if (parsedResponse.ok) {
-        if (kind === 'responses-api' && isResponsesApiImageSoftFailure(parsedResponse.value)) {
-          attemptDiagnostics.push({ kind, url, status: resp.status, softFailure: true })
-          lastError = new Error(
-            buildImageGenerationCompatibilityError(parsedResponse.value, { kind, url }, { model: body.model, attempts: attemptDiagnostics })
-          )
-          continue
-        }
-        return { payload: parsedResponse.value, requestMeta: { kind, url } }
-      }
-
-      const plain = String(responseText || '').trim()
-      if (plain) return { payload: plain, requestMeta: { kind, url } }
-      throw new Error('图片生成接口返回了空响应')
-    } catch (err) {
-      lastError = err
-      continue
-    }
-  }
-
-  const triedSummary = Array.from(new Set(triedUrls)).join('\n')
-  if (triedSummary) {
-    throw new Error(
-      `${lastError?.message || '图片生成请求失败：未收到有效响应。'}\n已尝试以下端点：\n${triedSummary}`
-    )
-  }
-
-  throw lastError || new Error('图片生成请求失败：未收到有效响应。')
-}
-
 async function runImageGenerationRound({
   baseUrl,
   apiKey,
@@ -7808,69 +9199,91 @@ async function runImageGenerationRound({
   signal,
   setCurrentAssistantDisplay,
   abortState = null,
-  placeholderMode = 'text'
+  placeholderMode = 'text',
+  requestOptionsOverride = null
 }) {
+  const targetSession = getRunSessionTarget(abortState)
   throwIfAborted(abortState)
   const lastUserApiMsg = (() => {
-    for (let i = (session.apiMessages || []).length - 1; i >= 0; i--) {
-      if (session.apiMessages[i]?.role === 'user') return session.apiMessages[i]
+    for (let i = (targetSession.apiMessages || []).length - 1; i >= 0; i--) {
+      if (targetSession.apiMessages[i]?.role === 'user') return targetSession.apiMessages[i]
     }
     return null
   })()
 
-  const userPrompt = extractImageGenerationPromptFromContent(lastUserApiMsg?.content).trim()
+  const userPrompt = extractEditableUserTextFromContent(
+    extractImageGenerationPromptFromContent(lastUserApiMsg?.content)
+  ).trim()
   if (!userPrompt) {
     throw new Error('图片生成提示词为空')
   }
 
-  const assistantDisplay = createImageGenerationPlaceholderDisplay(userPrompt, placeholderMode)
-  session.messages.push(assistantDisplay)
+  const requestOptions =
+    requestOptionsOverride && typeof requestOptionsOverride === 'object'
+      ? buildImageGenerationRequestOptionsWithReferences(requestOptionsOverride)
+      : {}
+  const requestInfo = placeholderMode === 'image' ? buildManualImageGenerationRequestInfo(requestOptions) : ''
+  const startedAt = Date.now()
+  const assistantDisplay = createImageGenerationPlaceholderDisplay(userPrompt, placeholderMode, { requestInfo })
+  attachMediaRequestSnapshot(assistantDisplay, 'image', buildMediaRequestSnapshot('image', {
+    baseUrl,
+    model,
+    prompt: userPrompt,
+    requestOptions,
+    placeholderMode,
+    startedAt
+  }))
+  targetSession.messages.push(assistantDisplay)
   setCurrentAssistantDisplay(assistantDisplay)
-  await scrollToBottom()
+  await maybeScrollToBottomForRun(abortState)
 
-  const prompt = buildImageGenerationPromptFromHistory(userPrompt)
-  const { payload, requestMeta } = await withTimeout(
-    postImageGeneration({
-      baseUrl,
-      apiKey,
-      body: {
-        model,
-        prompt
-      },
-      signal
-    }),
-    IMAGE_GENERATION_REQUEST_TIMEOUT_MS,
-    '图片生成请求'
-  )
+  const prompt = buildImageGenerationPromptFromHistory(userPrompt, { apiMessages: targetSession.apiMessages })
+  const { payload, requestMeta } = await requestImageGeneration({
+    baseUrl,
+    apiKey,
+    model,
+    prompt,
+    requestOptions,
+    signal
+  })
+  attachMediaRequestSnapshot(assistantDisplay, 'image', { requestMeta })
   throwIfAborted(abortState)
 
   const imageTask = extractImageGenerationTaskState(payload, requestMeta)
   if (imageTask) {
-    applyImageGenerationTaskToDisplay(assistantDisplay, imageTask, placeholderMode)
-    session.apiMessages.push({
+    applyImageGenerationTaskToDisplay(assistantDisplay, { ...imageTask, startedAt }, placeholderMode)
+    targetSession.apiMessages.push({
       role: 'assistant',
       content:
         placeholderMode === 'image'
           ? `图片任务已受理：${assistantImageTaskStatusLabel(assistantDisplay)}${imageTask.id ? `（任务 ID：${imageTask.id}）` : ''}`
           : buildImageGenerationPendingText(imageTask)
     })
-    assistantDisplay.apiIndex = session.apiMessages.length - 1
-    await scrollToBottom()
+    assistantDisplay.apiIndex = targetSession.apiMessages.length - 1
+    await maybeScrollToBottomForRun(abortState)
     return
   }
 
-  const images = extractChatImagesFromToolResult(payload)
+  const generationTimeMs = Math.max(0, Date.now() - startedAt)
+  const images = await persistChatMediaListAssets(
+    extractChatImagesFromToolResult(payload).map((image) => ({
+      ...image,
+      requestSize: image.requestSize || requestOptions.size || '',
+      generationTimeMs: Number(image.generationTimeMs || 0) || generationTimeMs
+    })),
+    { kind: 'image', messageId: assistantDisplay.id }
+  )
   const textResult = extractImageGenerationTextResult(payload)
   if (!images.length) {
     if (textResult) {
       applyImageGenerationTextToDisplay(assistantDisplay, textResult)
-      session.apiMessages.push({
+      targetSession.apiMessages.push({
         role: 'assistant',
         content: textResult
       })
-      assistantDisplay.apiIndex = session.apiMessages.length - 1
+      assistantDisplay.apiIndex = targetSession.apiMessages.length - 1
       setCurrentAssistantDisplay(null)
-      await scrollToBottom()
+      await maybeScrollToBottomForRun(abortState)
       return
     }
     throw new Error(buildImageGenerationCompatibilityError(payload, requestMeta))
@@ -7879,16 +9292,16 @@ async function runImageGenerationRound({
   const revisedPrompts = collectImageGenerationRevisedPrompts(payload)
   applyImageGenerationImagesToDisplay(assistantDisplay, { images, userPrompt, revisedPrompts })
 
-  session.apiMessages.push({
+  targetSession.apiMessages.push({
     role: 'assistant',
     content: buildImageGenerationApiSummary({
       imageCount: images.length,
       revisedPrompts
     })
   })
-  assistantDisplay.apiIndex = session.apiMessages.length - 1
+  assistantDisplay.apiIndex = targetSession.apiMessages.length - 1
   setCurrentAssistantDisplay(null)
-  await scrollToBottom()
+  await maybeScrollToBottomForRun(abortState)
 }
 
 function buildVideoGenerationPendingText(videoTask = null) {
@@ -7897,17 +9310,22 @@ function buildVideoGenerationPendingText(videoTask = null) {
   return `视频生成${statusLabel}${taskId ? `（任务 ID：${taskId}）` : '……'}`
 }
 
-function createVideoGenerationPlaceholderDisplay(userPrompt, placeholderMode = 'text') {
+function createVideoGenerationPlaceholderDisplay(userPrompt, placeholderMode = 'text', options = {}) {
+  const requestInfo = String(options?.requestInfo || '').trim()
   const assistantDisplay = createDisplayMessage('assistant', placeholderMode === 'video' ? '' : buildVideoGenerationPendingText(), {
     streaming: false,
     render: 'text',
     videoPrompt: userPrompt,
+    videoRequestInfo: requestInfo,
     transientRequestPlaceholder: true
   })
 
   if (placeholderMode === 'video') {
     assistantDisplay.videoBubblePlaceholder = true
-    assistantDisplay.videoBubblePlaceholderItem = createAssistantVideoBubblePlaceholder()
+    assistantDisplay.videoBubblePlaceholderItem = createAssistantVideoBubblePlaceholder(
+      '视频生成中，结果就绪后会展示在这里。',
+      requestInfo
+    )
   }
 
   return assistantDisplay
@@ -7920,19 +9338,21 @@ function applyVideoGenerationTaskToDisplay(assistantDisplay, videoTask, placehol
   assistantDisplay.transientRequestPlaceholder = false
 
   if (placeholderMode === 'video') {
+    const requestInfo = String(assistantDisplay.videoRequestInfo || '').trim()
     assistantDisplay.content = ''
     assistantDisplay.videoTask = videoTask
     assistantDisplay.videoBubblePlaceholder = true
     assistantDisplay.videoBubblePlaceholderItem = createAssistantVideoBubblePlaceholder(
-      videoTask?.note || '视频生成中，结果就绪后会展示在这里。'
+      videoTask?.note || '视频生成中，结果就绪后会展示在这里。',
+      requestInfo
     )
     return
   }
 
-  assistantDisplay.videoTask = null
+  assistantDisplay.videoTask = videoTask
   assistantDisplay.videoBubblePlaceholder = false
   assistantDisplay.videoBubblePlaceholderItem = null
-  assistantDisplay.content = buildVideoGenerationPendingText(videoTask)
+  assistantDisplay.content = ''
 }
 
 function applyVideoGenerationTextToDisplay(assistantDisplay, textResult) {
@@ -7972,291 +9392,192 @@ function buildVideoGenerationApiSummary({ videoCount }) {
   return `（已生成 ${count || 1} 个视频）`
 }
 
-function extractVideoGenerationTaskState(payload, requestMeta = null) {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null
-  const status = String(payload.status ?? payload.state ?? payload.task_status ?? payload.taskStatus ?? '')
-    .trim()
-    .toLowerCase()
-  if (!status) return null
-
-  if (!['queued', 'submitted', 'pending', 'accepted', 'processing', 'running', 'in_progress'].includes(status)) {
-    return null
-  }
-
-  const id = String(payload.task_id ?? payload.taskId ?? payload.job_id ?? payload.jobId ?? payload.id ?? '').trim()
-  const endpointKind = requestMeta?.kind === 'videos-api' ? 'videos' : ''
-  const note =
-    status === 'queued' || status === 'submitted' || status === 'pending' || status === 'accepted'
-      ? '视频任务已受理，正在排队生成。'
-      : '视频正在生成中，结果就绪后会展示在这里。'
-
-  return { id, status, endpointKind, note }
-}
-
-function buildVideoGenerationCompatibilityError(payload, requestMeta = null) {
-  const payloadPreview = summarizeImageGenerationPayload(payload)
-  const lines = ['视频生成接口没有返回可展示的视频数据。']
-  if (requestMeta?.url) lines.push(`接口：${requestMeta.url}`)
-  if (payloadPreview) lines.push(`返回预览：\n${payloadPreview}`)
-  return lines.join('\n')
-}
-
-function shouldFallbackMediaRequestToChat(err, mediaKind = 'image') {
-  const text = String(err?.message || err || '').trim()
-  if (!text) return false
-
-  const lower = text.toLowerCase()
-  const mediaLabel = mediaKind === 'video' ? '视频' : '图片'
-  const mediaToken = mediaKind === 'video' ? 'video' : 'image'
-  const httpStatuses = Array.from(
-    lower.matchAll(/http[\s:：]*(\d{3})|status[\s:=：]*(\d{3})/gi),
-    (match) => Number(match?.[1] || match?.[2] || 0)
-  ).filter((code) => Number.isFinite(code) && code > 0)
-
-  if (httpStatuses.some((code) => code === 404 || code === 405 || code === 415 || code === 422 || code >= 500)) {
-    return true
-  }
-
-  if (
-    lower.includes('unsupported') ||
-    lower.includes('not supported') ||
-    lower.includes('not support') ||
-    lower.includes('not found') ||
-    text.includes('接口不存在') ||
-    text.includes('兼容层') ||
-    text.includes('没有返回可展示') ||
-    text.includes('只支持文本') ||
-    lower.includes('only supports text') ||
-    lower.includes('only support text') ||
-    text.includes('已尝试以下端点') ||
-    lower.includes('/images/generations') ||
-    lower.includes('/videos') ||
-    lower.includes('/responses') ||
-    lower.includes('request failed')
-  ) {
-    return true
-  }
-
-  if (
-    (text.includes(mediaLabel) || lower.includes(mediaToken)) &&
-    (text.includes('模型') || lower.includes('model') || text.includes('请求失败') || lower.includes('failed'))
-  ) {
-    return true
-  }
-
-  return false
-}
-
-function uniqueNonEmpty(list = []) {
-  return Array.from(new Set((Array.isArray(list) ? list : []).filter(Boolean)))
-}
-
-function buildVideoStatusCandidates(baseEndpoint, videoId) {
-  const base = String(baseEndpoint || '').replace(/\/+$/, '')
-  const id = String(videoId || '').trim()
-  if (!base || !id) return []
-  return uniqueNonEmpty([`${base}/${id}`])
-}
-
-function buildVideoContentCandidates(baseEndpoint, videoId) {
-  const base = String(baseEndpoint || '').replace(/\/+$/, '')
-  const id = String(videoId || '').trim()
-  if (!base || !id) return []
-  return uniqueNonEmpty([`${base}/${id}/content`])
-}
-
-async function delayWithAbort(ms, abortState = null, signal = null) {
-  if (!ms || ms <= 0) return
-  await new Promise((resolve, reject) => {
-    const timer = window.setTimeout(() => {
-      cleanup()
-      resolve()
-    }, ms)
-
-    const onAbort = () => {
-      cleanup()
-      reject(createAbortError())
-    }
-
-    const cleanup = () => {
-      window.clearTimeout(timer)
-      try {
-        unregisterAbort?.()
-      } catch {
-        // ignore
-      }
-      if (signal && abortHandler) signal.removeEventListener('abort', abortHandler)
-    }
-
-    const unregisterAbort = abortState?.onAbort?.(onAbort)
-    const abortHandler = signal ? () => onAbort() : null
-    if (signal && abortHandler) signal.addEventListener('abort', abortHandler, { once: true })
+function buildMessageIdSet(messages = []) {
+  const ids = new Set()
+  ;(Array.isArray(messages) ? messages : []).forEach((msg) => {
+    const id = String(msg?.id || '').trim()
+    if (id) ids.add(id)
   })
+  return ids
 }
 
-async function postVideoGeneration({ baseUrl, apiKey, body, signal }) {
-  const base = normalizeBaseUrl(baseUrl)
-  const triedUrls = []
-  let lastError = null
-  const videoApiCandidates = uniqueNonEmpty([`${base}/videos`, !/\/v1$/i.test(base) ? `${base}/v1/videos` : ''])
+const activeSessionMessageIdSet = computed(() => buildMessageIdSet(session.messages))
+const trackedMessageIdSet = computed(() => {
+  const ids = new Set(activeSessionMessageIdSet.value)
+  ;(Array.isArray(memorySessions.value) ? memorySessions.value : []).forEach((record) => {
+    ;(Array.isArray(record?.messages) ? record.messages : []).forEach((msg) => {
+      const id = String(msg?.id || '').trim()
+      if (id) ids.add(id)
+    })
+  })
+  return ids
+})
 
-  for (const url of videoApiCandidates) {
-    triedUrls.push(url)
-    try {
-      const form = new FormData()
-      form.set('model', String(body.model || '').trim())
-      form.set('prompt', String(body.prompt || '').trim())
-
-      const resp = await fetch(url, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${apiKey}`
-        },
-        body: form,
-        signal
-      })
-
-      if (resp.status === 404) {
-        lastError = new Error(`视频生成接口不存在（HTTP 404）：${url}`)
-        continue
-      }
-
-      const responseText = await resp.text()
-      const parsedResponse = safeJsonParse(responseText)
-      if (!resp.ok) {
-        const errJson = parsedResponse.ok ? parsedResponse.value : null
-        const detail = errJson?.error?.message || (parsedResponse.ok ? stableStringify(errJson) : responseText)
-        throw new Error(`视频生成请求失败（HTTP ${resp.status}）：${detail || resp.statusText}\nURL: ${url}`)
-      }
-
-      if (parsedResponse.ok) {
-        return { payload: parsedResponse.value, requestMeta: { kind: 'videos-api', url, baseEndpoint: url } }
-      }
-
-      const plain = String(responseText || '').trim()
-      if (plain) return { payload: plain, requestMeta: { kind: 'videos-api', url, baseEndpoint: url } }
-      throw new Error('视频生成接口返回了空响应')
-    } catch (err) {
-      lastError = err
-      continue
-    }
-  }
-
-  const triedSummary = Array.from(new Set(triedUrls)).join('\n')
-  if (triedSummary) {
-    throw new Error(`${lastError?.message || '视频生成请求失败：未收到有效响应。'}\n已尝试以下端点：\n${triedSummary}`)
-  }
-  throw lastError || new Error('视频生成请求失败：未收到有效响应。')
+function isDisplayMessageInActiveSession(msg) {
+  if (!msg || typeof msg !== 'object') return false
+  const id = String(msg.id || '').trim()
+  return !!id && activeSessionMessageIdSet.value.has(id)
 }
 
-async function fetchVideoGenerationStatus({ requestMeta, videoId, apiKey, signal }) {
-  const candidates = buildVideoStatusCandidates(requestMeta?.baseEndpoint, videoId)
-  let lastError = null
-
-  for (const url of candidates) {
-    try {
-      const resp = await fetch(url, {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          Accept: 'application/json'
-        },
-        signal
-      })
-      if (resp.status === 404) continue
-      const responseText = await resp.text()
-      const parsedResponse = safeJsonParse(responseText)
-      if (!resp.ok) {
-        const detail = parsedResponse.ok ? stableStringify(parsedResponse.value) : responseText
-        throw new Error(`查询视频任务失败（HTTP ${resp.status}）：${detail || resp.statusText}`)
-      }
-      if (parsedResponse.ok) return parsedResponse.value
-      return String(responseText || '').trim()
-    } catch (err) {
-      lastError = err
-    }
-  }
-
-  if (lastError) throw lastError
-  return null
+function isDisplayMessageTracked(msg) {
+  if (!msg || typeof msg !== 'object') return false
+  const id = String(msg.id || '').trim()
+  return !!id && trackedMessageIdSet.value.has(id)
 }
 
-async function fetchVideoGenerationContentPayload({ requestMeta, videoId, apiKey, signal }) {
-  const candidates = buildVideoContentCandidates(requestMeta?.baseEndpoint, videoId)
-  let lastError = null
-
-  for (const url of candidates) {
-    try {
-      const resp = await fetch(url, {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${apiKey}`
-        },
-        signal
-      })
-      if (resp.status === 404) continue
-      if (!resp.ok) {
-        const responseText = await resp.text()
-        throw new Error(`获取视频内容失败（HTTP ${resp.status}）：${responseText || resp.statusText}`)
-      }
-
-      const blob = await resp.blob()
-      if (!blob || !blob.size) throw new Error('视频内容为空')
-      const objectUrl = URL.createObjectURL(blob)
-      return {
-        data: [
-          {
-            url: objectUrl,
-            mime: blob.type || 'video/mp4',
-            name: `video_${videoId}`
-          }
-        ]
-      }
-    } catch (err) {
-      lastError = err
-    }
-  }
-
-  if (lastError) throw lastError
-  return null
-}
-
-async function waitForVideoGenerationResult({
+function startDetachedVideoTaskPolling({
+  assistantDisplay,
   initialPayload,
+  requestMeta,
+  apiKey,
+  startedAt,
+  placeholderMode,
+  userPrompt,
+  initialTask,
+  sessionRecord = null,
+  stateSnapshot = null
+}) {
+  if (!assistantDisplay || !requestMeta || !apiKey) return
+  const taskId = String(initialTask?.id || initialPayload?.id || initialPayload?.task_id || '').trim()
+  if (!taskId) return
+
+  const record = sessionRecord || getMemorySessionForMessage(assistantDisplay)
+  const requestHandle = new AbortController()
+  const abortState = createRequestAbortStateForMediaResume(requestHandle)
+  detachedMediaAbortStates.add(abortState)
+  setMediaTaskResuming(assistantDisplay, 'video', true)
+  record.runningTaskCount = Math.max(0, Number(record.runningTaskCount || 0)) + 1
+  if (stateSnapshot && typeof stateSnapshot === 'object') record.state = deepCopyJson(stateSnapshot, {})
+
+  void (async () => {
+    try {
+      const resolvedPayload = await waitForVideoGenerationResult({
+        initialPayload,
+        requestMeta,
+        apiKey,
+        signal: requestHandle.signal,
+        abortState,
+        timeoutMs: VIDEO_GENERATION_RESULT_TIMEOUT_MS,
+        onStatus: (_payload, taskState) => {
+          if (!isDisplayMessageTracked(assistantDisplay)) {
+            abortState.abort()
+            return
+          }
+          if (!taskState) return
+          const nextTask = {
+            ...(assistantDisplay.videoTask || {}),
+            ...taskState,
+            id: taskState.id || assistantDisplay.videoTask?.id || taskId,
+            startedAt,
+            lastPolledAt: Date.now()
+          }
+          applyVideoGenerationTaskToDisplay(assistantDisplay, nextTask, placeholderMode)
+        }
+      })
+
+      if (!isDisplayMessageTracked(assistantDisplay)) return
+
+      if (!resolvedPayload) {
+        assistantDisplay.videoTask = {
+          ...(assistantDisplay.videoTask || {}),
+          id: taskId,
+          status: 'processing',
+          stage: 'polling',
+          startedAt,
+          note: '视频任务仍在生成中，稍后可继续轮询。'
+        }
+        applyVideoGenerationTaskToDisplay(assistantDisplay, assistantDisplay.videoTask, placeholderMode)
+        setAssistantApiContentForDisplay(assistantDisplay, buildVideoGenerationPendingText(assistantDisplay.videoTask))
+        return
+      }
+
+      const generationTimeMs = Math.max(0, Date.now() - startedAt)
+      const videos = await persistChatMediaListAssets(
+        extractChatVideosFromToolResult(resolvedPayload).map((video) => ({
+          ...video,
+          generationTimeMs: Number(video.generationTimeMs || 0) || generationTimeMs
+        })),
+        { kind: 'video', messageId: assistantDisplay.id }
+      )
+      if (!videos.length) {
+        const textResult = extractImageGenerationTextResult(resolvedPayload)
+        if (textResult) {
+          applyVideoGenerationTextToDisplay(assistantDisplay, textResult)
+          setAssistantApiContentForDisplay(assistantDisplay, textResult)
+          return
+        }
+        throw new Error(buildVideoGenerationCompatibilityError(resolvedPayload, requestMeta))
+      }
+
+      applyVideoGenerationVideosToDisplay(assistantDisplay, { videos, userPrompt })
+      setAssistantApiContentForDisplay(assistantDisplay, buildVideoGenerationApiSummary({ videoCount: videos.length }))
+      message.success('视频生成完成')
+    } catch (err) {
+      if (!isDisplayMessageTracked(assistantDisplay)) return
+      if (abortState.aborted || isAbortError(err)) {
+        assistantDisplay.videoTask = {
+          ...(assistantDisplay.videoTask || {}),
+          id: taskId,
+          status: 'processing',
+          stage: 'polling',
+          startedAt,
+          note: '已停止自动轮询，稍后可继续轮询。'
+        }
+        applyVideoGenerationTaskToDisplay(assistantDisplay, assistantDisplay.videoTask, placeholderMode)
+        setAssistantApiContentForDisplay(assistantDisplay, buildVideoGenerationPendingText(assistantDisplay.videoTask))
+      } else {
+        const errorText = err?.message || String(err)
+        applyMediaGenerationFailureToDisplay(assistantDisplay, errorText)
+        message.error(assistantDisplay.mediaFailure?.summary || mediaFailureSummary(errorText, 'video') || '视频轮询失败')
+      }
+    } finally {
+      detachedMediaAbortStates.delete(abortState)
+      record.runningTaskCount = Math.max(0, Number(record.runningTaskCount || 0) - 1)
+      if (isDisplayMessageTracked(assistantDisplay)) {
+        setMediaTaskResuming(assistantDisplay, 'video', false)
+        void autoPersistMemorySessionWhenIdle(record)
+        if (isDisplayMessageInActiveSession(assistantDisplay)) await scrollToBottom()
+      }
+    }
+  })()
+}
+
+async function resolveVideoGenerationContentIfReady({
+  payload,
   requestMeta,
   apiKey,
   signal,
   abortState = null,
-  timeoutMs = 10 * 60 * 1000
+  assistantDisplay = null,
+  startedAt = Date.now(),
+  placeholderMode = 'text'
 }) {
-  const directVideos = extractChatVideosFromToolResult(initialPayload)
-  if (directVideos.length) return initialPayload
+  if (!shouldFetchVideoGenerationContent(payload, requestMeta)) return payload
 
-  let payload = initialPayload
-  let taskState = extractVideoGenerationTaskState(payload, requestMeta)
-  const videoId = String(taskState?.id || payload?.id || payload?.task_id || '').trim()
-  if (!videoId) return payload
-
-  const startedAt = Date.now()
-  while (Date.now() - startedAt < timeoutMs) {
-    throwIfAborted(abortState)
-    const status = String(payload?.status ?? payload?.state ?? '').trim().toLowerCase()
-    if (['completed', 'succeeded', 'success'].includes(status)) {
-      if (extractChatVideosFromToolResult(payload).length) return payload
-      const contentPayload = await fetchVideoGenerationContentPayload({ requestMeta, videoId, apiKey, signal })
-      return contentPayload || payload
+  const resolvedPayload = await waitForVideoGenerationResult({
+    initialPayload: payload,
+    requestMeta,
+    apiKey,
+    signal,
+    abortState,
+    timeoutMs: VIDEO_GENERATION_RESULT_TIMEOUT_MS,
+    initialPollDelayMs: 0,
+    onStatus: (_payload, taskState) => {
+      if (!taskState || !assistantDisplay) return
+      const nextTask = {
+        ...(assistantDisplay.videoTask || {}),
+        ...taskState,
+        startedAt,
+        lastPolledAt: Date.now(),
+        note: taskState.stage === 'fetching_result'
+          ? '视频已生成，正在获取视频文件。'
+          : taskState.note || '视频正在生成中，结果就绪后会展示在这里。'
+      }
+      applyVideoGenerationTaskToDisplay(assistantDisplay, nextTask, placeholderMode)
     }
-    if (['failed', 'error', 'cancelled', 'canceled'].includes(status)) return payload
+  })
 
-    await delayWithAbort(8000, abortState, signal)
-    const nextPayload = await fetchVideoGenerationStatus({ requestMeta, videoId, apiKey, signal })
-    if (!nextPayload) return payload
-    payload = nextPayload
-    taskState = extractVideoGenerationTaskState(payload, requestMeta)
-    if (!taskState && extractChatVideosFromToolResult(payload).length) return payload
-  }
-
-  return null
+  return resolvedPayload || payload
 }
 
 async function runVideoGenerationRound({
@@ -8266,12 +9587,14 @@ async function runVideoGenerationRound({
   signal,
   setCurrentAssistantDisplay,
   abortState = null,
-  placeholderMode = 'text'
+  placeholderMode = 'text',
+  requestOptionsOverride = null
 }) {
+  const targetSession = getRunSessionTarget(abortState)
   throwIfAborted(abortState)
   const lastUserApiMsg = (() => {
-    for (let i = (session.apiMessages || []).length - 1; i >= 0; i--) {
-      if (session.apiMessages[i]?.role === 'user') return session.apiMessages[i]
+    for (let i = (targetSession.apiMessages || []).length - 1; i >= 0; i--) {
+      if (targetSession.apiMessages[i]?.role === 'user') return targetSession.apiMessages[i]
     }
     return null
   })()
@@ -8281,84 +9604,752 @@ async function runVideoGenerationRound({
     throw new Error('视频生成提示词为空')
   }
 
-  const assistantDisplay = createVideoGenerationPlaceholderDisplay(userPrompt, placeholderMode)
-  session.messages.push(assistantDisplay)
+  const requestOptions =
+    requestOptionsOverride && typeof requestOptionsOverride === 'object'
+      ? buildVideoGenerationRequestOptionsWithReferences(requestOptionsOverride)
+      : {}
+  const requestInfo = placeholderMode === 'video' ? buildManualVideoGenerationRequestInfo(requestOptions) : ''
+  const startedAt = Date.now()
+  const assistantDisplay = createVideoGenerationPlaceholderDisplay(userPrompt, placeholderMode, { requestInfo })
+  attachMediaRequestSnapshot(assistantDisplay, 'video', buildMediaRequestSnapshot('video', {
+    baseUrl,
+    model,
+    prompt: userPrompt,
+    requestOptions,
+    placeholderMode,
+    startedAt
+  }))
+  targetSession.messages.push(assistantDisplay)
   setCurrentAssistantDisplay(assistantDisplay)
-  await scrollToBottom()
+  await maybeScrollToBottomForRun(abortState)
 
-  const prompt = buildVideoGenerationPromptFromHistory(userPrompt)
-  const { payload, requestMeta } = await withTimeout(
-    postVideoGeneration({
-      baseUrl,
-      apiKey,
-      body: {
-        model,
-        prompt
-      },
-      signal
-    }),
-    180000,
-    '视频生成请求'
-  )
+  const prompt = buildVideoGenerationPromptFromHistory(userPrompt, { apiMessages: targetSession.apiMessages })
+  const { payload, requestMeta } = await requestVideoGeneration({
+    baseUrl,
+    apiKey,
+    model,
+    prompt,
+    requestOptions,
+    signal
+  })
+  attachMediaRequestSnapshot(assistantDisplay, 'video', { requestMeta })
   throwIfAborted(abortState)
 
   let finalPayload = payload
   const videoTask = extractVideoGenerationTaskState(payload, requestMeta)
   if (videoTask) {
-    applyVideoGenerationTaskToDisplay(assistantDisplay, videoTask, placeholderMode)
-    const resolvedPayload = await waitForVideoGenerationResult({
+    applyVideoGenerationTaskToDisplay(assistantDisplay, { ...videoTask, startedAt }, placeholderMode)
+    targetSession.apiMessages.push({
+      role: 'assistant',
+      content:
+        placeholderMode === 'video'
+          ? `视频任务已受理：${assistantVideoTaskStatusLabel(assistantDisplay)}${videoTask.id ? `（任务 ID：${videoTask.id}）` : ''}`
+          : buildVideoGenerationPendingText(videoTask)
+    })
+    assistantDisplay.apiIndex = targetSession.apiMessages.length - 1
+    setCurrentAssistantDisplay(null)
+    await maybeScrollToBottomForRun(abortState)
+    startDetachedVideoTaskPolling({
+      assistantDisplay,
       initialPayload: payload,
       requestMeta,
       apiKey,
-      signal,
-      abortState
+      startedAt,
+      placeholderMode,
+      userPrompt,
+      initialTask: videoTask,
+      sessionRecord: targetSession,
+      stateSnapshot: targetSession?.state || null
     })
-    if (!resolvedPayload) {
-      session.apiMessages.push({
-        role: 'assistant',
-        content:
-          placeholderMode === 'video'
-            ? `视频任务已受理：${assistantVideoTaskStatusLabel(assistantDisplay)}${videoTask.id ? `（任务 ID：${videoTask.id}）` : ''}`
-            : buildVideoGenerationPendingText(videoTask)
-      })
-      assistantDisplay.apiIndex = session.apiMessages.length - 1
-      await scrollToBottom()
-      return
-    }
-    finalPayload = resolvedPayload
+    return
   }
 
-  const videos = extractChatVideosFromToolResult(finalPayload)
+  finalPayload = await resolveVideoGenerationContentIfReady({
+    payload: finalPayload,
+    requestMeta,
+    apiKey,
+    signal,
+    abortState,
+    assistantDisplay,
+    startedAt,
+    placeholderMode
+  })
+  throwIfAborted(abortState)
+
+  const generationTimeMs = Math.max(0, Date.now() - startedAt)
+  const videos = await persistChatMediaListAssets(
+    extractChatVideosFromToolResult(finalPayload).map((video) => ({
+      ...video,
+      generationTimeMs: Number(video.generationTimeMs || 0) || generationTimeMs
+    })),
+    { kind: 'video', messageId: assistantDisplay.id }
+  )
   const textResult = extractImageGenerationTextResult(finalPayload)
   if (!videos.length) {
     if (textResult) {
       applyVideoGenerationTextToDisplay(assistantDisplay, textResult)
-      session.apiMessages.push({
+      targetSession.apiMessages.push({
         role: 'assistant',
         content: textResult
       })
-      assistantDisplay.apiIndex = session.apiMessages.length - 1
+      assistantDisplay.apiIndex = targetSession.apiMessages.length - 1
       setCurrentAssistantDisplay(null)
-      await scrollToBottom()
+      await maybeScrollToBottomForRun(abortState)
       return
     }
     throw new Error(buildVideoGenerationCompatibilityError(finalPayload, requestMeta))
   }
 
   applyVideoGenerationVideosToDisplay(assistantDisplay, { videos, userPrompt })
-  session.apiMessages.push({
+  targetSession.apiMessages.push({
     role: 'assistant',
     content: buildVideoGenerationApiSummary({
       videoCount: videos.length
     })
   })
-  assistantDisplay.apiIndex = session.apiMessages.length - 1
+  assistantDisplay.apiIndex = targetSession.apiMessages.length - 1
   setCurrentAssistantDisplay(null)
-  await scrollToBottom()
+  await maybeScrollToBottomForRun(abortState)
+}
+
+async function runDetachedVideoGenerationRequest({
+  record,
+  assistantDisplay,
+  baseUrl,
+  apiKey,
+  model,
+  userPrompt,
+  requestOptions,
+  placeholderMode,
+  startedAt,
+  stateSnapshot
+}) {
+  if (!record || !assistantDisplay) return
+  const requestHandle = new AbortController()
+  const abortState = createRequestAbortStateForMediaResume(requestHandle)
+  detachedMediaAbortStates.add(abortState)
+  record.runningTaskCount = Math.max(0, Number(record.runningTaskCount || 0)) + 1
+  record.state = stateSnapshot && typeof stateSnapshot === 'object' ? deepCopyJson(stateSnapshot, {}) : record.state
+
+  try {
+    const { payload, requestMeta } = await requestVideoGeneration({
+      baseUrl,
+      apiKey,
+      model,
+      prompt: userPrompt,
+      requestOptions,
+      signal: requestHandle.signal
+    })
+    attachMediaRequestSnapshot(assistantDisplay, 'video', { requestMeta })
+    if (abortState.aborted) throw createAbortError()
+
+    const videoTask = extractVideoGenerationTaskState(payload, requestMeta)
+    if (videoTask) {
+      applyVideoGenerationTaskToDisplay(assistantDisplay, { ...videoTask, startedAt }, placeholderMode)
+      setAssistantApiContentForDisplay(
+        assistantDisplay,
+        placeholderMode === 'video'
+          ? `视频任务已受理：${assistantVideoTaskStatusLabel(assistantDisplay)}${videoTask.id ? `（任务 ID：${videoTask.id}）` : ''}`
+          : buildVideoGenerationPendingText(videoTask),
+        record
+      )
+      startDetachedVideoTaskPolling({
+        assistantDisplay,
+        initialPayload: payload,
+        requestMeta,
+        apiKey,
+        startedAt,
+        placeholderMode,
+        userPrompt,
+        initialTask: videoTask,
+        sessionRecord: record,
+        stateSnapshot
+      })
+      return
+    }
+
+    const finalPayload = await resolveVideoGenerationContentIfReady({
+      payload,
+      requestMeta,
+      apiKey,
+      signal: requestHandle.signal,
+      abortState,
+      assistantDisplay,
+      startedAt,
+      placeholderMode
+    })
+    if (abortState.aborted) throw createAbortError()
+
+    const generationTimeMs = Math.max(0, Date.now() - startedAt)
+    const videos = await persistChatMediaListAssets(
+      extractChatVideosFromToolResult(finalPayload).map((video) => ({
+        ...video,
+        generationTimeMs: Number(video.generationTimeMs || 0) || generationTimeMs
+      })),
+      { kind: 'video', messageId: assistantDisplay.id }
+    )
+    if (!videos.length) {
+      const textResult = extractImageGenerationTextResult(finalPayload)
+      if (textResult) {
+        applyVideoGenerationTextToDisplay(assistantDisplay, textResult)
+        setAssistantApiContentForDisplay(assistantDisplay, textResult, record)
+        return
+      }
+      throw new Error(buildVideoGenerationCompatibilityError(finalPayload, assistantDisplay?.mediaRequest?.requestMeta))
+    }
+
+    applyVideoGenerationVideosToDisplay(assistantDisplay, { videos, userPrompt })
+    setAssistantApiContentForDisplay(assistantDisplay, buildVideoGenerationApiSummary({ videoCount: videos.length }), record)
+    message.success('视频生成完成')
+  } catch (err) {
+    if (abortState.aborted || isAbortError(err)) {
+      assistantDisplay.videoTask = {
+        ...(assistantDisplay.videoTask || {}),
+        status: 'processing',
+        stage: 'polling',
+        startedAt,
+        note: '已停止自动轮询，稍后可继续轮询。'
+      }
+      applyVideoGenerationTaskToDisplay(assistantDisplay, assistantDisplay.videoTask, placeholderMode)
+      setAssistantApiContentForDisplay(assistantDisplay, buildVideoGenerationPendingText(assistantDisplay.videoTask), record)
+    } else {
+      const errorText = err?.message || String(err)
+      applyMediaGenerationFailureToDisplay(assistantDisplay, errorText)
+      message.error(assistantDisplay.mediaFailure?.summary || mediaFailureSummary(errorText, 'video') || '视频生成失败')
+    }
+  } finally {
+    detachedMediaAbortStates.delete(abortState)
+    record.runningTaskCount = Math.max(0, Number(record.runningTaskCount || 0) - 1)
+    record.updatedAt = Date.now()
+    void autoPersistMemorySessionWhenIdle(record)
+    if (isDisplayMessageInActiveSession(assistantDisplay)) await scrollToBottom()
+  }
+}
+
+async function startDetachedVideoGeneration({ cfg, text, attachments = [], userDisplay, sourceMessage = null }) {
+  const record = getActiveMemorySession()
+  const stateSnapshot = buildCurrentChatState()
+  record.state = deepCopyJson(stateSnapshot, {})
+  const referenceImages = await collectAttachmentMediaReferenceImages(attachments, userDisplay)
+  clearAttachmentFileReferences(attachments)
+
+  const promptText = String(text || '').trim()
+  const userPrompt = extractImageGenerationPromptFromContent(promptText).trim()
+  if (!userPrompt) {
+    message.warning('视频生成提示词为空')
+    return false
+  }
+
+  const apiContent = promptText || userPrompt
+  record.apiMessages.push({ role: 'user', content: apiContent })
+  userDisplay.apiIndex = record.apiMessages.length - 1
+
+  const placeholderMode = String(cfg.videoGenerationPlaceholderMode || getMediaRequestPlaceholderMode(sourceMessage, 'video') || 'video')
+  const rawVideoRequestOptions = mergeReferenceImagesIntoRequestOptions(
+    cfg.videoGenerationRequestOptionsOverride && typeof cfg.videoGenerationRequestOptionsOverride === 'object'
+      ? cfg.videoGenerationRequestOptionsOverride
+      : {},
+    referenceImages,
+    'video'
+  )
+  const requestOptions = buildVideoGenerationRequestOptionsWithReferences(rawVideoRequestOptions)
+  const requestInfo = placeholderMode === 'video' ? buildManualVideoGenerationRequestInfo(requestOptions) : ''
+  const startedAt = Date.now()
+  const assistantDisplay = createVideoGenerationPlaceholderDisplay(userPrompt, placeholderMode, { requestInfo })
+  attachMediaRequestSnapshot(assistantDisplay, 'video', buildMediaRequestSnapshot('video', {
+    baseUrl: cfg.baseUrl,
+    model: cfg.model,
+    prompt: userPrompt,
+    requestOptions,
+    placeholderMode,
+    startedAt
+  }))
+  record.messages.push(assistantDisplay)
+  record.updatedAt = Date.now()
+  record.title = inferMemorySessionTitle(record)
+  scheduleRefreshUserAnchorMeta()
+  if (isMemorySessionActive(record)) await scrollToBottom({ force: true })
+  void runDetachedVideoGenerationRequest({
+    record,
+    assistantDisplay,
+    baseUrl: cfg.baseUrl,
+    apiKey: cfg.apiKey,
+    model: cfg.model,
+    userPrompt,
+    requestOptions,
+    placeholderMode,
+    startedAt,
+    stateSnapshot
+  })
+  return true
+}
+
+function getMediaRequestPrompt(msg, kind = 'image') {
+  const direct = kind === 'video' ? msg?.videoPrompt : msg?.imagePrompt
+  return String(direct || msg?.mediaRequest?.prompt || '').trim()
+}
+
+function getMediaRequestPlaceholderMode(msg, kind = 'image') {
+  const mode = String(msg?.mediaRequest?.placeholderMode || '').trim()
+  if (mode) return mode
+  return kind === 'video' ? 'video' : 'image'
+}
+
+function getImageRequestOptionsFromMessage(msg) {
+  if (msg?.mediaRequest?.requestOptions && typeof msg.mediaRequest.requestOptions === 'object') {
+    return buildImageGenerationRequestOptionsWithReferences(deepCopyJson(msg.mediaRequest.requestOptions, {}))
+  }
+  const firstImage = Array.isArray(msg?.images) ? msg.images.find((img) => img && typeof img === 'object') : null
+  const requestSize = String(firstImage?.requestSize || '').trim()
+  return requestSize ? { size: requestSize } : {}
+}
+
+function getVideoRequestOptionsFromMessage(msg) {
+  if (msg?.mediaRequest?.requestOptions && typeof msg.mediaRequest.requestOptions === 'object') {
+    return buildVideoGenerationRequestOptionsWithReferences(deepCopyJson(msg.mediaRequest.requestOptions, {}))
+  }
+  const firstVideo = Array.isArray(msg?.videos) ? msg.videos.find((video) => video && typeof video === 'object') : null
+  const requestSize = String(firstVideo?.requestSize || firstVideo?.resolution || '').trim()
+  return requestSize ? { size: requestSize } : {}
+}
+
+function canRegenerateMedia(msg, kind = 'image') {
+  if (sending.value) return false
+  return !!getMediaRequestPrompt(msg, kind)
+}
+
+function mediaTaskResumeKey(msg, kind = 'video') {
+  const task = kind === 'video' ? msg?.videoTask : msg?.imageTask
+  return `${kind}:${String(msg?.id || '').trim()}:${String(task?.id || '').trim()}`
+}
+
+function isMediaTaskResuming(msg, kind = 'video') {
+  const key = mediaTaskResumeKey(msg, kind)
+  return !!key && resumingMediaTaskKeys.value.includes(key)
+}
+
+function setMediaTaskResuming(msg, kind = 'video', next = false) {
+  const key = mediaTaskResumeKey(msg, kind)
+  if (!key) return
+  const current = new Set(resumingMediaTaskKeys.value)
+  if (next) current.add(key)
+  else current.delete(key)
+  resumingMediaTaskKeys.value = Array.from(current)
+}
+
+function getVideoResumeRequestMeta(msg) {
+  const meta = msg?.mediaRequest?.requestMeta
+  if (meta && typeof meta === 'object' && String(meta.baseEndpoint || '').trim()) return meta
+  return null
+}
+
+function canResumeMediaTask(msg, kind = 'video') {
+  if (kind !== 'video' || isMediaTaskResuming(msg, kind)) return false
+  if (assistantVisibleVideoCount(msg)) return false
+  const task = msg?.videoTask
+  const taskId = String(task?.id || '').trim()
+  if (!taskId) return false
+  const status = String(task?.status || task?.stage || '').trim().toLowerCase()
+  if (['failed', 'error', 'cancelled', 'canceled'].includes(status)) return false
+  return !!getVideoResumeRequestMeta(msg)
+}
+
+function countResumableMediaTasks() {
+  return (session.messages || []).filter((msg) => canResumeMediaTask(msg, 'video')).length
+}
+
+function findOpenaiCompatibleProviderByBaseUrl(baseUrl) {
+  const target = getCompatKey(baseUrl)
+  if (!target) return null
+  return (providers.value || []).find((provider) => {
+    if (!provider || isUtoolsBuiltinProvider(provider)) return false
+    return getCompatKey(provider.baseurl) === target
+  }) || null
+}
+
+function getOpenaiCompatibleMediaConfigOrHint(kind = 'image', sourceMessage = null, options = {}) {
+  const savedBaseUrl = String(sourceMessage?.mediaRequest?.baseUrl || '').trim()
+  const savedProvider = savedBaseUrl ? findOpenaiCompatibleProviderByBaseUrl(savedBaseUrl) : null
+  if (savedBaseUrl && !savedProvider && options.requireSavedProvider) {
+    message.warning('当前配置中找不到该任务的原服务商，请切回或重新配置相同接口地址后再继续轮询。')
+    return null
+  }
+  if (savedBaseUrl && !savedProvider && !options.silentFallback) {
+    message.warning('未找到原服务商配置，已改用当前服务商再次生成。')
+  }
+
+  const provider = savedProvider || selectedProvider.value
+  if (!provider) {
+    message.warning('请先选择服务商 / 模型')
+    showModelModal.value = true
+    return null
+  }
+
+  if (isUtoolsBuiltinProvider(provider)) {
+    message.warning('当前页面不支持用 uTools 内置 AI 直接恢复或再次生成媒体，请改用兼容 OpenAI 的服务商。')
+    return null
+  }
+
+  const baseUrl = String(provider.baseurl || '').trim()
+  const apiKey = String(provider.apikey || '').trim()
+  const providerDefaultModel = Array.isArray(provider.selectModels) ? String(provider.selectModels[0] || '').trim() : ''
+  const selectedModelForProvider = String(provider._id || '').trim() === String(selectedProviderId.value || '').trim()
+    ? String(selectedModel.value || '').trim()
+    : ''
+  const model = String(
+    savedProvider
+      ? sourceMessage?.mediaRequest?.model || selectedModelForProvider || providerDefaultModel
+      : selectedModel.value
+  ).trim()
+  if (!baseUrl || !apiKey) {
+    message.warning('请先配置服务商接口地址 / API 密钥')
+    return null
+  }
+  if (!model) {
+    message.warning('请先选择模型')
+    showModelModal.value = true
+    return null
+  }
+
+  return {
+    providerKind: 'openai-compatible',
+    baseUrl,
+    apiKey,
+    model,
+    requestMode: kind === 'video' ? 'video-generation' : 'image-generation',
+    imageGenerationPlaceholderMode: kind === 'image' ? 'image' : 'text',
+    videoGenerationPlaceholderMode: kind === 'video' ? 'video' : 'text',
+    supportsVision: false
+  }
+}
+
+async function submitMediaGenerationPrompt(kind, prompt, sourceMessage = null) {
+  if (sending.value) return
+  const text = String(prompt || '').trim()
+  if (!text) {
+    message.warning(kind === 'video' ? '视频生成提示词为空' : '图片生成提示词为空')
+    return
+  }
+
+  const cfg = getOpenaiCompatibleMediaConfigOrHint(kind, sourceMessage)
+  if (!cfg) return
+
+  clearAllUserEditingState()
+  const placeholderMode = getMediaRequestPlaceholderMode(sourceMessage, kind)
+  if (kind === 'video') {
+    cfg.videoGenerationPlaceholderMode = placeholderMode
+    cfg.videoGenerationRequestOptionsOverride = getVideoRequestOptionsFromMessage(sourceMessage)
+  } else {
+    cfg.imageGenerationPlaceholderMode = placeholderMode
+    cfg.imageGenerationRequestOptionsOverride = getImageRequestOptionsFromMessage(sourceMessage)
+  }
+
+  const userDisplay = createDisplayMessage('user', text)
+  session.messages.push(userDisplay)
+  const requestRecord = getActiveMemorySession()
+  autoScrollEnabled.value = true
+  scheduleRefreshUserAnchorMeta()
+  await scrollToBottom({ force: true })
+  if (kind === 'video') {
+    await startDetachedVideoGeneration({ cfg, text, attachments: [], userDisplay, sourceMessage })
+    return
+  }
+  await runChatSession({
+    ...cfg,
+    sessionRecord: requestRecord,
+    prepare: async () => {
+      if (isMemorySessionActive(requestRecord)) await scrollToBottom({ force: true })
+      await prepareUserApiMessage({
+        text,
+        attachments: [],
+        userDisplay,
+        preferVision: false,
+        providerKind: 'openai-compatible',
+        sessionTarget: requestRecord
+      })
+    }
+  })
+}
+
+function regenerateMedia(msg, kind = 'image') {
+  const prompt = getMediaRequestPrompt(msg, kind)
+  if (!prompt) {
+    message.warning(kind === 'video' ? '没有可复用的视频提示词' : '没有可复用的图片提示词')
+    return
+  }
+  showMediaLibraryModal.value = false
+  void submitMediaGenerationPrompt(kind, prompt, msg)
+}
+
+function setAssistantApiContentForDisplay(msg, content, sessionLike = null) {
+  if (!msg) return
+  const targetSession = sessionLike || getMemorySessionForMessage(msg) || session
+  const text = String(content || '').trim()
+  const apiIndex = Number(msg.apiIndex)
+  if (Number.isFinite(apiIndex) && apiIndex >= 0 && targetSession.apiMessages?.[apiIndex]?.role === 'assistant') {
+    targetSession.apiMessages[apiIndex].content = text
+    return
+  }
+  targetSession.apiMessages.push({ role: 'assistant', content: text })
+  msg.apiIndex = targetSession.apiMessages.length - 1
+}
+
+function extractMediaFailureReasonLine(errorText) {
+  const raw = String(errorText || '').trim()
+  if (!raw) return ''
+  const lines = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+  const reasonLine = lines.find((line) => /^原因[：:]/.test(line))
+  if (reasonLine) return reasonLine
+
+  const messageLine = lines.find((line) => /^(错误信息|错误消息|Error message|Message)[：:]/i.test(line))
+  const codeLine = lines.find((line) => /^(错误码|错误代码|Error code|Code)[：:]/i.test(line))
+  if (messageLine && codeLine) return `${codeLine}，${messageLine}`
+  if (messageLine) return messageLine
+  if (codeLine) return codeLine
+
+  const diagnosticLine = lines.find((line) =>
+    /moderation_blocked|moderation system|content safety|blocked by|rate limit|insufficient_quota|quota|unauthorized|forbidden|invalid|unsupported|not found|timeout|审核|拦截|限流|额度|余额|权限|不支持|不存在|超时/i.test(line)
+  )
+  return diagnosticLine || lines[0] || raw
+}
+
+function mediaFailureSummary(errorText, kind = 'image') {
+  const reason = extractMediaFailureReasonLine(errorText) || '未知错误'
+  const label = kind === 'video' ? '视频生成失败' : '图片生成失败'
+  return `${label}：${truncateInlineText(reason, 260)}`
+}
+
+function mediaFailureSuggestion(errorText, kind = 'image') {
+  const raw = String(errorText || '').trim()
+  const lower = raw.toLowerCase()
+  if (lower.includes('moderation_blocked') || lower.includes('moderation system') || lower.includes('content safety') || raw.includes('内容安全审核') || raw.includes('审核系统') || raw.includes('拦截')) {
+    return kind === 'video'
+      ? '请求被内容安全审核拦截，服务端不会返回可展示的视频文件。可以调整提示词或参考图后重试。'
+      : '请求被内容安全审核拦截，服务端不会返回可展示的图片文件。可以调整提示词或参考图后重试。'
+  }
+  if (lower.includes('timeout') || raw.includes('超时')) return '请求已超时，没有自动回退。可以稍后重试，或检查服务商任务是否仍在后台生成。'
+  if (lower.includes('429') || lower.includes('rate limit') || raw.includes('限流') || raw.includes('请求过多')) return '请求被服务商限流。可以稍后重试，或降低并发生成数量。'
+  if (lower.includes('insufficient_quota') || lower.includes('quota') || raw.includes('额度') || raw.includes('余额')) return '请检查当前服务商账户额度、计费状态和模型权限。'
+  if (lower.includes('401') || lower.includes('403') || raw.includes('密钥')) return '请检查当前服务商 API Key、模型权限和账户额度。'
+  if (kind === 'image' && lower.includes('tool choice') && lower.includes('image_generation') && lower.includes('tools')) {
+    return '当前服务商不兼容 Responses API 的图片生成工具调用，通常是中转站没有透传 tools 或不支持内置 image_generation 工具。建议切换到官方接口，或确认该服务商支持 /v1/images 与 /v1/responses 图片生成。'
+  }
+  if (lower.includes('404') || lower.includes('405') || raw.includes('接口不存在')) return kind === 'video'
+    ? '当前服务商的视频接口可能不兼容，可以切换模型/服务商或改用普通聊天。'
+    : '当前服务商的图片接口可能不兼容，可以切换模型/服务商或改用普通聊天。'
+  return '可以直接重试；如果连续失败，建议切换模型/服务商或复制错误信息排查。'
+}
+
+function applyMediaGenerationFailureToDisplay(assistantDisplay, errorText) {
+  if (!assistantDisplay || typeof assistantDisplay !== 'object') return false
+  const kind = String(assistantDisplay.mediaRequest?.kind || (assistantDisplay.videoPrompt ? 'video' : assistantDisplay.imagePrompt ? 'image' : '')).trim()
+  if (kind !== 'image' && kind !== 'video') return false
+
+  const summary = mediaFailureSummary(errorText, kind)
+  const suggestion = mediaFailureSuggestion(errorText, kind)
+  const note = `${summary}\n${suggestion}`
+  assistantDisplay.streaming = false
+  assistantDisplay.render = 'text'
+  assistantDisplay.transientRequestPlaceholder = false
+  assistantDisplay.mediaFailure = {
+    kind,
+    summary,
+    errorText: String(errorText || '').trim(),
+    suggestion
+  }
+
+  const startedAt = Number(assistantDisplay.mediaRequest?.startedAt || 0) || Date.now()
+  if (kind === 'video') {
+    assistantDisplay.videoTask = {
+      ...(assistantDisplay.videoTask || {}),
+      status: 'failed',
+      stage: 'failed',
+      note,
+      startedAt
+    }
+    if (getMediaRequestPlaceholderMode(assistantDisplay, kind) === 'video') {
+      assistantDisplay.content = ''
+      assistantDisplay.videoBubblePlaceholder = true
+      assistantDisplay.videoBubblePlaceholderItem = createAssistantVideoBubblePlaceholder(note, assistantDisplay.videoRequestInfo || '')
+    } else {
+      assistantDisplay.videoBubblePlaceholder = false
+      assistantDisplay.videoBubblePlaceholderItem = null
+      assistantDisplay.content = ''
+    }
+  } else {
+    assistantDisplay.imageTask = {
+      ...(assistantDisplay.imageTask || {}),
+      status: 'failed',
+      stage: 'failed',
+      note,
+      startedAt
+    }
+    if (getMediaRequestPlaceholderMode(assistantDisplay, kind) === 'image') {
+      assistantDisplay.content = ''
+      assistantDisplay.imageBubblePlaceholder = true
+      assistantDisplay.imageBubblePlaceholderImage = createAssistantImageBubblePlaceholder(note, assistantDisplay.imageRequestInfo || '')
+    } else {
+      assistantDisplay.imageBubblePlaceholder = false
+      assistantDisplay.imageBubblePlaceholderImage = null
+      assistantDisplay.content = ''
+    }
+  }
+
+  setAssistantApiContentForDisplay(assistantDisplay, note)
+  return true
+}
+
+function createRequestAbortStateForMediaResume(requestHandle) {
+  const abortListeners = new Set()
+  const abortState = {
+    aborted: false,
+    onAbort(listener) {
+      if (typeof listener !== 'function') return () => {}
+      if (abortState.aborted) {
+        try {
+          listener()
+        } catch {
+          // ignore
+        }
+        return () => {}
+      }
+      abortListeners.add(listener)
+      return () => abortListeners.delete(listener)
+    },
+    abort() {
+      if (abortState.aborted) return
+      abortState.aborted = true
+      abortListeners.forEach((listener) => {
+        try {
+          listener()
+        } catch {
+          // ignore
+        }
+      })
+      abortListeners.clear()
+      try {
+        requestHandle?.abort?.()
+      } catch {
+        // ignore
+      }
+    }
+  }
+  return abortState
+}
+
+async function resumeMediaTask(msg, kind = 'video') {
+  if (kind !== 'video') return
+  if (!canResumeMediaTask(msg, kind)) {
+    message.warning('当前视频任务缺少可恢复的轮询信息')
+    return
+  }
+
+  const cfg = getOpenaiCompatibleMediaConfigOrHint(kind, msg, { requireSavedProvider: true })
+  if (!cfg) return
+
+  const requestMeta = getVideoResumeRequestMeta(msg)
+  const task = msg.videoTask || {}
+  const taskId = String(task.id || '').trim()
+  const requestHandle = new AbortController()
+  const abortState = createRequestAbortStateForMediaResume(requestHandle)
+  const startedAt = Number(task.startedAt || msg.mediaRequest?.startedAt || 0) || Date.now()
+  const placeholderMode = getMediaRequestPlaceholderMode(msg, kind)
+  const record = getMemorySessionForMessage(msg)
+
+  setMediaTaskResuming(msg, kind, true)
+  detachedMediaAbortStates.add(abortState)
+  record.runningTaskCount = Math.max(0, Number(record.runningTaskCount || 0)) + 1
+
+  try {
+    msg.videoTask = {
+      ...task,
+      id: taskId,
+      status: String(task.status || 'processing').trim() || 'processing',
+      stage: 'polling',
+      startedAt,
+      note: task.note || '正在继续查询视频任务，结果就绪后会展示在这里。'
+    }
+    applyVideoGenerationTaskToDisplay(msg, msg.videoTask, placeholderMode)
+    if (isDisplayMessageInActiveSession(msg)) await scrollToBottom()
+
+    const resolvedPayload = await waitForVideoGenerationResult({
+      initialPayload: { id: taskId, status: msg.videoTask.status || 'processing' },
+      requestMeta,
+      apiKey: cfg.apiKey,
+      signal: requestHandle.signal,
+      abortState,
+      timeoutMs: VIDEO_GENERATION_RESULT_TIMEOUT_MS,
+      initialPollDelayMs: 0,
+      onStatus: (_payload, taskState) => {
+        if (!taskState) return
+        msg.videoTask = {
+          ...(msg.videoTask || {}),
+          ...taskState,
+          id: taskState.id || taskId,
+          startedAt,
+          lastPolledAt: Date.now()
+        }
+        applyVideoGenerationTaskToDisplay(msg, msg.videoTask, placeholderMode)
+      }
+    })
+
+    if (!resolvedPayload) {
+      msg.videoTask = {
+        ...(msg.videoTask || {}),
+        id: taskId,
+        status: 'processing',
+        stage: 'polling',
+        startedAt,
+        note: '视频任务仍在生成中，稍后可继续轮询。'
+      }
+      applyVideoGenerationTaskToDisplay(msg, msg.videoTask, placeholderMode)
+      setAssistantApiContentForDisplay(msg, buildVideoGenerationPendingText(msg.videoTask))
+      message.info('视频任务仍在生成中，稍后可继续轮询。')
+      return
+    }
+
+    const generationTimeMs = Math.max(0, Date.now() - startedAt)
+    const videos = await persistChatMediaListAssets(
+      extractChatVideosFromToolResult(resolvedPayload).map((video) => ({
+        ...video,
+        generationTimeMs: Number(video.generationTimeMs || 0) || generationTimeMs
+      })),
+      { kind: 'video', messageId: msg.id }
+    )
+    if (!videos.length) {
+      const textResult = extractImageGenerationTextResult(resolvedPayload)
+      if (textResult) {
+        applyVideoGenerationTextToDisplay(msg, textResult)
+        setAssistantApiContentForDisplay(msg, textResult)
+        return
+      }
+      throw new Error(buildVideoGenerationCompatibilityError(resolvedPayload, requestMeta))
+    }
+
+    applyVideoGenerationVideosToDisplay(msg, {
+      videos,
+      userPrompt: getMediaRequestPrompt(msg, 'video')
+    })
+    setAssistantApiContentForDisplay(msg, buildVideoGenerationApiSummary({ videoCount: videos.length }))
+    message.success('视频结果已恢复')
+  } catch (err) {
+    if (abortState.aborted || isAbortError(err)) {
+      message.info('已停止继续轮询视频任务')
+    } else {
+      const errorText = err?.message || String(err)
+      applyMediaGenerationFailureToDisplay(msg, errorText)
+      message.error(msg.mediaFailure?.summary || mediaFailureSummary(errorText, 'video') || '继续轮询失败')
+    }
+  } finally {
+    detachedMediaAbortStates.delete(abortState)
+    record.runningTaskCount = Math.max(0, Number(record.runningTaskCount || 0) - 1)
+    setMediaTaskResuming(msg, kind, false)
+    void autoPersistMemorySessionWhenIdle(record)
+    if (isDisplayMessageInActiveSession(msg)) await scrollToBottom()
+  }
 }
 
 const CHAT_REQUEST_TIMEOUT_MS = 36000000
-const IMAGE_GENERATION_REQUEST_TIMEOUT_MS = 180000
 
 async function runChatSession({
   providerKind = 'openai-compatible',
@@ -8369,11 +10360,19 @@ async function runChatSession({
   baseUrl,
   apiKey,
   model,
+  imageGenerationRequestOptionsOverride = null,
+  videoGenerationRequestOptionsOverride = null,
+  sessionRecord = null,
   prepare
 }) {
   if (sending.value) return
 
   sending.value = true
+  const runRecord = sessionRecord || getActiveMemorySession()
+  runRecord.runningTaskCount = Math.max(0, Number(runRecord.runningTaskCount || 0)) + 1
+  runRecord.chatRunCount = Math.max(0, Number(runRecord.chatRunCount || 0)) + 1
+  runRecord.state = buildCurrentChatState()
+  runRecord.title = inferMemorySessionTitle(runRecord)
   let requestHandle = null
   const abortListeners = new Set()
   const requestAbortState = {
@@ -8411,6 +10410,8 @@ async function runChatSession({
       }
     }
   }
+  runRecordByAbortState.set(requestAbortState, runRecord)
+  runRecord.activeRequestAbortState = requestAbortState
   abortController.value = requestAbortState
   let timedOut = false
   const requestTimeoutTimer = window.setTimeout(() => {
@@ -8446,14 +10447,16 @@ async function runChatSession({
             model,
             signal: requestHandle.signal,
             placeholderMode: imageGenerationPlaceholderMode,
+            requestOptionsOverride: imageGenerationRequestOptionsOverride,
             setCurrentAssistantDisplay: (m) => {
               currentAssistantDisplay = m
             },
             abortState: requestAbortState
           })
         } catch (err) {
-          if (!shouldFallbackMediaRequestToChat(err, 'image')) throw err
-          removeDisplayMessageById(currentAssistantDisplay?.id)
+          const allowTextFallback = imageGenerationPlaceholderMode !== 'image'
+          if (!allowTextFallback || !shouldFallbackMediaRequestToChat(err, 'image')) throw err
+          removeRunDisplayMessageById(requestAbortState, currentAssistantDisplay?.id)
           currentAssistantDisplay = null
           requestHandle = new AbortController()
           if (requestAbortState.aborted) requestHandle.abort()
@@ -8479,14 +10482,16 @@ async function runChatSession({
             model,
             signal: requestHandle.signal,
             placeholderMode: videoGenerationPlaceholderMode,
+            requestOptionsOverride: videoGenerationRequestOptionsOverride,
             setCurrentAssistantDisplay: (m) => {
               currentAssistantDisplay = m
             },
             abortState: requestAbortState
           })
         } catch (err) {
-          if (!shouldFallbackMediaRequestToChat(err, 'video')) throw err
-          removeDisplayMessageById(currentAssistantDisplay?.id)
+          const allowTextFallback = videoGenerationPlaceholderMode !== 'video'
+          if (!allowTextFallback || !shouldFallbackMediaRequestToChat(err, 'video')) throw err
+          removeRunDisplayMessageById(requestAbortState, currentAssistantDisplay?.id)
           currentAssistantDisplay = null
           requestHandle = new AbortController()
           if (requestAbortState.aborted) requestHandle.abort()
@@ -8522,14 +10527,19 @@ async function runChatSession({
     if (requestAbortState.aborted || isAbortError(err)) {
       const stopText = timedOut ? `（请求在 ${CHAT_REQUEST_TIMEOUT_MS}ms 后超时并已停止）` : '（已停止）'
       if (currentAssistantDisplay) {
+        flushDeferredMessageFieldsForMessage(currentAssistantDisplay.id)
         currentAssistantDisplay.streaming = false
         currentAssistantDisplay.content = currentAssistantDisplay.content || stopText
       } else {
-        session.messages.push(createDisplayMessage('assistant', stopText))
+          getRunSessionTarget(requestAbortState).messages.push(createDisplayMessage('assistant', stopText))
       }
     } else {
       const errorText = err?.message || String(err)
-      if (currentAssistantDisplay) {
+      const mediaFailureApplied = applyMediaGenerationFailureToDisplay(currentAssistantDisplay, errorText)
+      if (mediaFailureApplied) {
+        // 媒体生成错误保留在任务卡片中，便于重试和查看建议。
+      } else if (currentAssistantDisplay) {
+        flushDeferredMessageFieldsForMessage(currentAssistantDisplay.id)
         currentAssistantDisplay.streaming = false
         const shouldRemovePlaceholder =
           currentAssistantDisplay.transientRequestPlaceholder ||
@@ -8540,24 +10550,53 @@ async function runChatSession({
             !currentAssistantDisplay.imageTask &&
             !currentAssistantDisplay.videoTask)
         if (shouldRemovePlaceholder) {
-          const idx = session.messages.findIndex((m) => m.id === currentAssistantDisplay.id)
-          if (idx !== -1) session.messages.splice(idx, 1)
+          const targetSession = getRunSessionTarget(requestAbortState)
+          const idx = targetSession.messages.findIndex((m) => m.id === currentAssistantDisplay.id)
+          if (idx !== -1) targetSession.messages.splice(idx, 1)
         }
       }
-      message.error(errorText || '请求失败')
-      await scrollToBottom()
+      message.error(mediaFailureApplied ? (currentAssistantDisplay?.mediaFailure?.summary || '媒体生成失败') : (errorText || '请求失败'))
+      await maybeScrollToBottomForRun(requestAbortState)
     }
   } finally {
     window.clearTimeout(requestTimeoutTimer)
-    sending.value = false
-    abortController.value = null
+    runRecord.runningTaskCount = Math.max(0, Number(runRecord.runningTaskCount || 0) - 1)
+    runRecord.chatRunCount = Math.max(0, Number(runRecord.chatRunCount || 0) - 1)
+    if (runRecord.activeRequestAbortState === requestAbortState) {
+      runRecord.activeRequestAbortState = null
+    }
     currentAssistantDisplay = null
-    await scrollToBottom()
+    if (isMemorySessionActive(runRecord)) {
+      syncActiveRequestUiState(runRecord)
+    } else if (abortController.value === requestAbortState) {
+      sending.value = false
+      abortController.value = null
+    }
+    if (isMemorySessionActive(runRecord)) {
+      const record = saveActiveMemorySessionDraft()
+      void autoPersistMemorySessionWhenIdle(record)
+    } else {
+      runRecord.updatedAt = Date.now()
+      runRecord.title = inferMemorySessionTitle(runRecord)
+      void autoPersistMemorySessionWhenIdle(runRecord)
+    }
+    await maybeScrollToBottomForRun(requestAbortState)
+    runRecordByAbortState.delete(requestAbortState)
   }
 }
 
-async function prepareUserApiMessage({ text, attachments, userDisplay, preferVision = true, providerKind = 'openai-compatible' }) {
+async function prepareUserApiMessage({
+  text,
+  attachments,
+  userDisplay,
+  preferVision = true,
+  providerKind = 'openai-compatible',
+  sessionTarget = null,
+  imageAttachmentMode = 'chat'
+}) {
+  const targetSession = sessionTarget || session
   const list = Array.isArray(attachments) ? attachments : []
+  const imageAttachmentsAsMediaReferences = imageAttachmentMode === 'media-reference'
   if (list.length) {
     await Promise.all(list.map((a) => ensureAttachmentParsed(a)))
   }
@@ -8577,9 +10616,11 @@ async function prepareUserApiMessage({ text, attachments, userDisplay, preferVis
   for (const a of list) {
     if (a.status === 'ready' && a.kind === 'image' && a.dataUrl) {
       imageAttachments.push(a)
-      const metaText = String(a.text || '').trim() || `附件：${a.name}\n图片元数据不可用`
-      attachmentContextBlocksForVision.push(`${metaText}\n（图片已随消息发送）`)
-      attachmentContextBlocksTextOnly.push(`${metaText}\n（当前提供商不会直接接收图片二进制，模型只能看到这些元数据）`)
+      if (!imageAttachmentsAsMediaReferences) {
+        const metaText = String(a.text || '').trim() || `附件：${a.name}\n图片元数据不可用`
+        attachmentContextBlocksForVision.push(`${metaText}\n（图片已随消息发送）`)
+        attachmentContextBlocksTextOnly.push(`${metaText}\n（当前提供商不会直接接收图片二进制，模型只能看到这些元数据）`)
+      }
       continue
     }
     if (a.status === 'ready') {
@@ -8612,7 +10653,7 @@ async function prepareUserApiMessage({ text, attachments, userDisplay, preferVis
     // ignore
   }
 
-  const currentTurnAttachmentBudget = await getCurrentTurnAttachmentCharBudget(providerKind)
+  const currentTurnAttachmentBudget = await getCurrentTurnAttachmentCharBudget(providerKind, { sessionTarget: targetSession })
   const attachmentBlockForVision = attachmentContextBlocksForVision.length
     ? `【附件内容】\n${attachmentContextBlocksForVision.join('\n\n')}`
     : ''
@@ -8638,9 +10679,9 @@ async function prepareUserApiMessage({ text, attachments, userDisplay, preferVis
     userApiMessage.vision_fallback_text = combinedTextTextOnly
   }
 
-  session.apiMessages.push(userApiMessage)
-  userDisplay.apiIndex = session.apiMessages.length - 1
-  await scrollToBottom({ force: true })
+  targetSession.apiMessages.push(userApiMessage)
+  userDisplay.apiIndex = targetSession.apiMessages.length - 1
+  if (targetSession === session) await scrollToBottom({ force: true })
 }
 
 function getLatestRealUserPromptText(apiMessages = session.apiMessages) {
@@ -8726,7 +10767,7 @@ async function regenerateAssistant(msg) {
   } catch {
     // ignore
   }
-  await runChatSession({ ...cfg, prepare: async () => scrollToBottom({ force: true }) })
+  await runChatSession({ ...cfg, sessionRecord: getActiveMemorySession(), prepare: async () => scrollToBottom({ force: true }) })
 }
 
 function toggleOrSubmitUserEdit(msg) {
@@ -8801,7 +10842,7 @@ async function submitUserEdit(msg) {
   }
 
   truncateConversationAfterUser(userApiIndex, userDisplayIndex)
-  await runChatSession({ ...cfg, prepare: async () => scrollToBottom({ force: true }) })
+  await runChatSession({ ...cfg, sessionRecord: getActiveMemorySession(), prepare: async () => scrollToBottom({ force: true }) })
 }
 
 function toggleAutoApproveTools() {
@@ -8871,6 +10912,46 @@ function setImageGenerationMode(nextMode) {
 function setVideoGenerationMode(nextMode) {
   const next = normalizeImageGenerationMode(nextMode)
   videoGenerationMode.value = next
+}
+
+function assignImageGenerationParams(nextParams = {}) {
+  Object.assign(imageGenerationParams, normalizeImageGenerationParams(nextParams))
+}
+
+function assignVideoGenerationParams(nextParams = {}) {
+  Object.assign(videoGenerationParams, normalizeVideoGenerationParams(nextParams))
+}
+
+function setImageGenerationParamsEnabled(enabled) {
+  imageGenerationParamsEnabled.value = normalizeMediaGenerationParamsEnabled(enabled)
+}
+
+function setVideoGenerationParamsEnabled(enabled) {
+  videoGenerationParamsEnabled.value = normalizeMediaGenerationParamsEnabled(enabled)
+}
+
+function resetImageGenerationParams() {
+  assignImageGenerationParams(createDefaultImageGenerationParams())
+}
+
+function resetVideoGenerationParams() {
+  assignVideoGenerationParams(createDefaultVideoGenerationParams())
+}
+
+function getCurrentImageGenerationRequestOptions() {
+  return buildMediaGenerationManualRequestOptions(
+    'image',
+    imageGenerationParamsEnabled.value,
+    imageGenerationParams
+  )
+}
+
+function getCurrentVideoGenerationRequestOptions() {
+  return buildMediaGenerationManualRequestOptions(
+    'video',
+    videoGenerationParamsEnabled.value,
+    videoGenerationParams
+  )
 }
 
 function cycleImageGenerationMode() {
@@ -9208,18 +11289,21 @@ function openSystemPromptModal() {
 function applyCustomSystemPrompt() {
   basePromptMode.value = 'custom'
   customSystemPrompt.value = String(systemPromptDraft.value || '')
+  customSystemPromptExplicit.value = !!normalizePromptText(customSystemPrompt.value)
   showSystemPromptModal.value = false
 }
 
 function clearCustomSystemPrompt() {
   basePromptMode.value = 'custom'
   customSystemPrompt.value = ''
+  customSystemPromptExplicit.value = false
   systemPromptDraft.value = ''
 }
 
 function resetSystemPromptToSelectedPrompt() {
   basePromptMode.value = 'prompt'
   customSystemPrompt.value = ''
+  customSystemPromptExplicit.value = false
   const p = (prompts.value || []).find((x) => x._id === selectedPromptId.value)
   systemPromptDraft.value = String(p?.content || '')
 }
@@ -9302,6 +11386,7 @@ async function resetChatSetup() {
   basePromptMode.value = 'custom'
   const rawDefaultSystemPrompt = String(chatConfig.value?.defaultSystemPrompt || '')
   customSystemPrompt.value = rawDefaultSystemPrompt
+  customSystemPromptExplicit.value = false
   lastLoadedDefaultSystemPrompt.value = normalizePromptText(rawDefaultSystemPrompt)
   hasInitializedDefaultSystemPrompt.value = true
   systemPromptDraft.value = ''
@@ -9323,6 +11408,10 @@ async function resetChatSetup() {
   thinkingEffort.value = 'auto'
   imageGenerationMode.value = normalizeImageGenerationMode(chatConfig.value?.imageGenerationMode)
   videoGenerationMode.value = normalizeImageGenerationMode(chatConfig.value?.videoGenerationMode)
+  setImageGenerationParamsEnabled(false)
+  resetImageGenerationParams()
+  setVideoGenerationParamsEnabled(false)
+  resetVideoGenerationParams()
   try {
     mcpListToolsCache.clear()
     mcpListToolsInFlight.clear()
@@ -9511,10 +11600,10 @@ function getHistoryContextCharBudget(options = {}) {
   })
 }
 
-async function getCurrentTurnAttachmentCharBudget(providerKind = 'openai-compatible') {
+async function getCurrentTurnAttachmentCharBudget(providerKind = 'openai-compatible', options = {}) {
   let tools = []
   try {
-    const bundle = await buildToolsBundleV2({})
+    const bundle = await buildToolsBundleV2({ sessionTarget: options?.sessionTarget || null })
     tools = Array.isArray(bundle?.tools) ? bundle.tools : []
   } catch {
     tools = []
@@ -9526,9 +11615,9 @@ async function getCurrentTurnAttachmentCharBudget(providerKind = 'openai-compati
 }
 
 function buildRequestApiMessages(providerKind = 'openai-compatible', options = {}) {
-  const { tools = [], reservedCharsOverride = null } = options || {}
+  const { tools = [], reservedCharsOverride = null, apiMessages = null } = options || {}
   return buildChatContextWindow(
-    session.apiMessages,
+    Array.isArray(apiMessages) ? apiMessages : session.apiMessages,
     buildChatContextWindowRuntimeOptions(contextWindowResolvedOptions.value, {
       providerKind,
       maxChars: getHistoryContextCharBudget({ tools, reservedCharsOverride })
@@ -9558,13 +11647,14 @@ function isLikelyVideoGenerationPrompt(text) {
   )
 }
 
-function buildEmptyAssistantResponseText() {
+function buildEmptyAssistantResponseText(apiMessages = session.apiMessages) {
   const imageMode = normalizeImageGenerationMode(imageGenerationMode.value)
   const videoMode = normalizeImageGenerationMode(videoGenerationMode.value)
   const model = String(selectedModel.value || '').trim()
   const latestUserPrompt = (() => {
-    for (let i = (session.apiMessages || []).length - 1; i >= 0; i -= 1) {
-      const msg = session.apiMessages[i]
+    const list = Array.isArray(apiMessages) ? apiMessages : []
+    for (let i = list.length - 1; i >= 0; i -= 1) {
+      const msg = list[i]
       if (msg?.role === 'user') return extractRequestMessageTextContent(msg.content)
     }
     return ''
@@ -9579,11 +11669,11 @@ function buildEmptyAssistantResponseText() {
   }
 
   if (videoMode === 'auto' && isLikelyVideoGenerationPrompt(latestUserPrompt) && !isLikelyVideoGenerationModel(model)) {
-    return '(the model returned empty text. If this was actually a video-generation request, switch the video-generation mode to On and retry.)'
+    return '（模型返回为空：如果这实际是视频生成请求，请将视频生成模式切换为开启后重试）'
   }
 
   if (imageMode === 'auto' && isLikelyImageGenerationPrompt(latestUserPrompt) && !isLikelyImageGenerationModel(model)) {
-    return '(the model returned empty text. If this was actually an image-generation request, switch the image-generation mode to On and retry.)'
+    return '（模型返回为空：如果这实际是图片生成请求，请将图片生成模式切换为开启后重试）'
   }
 
   return '（模型返回为空：请检查服务商配置或接口兼容性）'
@@ -9595,8 +11685,12 @@ function buildMediaGenerationPromptFromHistory(userPrompt, options = {}) {
 
   const mediaLabel = String(options.mediaLabel || '图片').trim() || '图片'
   const promptLead = `当前${mediaLabel}生成需求：\n${currentPrompt}`
-  const reservedChars = String(systemContent.value || '').length + promptLead.length + 2000
-  const requestMessages = buildRequestApiMessages('openai-compatible', { reservedCharsOverride: reservedChars })
+  const mediaSystemContent = getMediaGenerationSystemContent()
+  const reservedChars = mediaSystemContent.length + promptLead.length + 2000
+  const requestMessages = buildRequestApiMessages('openai-compatible', {
+    reservedCharsOverride: reservedChars,
+    apiMessages: Array.isArray(options.apiMessages) ? options.apiMessages : null
+  })
 
   let latestUserIndex = -1
   for (let i = requestMessages.length - 1; i >= 0; i -= 1) {
@@ -9609,18 +11703,18 @@ function buildMediaGenerationPromptFromHistory(userPrompt, options = {}) {
   const historyLines = (latestUserIndex > 0 ? requestMessages.slice(0, latestUserIndex) : [])
     .filter((message) => message?.role === 'user' || message?.role === 'assistant')
     .map((message) => {
-      const text = truncateInlineText(extractRequestMessageTextContent(message.content), 800)
+      const text = truncateInlineText(extractEditableUserTextFromContent(extractRequestMessageTextContent(message.content)), 800)
       if (!text) return ''
-      const roleLabel = message.role === 'assistant' ? 'Assistant' : 'User'
+      const roleLabel = message.role === 'assistant' ? '助手' : '用户'
       return `${roleLabel}: ${text}`
     })
     .filter(Boolean)
 
   const contextText = historyLines.length
-    ? truncateText(historyLines.join('\n\n'), 6000, '(older conversation context truncated)')
+    ? truncateText(historyLines.join('\n\n'), 6000, '（较早的对话上下文已截断）')
     : ''
 
-  return [String(systemContent.value || '').trim(), contextText ? `参考最近对话上下文：\n${contextText}` : '', promptLead]
+  return [mediaSystemContent, contextText ? `参考最近对话上下文：\n${contextText}` : '', promptLead]
     .filter(Boolean)
     .join('\n\n')
 }
@@ -9652,7 +11746,7 @@ function shouldRetryToolContinuationAsPlainText(errorText) {
 
 function formatToolCallFallbackLine(toolCall) {
   const name = String(toolCall?.function?.name || '').trim() || 'unknown_tool'
-  const args = truncateText(String(toolCall?.function?.arguments || '').trim() || '{}', 1200, '(tool arguments truncated)')
+  const args = truncateText(String(toolCall?.function?.arguments || '').trim() || '{}', 1200, '（工具参数已截断）')
   return `- ${name}: ${args}`
 }
 
@@ -9660,7 +11754,7 @@ function coerceToolStateMessageToPlainText(message) {
   if (!message || typeof message !== 'object') return null
   if (message.role === 'tool') {
     const callId = String(message.tool_call_id || message.call_id || '').trim()
-    const content = truncateText(message.content || '', 24000, '(tool result truncated)')
+    const content = truncateText(message.content || '', 24000, '（工具结果已截断）')
     return {
       role: 'assistant',
       content: [`工具结果${callId ? `（${callId}）` : ''}：`, content || '（空结果）'].join('\n')
@@ -9780,63 +11874,6 @@ function stableStringify(obj, spaces = 2) {
   } catch {
     return String(obj)
   }
-}
-
-function withTimeout(promise, timeoutMs, label) {
-  const ms = Number(timeoutMs)
-  if (!ms || ms <= 0) return promise
-
-  let timer = null
-  const timeoutPromise = new Promise((_, reject) => {
-    timer = window.setTimeout(() => reject(new Error(`${label || 'Operation'} timed out (${ms}ms)`)), ms)
-  })
-
-  return Promise.race([promise, timeoutPromise]).finally(() => {
-    if (timer) window.clearTimeout(timer)
-  })
-}
-
-function createAbortError(message = 'Aborted') {
-  const err = new Error(message)
-  err.name = 'AbortError'
-  return err
-}
-
-function isAbortError(err) {
-  return err?.name === 'AbortError'
-}
-
-function throwIfAborted(abortState, message = 'Aborted') {
-  if (abortState?.aborted) throw createAbortError(message)
-}
-
-function waitForAbortable(promise, abortState, message = 'Aborted') {
-  throwIfAborted(abortState, message)
-  if (!abortState?.onAbort) return promise
-
-  return new Promise((resolve, reject) => {
-    let settled = false
-    let unregisterAbort = null
-    const finish = (fn) => {
-      if (settled) return
-      settled = true
-      try {
-        unregisterAbort?.()
-      } catch {
-        // ignore
-      }
-      fn()
-    }
-
-    unregisterAbort = abortState.onAbort(() => {
-      finish(() => reject(createAbortError(message)))
-    }) || null
-
-    Promise.resolve(promise).then(
-      (value) => finish(() => resolve(value)),
-      (err) => finish(() => reject(err))
-    )
-  })
 }
 
 function closeMcpClientSafely(server, client, pooled = false) {
@@ -10464,7 +12501,9 @@ function buildProviderToolDescription(server, tool, definition) {
   return `${base} (the original inputSchema top level is not an object; call it with {"input": ...})`
 }
 
-async function buildToolsBundle() {
+async function buildToolsBundle(options = {}) {
+  const abortState = options.abortState || null
+  const targetSession = options.sessionTarget || getRunSessionTarget(abortState)
   const functionMap = new Map()
   const tools = []
 
@@ -10543,7 +12582,7 @@ async function buildToolsBundle() {
       } catch {
         // ignore
       }
-      session.messages.push(
+      targetSession.messages.push(
         createDisplayMessage(
           'tool',
           `### MCP 工具加载失败\n- 服务：**${server.name || server._id}**\n- 错误：${err.message || String(err)}`,
@@ -10558,6 +12597,7 @@ async function buildToolsBundle() {
 
 async function buildToolsBundleV2(options = {}) {
   const abortState = options.abortState || null
+  const targetSession = options.sessionTarget || getRunSessionTarget(abortState)
   const functionMap = new Map()
   const tools = []
   const finalizeBundle = () => {
@@ -10769,7 +12809,7 @@ async function buildToolsBundleV2(options = {}) {
     if (!listResult.ok) {
       const err = listResult.error || new Error('listTools failed')
       throwIfAborted(abortState)
-      session.messages.push(
+      targetSession.messages.push(
         createDisplayMessage(
           'tool',
           `### MCP 工具加载失败\n- 服务：**${server.name || server._id}**\n- 错误：${err.message || String(err)}`,
@@ -10807,12 +12847,116 @@ async function buildToolsBundleV2(options = {}) {
   return finalizeBundle()
 }
 
+async function streamResponsesCompletion({ baseUrl, apiKey, body, signal, onDelta, abortState = null, stream = true }) {
+  const base = normalizeBaseUrl(baseUrl)
+  const candidates = [`${base}/responses`]
+  if (!/\/v1$/.test(base)) candidates.push(`${base}/v1/responses`)
+  const throwIfStreamingAborted = () => {
+    if (abortState?.aborted || signal?.aborted) throw createAbortError()
+  }
+
+  let resp = null
+  let usedUrl = candidates[0]
+  let lastNetworkError = null
+
+  for (const url of candidates) {
+    usedUrl = url
+    try {
+      resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          Authorization: `Bearer ${apiKey}`
+        },
+        body: JSON.stringify(buildResponsesRequestBodyFromChatBody(body, { stream })),
+        signal
+      })
+
+      if (resp.status === 404 && url !== candidates[candidates.length - 1]) continue
+      break
+    } catch (err) {
+      lastNetworkError = err
+      if (url !== candidates[candidates.length - 1]) continue
+      throw err
+    }
+  }
+
+  if (!resp) {
+    throw lastNetworkError || new Error('Request failed: no response received')
+  }
+
+  if (!resp.ok) {
+    const responseText = await resp.text()
+    const parsedResponse = safeJsonParse(responseText)
+    const errJson = parsedResponse.ok ? parsedResponse.value : null
+    const detail = errJson?.error?.message || (parsedResponse.ok ? stableStringify(errJson) : responseText)
+    throw new Error(`Responses 请求失败（HTTP ${resp.status}）：${detail || resp.statusText}\nURL：${usedUrl}`)
+  }
+
+  if (!stream) {
+    const responseText = await resp.text()
+    const parsedResponse = safeJsonParse(responseText)
+    if (!parsedResponse.ok) {
+      throw new Error(`Responses 请求失败：无法解析 JSON 响应\nURL：${usedUrl}`)
+    }
+    const state = createResponsesStreamAccumulator()
+    applyResponsesStreamEvent(state, parsedResponse.value)
+    const result = finalizeResponsesStreamAccumulator(state)
+    result.payloads = [parsedResponse.value]
+    if (!String(result.content || '').trim()) {
+      result.content = extractAssistantTextFromPayload(parsedResponse.value)
+    }
+    return result
+  }
+
+  const state = createResponsesStreamAccumulator()
+  await consumeJsonEventStream({
+    response: resp,
+    signal,
+    isAborted: () => {
+      throwIfStreamingAborted()
+      return !!abortState?.aborted
+    },
+    onJson: (json) => {
+      throwIfStreamingAborted()
+      const events = applyResponsesStreamEvent(state, json)
+      events.forEach((evt) => onDelta?.(evt))
+    }
+  })
+
+  const result = finalizeResponsesStreamAccumulator(state)
+  if (!String(result.content || '').trim() && result.payloads.length) {
+    result.content = extractAssistantTextFromPayloads(result.payloads)
+  }
+  return result
+}
+
+async function streamResponsesCompletionWithFallback(args) {
+  try {
+    return await streamResponsesCompletion({ ...args, stream: true })
+  } catch (err) {
+    if (isAbortError(err) || args?.abortState?.aborted || args?.signal?.aborted) throw createAbortError()
+    if (!shouldRetryResponsesWithoutStreaming(err?.message || err)) throw err
+    return await streamResponsesCompletion({ ...args, stream: false })
+  }
+}
+
 async function streamChatCompletion({ baseUrl, apiKey, body, signal, onDelta, abortState = null }) {
   const base = normalizeBaseUrl(baseUrl)
   const candidates = [`${base}/chat/completions`]
   if (!/\/v1$/.test(base)) candidates.push(`${base}/v1/chat/completions`)
   const throwIfStreamingAborted = () => {
     if (abortState?.aborted || signal?.aborted) throw createAbortError()
+  }
+
+  if (shouldPreferResponsesApiForModel(body?.model)) {
+    try {
+      return await streamResponsesCompletionWithFallback({ baseUrl, apiKey, body, signal, onDelta, abortState })
+    } catch (err) {
+      if (isAbortError(err) || abortState?.aborted || signal?.aborted) throw createAbortError()
+      if (!shouldFallbackResponsesToChatCompletions(err?.message || err)) throw err
+    }
   }
 
   let resp = null
@@ -10851,7 +12995,11 @@ async function streamChatCompletion({ baseUrl, apiKey, body, signal, onDelta, ab
     const parsedResponse = safeJsonParse(responseText)
     const errJson = parsedResponse.ok ? parsedResponse.value : null
     const detail = errJson?.error?.message || (parsedResponse.ok ? stableStringify(errJson) : responseText)
-    throw new Error(`请求失败（HTTP ${resp.status}）：${detail || resp.statusText}\nURL：${usedUrl}`)
+    const errorText = `请求失败（HTTP ${resp.status}）：${detail || resp.statusText}\nURL：${usedUrl}`
+    if (shouldFallbackChatCompletionsToResponses(errorText)) {
+      return await streamResponsesCompletionWithFallback({ baseUrl, apiKey, body, signal, onDelta, abortState })
+    }
+    throw new Error(errorText)
   }
 
   const toText = (val) => {
@@ -11386,6 +13534,7 @@ async function executeBuiltinWebTool({ mapping, argsObj, serverName, toolName, a
 }
 
 async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState = null) {
+  const targetSession = getRunSessionTarget(abortState)
   throwIfAborted(abortState)
   const fn = toolCall?.function?.name
   const argsRaw = toolCall?.function?.arguments || ''
@@ -11404,12 +13553,12 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     autoApproved: autoApproveTools.value,
     argsObj
   })
-  session.messages.push(pendingToolMessage)
-  await scrollToBottom()
+  targetSession.messages.push(pendingToolMessage)
+  await maybeScrollToBottomForRun(abortState)
 
   if (!mapping) {
     const errorText = `未在工具注册表中找到：${fn}`
-    session.messages.push(createDisplayMessage('tool', `### 工具结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+    targetSession.messages.push(createDisplayMessage('tool', `### 工具结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
     return { ok: false, content: errorText }
   }
 
@@ -11424,12 +13573,12 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     if (ok === null) throw createAbortError()
     throwIfAborted(abortState)
     if (!ok) {
-      session.messages.push(
+      targetSession.messages.push(
         createDisplayMessage('tool', `### 工具结果\n- 工具：\`${toolName}\`\n- 状态：**已拒绝**`, {
           toolMeta: `${serverName} / ${toolName}`
         })
       )
-      return { ok: false, content: 'The user rejected the tool call' }
+      return { ok: false, content: '用户拒绝了工具调用' }
     }
   }
 
@@ -11437,7 +13586,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     try {
       const exec = await executeBuiltinWebTool({ mapping, argsObj, serverName, toolName, abortState })
       throwIfAborted(abortState)
-      session.messages.push(
+      targetSession.messages.push(
         createDisplayMessage('tool', exec.display || `### 联网工具结果\n\n\`\`\`json\n${exec.content || ''}\n\`\`\``, {
           toolMeta: `${serverName} / ${toolName}`,
           toolName,
@@ -11446,13 +13595,13 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
           toolSubMeta: buildWebToolSubMeta(exec.payload)
         })
       )
-      await scrollToBottom()
+      await maybeScrollToBottomForRun(abortState)
       return exec
     } catch (err) {
       if (isAbortError(err) || abortState?.aborted) throw createAbortError()
       const errorText = err?.message || String(err)
-      session.messages.push(createDisplayMessage('tool', `### 联网工具结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await scrollToBottom()
+      targetSession.messages.push(createDisplayMessage('tool', `### 联网工具结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: `错误：${errorText}` }
     }
   }
@@ -11464,15 +13613,15 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
 
     if (!target || !target._id) {
       const errorText = `未找到要读取的技能文件。可用技能：${stableStringify(listSelectedSkillsBrief())}`
-      session.messages.push(createDisplayMessage('tool', `### 技能文件读取结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await scrollToBottom()
+      targetSession.messages.push(createDisplayMessage('tool', `### 技能文件读取结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
 
     if (!pathCandidate) {
       const errorText = 'path 不能为空'
-      session.messages.push(createDisplayMessage('tool', `### 技能文件读取结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await scrollToBottom()
+      targetSession.messages.push(createDisplayMessage('tool', `### 技能文件读取结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
 
@@ -11493,20 +13642,20 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
 
       const resultText = ['OK: read_skill_file', `skill_id: ${skillId}`, `skill_name: ${skillName}`, `path: ${resolvedPath}`, '', content].join('\n')
       throwIfAborted(abortState)
-      session.messages.push(
+      targetSession.messages.push(
         createDisplayMessage(
           'tool',
           `### 技能文件读取结果\n- 技能：**${skillName}**\n- 路径：\`${resolvedPath}\`\n\n\`\`\`\n${content}\n\`\`\``,
           { toolMeta: `${serverName} / ${toolName}` }
         )
       )
-      await scrollToBottom()
+      await maybeScrollToBottomForRun(abortState)
       return { ok: true, content: resultText }
     } catch (err) {
       if (isAbortError(err) || abortState?.aborted) throw createAbortError()
       const errorText = err?.message || String(err)
-      session.messages.push(createDisplayMessage('tool', `### 技能文件读取结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await scrollToBottom()
+      targetSession.messages.push(createDisplayMessage('tool', `### 技能文件读取结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
   }
@@ -11519,16 +13668,16 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
 
     if (!target || !target._id) {
       const errorText = `未找到要执行脚本的技能。可用技能：${stableStringify(listSelectedSkillsBrief())}`
-      session.messages.push(createDisplayMessage('tool', `### 技能脚本执行结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await scrollToBottom()
+      targetSession.messages.push(createDisplayMessage('tool', `### 技能脚本执行结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
 
     const resolvedScript = resolveSkillScriptTarget(target, pathCandidate)
     if (!resolvedScript.ok) {
       const errorText = resolvedScript.error || '脚本路径无效'
-      session.messages.push(createDisplayMessage('tool', `### 技能脚本执行结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await scrollToBottom()
+      targetSession.messages.push(createDisplayMessage('tool', `### 技能脚本执行结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
 
@@ -11604,7 +13753,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
         serverName,
         toolName
       }
-      session.messages.push(createDisplayMessage('tool', sections.join('\n\n'), {
+      targetSession.messages.push(createDisplayMessage('tool', sections.join('\n\n'), {
         toolMeta: `${serverName} / ${toolName}`,
         images,
         toolName,
@@ -11612,14 +13761,14 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
         toolExpanded: false
       }))
       successfulScriptResult = execResult
-      await scrollToBottom()
+      await maybeScrollToBottomForRun(abortState)
       return execResult
     } catch (err) {
       if (isAbortError(err) || abortState?.aborted) throw createAbortError()
       if (successfulScriptResult) return successfulScriptResult
       const errorText = err?.message || String(err)
-      session.messages.push(createDisplayMessage('tool', `### 技能脚本执行结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await scrollToBottom()
+      targetSession.messages.push(createDisplayMessage('tool', `### 技能脚本执行结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
   }
@@ -11649,7 +13798,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
         .filter((x) => x?.id)
         .slice(0, 30)
       const errorText = `未找到要启用的技能（仅可启用当前已选择的技能）。可用技能：${stableStringify(list)}`
-      session.messages.push(createDisplayMessage('tool', `### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      targetSession.messages.push(createDisplayMessage('tool', `### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
       return { ok: false, content: errorText }
     }
 
@@ -11667,8 +13816,8 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
       } catch (err) {
         if (isAbortError(err) || abortState?.aborted) throw createAbortError()
         const errorText = err?.message || String(err)
-        session.messages.push(createDisplayMessage('tool', `### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-        await scrollToBottom()
+        targetSession.messages.push(createDisplayMessage('tool', `### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+        await maybeScrollToBottomForRun(abortState)
         return { ok: false, content: errorText }
       }
     }
@@ -11698,15 +13847,15 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
         isDirectory ? (wasLoaded ? 'already_loaded' : 'loaded') : (isAgentSkill ? (changed ? 'activated' : 'already_activated') : 'noop_not_agent_skill')
       }`,
       `activation_status: ${isAgentSkill ? (changed ? 'activated' : 'already_activated') : 'noop_not_agent_skill'}`,
-      `mounted_mcp: ${mcpNameList.length ? mcpNameList.join(', ') : 'none'}`,
+      `mounted_mcp: ${mcpNameList.length ? mcpNameList.join(', ') : '无'}`,
       ...(missingMcpIds.length ? [`missing_mcp: ${missingMcpIds.join(', ')}`] : []),
       isAgentSkill
         ? '说明：完整技能内容已注入系统提示词，并已按技能配置挂载 MCP 服务；如果工具列表还没刷新出来，请下一轮再调用一次。'
-        : 'Note: this skill is not an agent preset skill, or it was already enabled, so no extra activation was needed.'
+        : '说明：这个技能不是智能体预设技能，或已经启用，因此无需额外激活。'
     ].join('\n')
 
     throwIfAborted(abortState)
-    session.messages.push(
+    targetSession.messages.push(
       createDisplayMessage(
         'tool',
         `### 技能启用结果\n- 技能：**${skillName}**\n- 状态：**${isAgentSkill ? (changed ? '已启用' : '已启用过') : '无需启用'}**\n- MCP：${mcpNameList.length ? mcpNameList.map((n) => `\`${n}\``).join(', ') : '（无）'}${missingMcpIds.length ? `\n- 缺失的 MCP 配置：${missingMcpIds.map((id) => `\`${id}\``).join(', ')}` : ''}`,
@@ -11715,7 +13864,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
         { toolMeta: `${serverName} / ${toolName}` }
       )
     )
-    await scrollToBottom()
+    await maybeScrollToBottomForRun(abortState)
     return { ok: true, content: resultText }
   }
 
@@ -11736,8 +13885,8 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     const targets = Array.from(uniq.values())
     if (!targets.length) {
       const errorText = `未找到要启用的技能（仅可启用当前已选择的技能）。可用技能：${stableStringify(listSelectedSkillsBrief())}`
-      session.messages.push(createDisplayMessage('tool', `### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await scrollToBottom()
+      targetSession.messages.push(createDisplayMessage('tool', `### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
 
@@ -11814,7 +13963,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
 
     const resultText = stableStringify(resultObj)
     throwIfAborted(abortState)
-    session.messages.push(
+    targetSession.messages.push(
       createDisplayMessage(
         'tool',
         `### 技能启用结果\n- 已启用：${activated.length ? activated.length : 0}\n- 已启用过：${already.length ? already.length : 0}\n- 无需启用：${noop.length ? noop.length : 0}\n- MCP：${mountedMcpNames.size ? Array.from(mountedMcpNames).map((n) => `\`${n}\``).join(', ') : '（无）'}${missingMcpIds.size ? `\n- 缺失的 MCP 配置：${Array.from(missingMcpIds).map((id) => `\`${id}\``).join(', ')}` : ''}`,
@@ -11823,7 +13972,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
         { toolMeta: `${serverName} / ${toolName}` }
       )
     )
-    await scrollToBottom()
+    await maybeScrollToBottomForRun(abortState)
     return {
       ok: true,
       content: resultText,
@@ -11836,8 +13985,8 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     const confirm = argsObj?.confirm === true
     if (!confirm) {
       const errorText = '请在执行前传入 confirm=true，避免系统提示词被意外膨胀。'
-      session.messages.push(createDisplayMessage('tool', `### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await scrollToBottom()
+      targetSession.messages.push(createDisplayMessage('tool', `### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
 
@@ -11848,8 +13997,8 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     })
     if (!targets.length) {
       const errorText = '当前上下文中没有可启用的智能体预设技能。'
-      session.messages.push(createDisplayMessage('tool', `### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await scrollToBottom()
+      targetSession.messages.push(createDisplayMessage('tool', `### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
 
@@ -11918,7 +14067,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     const resultText = stableStringify(resultObj)
 
     throwIfAborted(abortState)
-    session.messages.push(
+    targetSession.messages.push(
       createDisplayMessage(
         'tool',
         `### 技能启用结果\n- 已启用：${activated.length}\n- 已启用过：${already.length}\n- MCP：${mountedMcpNames.size ? Array.from(mountedMcpNames).map((n) => `\`${n}\``).join(', ') : '（无）'}${missingMcpIds.size ? `\n- 缺失的 MCP 配置：${Array.from(missingMcpIds).map((id) => `\`${id}\``).join(', ')}` : ''}`,
@@ -11927,7 +14076,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
         { toolMeta: `${serverName} / ${toolName}` }
       )
     )
-    await scrollToBottom()
+    await maybeScrollToBottomForRun(abortState)
     return { ok: true, content: resultText }
   }
 
@@ -11951,15 +14100,15 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     const targetServers = resolved ? [resolved] : activeServers
     if (!targetServers.length) {
       const errorText = `当前没有可用的 MCP 服务。可用：${stableStringify(listActiveMcpServersBrief())}`
-      session.messages.push(createDisplayMessage('tool', `### MCP 发现\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await scrollToBottom()
+      targetSession.messages.push(createDisplayMessage('tool', `### MCP 发现\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
 
     if (toolFilter && targetServers.length !== 1) {
       const errorText = '提供 tool 时也必须同时提供 server_id，避免在多个服务之间产生歧义。'
-      session.messages.push(createDisplayMessage('tool', `### MCP 发现\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await scrollToBottom()
+      targetSession.messages.push(createDisplayMessage('tool', `### MCP 发现\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
 
@@ -11997,14 +14146,14 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
       if (!result?.ok) {
         const err = result?.error || new Error('listTools failed')
         const errorText = err?.message || String(err)
-        session.messages.push(
+        targetSession.messages.push(
           createDisplayMessage(
             'tool',
             `### MCP 发现\n- 服务：**${server.name || server._id}**\n- 错误：${errorText}`,
             { toolMeta: `${server.name || server._id} / MCP` }
           )
         )
-        await scrollToBottom()
+        await maybeScrollToBottomForRun(abortState)
         return { ok: false, content: errorText }
       }
 
@@ -12018,8 +14167,8 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
         null
       if (!fuzzy) {
         const errorText = `未找到工具：${toolFilter}（服务：${server.name || server._id}）`
-        session.messages.push(createDisplayMessage('tool', `### MCP 发现\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / MCP` }))
-        await scrollToBottom()
+        targetSession.messages.push(createDisplayMessage('tool', `### MCP 发现\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / MCP` }))
+        await maybeScrollToBottomForRun(abortState)
         return { ok: false, content: errorText }
       }
 
@@ -12041,12 +14190,12 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
       }
       const resultText = stableStringify(resultObj)
       throwIfAborted(abortState)
-      session.messages.push(
+      targetSession.messages.push(
         createDisplayMessage('tool', `### MCP 工具详情\n\n\`\`\`json\n${resultText}\n\`\`\``, {
           toolMeta: `${server.name || server._id} / ${fuzzy.name}`
         })
       )
-      await scrollToBottom()
+      await maybeScrollToBottomForRun(abortState)
       return {
         ok: true,
         content: resultText,
@@ -12104,10 +14253,10 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
 
     const resultText = stableStringify(resultObj)
     throwIfAborted(abortState)
-    session.messages.push(
+    targetSession.messages.push(
       createDisplayMessage('tool', `### MCP 发现\n\n\`\`\`json\n${resultText}\n\`\`\``, { toolMeta: `${serverName} / ${toolName}` })
     )
-    await scrollToBottom()
+    await maybeScrollToBottomForRun(abortState)
     return {
       ok: true,
       content: resultText,
@@ -12119,10 +14268,10 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
   if (mapping?.type === 'internal' && mapping.internal === 'mcp_list_servers') {
     const resultObj = { ok: true, servers: listActiveMcpServersBrief(100) }
     const resultText = stableStringify(resultObj)
-    session.messages.push(
+    targetSession.messages.push(
       createDisplayMessage('tool', `### MCP 服务器\n\n\`\`\`json\n${resultText}\n\`\`\``, { toolMeta: `${serverName} / ${toolName}` })
     )
-    await scrollToBottom()
+    await maybeScrollToBottomForRun(abortState)
     return { ok: true, content: resultText }
   }
 
@@ -12132,14 +14281,14 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     const server = resolveActiveMcpServer({ idCandidate: serverIdCandidate, nameCandidate: serverNameCandidate })
     if (!server || !server._id) {
       const errorText = `未找到 MCP 服务器。可用：${stableStringify(listActiveMcpServersBrief())}`
-      session.messages.push(createDisplayMessage('tool', `### MCP 工具列表\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await scrollToBottom()
+      targetSession.messages.push(createDisplayMessage('tool', `### MCP 工具列表\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
     if (server.disabled) {
       const errorText = `MCP 服务器已禁用：${server.name || server._id}`
-      session.messages.push(createDisplayMessage('tool', `### MCP 工具列表\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / MCP` }))
-      await scrollToBottom()
+      targetSession.messages.push(createDisplayMessage('tool', `### MCP 工具列表\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / MCP` }))
+      await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
 
@@ -12154,14 +14303,14 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     if (!listResult.ok) {
       const err = listResult.error || new Error('listTools failed')
       const errorText = err?.message || String(err)
-      session.messages.push(
+      targetSession.messages.push(
         createDisplayMessage(
           'tool',
           `### MCP 工具列表\n- 服务：**${server.name || server._id}**\n- 错误：${errorText}`,
           { toolMeta: `${server.name || server._id} / MCP` }
         )
       )
-      await scrollToBottom()
+      await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
 
@@ -12177,8 +14326,8 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
         null
       if (!fuzzy) {
         const errorText = `未找到工具：${toolFilter}（服务：${server.name || server._id}）`
-        session.messages.push(createDisplayMessage('tool', `### MCP 工具列表\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / MCP` }))
-        await scrollToBottom()
+        targetSession.messages.push(createDisplayMessage('tool', `### MCP 工具列表\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / MCP` }))
+        await maybeScrollToBottomForRun(abortState)
         return { ok: false, content: errorText }
       }
 
@@ -12194,10 +14343,10 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
       }
       const resultText = stableStringify(resultObj)
       throwIfAborted(abortState)
-      session.messages.push(
+      targetSession.messages.push(
         createDisplayMessage('tool', `### MCP 工具详情\n\n\`\`\`json\n${resultText}\n\`\`\``, { toolMeta: `${server.name || server._id} / ${fuzzy.name}` })
       )
-      await scrollToBottom()
+      await maybeScrollToBottomForRun(abortState)
       return { ok: true, content: resultText }
     }
 
@@ -12217,10 +14366,10 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     }
     const resultText = stableStringify(resultObj)
     throwIfAborted(abortState)
-    session.messages.push(
+    targetSession.messages.push(
       createDisplayMessage('tool', `### MCP 工具列表\n\n\`\`\`json\n${resultText}\n\`\`\``, { toolMeta: `${server.name || server._id} / MCP` })
     )
-    await scrollToBottom()
+    await maybeScrollToBottomForRun(abortState)
     return { ok: true, content: resultText }
   }
 
@@ -12234,30 +14383,30 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
 
     if (!tool) {
       const errorText = '缺少 tool 字段。'
-      session.messages.push(createDisplayMessage('tool', `### MCP 工具调用\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await scrollToBottom()
+      targetSession.messages.push(createDisplayMessage('tool', `### MCP 工具调用\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
 
     const server = resolveActiveMcpServer({ idCandidate: serverIdCandidate, nameCandidate: serverNameCandidate })
     if (!server || !server._id) {
       const errorText = `未找到 MCP 服务。可用：${stableStringify(listActiveMcpServersBrief())}`
-      session.messages.push(createDisplayMessage('tool', `### MCP 工具调用\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await scrollToBottom()
+      targetSession.messages.push(createDisplayMessage('tool', `### MCP 工具调用\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
     if (server.disabled) {
       const errorText = `MCP 服务已禁用：${server.name || server._id}`
-      session.messages.push(createDisplayMessage('tool', `### MCP 工具调用\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / MCP` }))
-      await scrollToBottom()
+      targetSession.messages.push(createDisplayMessage('tool', `### MCP 工具调用\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / MCP` }))
+      await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
 
     const allow = Array.isArray(server.allowTools) ? server.allowTools.map((x) => String(x || '').trim()).filter(Boolean) : []
     if (allow.length && !allow.includes(tool)) {
       const errorText = `该工具不在 allowTools 白名单中：${tool}`
-      session.messages.push(createDisplayMessage('tool', `### MCP 工具调用\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / ${tool}` }))
-      await scrollToBottom()
+      targetSession.messages.push(createDisplayMessage('tool', `### MCP 工具调用\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / ${tool}` }))
+      await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
 
@@ -12300,7 +14449,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
         truncateInlineText
       })
       throwIfAborted(abortState)
-      session.messages.push(
+      targetSession.messages.push(
         createDisplayMessage(
           'tool',
           displayText,
@@ -12315,7 +14464,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
           }
         )
       )
-      await scrollToBottom()
+      await maybeScrollToBottomForRun(abortState)
       return {
         ok: true,
         content: resultText,
@@ -12333,12 +14482,12 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
       if (isAbortError(err) || abortState?.aborted) throw createAbortError()
       closeMcpClientSafely(server, client, pooled)
       const errorText = err?.message || String(err)
-      session.messages.push(
+      targetSession.messages.push(
         createDisplayMessage('tool', `### MCP 工具结果\n- 工具：\`${tool}\`\n- 错误：${errorText}`, {
           toolMeta: `${server.name || server._id} / ${tool}`
         })
       )
-      await scrollToBottom()
+      await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: `错误：${errorText}` }
     } finally {
       try {
@@ -12352,12 +14501,12 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
   const server = activeMcpServers.value.find((s) => s._id === mapping.serverId)
   if (!server) {
     const errorText = `未找到 MCP 服务器：${mapping.serverId}`
-    session.messages.push(createDisplayMessage('tool', `### 工具结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+    targetSession.messages.push(createDisplayMessage('tool', `### 工具结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
     return { ok: false, content: errorText }
   }
   if (server.disabled) {
     const errorText = `MCP 服务器已禁用：${serverName}`
-    session.messages.push(createDisplayMessage('tool', `### 工具结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+    targetSession.messages.push(createDisplayMessage('tool', `### 工具结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
     return { ok: false, content: errorText }
   }
 
@@ -12401,7 +14550,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
       truncateInlineText
     })
     throwIfAborted(abortState)
-    session.messages.push(
+    targetSession.messages.push(
       createDisplayMessage(
         'tool',
         displayText,
@@ -12416,7 +14565,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
         }
       )
     )
-    await scrollToBottom()
+    await maybeScrollToBottomForRun(abortState)
     return {
       ok: true,
       content: resultText,
@@ -12433,10 +14582,10 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     if (isAbortError(err) || abortState?.aborted) throw createAbortError()
     closeMcpClientSafely(server, client, pooled)
     const errorText = err?.message || String(err)
-    session.messages.push(
+    targetSession.messages.push(
       createDisplayMessage('tool', `### 工具结果\n- 工具：\`${toolName}\`\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` })
     )
-    await scrollToBottom()
+    await maybeScrollToBottomForRun(abortState)
     return { ok: false, content: `错误：${errorText}` }
   } finally {
     try {
@@ -12476,19 +14625,37 @@ async function send() {
     userDisplay.attachments = attachments
   }
   session.messages.push(userDisplay)
+  const requestRecord = getActiveMemorySession()
   autoScrollEnabled.value = true
   scheduleRefreshUserAnchorMeta()
   await scrollToBottom({ force: true })
+  if (cfg.requestMode === 'image-generation') {
+    const referenceImages = await collectAttachmentMediaReferenceImages(attachments, userDisplay)
+    cfg.imageGenerationRequestOptionsOverride = mergeReferenceImagesIntoRequestOptions(
+      cfg.imageGenerationRequestOptionsOverride && typeof cfg.imageGenerationRequestOptionsOverride === 'object'
+        ? cfg.imageGenerationRequestOptionsOverride
+        : {},
+      referenceImages,
+      'image'
+    )
+  }
+  if (cfg.requestMode === 'video-generation') {
+    await startDetachedVideoGeneration({ cfg, text, attachments, userDisplay })
+    return
+  }
   await runChatSession({
     ...cfg,
+    sessionRecord: requestRecord,
     prepare: async () => {
-      await scrollToBottom({ force: true })
+      if (isMemorySessionActive(requestRecord)) await scrollToBottom({ force: true })
       await prepareUserApiMessage({
         text,
         attachments,
         userDisplay,
         preferVision: cfg.supportsVision !== false,
-        providerKind: cfg.providerKind || 'openai-compatible'
+        providerKind: cfg.providerKind || 'openai-compatible',
+        sessionTarget: requestRecord,
+        imageAttachmentMode: cfg.requestMode === 'image-generation' ? 'media-reference' : 'chat'
       })
     }
   })
@@ -12512,11 +14679,18 @@ watch(
 </script>
 
 <style scoped>
+.chat-layout__content {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .chat-page {
   width: 100%;
   max-width: 1000px;
   margin: 0 auto;
   height: 100%;
+  min-width: 0;
   min-height: 0;
   overflow: hidden;
   position: relative;
@@ -12647,20 +14821,24 @@ watch(
   width: 100%;
   flex: 1;
   margin-top: 8px;
+  min-width: 0;
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
   background: transparent;
 }
 
 .chat-scroll-wrapper {
   position: relative;
   height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: visible;
 }
 
 
 .chat-scroll-to-bottom {
   position: absolute;
-  right: 12px;
+  right: 28px;
   bottom: 12px;
   z-index: 5;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
@@ -12752,7 +14930,7 @@ watch(
 
 .chat-anchor-rail {
   position: absolute;
-  right: 10px;
+  right: -18px;
   top: 12px;
   bottom: 56px;
   width: 14px;
@@ -12797,7 +14975,17 @@ watch(
 }
 
 :deep(.chat-session-sider) {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  z-index: 12;
+  height: calc(100vh - 30px);
+  max-height: calc(100vh - 30px);
+  min-width: 0;
+  min-height: 0;
+  max-width: 100%;
   background: transparent;
+  overflow: visible;
 }
 
 :deep(.chat-session-sider .n-layout-sider__border) {
@@ -12805,12 +14993,34 @@ watch(
 }
 
 :deep(.chat-session-sider .n-layout-toggle-button) {
+  position: relative;
+  z-index: 14;
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
 }
 
 .chat-session-sider :deep(.n-layout-sider-scroll-container) {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  z-index: 13;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-width: 100%;
+  overflow: hidden;
+  scrollbar-gutter: stable;
+  box-sizing: border-box;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(248, 250, 252, 0.92));
   border-radius: 24px;
+}
+
+.chat-session-sider :deep(.n-layout-sider-children) {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .chat-session-sider :deep(.n-layout-toggle-button) {
@@ -12997,6 +15207,10 @@ watch(
   display: flex;
   flex-direction: column;
   gap: 14px;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 .chat-list__spacer {
@@ -13041,6 +15255,8 @@ watch(
 
 .chat-item.user {
   align-items: flex-end;
+  box-sizing: border-box;
+  padding-right: 24px;
 }
 
 .chat-item__row {
@@ -13151,7 +15367,7 @@ watch(
 }
 
 .chat-item__bubble {
-  max-width: min(calc(100% - 44px), 780px);
+  max-width: min(calc(100% - 68px), 780px);
   width: fit-content;
   border-radius: 16px;
   padding: 10px 12px;
@@ -13373,6 +15589,85 @@ watch(
   background: transparent;
 }
 
+.session-media-library-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  padding-right: 6px;
+}
+
+.session-media-library-item {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.chat-page.dark .session-media-library-item,
+:deep(.chat-page.dark) .session-media-library-item {
+  border-color: rgba(148, 163, 184, 0.18);
+  background: rgba(15, 23, 42, 0.52);
+}
+
+.session-media-library-item__preview {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  background: rgba(15, 23, 42, 0.06);
+  overflow: hidden;
+}
+
+.session-media-library-item__preview :deep(.n-image),
+.session-media-library-item__preview :deep(img),
+.session-media-library-item__video {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+
+.session-media-library-item__body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  min-width: 0;
+}
+
+.session-media-library-item__title {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-media-library-item__meta,
+.session-media-library-item__prompt {
+  font-size: 12px;
+  line-height: 1.5;
+  color: rgba(71, 85, 105, 0.86);
+  word-break: break-word;
+}
+
+.chat-page.dark .session-media-library-item__meta,
+.chat-page.dark .session-media-library-item__prompt {
+  color: rgba(203, 213, 225, 0.82);
+}
+
+.session-media-library-item__prompt {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.session-media-library-item__actions {
+  margin-top: 2px;
+}
+
 @media (max-width: 960px) {
   .chat-page {
     max-width: none;
@@ -13414,6 +15709,10 @@ watch(
 
   .chat-item__row {
     gap: 8px;
+  }
+
+  .chat-item.user {
+    padding-right: 14px;
   }
 
   .chat-item__avatar {

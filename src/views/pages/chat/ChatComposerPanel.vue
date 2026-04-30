@@ -90,7 +90,7 @@
           :autosize="{ minRows: 4, maxRows: 12 }"
           placeholder="输入消息……（回车发送，Shift+回车换行，@ 选择智能体，/prompt 提示词，/skill 技能，/mcp MCP）"
           :disabled="sending"
-          @update:value="emit('update:inputValue', $event)"
+          @update:value="handleInputValueUpdate"
           @keydown="emit('input-keydown', $event)"
           @paste="emit('composer-paste', $event)"
           @click="emit('composer-click', $event)"
@@ -139,6 +139,26 @@
         >
           <n-icon :component="VideocamOutline" size="14" style="margin-right: 4px;" />
           产视频：{{ videoGenerationModeLabel }}
+        </n-tag>
+
+        <n-tag
+          v-if="imageGenerationParamsEnabled"
+          size="small"
+          closable
+          @close="emit('set-image-generation-params-enabled', false)"
+        >
+          <n-icon :component="OptionsOutline" size="14" style="margin-right: 4px;" />
+          图片参数：{{ imageGenerationParamsSummary }}
+        </n-tag>
+
+        <n-tag
+          v-if="videoGenerationParamsEnabled"
+          size="small"
+          closable
+          @close="emit('set-video-generation-params-enabled', false)"
+        >
+          <n-icon :component="OptionsOutline" size="14" style="margin-right: 4px;" />
+          视频参数：{{ videoGenerationParamsSummary }}
         </n-tag>
       </n-flex>
 
@@ -336,6 +356,74 @@
             思考等级：{{ thinkingEffortLabel }}（点击切换）
           </n-tooltip>
 
+          <n-popover
+            v-if="mediaGenerationPresetGroups.length"
+            v-model:show="mediaPresetPopoverVisible"
+            trigger="click"
+            placement="top-start"
+            :disabled="sending"
+          >
+            <template #trigger>
+              <n-tooltip trigger="hover">
+                <template #trigger>
+                  <n-button size="small" tertiary circle :disabled="sending" title="生成参数预设">
+                    <template #icon>
+                      <n-icon :component="SparklesOutline" size="12" />
+                    </template>
+                  </n-button>
+                </template>
+                生成参数预设
+              </n-tooltip>
+            </template>
+
+            <div :class="['media-preset-popover', { 'is-dark': theme === 'dark' }]">
+              <section
+                v-for="group in mediaGenerationPresetGroups"
+                :key="group.key"
+                class="media-preset-group"
+              >
+                <div class="media-preset-group__header">
+                  <span>{{ group.label }}</span>
+                  <span>{{ group.children.length }} 个</span>
+                </div>
+
+                <div class="media-preset-grid">
+                  <button
+                    v-for="item in group.children"
+                    :key="item.key"
+                    type="button"
+                    class="media-preset-item"
+                    :title="item.label"
+                    @click="handleMediaPresetSelect(item.key)"
+                  >
+                    <n-icon
+                      :component="group.kind === 'video' ? VideocamOutline : ImageOutline"
+                      size="13"
+                    />
+                    <span>{{ item.label }}</span>
+                  </button>
+                </div>
+              </section>
+            </div>
+          </n-popover>
+
+          <ChatMediaGenerationParamsPopover
+            :theme="theme"
+            :sending="sending"
+            :image-generation-params-enabled="imageGenerationParamsEnabled"
+            :image-generation-params="imageGenerationParams"
+            :image-generation-params-summary="imageGenerationParamsSummary"
+            :video-generation-params-enabled="videoGenerationParamsEnabled"
+            :video-generation-params="videoGenerationParams"
+            :video-generation-params-summary="videoGenerationParamsSummary"
+            @set-image-generation-params-enabled="emit('set-image-generation-params-enabled', $event)"
+            @update-image-generation-params="emit('update-image-generation-params', $event)"
+            @reset-image-generation-params="emit('reset-image-generation-params')"
+            @set-video-generation-params-enabled="emit('set-video-generation-params-enabled', $event)"
+            @update-video-generation-params="emit('update-video-generation-params', $event)"
+            @reset-video-generation-params="emit('reset-video-generation-params')"
+          />
+
           <n-tooltip trigger="hover">
             <template #trigger>
               <n-button
@@ -411,8 +499,8 @@
 </template>
 
 <script setup>
-import { nextTick, ref, watch } from 'vue'
-import { NButton, NCard, NFlex, NIcon, NInput, NTag, NText, NTooltip } from 'naive-ui'
+import { computed, nextTick, ref, watch } from 'vue'
+import { NButton, NCard, NFlex, NIcon, NInput, NPopover, NTag, NText, NTooltip } from 'naive-ui'
 import { SkillLevelIntermediate, BareMetalServer02 } from '@vicons/carbon'
 import { Trash, Magento } from '@vicons/fa'
 import { Prompt as PromptIcon } from '@vicons/tabler'
@@ -426,6 +514,7 @@ import {
   VideocamOutline,
   SpeedometerOutline,
   SparklesOutline,
+  OptionsOutline,
   ChatbubbleEllipsesOutline,
   HardwareChipOutline,
   EarthOutline,
@@ -433,6 +522,7 @@ import {
 } from '@vicons/ionicons5'
 
 import ChatPendingAttachments from './ChatPendingAttachments.vue'
+import ChatMediaGenerationParamsPopover from './ChatMediaGenerationParamsPopover.vue'
 
 const props = defineProps({
   attachAccept: {
@@ -555,6 +645,30 @@ const props = defineProps({
     type: String,
     default: ''
   },
+  imageGenerationParamsEnabled: {
+    type: Boolean,
+    default: false
+  },
+  imageGenerationParams: {
+    type: Object,
+    default: () => ({})
+  },
+  imageGenerationParamsSummary: {
+    type: String,
+    default: ''
+  },
+  videoGenerationParamsEnabled: {
+    type: Boolean,
+    default: false
+  },
+  videoGenerationParams: {
+    type: Object,
+    default: () => ({})
+  },
+  videoGenerationParamsSummary: {
+    type: String,
+    default: ''
+  },
   sessionMessagesLength: {
     type: Number,
     default: 0
@@ -599,6 +713,10 @@ const props = defineProps({
     type: String,
     default: 'default'
   },
+  mediaGenerationPresetOptions: {
+    type: Array,
+    default: () => []
+  },
   canSend: {
     type: Boolean,
     default: false
@@ -611,6 +729,7 @@ const props = defineProps({
 
 const emit = defineEmits([
   'update:inputValue',
+  'update:input-value',
   'file-change',
   'input-keydown',
   'composer-paste',
@@ -623,6 +742,12 @@ const emit = defineEmits([
   'set-thinking-effort',
   'set-image-generation-mode',
   'set-video-generation-mode',
+  'set-image-generation-params-enabled',
+  'update-image-generation-params',
+  'reset-image-generation-params',
+  'set-video-generation-params-enabled',
+  'update-video-generation-params',
+  'reset-video-generation-params',
   'clear-session',
   'reset-chat-setup',
   'open-agent-modal',
@@ -637,6 +762,7 @@ const emit = defineEmits([
   'cycle-thinking-effort',
   'cycle-image-generation-mode',
   'cycle-video-generation-mode',
+  'apply-media-preset',
   'stop',
   'send'
 ])
@@ -645,6 +771,37 @@ const fileInputRef = ref(null)
 const composerInputRef = ref(null)
 const inlineAgentListRef = ref(null)
 const inlineCommandListRef = ref(null)
+const mediaPresetPopoverVisible = ref(false)
+
+function handleInputValueUpdate(value) {
+  emit('update:inputValue', value)
+  emit('update:input-value', value)
+}
+
+const mediaGenerationPresetGroups = computed(() => {
+  return (Array.isArray(props.mediaGenerationPresetOptions) ? props.mediaGenerationPresetOptions : [])
+    .map((group) => {
+      const children = Array.isArray(group?.children)
+        ? group.children.filter((item) => item?.key && item?.label)
+        : []
+      if (!children.length) return null
+      const key = String(group?.key || '').trim()
+      const label = String(group?.label || '').trim()
+      const kind = key.includes('video') || label.includes('视频') ? 'video' : 'image'
+      return {
+        key: key || `${kind}-presets`,
+        kind,
+        label: label || (kind === 'video' ? '视频' : '图片'),
+        children
+      }
+    })
+    .filter(Boolean)
+})
+
+function handleMediaPresetSelect(key) {
+  mediaPresetPopoverVisible.value = false
+  emit('apply-media-preset', key)
+}
 
 function scrollActiveInlinePickerItemIntoView(listEl, index) {
   if (!listEl || index < 0) return
@@ -950,5 +1107,109 @@ defineExpose({
 
 .chat-attachments {
   padding: 0 2px;
+}
+
+.media-preset-popover {
+  width: min(420px, calc(100vw - 28px));
+  max-height: min(520px, calc(100vh - 160px));
+  overflow-y: auto;
+  padding: 2px;
+}
+
+.media-preset-group + .media-preset-group {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.media-preset-group__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 7px;
+  padding: 0 2px;
+  color: rgba(15, 23, 42, 0.72);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.media-preset-group__header span:last-child {
+  color: rgba(100, 116, 139, 0.72);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.media-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.media-preset-item {
+  min-width: 0;
+  min-height: 30px;
+  padding: 5px 7px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.88);
+  color: rgba(15, 23, 42, 0.9);
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: border-color 120ms ease, background-color 120ms ease, transform 120ms ease;
+}
+
+.media-preset-item:hover {
+  border-color: rgba(32, 128, 240, 0.42);
+  background: rgba(239, 246, 255, 0.96);
+  transform: translateY(-1px);
+}
+
+.media-preset-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.media-preset-item :deep(.n-icon) {
+  flex: 0 0 auto;
+  color: rgba(32, 128, 240, 0.78);
+}
+
+.media-preset-popover.is-dark .media-preset-group + .media-preset-group {
+  border-top-color: rgba(148, 163, 184, 0.2);
+}
+
+.media-preset-popover.is-dark .media-preset-group__header {
+  color: rgba(226, 232, 240, 0.78);
+}
+
+.media-preset-popover.is-dark .media-preset-group__header span:last-child {
+  color: rgba(148, 163, 184, 0.82);
+}
+
+.media-preset-popover.is-dark .media-preset-item {
+  border-color: rgba(148, 163, 184, 0.18);
+  background: rgba(30, 41, 59, 0.58);
+  color: rgba(226, 232, 240, 0.94);
+}
+
+.media-preset-popover.is-dark .media-preset-item:hover {
+  border-color: rgba(64, 169, 255, 0.48);
+  background: rgba(30, 64, 115, 0.46);
+}
+
+@media (max-width: 520px) {
+  .media-preset-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 </style>

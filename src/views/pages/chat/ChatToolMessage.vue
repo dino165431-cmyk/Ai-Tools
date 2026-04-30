@@ -30,7 +30,7 @@
                 :class="['tool-message__media-image', { 'is-dark': theme === 'dark' }]"
                 :src="img.src"
                 :alt="toolImageTitle(img, index)"
-                :img-props="{ class: 'tool-message__media-image-el' }"
+                :img-props="{ class: 'tool-message__media-image-el', loading: 'lazy', decoding: 'async' }"
                 object-fit="contain"
               />
             </div>

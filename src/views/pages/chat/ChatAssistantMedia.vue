@@ -6,9 +6,21 @@
           <div class="assistant-image-block__eyebrow">图片任务</div>
           <div class="assistant-image-block__title">{{ helpers.assistantImageTaskTitle(msg) }}</div>
         </div>
-        <n-tag class="assistant-media-tag assistant-media-tag--task" size="small" :bordered="false" :type="helpers.assistantImageTaskTagType(msg)">
-          {{ helpers.assistantImageTaskStatusLabel(msg) }}
-        </n-tag>
+        <n-flex align="center" :size="6" class="assistant-media-header-actions">
+          <n-tag class="assistant-media-tag assistant-media-tag--task" size="small" :bordered="false" :type="helpers.assistantImageTaskTagType(msg)">
+            {{ helpers.assistantImageTaskStatusLabel(msg) }}
+          </n-tag>
+          <n-tooltip v-if="helpers.canRegenerateMedia?.(msg, 'image')" trigger="hover">
+            <template #trigger>
+              <n-button size="tiny" tertiary circle @click.stop="actions.regenerateMedia?.(msg, 'image')">
+                <template #icon>
+                  <n-icon :component="RefreshOutline" size="14" />
+                </template>
+              </n-button>
+            </template>
+            再次生成
+          </n-tooltip>
+        </n-flex>
       </div>
       <div v-if="helpers.assistantImagePromptLabel(msg)" class="assistant-image-block__prompt">
         {{ helpers.assistantImagePromptLabel(msg) }}
@@ -21,15 +33,70 @@
       </div>
     </div>
 
+    <div v-if="msg.videoTask && !msg.videoBubblePlaceholder && !visibleVideos.length" class="assistant-image-task assistant-video-task">
+      <div class="assistant-image-block__header">
+        <div class="assistant-image-block__titles">
+          <div class="assistant-image-block__eyebrow">视频任务</div>
+          <div class="assistant-image-block__title">{{ helpers.assistantVideoTaskTitle(msg) }}</div>
+        </div>
+        <n-flex align="center" :size="6" class="assistant-media-header-actions">
+          <n-tag class="assistant-media-tag assistant-media-tag--video" size="small" :bordered="false" :type="helpers.assistantVideoTaskTagType(msg)">
+            {{ helpers.assistantVideoTaskStatusLabel(msg) }}
+          </n-tag>
+          <n-tooltip v-if="helpers.canResumeMediaTask?.(msg, 'video')" trigger="hover">
+            <template #trigger>
+              <n-button size="tiny" tertiary circle :loading="helpers.isMediaTaskResuming?.(msg, 'video')" @click.stop="actions.resumeMediaTask?.(msg, 'video')">
+                <template #icon>
+                  <n-icon :component="RefreshOutline" size="14" />
+                </template>
+              </n-button>
+            </template>
+            继续轮询
+          </n-tooltip>
+          <n-tooltip v-if="helpers.canRegenerateMedia?.(msg, 'video')" trigger="hover">
+            <template #trigger>
+              <n-button size="tiny" tertiary circle @click.stop="actions.regenerateMedia?.(msg, 'video')">
+                <template #icon>
+                  <n-icon :component="RefreshOutline" size="14" />
+                </template>
+              </n-button>
+            </template>
+            再次生成
+          </n-tooltip>
+        </n-flex>
+      </div>
+      <div v-if="helpers.assistantVideoPromptLabel(msg)" class="assistant-image-block__prompt">
+        {{ helpers.assistantVideoPromptLabel(msg) }}
+      </div>
+      <div v-if="helpers.assistantVideoTaskMetaLabel(msg)" class="assistant-image-task__meta">
+        {{ helpers.assistantVideoTaskMetaLabel(msg) }}
+      </div>
+      <div v-if="helpers.assistantVideoTaskNote(msg)" class="assistant-image-task__note">
+        {{ helpers.assistantVideoTaskNote(msg) }}
+      </div>
+    </div>
+
     <div v-if="visibleImages.length" class="assistant-image-block">
       <div class="assistant-image-block__header">
         <div class="assistant-image-block__titles">
           <div class="assistant-image-block__eyebrow">{{ helpers.assistantImageBlockEyebrow(msg) }}</div>
           <div class="assistant-image-block__title">{{ helpers.assistantImageDisplayTitle(msg) }}</div>
         </div>
-        <n-tag class="assistant-media-tag" size="small" :bordered="false" :type="visibleImagesCount ? 'success' : 'warning'">
-          {{ visibleImagesCount ? `${visibleImagesCount} 张图片` : '占位中' }}
-        </n-tag>
+        <n-flex align="center" :size="6" class="assistant-media-header-actions">
+          <n-tag class="assistant-media-tag" size="small" :bordered="false" :type="visibleImagesCount ? 'success' : 'warning'">
+            {{ visibleImagesCount ? `${visibleImagesCount} 张图片` : '占位中' }}
+          </n-tag>
+          <n-tooltip v-if="helpers.canRegenerateMedia?.(msg, 'image')" trigger="hover">
+            <template #trigger>
+              <n-button size="tiny" tertiary circle @click.stop="actions.regenerateMedia?.(msg, 'image')">
+                <template #icon>
+                  <n-icon :component="RefreshOutline" size="14" />
+                </template>
+              </n-button>
+            </template>
+            再次生成
+          </n-tooltip>
+        </n-flex>
       </div>
       <div v-if="helpers.assistantImagePromptLabel(msg)" class="assistant-image-block__prompt">
         {{ helpers.assistantImagePromptLabel(msg) }}
@@ -52,14 +119,17 @@
                 :class="['chat-image-viewer', 'chat-image-viewer--assistant', { 'is-dark': theme === 'dark' }]"
                 :src="img.src"
                 :alt="img.name || 'image'"
-                :img-props="{ class: 'chat-image-viewer__img' }"
+                :img-props="{ class: 'chat-image-viewer__img', loading: 'lazy', decoding: 'async', onLoad: (event) => actions.updateChatImageMetadata?.(img, event) }"
                 width="240"
                 object-fit="cover"
               />
               <div v-else class="chat-image-placeholder chat-image-placeholder--assistant">
-                <span class="chat-image-placeholder__label">
-                  {{ helpers.assistantImagePlaceholderText(msg, img) }}
-                </span>
+                <div class="chat-image-placeholder__content">
+                  <n-icon class="chat-image-placeholder__icon" :component="ImageOutline" size="24" />
+                  <span class="chat-image-placeholder__label">
+                    {{ helpers.assistantImagePlaceholderText(msg, img) }}
+                  </span>
+                </div>
               </div>
             </div>
             <div
@@ -106,9 +176,31 @@
           <div class="assistant-image-block__eyebrow">{{ helpers.assistantVideoBlockEyebrow(msg) }}</div>
           <div class="assistant-image-block__title">{{ helpers.assistantVideoDisplayTitle(msg) }}</div>
         </div>
-        <n-tag class="assistant-media-tag assistant-media-tag--video" size="small" :bordered="false" :type="visibleVideosCount ? 'success' : 'warning'">
-          {{ visibleVideosCount ? `${visibleVideosCount} 个视频` : '占位中' }}
-        </n-tag>
+        <n-flex align="center" :size="6" class="assistant-media-header-actions">
+          <n-tag class="assistant-media-tag assistant-media-tag--video" size="small" :bordered="false" :type="visibleVideosCount ? 'success' : 'warning'">
+            {{ visibleVideosCount ? `${visibleVideosCount} 个视频` : '占位中' }}
+          </n-tag>
+          <n-tooltip v-if="helpers.canResumeMediaTask?.(msg, 'video')" trigger="hover">
+            <template #trigger>
+              <n-button size="tiny" tertiary circle :loading="helpers.isMediaTaskResuming?.(msg, 'video')" @click.stop="actions.resumeMediaTask?.(msg, 'video')">
+                <template #icon>
+                  <n-icon :component="RefreshOutline" size="14" />
+                </template>
+              </n-button>
+            </template>
+            继续轮询
+          </n-tooltip>
+          <n-tooltip v-if="helpers.canRegenerateMedia?.(msg, 'video')" trigger="hover">
+            <template #trigger>
+              <n-button size="tiny" tertiary circle @click.stop="actions.regenerateMedia?.(msg, 'video')">
+                <template #icon>
+                  <n-icon :component="RefreshOutline" size="14" />
+                </template>
+              </n-button>
+            </template>
+            再次生成
+          </n-tooltip>
+        </n-flex>
       </div>
       <div v-if="helpers.assistantVideoPromptLabel(msg)" class="assistant-image-block__prompt">
         {{ helpers.assistantVideoPromptLabel(msg) }}
@@ -130,13 +222,19 @@
               :class="['chat-video-player', { 'is-dark': theme === 'dark' }]"
               :src="video.src"
               controls
+              controlslist="nofullscreen"
               preload="metadata"
               playsinline
+              @dblclick.stop.prevent="openVideoPreview(video)"
+              @loadedmetadata="actions.updateChatVideoMetadata?.(video, $event)"
             />
             <div v-else class="chat-image-placeholder chat-image-placeholder--assistant">
-              <span class="chat-image-placeholder__label">
-                {{ helpers.assistantVideoPlaceholderText(msg, video) }}
-              </span>
+              <div class="chat-image-placeholder__content">
+                <n-icon class="chat-image-placeholder__icon" :component="VideocamOutline" size="24" />
+                <span class="chat-image-placeholder__label">
+                  {{ helpers.assistantVideoPlaceholderText(msg, video) }}
+                </span>
+              </div>
             </div>
           </div>
           <div
@@ -153,13 +251,23 @@
           <n-flex v-if="video.src" justify="flex-end" align="center" :size="6" class="chat-image-actions">
             <n-tooltip trigger="hover">
               <template #trigger>
+                <n-button size="tiny" tertiary circle @click.stop="openVideoPreview(video)">
+                  <template #icon>
+                    <n-icon :component="ExpandOutline" size="14" />
+                  </template>
+                </n-button>
+              </template>
+              预览
+            </n-tooltip>
+            <n-tooltip trigger="hover">
+              <template #trigger>
                 <n-button size="tiny" tertiary circle @click.stop="actions.copyChatVideo(video)">
                   <template #icon>
                     <n-icon :component="CopyOutline" size="14" />
                   </template>
                 </n-button>
               </template>
-              复制视频链接
+              复制视频
             </n-tooltip>
             <n-tooltip trigger="hover">
               <template #trigger>
@@ -175,13 +283,39 @@
         </div>
       </div>
     </div>
+
+    <n-modal
+      v-model:show="videoPreviewVisible"
+      :mask-closable="true"
+      preset="card"
+      :title="previewVideo?.name || '视频预览'"
+      class="chat-video-preview-modal"
+      :style="{ width: 'min(960px, 92vw)', maxWidth: '92vw' }"
+      @after-leave="previewVideo = null"
+    >
+      <div class="chat-video-preview">
+        <video
+          v-if="previewVideo?.src"
+          class="chat-video-preview__player"
+          :src="previewVideo.src"
+          controls
+          controlslist="nofullscreen"
+          preload="metadata"
+          playsinline
+          autoplay
+        />
+        <div v-if="helpers.videoMetaLabel(previewVideo)" class="chat-video-preview__meta">
+          {{ helpers.videoMetaLabel(previewVideo) }}
+        </div>
+      </div>
+    </n-modal>
   </div>
 </template>
 
 <script setup>
-import { computed } from 'vue'
-import { NButton, NFlex, NIcon, NImage, NImageGroup, NTag, NTooltip } from 'naive-ui'
-import { CopyOutline, DownloadOutline } from '@vicons/ionicons5'
+import { computed, ref } from 'vue'
+import { NButton, NFlex, NIcon, NImage, NImageGroup, NModal, NTag, NTooltip } from 'naive-ui'
+import { CopyOutline, DownloadOutline, ExpandOutline, ImageOutline, RefreshOutline, VideocamOutline } from '@vicons/ionicons5'
 
 const props = defineProps({
   msg: {
@@ -206,6 +340,14 @@ const visibleImages = computed(() => props.helpers.assistantVisibleImages(props.
 const visibleImagesCount = computed(() => props.helpers.assistantVisibleImageCount(props.msg))
 const visibleVideos = computed(() => props.helpers.assistantVisibleVideos(props.msg))
 const visibleVideosCount = computed(() => props.helpers.assistantVisibleVideoCount(props.msg))
+const videoPreviewVisible = ref(false)
+const previewVideo = ref(null)
+
+function openVideoPreview(video) {
+  if (!video?.src) return
+  previewVideo.value = video
+  videoPreviewVisible.value = true
+}
 </script>
 
 <style scoped>
@@ -321,6 +463,10 @@ const visibleVideosCount = computed(() => props.helpers.assistantVisibleVideoCou
   min-width: 0;
 }
 
+.assistant-media-header-actions {
+  flex: 0 0 auto;
+}
+
 .assistant-image-block__eyebrow {
   font-size: 11px;
   font-weight: 700;
@@ -373,6 +519,7 @@ const visibleVideosCount = computed(() => props.helpers.assistantVisibleVideoCou
   font-size: 12px;
   line-height: 1.6;
   color: rgba(15, 23, 42, 0.76);
+  white-space: pre-line;
 }
 
 :deep(.chat-page.dark) .assistant-image-task__note {
@@ -425,7 +572,7 @@ const visibleVideosCount = computed(() => props.helpers.assistantVisibleVideoCou
   border-radius: 16px;
   border: 1px dashed rgba(148, 163, 184, 0.28);
   background:
-    linear-gradient(180deg, rgba(148, 163, 184, 0.12), rgba(226, 232, 240, 0.28));
+    linear-gradient(180deg, rgba(241, 245, 249, 0.88), rgba(226, 232, 240, 0.7));
 }
 
 .chat-image-placeholder--assistant::before {
@@ -444,24 +591,43 @@ const visibleVideosCount = computed(() => props.helpers.assistantVisibleVideoCou
 .assistant-media.is-dark .chat-image-placeholder--assistant,
 :deep(.chat-page.dark) .chat-image-placeholder--assistant {
   background:
-    linear-gradient(180deg, rgba(71, 85, 105, 0.48), rgba(51, 65, 85, 0.72));
+    linear-gradient(180deg, rgba(30, 41, 59, 0.72), rgba(15, 23, 42, 0.82));
   border-color: rgba(148, 163, 184, 0.2);
 }
 
-.chat-image-placeholder__label {
+.chat-image-placeholder__content {
   position: relative;
   z-index: 1;
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-direction: column;
+  gap: 10px;
   width: 100%;
   height: 100%;
   padding: 12px;
   text-align: center;
+}
+
+.chat-image-placeholder__icon {
+  color: rgba(14, 116, 144, 0.72);
+  filter: drop-shadow(0 8px 14px rgba(14, 116, 144, 0.12));
+}
+
+.assistant-media.is-dark .chat-image-placeholder__icon,
+:deep(.chat-page.dark) .chat-image-placeholder__icon {
+  color: rgba(125, 211, 252, 0.82);
+}
+
+.chat-image-placeholder__label {
+  display: block;
+  max-width: 100%;
   font-size: 12px;
   line-height: 1.55;
   font-weight: 600;
   color: rgba(15, 23, 42, 0.72);
+  word-break: break-word;
+  white-space: pre-line;
 }
 
 .assistant-media.is-dark .chat-image-placeholder__label,
@@ -606,6 +772,37 @@ const visibleVideosCount = computed(() => props.helpers.assistantVisibleVideoCou
     0 10px 24px rgba(2, 6, 23, 0.22);
 }
 
+.chat-video-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: calc(100vh - 150px);
+  overflow: hidden;
+}
+
+.chat-video-preview__player {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  max-height: min(72vh, 720px);
+  object-fit: contain;
+  border-radius: 12px;
+  background: #000;
+}
+
+.chat-video-preview__meta {
+  flex: 0 0 auto;
+  font-size: 12px;
+  line-height: 1.5;
+  color: rgba(100, 116, 139, 0.9);
+}
+
+.assistant-media.is-dark .chat-video-preview__meta,
+:deep(.chat-page.dark) .chat-video-preview__meta {
+  color: rgba(203, 213, 225, 0.82);
+}
+
 .chat-image-name {
   font-size: 12px;
   font-weight: 700;
@@ -680,6 +877,14 @@ const visibleVideosCount = computed(() => props.helpers.assistantVisibleVideoCou
   .chat-video-player {
     min-width: 0;
     min-height: 210px;
+  }
+
+  .chat-video-preview {
+    max-height: calc(100vh - 110px);
+  }
+
+  .chat-video-preview__player {
+    max-height: 68vh;
   }
 }
 </style>

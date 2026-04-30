@@ -37,19 +37,24 @@
       {{ runtimeIssue }}
     </n-alert>
 
-    <n-tree
-      class="note-tree__list"
-      block-line
-      expand-on-click
-      ellipsis
-      :data="treeData"
-      :node-props="nodeProps"
-      v-model:expanded-keys="expandedKeys"
-      v-model:selected-keys="selectedKeys"
-      style="width: 100%;"
-      :render-prefix="renderPrefix"
-      :render-label="renderLabel"
-    />
+    <div class="note-tree__scroll">
+      <n-tree
+        class="note-tree__list"
+        block-line
+        virtual-scroll
+        :animated="false"
+        expand-on-click
+        ellipsis
+        :data="treeData"
+        :node-props="nodeProps"
+        v-model:expanded-keys="expandedKeys"
+        v-model:selected-keys="selectedKeys"
+        style="width: 100%; height: 100%; min-height: 0;"
+        :scrollbar-props="{ trigger: 'none' }"
+        :render-prefix="renderPrefix"
+        :render-label="renderLabel"
+      />
+    </div>
     <n-dropdown
       placement="bottom-start"
       trigger="manual"
@@ -1888,7 +1893,10 @@ defineExpose({
   display: flex;
   flex-direction: column;
   padding: 4px 2px 2px;
-  height: 99%;
+  flex: 1 1 auto;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .note-tree.is-dark {
@@ -1897,6 +1905,7 @@ defineExpose({
 
 .note-tree__toolbar {
   display: flex;
+  flex: 0 0 auto;
   justify-content: flex-end;
   margin-bottom: 10px;
 }
@@ -1911,14 +1920,32 @@ defineExpose({
   border-color: rgba(148, 163, 184, 0.14);
 }
 
-.note-tree__list,
+.note-tree__scroll,
 .note-tree__picker-list {
   border-radius: 16px;
   padding: 4px;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.48), rgba(246, 248, 250, 0.56));
 }
 
-.note-tree.is-dark .note-tree__list,
+.note-tree__scroll {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
+.note-tree__list {
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+
+.note-tree__picker-list {
+  max-height: 320px;
+  overflow: auto;
+}
+
+.note-tree.is-dark .note-tree__scroll,
 .note-tree.is-dark .note-tree__picker-list {
   border: none;
   background: transparent !important;

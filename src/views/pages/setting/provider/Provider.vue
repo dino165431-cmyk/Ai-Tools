@@ -134,20 +134,38 @@
         </n-form-item>
         <n-form-item label="模型" label-placement="top" :show-feedback="false">
           <n-flex vertical style="width: 100%;">
-            <n-flex justify="space-between" align="center">
+            <n-flex justify="space-between" align="center" wrap :size="8">
               <n-text depth="2">选择要启用的模型</n-text>
-              <n-button
-                size="tiny"
-                secondary
-                title="从当前服务商接口刷新模型列表"
-                :loading="loadingModels"
-                @click="refreshModels"
-              >
-                <template #icon>
-                  <n-icon :component="ArrowClockwise20Regular" />
-                </template>
-                刷新
-              </n-button>
+              <n-flex align="center" justify="flex-end" wrap :size="8">
+                <n-text v-if="missingSelectedModels.length" type="warning" style="font-size: 12px;">
+                  {{ missingSelectedModels.length }} 个已启用模型不在最新列表中
+                </n-text>
+                <n-button
+                  size="tiny"
+                  secondary
+                  type="warning"
+                  title="移除已启用但不在最新模型列表中的模型"
+                  :disabled="!canPruneMissingModels"
+                  @click="confirmPruneMissingModels"
+                >
+                  <template #icon>
+                    <n-icon :component="Trash" />
+                  </template>
+                  清理失效模型
+                </n-button>
+                <n-button
+                  size="tiny"
+                  secondary
+                  title="从当前服务商接口刷新模型列表"
+                  :loading="loadingModels"
+                  @click="refreshModels"
+                >
+                  <template #icon>
+                    <n-icon :component="ArrowClockwise20Regular" />
+                  </template>
+                  刷新
+                </n-button>
+              </n-flex>
             </n-flex>
             <n-input
               v-model:value="modelFilterKeyword"
@@ -360,6 +378,32 @@ const filteredBuiltinModelRows = computed(() => {
   )
 })
 
+const availableModelIds = computed(() => {
+  return new Set(
+    (availableModels.value || [])
+      .map((row) => String(row?.id || '').trim())
+      .filter(Boolean)
+  )
+})
+
+const missingSelectedModels = computed(() => {
+  if (!availableModelIds.value.size) return []
+
+  const seen = new Set()
+  return (formData.selectModels || [])
+    .map((id) => String(id || '').trim())
+    .filter(Boolean)
+    .filter((id) => {
+      if (seen.has(id)) return false
+      seen.add(id)
+      return !availableModelIds.value.has(id)
+    })
+})
+
+const canPruneMissingModels = computed(() => {
+  return !loadingModels.value && availableModelIds.value.size > 0 && missingSelectedModels.value.length > 0
+})
+
 function getProviderSummary(provider) {
   if (isUtoolsBuiltinProvider(provider)) {
     return 'uTools 官方 AI，模型由 uTools 统一设置与管理'
@@ -373,6 +417,36 @@ function toggleModel(modelId, isSelected) {
   } else {
     formData.selectModels.push(modelId)
   }
+}
+
+function confirmPruneMissingModels() {
+  if (!availableModelIds.value.size) {
+    message.warning('请先刷新到有效的模型列表')
+    return
+  }
+
+  const missing = missingSelectedModels.value
+  if (!missing.length) {
+    message.success('没有需要清理的失效模型')
+    return
+  }
+
+  const preview = missing.slice(0, 8).join('、')
+  const more = missing.length > 8 ? ` 等 ${missing.length} 个` : ''
+
+  dialog.warning({
+    title: '清理失效模型',
+    content: `将移除已启用但不在最新模型列表中的模型：${preview}${more}。保存后生效。`,
+    positiveText: '清理',
+    negativeText: '取消',
+    onPositiveClick: () => {
+      const validIds = availableModelIds.value
+      const before = formData.selectModels.length
+      formData.selectModels = formData.selectModels.filter((id) => validIds.has(String(id || '').trim()))
+      const removed = before - formData.selectModels.length
+      message.success(`已清理 ${removed} 个失效模型，保存后生效`)
+    }
+  })
 }
 
 function normalizeBaseUrl(url) {

@@ -187,7 +187,7 @@
         <n-form-item label="自动保存会话" path="autoSaveSession">
           <n-switch v-model:value="formData.autoSaveSession" />
           <n-text depth="3" style="margin-left: 8px; font-size: 12px;">
-            保存到 `session/Timed Task/任务名/执行时间.json`
+            保存到 `session/定时任务/任务名/任务名.json`，执行时间会显示为会话元数据
           </n-text>
         </n-form-item>
 
@@ -249,7 +249,8 @@ import { createDirectory, exists, moveItem } from '@/utils/fileOperations'
 const theme = getTheme()
 
 const SESSION_ROOT = 'session'
-const TIMED_TASK_ROOT = `${SESSION_ROOT}/Timed Task`
+const TIMED_TASK_DIR_NAME = '定时任务'
+const TIMED_TASK_ROOT = `${SESSION_ROOT}/${TIMED_TASK_DIR_NAME}`
 
 const tasks = getTimedTasks()
 const agents = getAgents()
@@ -415,10 +416,20 @@ function formatTrigger(task) {
 
 function sanitizePathSegment(name) {
   const raw = String(name || '').trim()
-  if (!raw) return 'Untitled'
+  if (!raw) return '未命名'
   const replaced = raw.replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim()
   const safe = replaced === '.' || replaced === '..' ? `_${replaced}_` : replaced
-  return safe.slice(0, 80) || 'Untitled'
+  return safe.slice(0, 80) || '未命名'
+}
+
+async function ensureTimedTaskSessionRoot() {
+  try {
+    await createDirectory(SESSION_ROOT)
+  } catch {
+    // ignore
+  }
+
+  await createDirectory(TIMED_TASK_ROOT)
 }
 
 async function maybeRenameTimedTaskSessionFolder({ taskId, oldName, newName, autoSaveSession }) {
@@ -432,7 +443,7 @@ async function maybeRenameTimedTaskSessionFolder({ taskId, oldName, newName, aut
   if (oldDirName === newDirName) return
 
   try {
-    await createDirectory(TIMED_TASK_ROOT)
+    await ensureTimedTaskSessionRoot()
   } catch {
     // ignore
   }

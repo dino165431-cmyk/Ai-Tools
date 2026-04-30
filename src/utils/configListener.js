@@ -21,7 +21,7 @@ const DEFAULT_SYSTEM_PROMPT = `你是一个 AI 助手（AI Assistant）。
 
 安全与边界：
 - 遇到可能有风险或权限不足的操作，先提示风险与替代方案，并征求确认。
-- 不要编造信息；需要外部信息时明确说明并给出获取/验证方法。`
+- 不要编造信息；需要外部信息时明确说明并给出获取/验证方法。`;
 
 function getDefaultConfigSecurity() {
     return {

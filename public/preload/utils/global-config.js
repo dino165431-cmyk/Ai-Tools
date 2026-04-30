@@ -118,7 +118,7 @@ function buildBuiltinConfigSkill() {
     return {
         _id: BUILTIN_CONFIG_SKILL_ID,
         name: '配置管理（内置）',
-        description: '用于在聊天中严格新增或修改配置：MCP、Skill、Prompt、Agent、Provider、TimedTask。支持从标准 Skill 目录或 SKILL.md 导入，也兼容旧版内联 Skill payload。',
+        description: '用于在聊天中严格新增或修改配置：MCP、技能、提示词、智能体、服务商、定时任务。支持从标准 Skill 目录或 SKILL.md 导入，也兼容旧版内联 Skill payload。',
         content: [
             '你是一个“配置助手”。你可以通过内置 MCP 工具帮助用户创建、修改和检查本插件的真实配置。',
             '',
@@ -143,7 +143,7 @@ function buildBuiltinConfigSkill() {
             '高频字段规则：',
             '- `args` 必须是字符串数组；`env` / `headers` 必须是对象。',
             '- `config_import_skill_directory` / `config_import_skill_file` 的 `path` 必须是绝对路径，并且目标要符合 `SKILL.md` 结构。',
-            '- TimedTask 建议直接传完整 `trigger` 对象。',
+            '- 定时任务建议直接传完整 `trigger` 对象。',
             '- 修改后向用户说明改动内容、影响范围，以及在哪里验证结果。'
         ].join('\n'),
         triggers: {
@@ -161,7 +161,7 @@ function buildBuiltinSessionsSkill() {
         description: '用于查询历史会话与定时任务执行记录：获取会话树结构，读取单个或批量会话 JSON 进行分析。',
         content: [
             '你是一个“会话历史查询助手”。你可以通过内置 MCP 工具读取历史会话和定时任务执行日志。',
-            '存储位置相对数据根目录：普通会话在 `session/`；定时任务通常在 `session/Timed Task/...`。',
+            '存储位置相对数据根目录：普通会话在 `session/`；定时任务通常在 `session/定时任务/...`。',
             `可用工具（来自内置 MCP：\`${BUILTIN_SESSIONS_MCP_SERVER_ID}\`）：`,
             '- `sessions_list_tree`：列出会话树形结构。',
             '- `sessions_read`：读取单个会话文件并解析 JSON。',
@@ -169,7 +169,7 @@ function buildBuiltinSessionsSkill() {
             '推荐流程：先 `sessions_list_tree` 定位，再 `sessions_read` 或 `sessions_read_many` 分析具体内容。'
         ].join('\n'),
         triggers: {
-            keywords: ['历史会话', '会话历史', '会话树', '会话记录', '读取会话', '会话文件', '定时任务日志', '任务执行日志', 'Timed Task', 'timed task', 'cron']
+            keywords: ['历史会话', '会话历史', '会话树', '会话记录', '读取会话', '会话文件', '定时任务日志', '任务执行日志', '定时任务', 'cron']
         },
         mcp: [BUILTIN_SESSIONS_MCP_SERVER_ID],
         builtin: true
@@ -2660,7 +2660,7 @@ class GlobalConfig {
         const resolved = this._resolveSkillFileAbs(skillRoot, filePath || skill.entryFile || 'SKILL.md')
         if (!fs.existsSync(resolved.abs)) throw new Error(`skill file not found: ${resolved.inner}`)
         const stat = fs.statSync(resolved.abs)
-        if (!stat.isFile()) throw new Error(`skill path is not a file: ${resolved.inner}`)
+        if (!stat.isFile()) throw new Error(`技能路径不是文件：${resolved.inner}`)
 
         const ext = path.extname(resolved.abs).toLowerCase()
         const textExts = new Set([

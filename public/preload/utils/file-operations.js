@@ -20,6 +20,11 @@ function guessMimeByExt(extRaw) {
     if (ext === '.svg') return 'image/svg+xml'
     if (ext === '.bmp') return 'image/bmp'
     if (ext === '.ico') return 'image/x-icon'
+    if (ext === '.mp4') return 'video/mp4'
+    if (ext === '.webm') return 'video/webm'
+    if (ext === '.mov') return 'video/quicktime'
+    if (ext === '.m4v') return 'video/x-m4v'
+    if (ext === '.ogv') return 'video/ogg'
     return 'application/octet-stream'
 }
 

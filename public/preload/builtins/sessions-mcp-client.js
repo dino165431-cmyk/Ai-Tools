@@ -47,6 +47,10 @@ function normalizeSessionPathInRoot(sessionPathRaw) {
   return normalized
 }
 
+function isChatSessionAssetDirectoryName(name) {
+  return String(name || '').trim().toLowerCase().endsWith('.json.assets')
+}
+
 async function ensureDir(relPath) {
   try {
     await fileOperations.createDirectory(relPath)
@@ -81,6 +85,7 @@ async function listSessionTree({ sessionsRoot, dirPath = '', maxDepth = 12 }) {
       if (!name || name.startsWith('.')) continue
 
       if (entry.isDirectory()) {
+        if (isChatSessionAssetDirectoryName(name)) continue
         dirs.push(name)
         continue
       }
@@ -137,7 +142,7 @@ async function readOneSession({ sessionsRoot, sessionPath, parse = true }) {
 
   const abs = fileOperations._resolvePath(sessionRel)
   const st = await fs.stat(abs)
-  if (!st.isFile()) throw new Error('path is not a file')
+  if (!st.isFile()) throw new Error('path 不是文件')
 
   const maxBytes = 6 * 1024 * 1024
   const size = Number(st.size) || 0
@@ -146,7 +151,7 @@ async function readOneSession({ sessionsRoot, sessionPath, parse = true }) {
       ok: false,
       path: relInRoot,
       size,
-      error: `session file too large (> ${maxBytes} bytes)`
+      error: `会话文件过大（> ${maxBytes} bytes）`
     }
   }
 
@@ -166,11 +171,11 @@ async function readOneSession({ sessionsRoot, sessionPath, parse = true }) {
 const TOOLS = [
   {
     name: 'sessions_list_tree',
-    description: '列出历史会话的树形结构（仅 .json）。默认根目录为 sessionsRoot（通常是 session/），定时任务会话在 session/Timed Task/ 下。',
+    description: '列出历史会话的树形结构（仅 .json）。默认根目录为 sessionsRoot（通常是 session/），定时任务会话在 session/定时任务/ 下。',
     inputSchema: {
       type: 'object',
       properties: {
-        dirPath: { type: 'string', description: '只列出指定子目录（相对 sessionsRoot），例如 Timed Task 或 Timed Task/某任务名' },
+        dirPath: { type: 'string', description: '只列出指定子目录（相对 sessionsRoot），例如 定时任务 或 定时任务/某任务名' },
         maxDepth: { type: 'integer', description: '最大递归深度（默认 12，范围 1~50）' }
       },
       additionalProperties: false
@@ -182,7 +187,7 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: '相对 sessionsRoot 的路径，例如 xxx.json 或 Timed Task/任务名/时间戳.json（可省略 .json）' },
+        path: { type: 'string', description: '相对 sessionsRoot 的路径，例如 xxx.json 或 定时任务/任务名/任务名.json（可省略 .json）' },
         parse: { type: 'boolean', description: '是否解析为 JSON（默认 true）' }
       },
       required: ['path'],
@@ -277,4 +282,3 @@ class BuiltinSessionsMcpClient {
 module.exports = function createBuiltinSessionsMcpClient(serverConfig) {
   return new BuiltinSessionsMcpClient(serverConfig)
 }
-

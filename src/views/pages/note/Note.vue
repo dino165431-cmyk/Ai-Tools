@@ -1,6 +1,12 @@
 ﻿<template>
   <n-space vertical size="large" :class="['note-page', { 'is-dark': theme === 'dark' }]">
-    <n-layout embedded has-sider sider-placement="right" :native-scrollbar="false" :scrollbar-props="{ trigger: 'none' }" class="note-page__layout">
+    <n-layout
+      embedded
+      has-sider
+      sider-placement="right"
+      class="note-page__layout"
+      content-style="height: 100%; min-height: 0; overflow: visible;"
+    >
       <n-layout-content class="note-page__content" content-style="padding: 8px 24px 8px 8px;height: calc(100vh - 30px);">
         <div
           class="note-page__workspace"
@@ -96,7 +102,7 @@
         collapse-mode="transform"
         :width="320"
         :collapsed-width="16"
-        content-style="padding: 24px;"
+        content-style="height: 100%; min-height: 0; padding: 24px; display: flex; flex-direction: column; overflow: hidden;"
         show-trigger="arrow-circle"
         bordered
         :scrollbar-props="{ trigger: 'none' }"
@@ -1176,12 +1182,18 @@ onBeforeUnmount(() => {
   background: transparent;
   height: 100%;
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
+}
+
+.note-page__layout :deep(> .n-layout-scroll-container) {
+  overflow: visible;
 }
 
 .note-page__content {
   display: flex;
   flex-direction: column;
+  position: relative;
+  z-index: 1;
   height: 100%;
   min-height: 0;
   overflow: hidden;
@@ -1275,13 +1287,25 @@ onBeforeUnmount(() => {
 .note-page__sider {
   contain: layout;
   position: relative;
-  z-index: 2;
+  z-index: 20;
+  height: 100%;
+  min-height: 0;
+  overflow: visible;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(248, 250, 252, 0.94));
   border-radius: 24px;
 }
 
+.note-page__sider :deep(.n-layout-sider-scroll-container) {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .note-page__sider :deep(.n-layout-toggle-button) {
-  z-index: 12;
+  z-index: 60;
+  pointer-events: auto;
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
 }
 

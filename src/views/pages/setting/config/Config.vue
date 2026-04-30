@@ -539,6 +539,7 @@ import {
   NAlert,
   NButton,
   NCard,
+  NCheckbox,
   NFlex,
   NForm,
   NFormItem,

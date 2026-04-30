@@ -7,7 +7,8 @@
         {{ pendingImageAttachments.length }} 图 · {{ pendingFileAttachments.length }} 文件
       </span>
       <span v-if="showBuiltinHint" class="chat-pending-preview__hint">
-        当前会发送图片元数据，SVG 会额外提取可读文本。      </span>
+        uTools AI 聊天仅发送图片元数据；图片/视频生成请切换 OpenAI 兼容服务商。
+      </span>
       </div>
 
 
@@ -18,7 +19,7 @@
           :class="['chat-image-viewer', 'chat-image-viewer--pending', { 'is-dark': theme === 'dark' }]"
           :src="img.dataUrl"
           :alt="img.name || 'image'"
-          :img-props="{ class: 'chat-image-viewer__img' }"
+          :img-props="{ class: 'chat-image-viewer__img', loading: 'lazy', decoding: 'async' }"
           width="104"
           object-fit="contain"
         />

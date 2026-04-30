@@ -25,7 +25,8 @@ import { createDirectory, exists, writeFile } from '@/utils/fileOperations'
 import { getOrCreateMCPClient, releaseMCPClient, closePooledMCPClient } from '@/utils/mcpClient'
 
 const SESSION_ROOT = 'session'
-const TIMED_TASK_ROOT = `${SESSION_ROOT}/Timed Task`
+const TIMED_TASK_DIR_NAME = '定时任务'
+const TIMED_TASK_ROOT = `${SESSION_ROOT}/${TIMED_TASK_DIR_NAME}`
 
 const agentsRef = getAgents()
 const providersRef = getProviders()
@@ -55,7 +56,7 @@ function newId() {
 }
 
 function createDisplayMessage(role, content, extra = {}) {
-  // TimedTask 会话用于“任务执行记录/日志分析”，默认按 Markdown 渲染更符合预期
+  // 定时任务会话用于“任务执行记录/日志分析”，默认按 Markdown 渲染更符合预期
   const defaultRender = role === 'thinking' ? 'text' : 'md'
   const base = { id: newId(), role, content: String(content || ''), time: Date.now(), render: defaultRender }
   if (role === 'tool' || role === 'tool_call') {
@@ -694,19 +695,10 @@ async function runTimedTaskWithUtoolsAi({ profile, model, systemPrompt, displayM
 
 function sanitizePathSegment(name) {
   const raw = String(name || '').trim()
-  if (!raw) return 'Untitled'
+  if (!raw) return '未命名'
   const replaced = raw.replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim()
   const safe = replaced === '.' || replaced === '..' ? `_${replaced}_` : replaced
-  return safe.slice(0, 80) || 'Untitled'
-}
-
-function pad2(n) {
-  return String(n).padStart(2, '0')
-}
-
-function formatTimestampForFile(d) {
-  const dt = d instanceof Date ? d : new Date(d)
-  return `${dt.getFullYear()}${pad2(dt.getMonth() + 1)}${pad2(dt.getDate())}-${pad2(dt.getHours())}${pad2(dt.getMinutes())}${pad2(dt.getSeconds())}`
+  return safe.slice(0, 80) || '未命名'
 }
 
 async function ensureUniqueJsonPath(basePathNoExt) {
@@ -716,18 +708,27 @@ async function ensureUniqueJsonPath(basePathNoExt) {
     candidate = `${basePathNoExt}-${i}.json`
     if (!(await exists(candidate))) return candidate
   }
-  return `${basePathNoExt}-${Date.now()}.json`
+  return `${basePathNoExt}-${Math.random().toString(36).slice(2, 8)}.json`
+}
+
+async function ensureTimedTaskRoot() {
+  try {
+    await createDirectory(SESSION_ROOT)
+  } catch {
+    // ignore
+  }
+
+  await createDirectory(TIMED_TASK_ROOT)
 }
 
 async function saveTimedTaskSession({ task, startedAt, payload }) {
   const taskName = sanitizePathSegment(task?.name || task?._id)
-  const runName = formatTimestampForFile(startedAt)
 
-  await createDirectory(TIMED_TASK_ROOT)
+  await ensureTimedTaskRoot()
   const taskDir = `${TIMED_TASK_ROOT}/${taskName}`
   await createDirectory(taskDir)
 
-  const base = `${taskDir}/${runName}`
+  const base = `${taskDir}/${taskName}`
   const filePath = await ensureUniqueJsonPath(base)
   await writeFile(filePath, JSON.stringify(payload, null, 2))
 
@@ -752,7 +753,7 @@ export async function runTimedTaskOnce(task, options = {}) {
   const isBuiltinUtoolsProvider = isUtoolsBuiltinProvider(provider)
   const baseUrl = isBuiltinUtoolsProvider ? '__utools_builtin__' : String(provider.baseurl || '').trim()
   const apiKey = isBuiltinUtoolsProvider ? '__utools_builtin__' : String(provider.apikey || '').trim()
-  if (!baseUrl || !apiKey) throw new Error('Provider 未配置 baseurl / apikey')
+  if (!baseUrl || !apiKey) throw new Error('服务商未配置 baseurl / apikey')
 
   const userText = String(task?.content || '').trim()
   if (!userText) throw new Error('执行内容为空')
@@ -765,15 +766,20 @@ export async function runTimedTaskOnce(task, options = {}) {
 
   const REQUEST_TIMEOUT_MS = 1800000
   const finalizePayload = async () => {
+    const completedAt = new Date()
     const payload = {
       version: 1,
       type: 'chat_session',
-      title: String(task?.name || 'Timed Task'),
+      title: String(task?.name || '定时任务'),
+      createdAt: startedAt.toISOString(),
       savedAt: startedAt.toISOString(),
-      updatedAt: new Date().toISOString(),
+      updatedAt: completedAt.toISOString(),
       source: {
         type: 'timed_task',
-        taskId: task?._id || ''
+        taskId: task?._id || '',
+        taskName: String(task?.name || ''),
+        startedAt: startedAt.toISOString(),
+        completedAt: completedAt.toISOString()
       },
       state: profile.state,
       session: {

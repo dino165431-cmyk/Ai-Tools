@@ -22,7 +22,7 @@
               :class="['chat-image-viewer', 'chat-image-viewer--attachment', { 'is-dark': theme === 'dark' }]"
               :src="img.src"
               :alt="img.name || 'image'"
-              :img-props="{ class: 'chat-image-viewer__img' }"
+              :img-props="{ class: 'chat-image-viewer__img', loading: 'lazy', decoding: 'async' }"
               width="180"
               object-fit="contain"
             />
