@@ -16,3 +16,9 @@ window.fileOperations = fileOperations
 window.createMCPClient = createMCPClient
 window.notebookRuntime = notebookRuntime
 window.webOperations = webOperations
+
+try {
+  fileOperations.initCloudAutomation?.()
+} catch (e) {
+  console.warn('初始化云端自动任务失败：', e)
+}

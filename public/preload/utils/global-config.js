@@ -338,6 +338,16 @@ const DEFAULT_WEB_SEARCH_CONFIG = Object.freeze({
     searchApiEndpoint: '',
     searchApiMarket: 'zh-CN'
 })
+const DEFAULT_CLOUD_CONFIG = Object.freeze({
+    region: '',
+    accessKeyId: '',
+    secretAccessKey: '',
+    bucket: '',
+    endpoint: '',
+    forcePathStyle: null,
+    autoBackupEnabled: false,
+    autoRestoreEnabled: false
+})
 const LOCAL_WEB_SEARCH_CONFIG_KEYS = Object.freeze(['proxyUrl', 'allowInsecureTlsFallback'])
 const SYNCED_WEB_SEARCH_CONFIG_KEYS = Object.freeze(['searchApiProvider', 'searchApiKey', 'searchApiEndpoint', 'searchApiMarket'])
 const DEFAULT_NOTE_CONFIG = Object.freeze({
@@ -373,6 +383,20 @@ function normalizeWebSearchConfig(raw) {
         searchApiMarket: usesCredentialedApi && typeof src.searchApiMarket === 'string' && src.searchApiMarket.trim()
             ? src.searchApiMarket.trim()
             : 'zh-CN'
+    }
+}
+
+function normalizeCloudConfig(raw) {
+    const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
+    return {
+        region: typeof src.region === 'string' ? src.region.trim() : '',
+        accessKeyId: typeof src.accessKeyId === 'string' ? src.accessKeyId.trim() : '',
+        secretAccessKey: typeof src.secretAccessKey === 'string' ? src.secretAccessKey.trim() : '',
+        bucket: typeof src.bucket === 'string' ? src.bucket.trim() : '',
+        endpoint: typeof src.endpoint === 'string' ? src.endpoint.trim() : '',
+        forcePathStyle: typeof src.forcePathStyle === 'boolean' ? src.forcePathStyle : null,
+        autoBackupEnabled: src.autoBackupEnabled === true,
+        autoRestoreEnabled: src.autoRestoreEnabled === true
     }
 }
 
@@ -699,7 +723,8 @@ function syncConfigStructure(rawConfig) {
                 globalFallbackVerifier: canonicalVerifier
             }
         },
-        configSecurity: nextConfigSecurity
+        configSecurity: nextConfigSecurity,
+        cloudConfig: normalizeCloudConfig(config.cloudConfig)
     }
 }
 
@@ -1402,14 +1427,7 @@ class GlobalConfig {
             },
             timedTask: {},
             dataStorageRoot: getDefaultUserDataRoot(),
-            cloudConfig: {
-                region: '',
-                accessKeyId: '',
-                secretAccessKey: '',
-                bucket: '',
-                endpoint: '',
-                forcePathStyle: null
-            }
+            cloudConfig: this._clone(DEFAULT_CLOUD_CONFIG)
         };
     }
 
@@ -2445,13 +2463,7 @@ class GlobalConfig {
             finalMerged.dataStorageRoot = this._defaultConfig.dataStorageRoot;
         }
 
-        if (!this._isPlainObject(finalMerged.cloudConfig)) {
-            finalMerged.cloudConfig = this._clone(this._defaultConfig.cloudConfig);
-        } else {
-            if (finalMerged.cloudConfig.forcePathStyle !== null && typeof finalMerged.cloudConfig.forcePathStyle !== 'boolean') {
-                finalMerged.cloudConfig.forcePathStyle = this._defaultConfig.cloudConfig.forcePathStyle;
-            }
-        }
+        finalMerged.cloudConfig = normalizeCloudConfig(finalMerged.cloudConfig)
 
         try {
             this._applyBuiltinsInPlace(finalMerged);
@@ -3314,7 +3326,7 @@ class GlobalConfig {
         const cleanPartial = Object.fromEntries(
             Object.entries(partial).filter(([_, v]) => v !== undefined)
         );
-        config.cloudConfig = { ...current, ...cleanPartial };
+        config.cloudConfig = normalizeCloudConfig({ ...current, ...cleanPartial });
         this._save(config);
         return config.cloudConfig;
     }

@@ -19,7 +19,11 @@
                     @update:value="handleMenuSelect"
                 />
             </n-layout-sider>
-            <n-layout :native-scrollbar="false" :scrollbar-props="{ trigger: 'none' }" class="app-shell__content">
+            <n-layout
+                :native-scrollbar="false"
+                :scrollbar-props="{ trigger: 'none' }"
+                class="app-shell__content"
+            >
                 <router-view v-slot="{ Component, route }">
                     <keep-alive :include="keepAliveComponentNames">
                         <component :is="Component" :key="route.name" />
@@ -112,16 +116,43 @@ watch(
     linear-gradient(180deg, rgba(2, 6, 23, 0.94), rgba(15, 23, 42, 0.98));
 }
 
+/* Keep the fixed-height shell's only child stretched, otherwise long pages get clipped. */
+.app-shell :deep(> .n-space-item) {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .app-shell__layout {
   background: transparent;
-  height: 100%;
+  height: var(--app-viewport-height);
+  max-height: var(--app-viewport-height);
   min-height: 0;
+  overflow: hidden;
+}
+
+.app-shell__layout :deep(> .n-layout-scroll-container) {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  max-height: 100%;
+  align-items: stretch;
+  min-height: 0;
+  overflow: hidden;
 }
 
 
 .app-shell__sider {
-  height: 100%;
+  contain: layout;
+  display: flex;
+  flex-direction: column;
+  height: var(--app-viewport-height);
+  max-height: var(--app-viewport-height);
   min-height: 0;
+  align-self: stretch;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(248, 250, 252, 0.94));
   box-shadow: inset -1px 0 0 rgba(15, 23, 42, 0.04);
   position: relative;
@@ -137,18 +168,63 @@ watch(
 .app-shell__content {
   position: relative;
   z-index: 1;
-  height: 100%;
+  flex: 1 1 0;
+  height: var(--app-viewport-height);
+  max-height: var(--app-viewport-height);
   min-height: 0;
+  min-width: 0;
   padding: var(--app-shell-padding);
   box-sizing: border-box;
   overflow: hidden;
   background: transparent;
 }
 
-.app-shell__content :deep(> .n-layout-scroll-container) {
+.app-shell__content :deep(> .n-scrollbar),
+.app-shell__content :deep(> .n-scrollbar > .n-scrollbar-container) {
   height: 100%;
+  max-height: 100%;
   min-height: 0;
+}
+
+.app-shell__content :deep(> .n-scrollbar > .n-scrollbar-container > .n-scrollbar-content) {
+  box-sizing: border-box;
+  min-height: 100%;
+}
+
+.app-shell__content :deep(> .n-scrollbar > .n-scrollbar-rail),
+.app-shell__sider :deep(> .n-scrollbar > .n-scrollbar-rail) {
+  opacity: 1 !important;
+  visibility: visible;
+  pointer-events: auto;
+  background: var(--app-scrollbar-rail) !important;
+}
+
+.app-shell__content :deep(> .n-scrollbar > .n-scrollbar-rail > .n-scrollbar-rail__scrollbar),
+.app-shell__sider :deep(> .n-scrollbar > .n-scrollbar-rail > .n-scrollbar-rail__scrollbar) {
+  opacity: 1 !important;
+  visibility: visible;
+  background: var(--app-scrollbar-thumb) !important;
+}
+
+.app-shell__content :deep(> .n-scrollbar > .n-scrollbar-rail:hover),
+.app-shell__sider :deep(> .n-scrollbar > .n-scrollbar-rail:hover) {
+  background: var(--app-scrollbar-rail-hover) !important;
+}
+
+.app-shell__content :deep(.n-layout-scroll-container) {
   background: transparent;
+}
+
+.app-shell__sider :deep(> .n-scrollbar),
+.app-shell__sider :deep(> .n-scrollbar > .n-scrollbar-container) {
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+}
+
+.app-shell__sider :deep(> .n-scrollbar > .n-scrollbar-container > .n-scrollbar-content) {
+  box-sizing: border-box;
+  min-height: 100%;
 }
 
 .app-shell__sider :deep(.n-layout-toggle-button) {

@@ -1,6 +1,32 @@
 const { AwsClient } = require('aws4fetch');
 const fs = require('fs').promises;
 
+const XML_ENTITY_MAP = Object.freeze({
+    amp: '&',
+    lt: '<',
+    gt: '>',
+    quot: '"',
+    apos: "'",
+});
+
+function decodeXmlText(text) {
+    return String(text || '').replace(/&(#x[0-9a-fA-F]+|#X[0-9a-fA-F]+|#\d+|amp|lt|gt|quot|apos);/g, (match, entity) => {
+        if (entity.startsWith('#x') || entity.startsWith('#X')) {
+            const codePoint = Number.parseInt(entity.slice(2), 16);
+            return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff
+                ? String.fromCodePoint(codePoint)
+                : match;
+        }
+        if (entity.startsWith('#')) {
+            const codePoint = Number.parseInt(entity.slice(1), 10);
+            return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff
+                ? String.fromCodePoint(codePoint)
+                : match;
+        }
+        return XML_ENTITY_MAP[entity] || match;
+    });
+}
+
 class S3ClientWrapper {
     /**
      * @param {Object} config - 配置对象，与原来完全一致
@@ -168,9 +194,9 @@ class S3ClientWrapper {
             allKeys.push(...keys);
             
             // 检查是否有更多数据
-            isTruncated = /<IsTruncated>true<\/IsTruncated>/.test(xml);
+            isTruncated = /<IsTruncated>\s*true\s*<\/IsTruncated>/i.test(xml);
             const tokenMatch = xml.match(/<NextContinuationToken>(.*?)<\/NextContinuationToken>/);
-            continuationToken = tokenMatch ? tokenMatch[1] : null;
+            continuationToken = tokenMatch ? decodeXmlText(tokenMatch[1]) : null;
         }
         return allKeys;
     }
@@ -186,7 +212,7 @@ class S3ClientWrapper {
         const keyRegex = /<Key>(.*?)<\/Key>/gs;
         let match;
         while ((match = keyRegex.exec(xml)) !== null) {
-            keys.push(match[1]);
+            keys.push(decodeXmlText(match[1]));
         }
         return keys;
     }

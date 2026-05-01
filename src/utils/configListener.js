@@ -80,7 +80,9 @@ const globalConfig = ref({
         secretAccessKey: '',
         bucket: '',
         endpoint: '',
-        forcePathStyle: null
+        forcePathStyle: null,
+        autoBackupEnabled: false,
+        autoRestoreEnabled: false
     },
     webSearchConfig: getDefaultWebSearchConfig()
 });

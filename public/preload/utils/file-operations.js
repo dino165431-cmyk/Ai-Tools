@@ -4,6 +4,11 @@ const path = require('path')
 const fs = require('fs').promises
 const { execFile } = require('child_process')
 
+const CLOUD_AUTO_BACKUP_DEBOUNCE_MS = 15000
+const CLOUD_AUTO_RESTORE_DEBOUNCE_MS = 15000
+const CLOUD_AUTO_BACKUP_MIN_INTERVAL_MS = 5 * 60 * 1000
+const CLOUD_AUTO_REQUIRED_KEYS = ['region', 'accessKeyId', 'secretAccessKey', 'bucket']
+
 let electronShell = null
 try {
     electronShell = require('electron')?.shell || null
@@ -35,6 +40,19 @@ class FileOperations {
         }
         FileOperations.instance = this
         this._imageBlobCache = new Map()
+        this._cloudAutomationInitialized = false
+        this._cloudAutoBackupReady = false
+        this._cloudAutoBackupSignature = ''
+        this._cloudAutoBackupTimer = null
+        this._cloudOperationRunning = false
+        this._cloudAutoBackupRunning = false
+        this._cloudAutoBackupPending = false
+        this._cloudAutoBackupLastRunAt = 0
+        this._cloudAutoRestoreReady = false
+        this._cloudAutoRestoreSignature = ''
+        this._cloudAutoRestoreTimer = null
+        this._cloudAutoRestoreRunning = false
+        this._cloudAutoRestorePending = false
     }
 
     _revokeCachedBlobUrl(cacheKey) {
@@ -62,6 +80,199 @@ class FileOperations {
             if (exactKeys.has(key) || prefixKeys.some((prefix) => key.startsWith(prefix))) {
                 this._revokeCachedBlobUrl(key)
             }
+        }
+    }
+
+    initCloudAutomation() {
+        if (this._cloudAutomationInitialized) return
+        this._cloudAutomationInitialized = true
+
+        this._handleCloudAutomationConfigChange(this._getCloudConfigSafe())
+
+        if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+            window.addEventListener('globalConfigChanged', (event) => {
+                this._handleCloudAutomationConfigChange(event?.detail?.cloudConfig)
+            })
+        }
+    }
+
+    _getCloudConfigSafe() {
+        try {
+            return globalConfig.getCloudConfig?.() || {}
+        } catch {
+            return {}
+        }
+    }
+
+    _hasRequiredCloudConfig(config) {
+        return CLOUD_AUTO_REQUIRED_KEYS.every((key) => String(config?.[key] || '').trim())
+    }
+
+    _isCloudAutoBackupReady(config = this._getCloudConfigSafe()) {
+        return config?.autoBackupEnabled === true && this._hasRequiredCloudConfig(config)
+    }
+
+    _isCloudAutoRestoreReady(config = this._getCloudConfigSafe()) {
+        return config?.autoRestoreEnabled === true && this._hasRequiredCloudConfig(config)
+    }
+
+    _getCloudConnectionSignature(config) {
+        return [
+            ...CLOUD_AUTO_REQUIRED_KEYS.map((key) => String(config?.[key] || '').trim()),
+            String(config?.endpoint || '').trim(),
+            String(config?.forcePathStyle === true)
+        ].join('\n')
+    }
+
+    _getCloudAutoBackupSignature(config) {
+        return this._getCloudConnectionSignature(config)
+    }
+
+    _getCloudAutoRestoreSignature(config) {
+        return [
+            this._getCloudConnectionSignature(config),
+            String(globalConfig.getDataStorageRoot?.() || '').trim()
+        ].join('\n')
+    }
+
+    _clearCloudAutoBackupTimer() {
+        if (!this._cloudAutoBackupTimer) return
+        clearTimeout(this._cloudAutoBackupTimer)
+        this._cloudAutoBackupTimer = null
+    }
+
+    _clearCloudAutoRestoreTimer() {
+        if (!this._cloudAutoRestoreTimer) return
+        clearTimeout(this._cloudAutoRestoreTimer)
+        this._cloudAutoRestoreTimer = null
+    }
+
+    _handleCloudAutomationConfigChange(config = this._getCloudConfigSafe()) {
+        const backupReady = this._isCloudAutoBackupReady(config)
+        const backupSignature = backupReady ? this._getCloudAutoBackupSignature(config) : ''
+        const shouldRunInitialBackup = backupReady && (!this._cloudAutoBackupReady || this._cloudAutoBackupSignature !== backupSignature)
+        const restoreReady = this._isCloudAutoRestoreReady(config)
+        const restoreSignature = restoreReady ? this._getCloudAutoRestoreSignature(config) : ''
+        const shouldRunInitialRestore = restoreReady && (!this._cloudAutoRestoreReady || this._cloudAutoRestoreSignature !== restoreSignature)
+
+        this._cloudAutoBackupReady = backupReady
+        this._cloudAutoBackupSignature = backupSignature
+        this._cloudAutoRestoreReady = restoreReady
+        this._cloudAutoRestoreSignature = restoreSignature
+
+        if (!backupReady) {
+            this._clearCloudAutoBackupTimer()
+        }
+        if (!restoreReady) {
+            this._clearCloudAutoRestoreTimer()
+        }
+
+        if (shouldRunInitialRestore) this._scheduleCloudAutoRestore()
+        if (shouldRunInitialBackup) this._scheduleCloudAutoBackup()
+    }
+
+    _scheduleCloudAutoBackup() {
+        if (!this._cloudAutomationInitialized || !this._isCloudAutoBackupReady()) return
+
+        this._clearCloudAutoBackupTimer()
+        const now = Date.now()
+        const throttleDelay = this._cloudAutoBackupLastRunAt > 0
+            ? Math.max(0, CLOUD_AUTO_BACKUP_MIN_INTERVAL_MS - (now - this._cloudAutoBackupLastRunAt))
+            : 0
+        const delay = Math.max(CLOUD_AUTO_BACKUP_DEBOUNCE_MS, throttleDelay)
+
+        this._cloudAutoBackupTimer = setTimeout(() => {
+            this._cloudAutoBackupTimer = null
+            void this._runCloudAutoBackup()
+        }, delay)
+    }
+
+    _scheduleCloudAutoRestore() {
+        if (!this._cloudAutomationInitialized || !this._isCloudAutoRestoreReady()) return
+
+        this._clearCloudAutoRestoreTimer()
+        this._cloudAutoRestoreTimer = setTimeout(() => {
+            this._cloudAutoRestoreTimer = null
+            void this._runCloudAutoRestore()
+        }, CLOUD_AUTO_RESTORE_DEBOUNCE_MS)
+    }
+
+    _scheduleCloudAutoBackupAfterMutation() {
+        this._scheduleCloudAutoBackup()
+    }
+
+    _isCloudAutoOperationRunning() {
+        return this._cloudOperationRunning || this._cloudAutoBackupRunning || this._cloudAutoRestoreRunning
+    }
+
+    _schedulePendingCloudAutoOperation() {
+        if (this._cloudAutoRestorePending) {
+            this._cloudAutoRestorePending = false
+            this._scheduleCloudAutoRestore()
+            return
+        }
+        if (this._cloudAutoBackupPending) {
+            this._cloudAutoBackupPending = false
+            this._scheduleCloudAutoBackup()
+        }
+    }
+
+    async _runExclusiveCloudOperation(operation) {
+        if (this._cloudOperationRunning) {
+            throw new Error('已有云端任务正在执行，请稍后再试')
+        }
+        this._cloudOperationRunning = true
+        try {
+            return await operation()
+        } finally {
+            this._cloudOperationRunning = false
+        }
+    }
+
+    async _runManualCloudOperation(operation) {
+        try {
+            return await this._runExclusiveCloudOperation(operation)
+        } finally {
+            this._schedulePendingCloudAutoOperation()
+        }
+    }
+
+    async _runCloudAutoBackup() {
+        if (!this._isCloudAutoBackupReady()) return
+
+        if (this._isCloudAutoOperationRunning()) {
+            this._cloudAutoBackupPending = true
+            return
+        }
+
+        this._cloudAutoBackupRunning = true
+        try {
+            await this._runExclusiveCloudOperation(() => this._backupToCloudInternal())
+            this._cloudAutoBackupLastRunAt = Date.now()
+        } catch (err) {
+            console.warn?.('[Cloud auto backup] failed:', err)
+        } finally {
+            this._cloudAutoBackupRunning = false
+            this._schedulePendingCloudAutoOperation()
+        }
+    }
+
+    async _runCloudAutoRestore() {
+        if (!this._isCloudAutoRestoreReady()) return
+
+        if (this._isCloudAutoOperationRunning()) {
+            this._cloudAutoRestorePending = true
+            return
+        }
+
+        this._cloudAutoRestoreRunning = true
+        try {
+            await this._runExclusiveCloudOperation(() => this._restoreFromCloudInternal())
+        } catch (err) {
+            console.warn?.('[Cloud auto restore] failed:', err)
+        } finally {
+            this._cloudAutoRestoreRunning = false
+            this._schedulePendingCloudAutoOperation()
         }
     }
 
@@ -143,6 +354,7 @@ class FileOperations {
         await fs.mkdir(path.dirname(fullPath), { recursive: true })
         await fs.writeFile(fullPath, data)
         this._clearBlobCacheForRelativePath(relativePath)
+        this._scheduleCloudAutoBackupAfterMutation()
         return true
     }
 
@@ -181,6 +393,7 @@ class FileOperations {
             await this._runDeleteWithRetry(() => fs.unlink(fullPath))
         }
         this._clearBlobCacheForRelativePath(relativePath, { recursive: stat.isDirectory() })
+        this._scheduleCloudAutoBackupAfterMutation()
         return true
     }
 
@@ -239,6 +452,7 @@ class FileOperations {
 
         this._clearBlobCacheForRelativePath(fromRel, { recursive: recursiveCacheClear })
         this._clearBlobCacheForRelativePath(toRel, { recursive: recursiveCacheClear })
+        this._scheduleCloudAutoBackupAfterMutation()
         return true
     }
 
@@ -318,7 +532,7 @@ class FileOperations {
         throw lastError
     }
 
-    async backupToCloud(progressCallback) {
+    async _backupToCloudInternal(progressCallback) {
         const s3 = this._getS3Client()
         const bucket = globalConfig.getCloudConfig().bucket
         const localFiles = await this._getLocalFiles('')
@@ -335,10 +549,15 @@ class FileOperations {
         return { uploaded: total }
     }
 
-    async restoreFromCloud(progressCallback) {
+    async backupToCloud(progressCallback) {
+        return this._runManualCloudOperation(() => this._backupToCloudInternal(progressCallback))
+    }
+
+    async _restoreFromCloudInternal(progressCallback) {
         const s3 = this._getS3Client()
         const bucket = globalConfig.getCloudConfig().bucket
-        const remoteFiles = await this._retryOperation(() => s3.listObjects(bucket))
+        const remoteFiles = (await this._retryOperation(() => s3.listObjects(bucket)))
+            .filter((key) => String(key || '').trim() && !String(key).endsWith('/'))
         const total = remoteFiles.length
         let completed = 0
 
@@ -354,15 +573,18 @@ class FileOperations {
         return { downloaded: total }
     }
 
-    async syncToCloud(progressCallback) {
+    async restoreFromCloud(progressCallback) {
+        return this._runManualCloudOperation(() => this._restoreFromCloudInternal(progressCallback))
+    }
+
+    async _syncToCloudInternal(progressCallback) {
         const s3 = this._getS3Client()
         const bucket = globalConfig.getCloudConfig().bucket
         const localFiles = await this._getLocalFiles('')
         const remoteFiles = await this._retryOperation(() => s3.listObjects(bucket))
 
         const localSet = new Set(localFiles)
-        const remoteSet = new Set(remoteFiles)
-        const toUpload = localFiles.filter((relPath) => !remoteSet.has(relPath))
+        const toUpload = localFiles
         const toDelete = remoteFiles.filter((key) => !localSet.has(key))
 
         const totalOperations = toUpload.length + toDelete.length
@@ -387,6 +609,10 @@ class FileOperations {
             uploaded: toUpload.length,
             deleted: toDelete.length
         }
+    }
+
+    async syncToCloud(progressCallback) {
+        return this._runManualCloudOperation(() => this._syncToCloudInternal(progressCallback))
     }
 
     async getFileBlobUrl(fileRelPath) {

@@ -82,6 +82,15 @@ onBeforeUnmount(() => {
   color-scheme: light;
 }
 
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
 @supports (height: 100dvh) {
   :root {
     --app-viewport-height: 100dvh;
