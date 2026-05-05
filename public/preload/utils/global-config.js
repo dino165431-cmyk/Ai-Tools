@@ -14,6 +14,26 @@ const DEFAULT_SYSTEM_PROMPT = [
     '不要编造信息；需要外部信息时，明确说明并给出获取或验证方式。'
 ].join('\n')
 
+const DEFAULT_CHAT_MEMORY_CONFIG = Object.freeze({
+    enabled: false,
+    scope: 'global',
+    autoExtract: true,
+    extraction: Object.freeze({
+        providerId: '',
+        model: ''
+    }),
+    embedding: Object.freeze({
+        providerId: '',
+        model: ''
+    }),
+    topK: 5,
+    maxInjectChars: 1600,
+    minSimilarity: 0.38,
+    minConfidence: 0.6,
+    profileMaxItems: 8,
+    relevantMaxItems: 6
+})
+
 // -------------------- Built-in presets (MCP / Skill / Prompt / Agent) --------------------
 const BUILTIN_MCP_SERVER_ID = 'builtin_notes_mcp'
 const BUILTIN_CONFIG_MCP_SERVER_ID = 'builtin_config_mcp'
@@ -667,7 +687,8 @@ function normalizeChatConfig(raw) {
         defaultSystemPrompt: typeof src.defaultSystemPrompt === 'string'
             ? src.defaultSystemPrompt
             : DEFAULT_SYSTEM_PROMPT,
-        contextWindow: normalizeChatContextWindowConfig(src.contextWindow)
+        contextWindow: normalizeChatContextWindowConfig(src.contextWindow),
+        memory: normalizeChatMemoryConfig(src.memory)
     }
 }
 
@@ -742,7 +763,57 @@ function mergeChatConfig(current, patch) {
         })
     }
 
+    if (src.memory !== undefined) {
+        next.memory = normalizeChatMemoryConfig({
+            ...base.memory,
+            ...(src.memory && typeof src.memory === 'object' && !Array.isArray(src.memory)
+                ? src.memory
+                : {})
+        })
+    }
+
     return normalizeChatConfig(next)
+}
+
+function normalizeChatMemoryString(value) {
+    return String(value || '').trim()
+}
+
+function normalizeChatMemorySelection(raw) {
+    const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
+    return {
+        providerId: normalizeChatMemoryString(src.providerId),
+        model: normalizeChatMemoryString(src.model)
+    }
+}
+
+function normalizeChatMemoryInteger(value, fallback, min, max) {
+    const num = Number(value)
+    if (!Number.isFinite(num)) return fallback
+    return Math.min(max, Math.max(min, Math.round(num)))
+}
+
+function normalizeChatMemoryNumber(value, fallback, min, max) {
+    const num = Number(value)
+    if (!Number.isFinite(num)) return fallback
+    return Math.min(max, Math.max(min, num))
+}
+
+function normalizeChatMemoryConfig(raw) {
+    const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
+    return {
+        enabled: src.enabled === true,
+        scope: normalizeChatMemoryString(src.scope).toLowerCase() === 'global' ? 'global' : 'global',
+        autoExtract: src.autoExtract !== false,
+        extraction: normalizeChatMemorySelection(src.extraction),
+        embedding: normalizeChatMemorySelection(src.embedding),
+        topK: normalizeChatMemoryInteger(src.topK, DEFAULT_CHAT_MEMORY_CONFIG.topK, 1, 20),
+        maxInjectChars: normalizeChatMemoryInteger(src.maxInjectChars, DEFAULT_CHAT_MEMORY_CONFIG.maxInjectChars, 400, 8000),
+        minSimilarity: normalizeChatMemoryNumber(src.minSimilarity, DEFAULT_CHAT_MEMORY_CONFIG.minSimilarity, 0, 1),
+        minConfidence: normalizeChatMemoryNumber(src.minConfidence, DEFAULT_CHAT_MEMORY_CONFIG.minConfidence, 0, 1),
+        profileMaxItems: normalizeChatMemoryInteger(src.profileMaxItems, DEFAULT_CHAT_MEMORY_CONFIG.profileMaxItems, 1, 20),
+        relevantMaxItems: normalizeChatMemoryInteger(src.relevantMaxItems, DEFAULT_CHAT_MEMORY_CONFIG.relevantMaxItems, 1, 20)
+    }
 }
 
 function mergeNoteEditorConfig(current, patch) {
@@ -1400,7 +1471,8 @@ class GlobalConfig {
                 defaultProviderId: BUILTIN_PROVIDER_ID,
                 defaultModel: '',
                 defaultSystemPrompt: DEFAULT_SYSTEM_PROMPT,
-                contextWindow: this._clone(DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG)
+                contextWindow: this._clone(DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG),
+                memory: this._clone(DEFAULT_CHAT_MEMORY_CONFIG)
             },
             noteConfig: this._clone(DEFAULT_NOTE_CONFIG),
             configSecurity: this._clone(DEFAULT_CONFIG_SECURITY_CONFIG),

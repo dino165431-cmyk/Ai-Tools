@@ -189,6 +189,105 @@
       <n-card hoverable>
         <n-flex vertical :size="12">
           <n-flex justify="space-between" align="center" wrap :size="12">
+            <n-flex vertical :size="6" style="min-width: 280px;">
+              <n-text strong>聊天记忆</n-text>
+              <n-text depth="3">{{ memoryConfigSummary }}</n-text>
+              <n-text depth="3" style="font-size: 12px;">
+                记忆会同时沉淀长期事实、用户偏好、回答风格偏向和稳定约束。向量模型未配置时，会自动降级成关键词召回。
+              </n-text>
+            </n-flex>
+            <n-flex :size="10" wrap>
+              <n-button type="primary" :loading="memorySaving" @click="saveMemoryConfig">保存记忆配置</n-button>
+              <n-button :disabled="memoryDraft.enabled !== true" @click="openMemoryPage">记忆管理</n-button>
+            </n-flex>
+          </n-flex>
+
+          <n-flex wrap :size="12">
+            <n-form-item label="启用记忆" style="flex: 1; min-width: 220px; margin-bottom: 0;">
+              <n-switch v-model:value="memoryDraft.enabled" />
+            </n-form-item>
+            <n-form-item label="自动提取" style="flex: 1; min-width: 220px; margin-bottom: 0;">
+              <n-switch v-model:value="memoryDraft.autoExtract" :disabled="memoryDraft.enabled !== true" />
+            </n-form-item>
+          </n-flex>
+
+          <n-flex wrap :size="12">
+            <n-form-item label="提取服务商" style="flex: 1; min-width: 260px; margin-bottom: 0;">
+              <n-select
+                v-model:value="memoryDraft.extraction.providerId"
+                :options="memoryProviderOptions"
+                :disabled="memoryDraft.enabled !== true"
+                clearable
+              />
+            </n-form-item>
+            <n-form-item label="提取模型" style="flex: 1; min-width: 260px; margin-bottom: 0;">
+              <n-select
+                v-model:value="memoryDraft.extraction.model"
+                :options="memoryExtractionModelOptions"
+                :disabled="memoryDraft.enabled !== true || !memoryDraft.extraction.providerId"
+                clearable
+              />
+            </n-form-item>
+          </n-flex>
+
+          <n-flex wrap :size="12">
+            <n-form-item label="向量服务商" style="flex: 1; min-width: 260px; margin-bottom: 0;">
+              <n-select
+                v-model:value="memoryDraft.embedding.providerId"
+                :options="memoryEmbeddingProviderOptions"
+                :disabled="memoryDraft.enabled !== true"
+                clearable
+              />
+            </n-form-item>
+            <n-form-item label="向量模型" style="flex: 1; min-width: 260px; margin-bottom: 0;">
+              <n-select
+                v-model:value="memoryDraft.embedding.model"
+                :options="memoryEmbeddingModelOptions"
+                :disabled="memoryDraft.enabled !== true || !memoryDraft.embedding.providerId"
+                clearable
+              />
+            </n-form-item>
+          </n-flex>
+
+          <n-flex wrap :size="12">
+            <n-form-item label="召回 TopK" style="flex: 1; min-width: 220px; margin-bottom: 0;">
+              <n-input-number v-model:value="memoryDraft.topK" :min="1" :max="20" :disabled="memoryDraft.enabled !== true" style="width: 220px;" />
+            </n-form-item>
+            <n-form-item label="注入字符上限" style="flex: 1; min-width: 220px; margin-bottom: 0;">
+              <n-input-number v-model:value="memoryDraft.maxInjectChars" :min="400" :max="8000" :step="100" :disabled="memoryDraft.enabled !== true" style="width: 220px;" />
+            </n-form-item>
+            <n-form-item label="最小相似度" style="flex: 1; min-width: 220px; margin-bottom: 0;">
+              <n-input-number v-model:value="memoryDraft.minSimilarity" :min="0" :max="1" :step="0.01" :disabled="memoryDraft.enabled !== true" style="width: 220px;" />
+            </n-form-item>
+          </n-flex>
+
+          <n-flex wrap :size="12">
+            <n-form-item label="最小置信度" style="flex: 1; min-width: 220px; margin-bottom: 0;">
+              <n-input-number v-model:value="memoryDraft.minConfidence" :min="0" :max="1" :step="0.01" :disabled="memoryDraft.enabled !== true" style="width: 220px;" />
+            </n-form-item>
+            <n-form-item label="画像条数上限" style="flex: 1; min-width: 220px; margin-bottom: 0;">
+              <n-input-number v-model:value="memoryDraft.profileMaxItems" :min="1" :max="20" :disabled="memoryDraft.enabled !== true" style="width: 220px;" />
+            </n-form-item>
+            <n-form-item label="相关记忆上限" style="flex: 1; min-width: 220px; margin-bottom: 0;">
+              <n-input-number v-model:value="memoryDraft.relevantMaxItems" :min="1" :max="20" :disabled="memoryDraft.enabled !== true" style="width: 220px;" />
+            </n-form-item>
+          </n-flex>
+
+          <n-alert type="info" :show-icon="false">
+            记忆提取模型可选内置 uTools AI 或兼容 OpenAI 的聊天模型；向量模型建议使用标准 embeddings 接口，因此这里只显示兼容 OpenAI 的服务商。
+          </n-alert>
+
+          <n-flex wrap :size="10">
+            <n-button secondary :disabled="memoryDraft.enabled !== true" :loading="memoryRebuilding" @click="handleRebuildMemory">重建向量</n-button>
+            <n-button secondary :disabled="memoryDraft.enabled !== true" @click="handleCleanMemoryStore">清洗与合并</n-button>
+            <n-button secondary :loading="memoryOpening" @click="handleOpenMemoryFolder">打开记忆目录</n-button>
+          </n-flex>
+        </n-flex>
+      </n-card>
+
+      <n-card hoverable>
+        <n-flex vertical :size="12">
+          <n-flex justify="space-between" align="center" wrap :size="12">
             <n-flex vertical :size="4">
               <n-text strong>云同步配置</n-text>
               <n-text depth="3">{{ cloudConfigSummary }}</n-text>
@@ -559,6 +658,7 @@
 
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   NAlert,
   NButton,
@@ -586,6 +686,7 @@ import {
   getCloudConfig,
   getDataStorageRoot,
   getNoteConfig,
+  getProviders,
   getTheme,
   getWebSearchConfig,
   importGlobalConfigFromFile,
@@ -619,6 +720,8 @@ import {
   DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG,
   normalizeChatContextWindowConfig
 } from '@/utils/chatContextWindow'
+import { DEFAULT_CHAT_MEMORY_CONFIG, normalizeChatMemoryConfig } from '@/utils/chatMemoryConfig'
+import { manageMemoryStore, rebuildMemoryEmbeddings } from '@/utils/chatMemory'
 import { checkNotebookPythonLsp, detectNotebookPython, listNotebookPythonModules } from '@/utils/notebookRuntime'
 import { normalizeNotebookRuntimeConfig } from '@/utils/notebookRuntimeConfig'
 
@@ -657,6 +760,7 @@ const webSearchApiProviderOptions = [
 ]
 
 const theme = getTheme()
+const router = useRouter()
 const dialog = useDialog()
 const message = useMessage()
 const chatConfig = getChatConfig()
@@ -665,6 +769,7 @@ const rawConfigSecurity = getConfigSecurity()
 const dataStorageRoot = getDataStorageRoot()
 const cloudConfig = getCloudConfig()
 const webSearchConfig = getWebSearchConfig()
+const providers = getProviders()
 
 const configAccessReady = ref(false)
 const configPageUnlocked = ref(false)
@@ -721,6 +826,9 @@ const webSearchConfigDraft = reactive({
   searchApiMarket: 'zh-CN'
 })
 const webSearchConfigSaving = ref(false)
+const memorySaving = ref(false)
+const memoryRebuilding = ref(false)
+const memoryOpening = ref(false)
 
 const cloudActionLoading = reactive({
   backup: false,
@@ -773,6 +881,7 @@ const actionPasswordModal = reactive({
   loading: false
 })
 const actionPayload = ref(null)
+const memoryDraft = reactive(normalizeChatMemoryConfig(DEFAULT_CHAT_MEMORY_CONFIG))
 
 const noteSecurity = computed(() => normalizeNoteSecurityConfig(noteConfig.value?.noteSecurity))
 const configSecurity = computed(() => normalizeConfigSecurityState(rawConfigSecurity.value))
@@ -874,6 +983,58 @@ const contextWindowSummary = computed(() => {
   return `${presetLabel} / ${focusLabel} / 最大 ${normalized.maxTurns} 轮，${normalized.maxMessages} 条消息，展开 ${normalized.maxCharsExpanded} 字符，压缩 ${normalized.maxCharsCompact} 字符`
 })
 
+const memoryProviderOptions = computed(() => {
+  return (providers.value || []).map((provider) => ({
+    label: provider?.name || provider?._id || '未命名服务商',
+    value: String(provider?._id || '')
+  }))
+})
+
+const memoryEmbeddingProviderOptions = computed(() => {
+  return (providers.value || [])
+    .filter((provider) => !provider?.builtin && String(provider?.providerType || '').trim() !== 'utools-ai')
+    .map((provider) => ({
+      label: provider?.name || provider?._id || '未命名服务商',
+      value: String(provider?._id || '')
+    }))
+})
+
+function findProviderById(id) {
+  const target = String(id || '').trim()
+  return (providers.value || []).find((provider) => String(provider?._id || '').trim() === target) || null
+}
+
+function buildProviderModelOptions(providerId) {
+  const provider = findProviderById(providerId)
+  return (provider?.selectModels || []).map((model) => ({
+    label: String(model || ''),
+    value: String(model || '')
+  }))
+}
+
+const memoryExtractionModelOptions = computed(() => buildProviderModelOptions(memoryDraft.extraction.providerId))
+const memoryEmbeddingModelOptions = computed(() => buildProviderModelOptions(memoryDraft.embedding.providerId))
+
+const memoryConfigSummary = computed(() => {
+  const memory = normalizeChatMemoryConfig(chatConfig.value?.memory)
+  if (!memory.enabled) return '未启用。聊天不会提取或召回长期记忆。'
+  const extractionProvider = findProviderById(memory.extraction.providerId)
+  const embeddingProvider = findProviderById(memory.embedding.providerId)
+  const extractionText = memory.extraction.model
+    ? `提取：${extractionProvider?.name || memory.extraction.providerId} / ${memory.extraction.model}`
+    : '提取模型未配置'
+  const embeddingText = memory.embedding.model
+    ? `向量：${embeddingProvider?.name || memory.embedding.providerId} / ${memory.embedding.model}`
+    : '向量模型未配置，将降级为关键词召回'
+  return [
+    '已启用',
+    extractionText,
+    embeddingText,
+    `召回 TopK ${memory.topK}`,
+    `注入上限 ${memory.maxInjectChars} 字符`
+  ].join(' / ')
+})
+
 const cloudConfigSummary = computed(() => {
   const cfg = cloudConfig.value || {}
   const endpoint = String(cfg.endpoint || '').trim()
@@ -919,6 +1080,41 @@ watch(
     generationDraft.videoGenerationMode = normalizeGenerationMode(nextVideo)
   },
   { immediate: true }
+)
+
+function syncMemoryDraft(raw = chatConfig.value?.memory) {
+  const normalized = normalizeChatMemoryConfig(raw)
+  Object.assign(memoryDraft, normalized)
+  memoryDraft.extraction = { ...normalized.extraction }
+  memoryDraft.embedding = { ...normalized.embedding }
+}
+
+watch(
+  () => chatConfig.value?.memory,
+  (next) => {
+    syncMemoryDraft(next)
+  },
+  { immediate: true, deep: true }
+)
+
+watch(
+  () => memoryDraft.extraction.providerId,
+  (next) => {
+    const models = buildProviderModelOptions(next)
+    if (!models.some((item) => item.value === memoryDraft.extraction.model)) {
+      memoryDraft.extraction.model = models[0]?.value || ''
+    }
+  }
+)
+
+watch(
+  () => memoryDraft.embedding.providerId,
+  (next) => {
+    const models = buildProviderModelOptions(next)
+    if (!models.some((item) => item.value === memoryDraft.embedding.model)) {
+      memoryDraft.embedding.model = models[0]?.value || ''
+    }
+  }
 )
 
 watch(
@@ -1554,6 +1750,64 @@ async function saveContextWindow() {
     message.error(err?.message || String(err))
   } finally {
     contextWindowModal.loading = false
+  }
+}
+
+async function saveMemoryConfig() {
+  memorySaving.value = true
+  try {
+    const normalized = normalizeChatMemoryConfig({
+      ...memoryDraft,
+      extraction: { ...memoryDraft.extraction },
+      embedding: { ...memoryDraft.embedding }
+    })
+    await updateChatConfig({ memory: normalized })
+    syncMemoryDraft(normalized)
+    message.success('聊天记忆配置已保存')
+  } catch (err) {
+    message.error(err?.message || String(err))
+  } finally {
+    memorySaving.value = false
+  }
+}
+
+function openMemoryPage() {
+  if (memoryDraft.enabled !== true) {
+    message.warning('请先启用聊天记忆，再进入记忆管理页')
+    return
+  }
+  router.push({ name: 'memory' })
+}
+
+async function handleRebuildMemory() {
+  memoryRebuilding.value = true
+  try {
+    await rebuildMemoryEmbeddings()
+    message.success('记忆向量已重建')
+  } catch (err) {
+    message.error(err?.message || String(err))
+  } finally {
+    memoryRebuilding.value = false
+  }
+}
+
+async function handleOpenMemoryFolder() {
+  memoryOpening.value = true
+  try {
+    await manageMemoryStore('open')
+  } catch (err) {
+    message.error(describeFileOperationsError(err, '打开记忆目录'))
+  } finally {
+    memoryOpening.value = false
+  }
+}
+
+async function handleCleanMemoryStore() {
+  try {
+    await manageMemoryStore('clean')
+    message.success('记忆已完成清洗与合并')
+  } catch (err) {
+    message.error(err?.message || String(err))
   }
 }
 

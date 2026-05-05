@@ -335,6 +335,22 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.markdown-preview-renderer :deep(.md-editor.md-editor-previewOnly) {
+  height: auto !important;
+  min-height: 0;
+  overflow: visible !important;
+}
+
+.markdown-preview-renderer :deep(.md-editor.md-editor-previewOnly .md-editor-content) {
+  height: auto !important;
+  min-height: 0;
+  overflow: visible !important;
+}
+
+.markdown-preview-renderer :deep(.md-editor.md-editor-previewOnly .md-editor-preview-wrapper) {
+  overflow: visible !important;
+}
+
 .markdown-preview-renderer :deep(.md-editor-preview img) {
   display: block;
   max-width: 100%;

@@ -528,13 +528,13 @@ function openVideoPreview(video) {
 
 .chat-image-grid--assistant {
   margin: 0;
-  gap: 14px;
+  gap: 12px;
 }
 
 .chat-image-item--assistant {
-  max-width: min(100%, 280px);
-  padding: 10px;
-  border-radius: 18px;
+  max-width: min(100%, 228px);
+  padding: 6px;
+  border-radius: 16px;
   border: 1px solid rgba(148, 163, 184, 0.14);
   background: rgba(255, 255, 255, 0.56);
   box-shadow: 0 16px 28px rgba(15, 23, 42, 0.08);
@@ -562,8 +562,8 @@ function openVideoPreview(video) {
 .chat-image-placeholder--assistant {
   position: relative;
   width: 100%;
-  min-width: 220px;
-  min-height: 220px;
+  min-width: 180px;
+  min-height: 180px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -645,18 +645,18 @@ function openVideoPreview(video) {
 }
 
 .chat-image-item--placeholder {
-  max-width: min(100%, 236px);
-  padding: 8px;
+  max-width: min(100%, 200px);
+  padding: 6px;
 }
 
 .chat-image-item--placeholder .chat-image-frame--assistant {
-  padding: 6px;
+  padding: 5px;
 }
 
 .chat-image-item--placeholder .chat-image-placeholder--assistant,
 .chat-image-item--placeholder .chat-video-player {
-  min-width: 196px;
-  min-height: 196px;
+  min-width: 164px;
+  min-height: 164px;
 }
 
 .chat-image-caption--placeholder .chat-image-name {
@@ -672,8 +672,8 @@ function openVideoPreview(video) {
 .chat-image-frame--assistant {
   position: relative;
   border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 18px;
-  padding: 8px;
+  border-radius: 16px;
+  padding: 5px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(241, 245, 249, 0.9));
   box-shadow:
@@ -754,9 +754,9 @@ function openVideoPreview(video) {
 .chat-video-player {
   display: block;
   width: 100%;
-  min-width: 240px;
+  min-width: 196px;
   max-width: 100%;
-  min-height: 240px;
+  min-height: 196px;
   border-radius: 14px;
   object-fit: cover;
   background: #000;
@@ -870,13 +870,13 @@ function openVideoPreview(video) {
   .chat-image-item--placeholder .chat-image-placeholder--assistant,
   .chat-image-item--placeholder .chat-video-player {
     min-width: 0;
-    min-height: 176px;
+    min-height: 168px;
   }
 
   .chat-image-placeholder--assistant,
   .chat-video-player {
     min-width: 0;
-    min-height: 210px;
+    min-height: 192px;
   }
 
   .chat-video-preview {

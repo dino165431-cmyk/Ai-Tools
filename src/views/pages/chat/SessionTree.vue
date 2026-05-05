@@ -40,6 +40,7 @@
         :node-props="nodeProps"
         v-model:expanded-keys="expandedKeys"
         v-model:selected-keys="selectedKeys"
+        @update:selected-keys="handleSelectedKeysChange"
         style="width: 100%; height: 100%; min-height: 0;"
         :scrollbar-props="{ trigger: 'none' }"
         :render-prefix="renderPrefix"
@@ -113,8 +114,9 @@
 import { ref, h, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { FileTrayFullOutline, Folder, FolderOpenOutline, RefreshOutline, CreateOutline, TrashOutline } from '@vicons/ionicons5'
 import { NIcon, NTree, NDropdown, useMessage, useDialog, NInput, NButton, NModal, NTooltip, NAlert } from 'naive-ui'
-import { createDirectory, writeFile, readFile, listDirectory, exists, stat, deleteItem, moveItem, openInFileManager, describeFileOperationsError } from '@/utils/fileOperations'
+import { createDirectory, writeFile, listDirectory, exists, stat, deleteItem, moveItem, openInFileManager, describeFileOperationsError } from '@/utils/fileOperations'
 import { buildChatSessionAssetsDirectory, isChatSessionAssetsDirectoryPath } from '@/utils/chatMediaAssets.js'
+import { readSessionJsonFile } from '@/utils/sessionFileJson.js'
 
 const props = defineProps({
   root: {
@@ -196,7 +198,8 @@ function isJsonSessionPath(p) {
 async function readDeletedSessionPayload(p) {
   if (!isJsonSessionPath(p)) return null
   try {
-    return JSON.parse(String(await readFile(p, 'utf-8') || ''))
+    const parsed = await readSessionJsonFile(p)
+    return parsed.ok ? parsed.value : null
   } catch {
     return null
   }
@@ -515,7 +518,8 @@ async function readSessionFileMeta(entryPath, statInfo) {
   try {
     const size = Number(statInfo?.size)
     if (!Number.isFinite(size) || size <= maxMetaReadBytes) {
-      data = JSON.parse(String(await readFile(entryPath, 'utf-8') || ''))
+      const parsed = await readSessionJsonFile(entryPath)
+      data = parsed.ok ? parsed.value : null
     }
   } catch {
     data = null
@@ -584,7 +588,6 @@ function nodeProps({ option }) {
   return {
     onClick() {
       selectedKeys.value = [option.key]
-      if (option.isLeaf) emit('select', option.key)
     },
     onContextmenu(e) {
       e.preventDefault()
@@ -598,6 +601,15 @@ function nodeProps({ option }) {
       }, 10)
     }
   }
+}
+
+function handleSelectedKeysChange(keys, _options, meta) {
+  selectedKeys.value = uniqueStrings(Array.isArray(keys) ? keys : [])
+  if (meta?.action !== 'select') return
+  const selectedPath = String(selectedKeys.value[0] || '').trim()
+  if (!selectedPath) return
+  const selectedNode = findNodeByKey(treeData.value, selectedPath)
+  if (selectedNode?.isLeaf) emit('select', selectedPath)
 }
 
 function handleTreeContextMenu(e) {

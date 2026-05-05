@@ -9,6 +9,7 @@ import {
     NotepadEdit16Regular,
     PeopleSettings24Regular,
     AppsListDetail20Regular,
+    BrainCircuit20Regular,
     Timer24Regular
 } from '@vicons/fluent'
 
@@ -62,6 +63,18 @@ export const routers = [
                     menu: true,
                     label: '定时任务',
                     icon: Timer24Regular
+                }
+            },
+            {
+                path: '/memory',
+                name: 'memory',
+                component: () => import('@/views/pages/setting/memory/Memory.vue'),
+                meta: {
+                    keepAlive: true,
+                    menu: true,
+                    label: '记忆管理',
+                    icon: BrainCircuit20Regular,
+                    requiresMemoryEnabled: true
                 }
             },
             {

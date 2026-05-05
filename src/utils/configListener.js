@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue';
 import { initUtoolsAiProvider, mergeUtoolsBuiltinProvider } from '@/utils/utoolsAiProvider';
 import { DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG } from '@/utils/chatContextWindow';
+import { DEFAULT_CHAT_MEMORY_CONFIG, normalizeChatMemoryConfig } from '@/utils/chatMemoryConfig';
 import { getDefaultNoteSecurityConfig } from '@/utils/noteEncryption';
 import { DEFAULT_NOTE_EDITOR_CONFIG } from '@/utils/noteTemplateConfig';
 import { DEFAULT_NOTEBOOK_RUNTIME_CONFIG } from '@/utils/notebookRuntimeConfig';
@@ -47,7 +48,8 @@ function getDefaultChatConfig() {
         defaultSystemPrompt: DEFAULT_SYSTEM_PROMPT,
         imageGenerationMode: 'auto',
         videoGenerationMode: 'auto',
-        contextWindow: { ...DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG }
+        contextWindow: { ...DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG },
+        memory: normalizeChatMemoryConfig(DEFAULT_CHAT_MEMORY_CONFIG)
     };
 }
 

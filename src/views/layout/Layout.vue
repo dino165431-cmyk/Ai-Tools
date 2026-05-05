@@ -41,21 +41,29 @@ import { NIcon } from 'naive-ui'
 import { useRouter, useRoute } from 'vue-router'
 import { routers } from '@/router/routes'
 import { useUtoolsEnterData } from '@/utils/utoolsListener'
-import { getTheme } from '@/utils/configListener'
+import { getChatConfig, getTheme } from '@/utils/configListener'
 
 const router = useRouter()
 const route = useRoute()
 const utoolsEnterData = useUtoolsEnterData()
 const theme = getTheme()
+const chatConfig = getChatConfig()
 
 function renderIcon(icon) {
   return () => h(NIcon, null, { default: () => h(icon) })
 }
 
+function isRouteVisible(route) {
+  if (route?.meta?.requiresMemoryEnabled === true) {
+    return chatConfig.value?.memory?.enabled === true
+  }
+  return true
+}
+
 function transformRoutesToMenu(routes) {
   const menuItems = []
   for (const route of routes) {
-    if (route.meta?.menu) {
+    if (route.meta?.menu && isRouteVisible(route)) {
       const menuItem = {
         label: route.meta.label || route.name || route.path,
         key: route.name,
@@ -74,7 +82,7 @@ function transformRoutesToMenu(routes) {
   return menuItems
 }
 
-const menuOptions = transformRoutesToMenu(routers)
+const menuOptions = computed(() => transformRoutesToMenu(routers))
 const keepAliveComponentNames = Object.freeze(['Chat', 'Note'])
 
 const selectedKey = computed(() => route.name)
@@ -93,6 +101,17 @@ watch(
     const target = ENTER_ROUTE_MAP[val?.code]
     if (!target || route.name === target) return
     router.replace({ name: target })
+  },
+  { immediate: true }
+)
+
+watch(
+  () => chatConfig.value?.memory?.enabled,
+  (enabled) => {
+    if (enabled === true) return
+    if (route.meta?.requiresMemoryEnabled === true) {
+      router.replace({ name: 'config' })
+    }
   },
   { immediate: true }
 )

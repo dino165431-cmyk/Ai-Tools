@@ -1128,6 +1128,13 @@ import {
   shouldIncludeReasoningContent
 } from '@/utils/chatRequestCompat'
 import {
+  buildMemoryInjection,
+  enqueueMemoryCandidate,
+  flushMemoryCandidates,
+  normalizeMemoryCandidateQueue
+} from '@/utils/chatMemory'
+import { isChatMemoryEnabled } from '@/utils/chatMemoryConfig'
+import {
   applyResponsesStreamEvent,
   buildResponsesRequestBodyFromChatBody,
   createResponsesStreamAccumulator,
@@ -1186,6 +1193,7 @@ import {
   resolveChatMediaAssetPath,
   serializeChatMediaForSave
 } from '@/utils/chatMediaAssets.js'
+import { readSessionJsonFile } from '@/utils/sessionFileJson.js'
 import {
   VIDEO_GENERATION_RESULT_TIMEOUT_MS,
   buildImageGenerationCompatibilityError,
@@ -1469,6 +1477,10 @@ function createMemorySessionRecord(options = {}) {
     apiMessages: Array.isArray(options.apiMessages) ? options.apiMessages : [],
     input: String(options.input || ''),
     pendingAttachments: Array.isArray(options.pendingAttachments) ? options.pendingAttachments : [],
+    memoryCandidates: normalizeMemoryCandidateQueue(options.memoryCandidates),
+    memoryCandidateUpdatedAt: Number(options.memoryCandidateUpdatedAt || 0) || 0,
+    memoryCandidateFlushTimer: null,
+    memoryCandidateFlushInFlight: false,
     activeSessionFilePath: String(options.activeSessionFilePath || '').trim(),
     activeSessionTitle: String(options.activeSessionTitle || '').trim(),
     state: options.state && typeof options.state === 'object' ? deepCopyJson(options.state, {}) : null,
@@ -1564,6 +1576,15 @@ function syncSessionTreeSelectionForRecord(record) {
 function removeMemorySessionById(id) {
   const target = String(id || '').trim()
   if (!target) return false
+  const existing = getMemorySessionById(target)
+  if (existing?.memoryCandidateFlushTimer) {
+    try {
+      window.clearTimeout(existing.memoryCandidateFlushTimer)
+    } catch {
+      // ignore
+    }
+    existing.memoryCandidateFlushTimer = null
+  }
   const before = memorySessions.value.length
   memorySessions.value = memorySessions.value.filter((item) => String(item?.id || '') !== target)
   return memorySessions.value.length !== before
@@ -1579,15 +1600,24 @@ function getMemorySessionAutoPersistKey(record) {
 
 function pruneDormantMemorySessions(options = {}) {
   const keepId = String(options.keepId || activeMemorySessionId.value || '').trim()
-  memorySessions.value = memorySessions.value.filter((record) => {
+  const kept = []
+  memorySessions.value.forEach((record) => {
     const id = String(record?.id || '').trim()
-    if (!id) return false
-    if (id === keepId) return true
-    if (isMemorySessionRunning(record)) return true
-    if (isMemorySessionEmptyDraft(record)) return false
-    if (record.autoManaged && isAutoChatSessionPath(record.activeSessionFilePath)) return false
-    return true
+    if (!id) {
+      clearMemoryCandidateFlushTimer(record)
+      return
+    }
+    if (id === keepId || isMemorySessionRunning(record)) {
+      kept.push(record)
+      return
+    }
+    if (isMemorySessionEmptyDraft(record) || (record.autoManaged && isAutoChatSessionPath(record.activeSessionFilePath))) {
+      clearMemoryCandidateFlushTimer(record)
+      return
+    }
+    kept.push(record)
   })
+  memorySessions.value = kept
 }
 
 function getRunRecord(abortState = null) {
@@ -1629,6 +1659,7 @@ function saveActiveMemorySessionDraft() {
   record.apiMessages = session.apiMessages
   record.input = String(input.value || '')
   record.pendingAttachments = Array.isArray(pendingAttachments.value) ? pendingAttachments.value : []
+  record.memoryCandidates = normalizeMemoryCandidateQueue(record.memoryCandidates)
   record.activeSessionFilePath = String(activeSessionFilePath.value || '').trim()
   record.activeSessionTitle = String(activeSessionTitle.value || '').trim()
   record.state = buildCurrentChatState()
@@ -1649,9 +1680,12 @@ function restoreMemorySession(record, options = {}) {
   session.apiMessages = Array.isArray(record.apiMessages) ? record.apiMessages : []
   input.value = String(record.input || '')
   pendingAttachments.value = Array.isArray(record.pendingAttachments) ? record.pendingAttachments : []
+  record.memoryCandidates = normalizeMemoryCandidateQueue(record.memoryCandidates)
   activeSessionFilePath.value = String(record.activeSessionFilePath || '').trim()
   activeSessionTitle.value = String(record.activeSessionTitle || '').trim()
   if (record.state) applyLoadedChatState(record.state)
+  if (record.memoryCandidates?.length) scheduleMemoryCandidateFlush(record, { delayMs: 3000 })
+  else clearMemoryCandidateFlushTimer(record)
   resetComposerInput()
   syncActiveRequestUiState(record)
   if (options.syncTreeSelection !== false) syncSessionTreeSelectionForRecord(record)
@@ -1671,6 +1705,227 @@ function isTimedTaskSessionPath(filePath) {
 
 function isMemorySessionActive(record) {
   return !!record && String(record.id || '') === String(activeMemorySessionId.value || '')
+}
+
+function clearMemoryCandidateFlushTimer(record) {
+  if (!record?.memoryCandidateFlushTimer) return
+  try {
+    window.clearTimeout(record.memoryCandidateFlushTimer)
+  } catch {
+    // ignore
+  }
+  record.memoryCandidateFlushTimer = null
+}
+
+function buildMemoryRecallQueryFromRecord(record, currentUserText = '') {
+  const parts = []
+  const currentText = String(currentUserText || '').trim()
+  if (currentText) parts.push(currentText)
+  const messages = Array.isArray(record?.messages) ? record.messages : []
+  const recent = messages
+    .filter((msg) => msg?.role === 'user' || msg?.role === 'assistant')
+    .slice(-4)
+    .map((msg) => {
+      const prefix = msg?.role === 'assistant' ? '助手' : '用户'
+      const content = String(msg?.content || '').trim()
+      return content ? `${prefix}：${content}` : ''
+    })
+    .filter(Boolean)
+  if (recent.length) parts.push(recent.join('\n'))
+  const title = String(record?.title || activeSessionTitle.value || '').trim()
+  if (title && title !== DEFAULT_MEMORY_SESSION_TITLE) parts.push(`当前会话：${title}`)
+  return parts.filter(Boolean).join('\n\n').trim()
+}
+
+function buildMemoryRecallQueryFromAttachments(attachments = []) {
+  const list = Array.isArray(attachments) ? attachments : []
+  const blocks = []
+  list.forEach((attachment) => {
+    if (!attachment || typeof attachment !== 'object') return
+    const name = String(attachment.name || '').trim()
+    const body = String(attachment.text || '').trim()
+    if (!name && !body) return
+    blocks.push(
+      [
+        name ? `附件：${name}` : '附件内容',
+        body ? truncateText(body, 1000, '（附件内容已截断）') : ''
+      ].filter(Boolean).join('\n')
+    )
+  })
+  return blocks.join('\n\n').trim()
+}
+
+function resolveMemoryVisionRequestConfig(chatRequestConfig = null) {
+  const memoryCfg = chatConfig.value?.memory
+  if (isChatMemoryEnabled(memoryCfg)) {
+    const extraction = memoryCfg?.extraction && typeof memoryCfg.extraction === 'object' ? memoryCfg.extraction : {}
+    const providerId = String(extraction.providerId || '').trim()
+    const model = String(extraction.model || '').trim()
+    const provider = providerId
+      ? (providers.value || []).find((item) => String(item?._id || '') === providerId) || null
+      : null
+    if (provider && !isUtoolsBuiltinProvider(provider)) {
+      const baseUrl = String(provider.baseurl || '').trim()
+      const apiKey = String(provider.apikey || '').trim()
+      if (baseUrl && apiKey && model) {
+        return {
+          providerKind: 'openai-compatible',
+          baseUrl,
+          apiKey,
+          model,
+          supportsVision: true,
+          source: 'memory-extraction'
+        }
+      }
+    }
+  }
+
+  if (chatRequestConfig?.providerKind === 'openai-compatible') {
+    const baseUrl = String(chatRequestConfig?.baseUrl || '').trim()
+    const apiKey = String(chatRequestConfig?.apiKey || '').trim()
+    const model = String(chatRequestConfig?.model || '').trim()
+    if (baseUrl && apiKey && model && chatRequestConfig?.supportsVision !== false) {
+      return {
+        providerKind: 'openai-compatible',
+        baseUrl,
+        apiKey,
+        model,
+        supportsVision: true,
+        source: 'chat-provider'
+      }
+    }
+  }
+
+  return null
+}
+
+async function buildAttachmentVisionRecallSummary(att, cfg) {
+  if (!att || typeof att !== 'object') return ''
+  if (att.kind !== 'image' || !String(att.dataUrl || '').trim()) return ''
+  const requestCfg = resolveMemoryVisionRequestConfig(cfg)
+  if (!requestCfg || requestCfg?.supportsVision === false) return ''
+
+  const baseUrl = String(requestCfg?.baseUrl || '').trim()
+  const apiKey = String(requestCfg?.apiKey || '').trim()
+  const model = String(requestCfg?.model || '').trim()
+  if (!baseUrl || !apiKey || !model) return ''
+
+  const prompt = [
+    '请只提取这张图片里和后续问答/记忆召回最相关的信息。',
+    '优先输出：人物姓名、称呼、问题、项目名、偏好、约束、可见文字、图表主题。',
+    '控制在 80 字以内，不要解释，不要编造。'
+  ].join('\n')
+
+  try {
+    const result = await streamChatCompletion({
+      baseUrl,
+      apiKey,
+      body: {
+        model,
+        stream: true,
+        temperature: 0.2,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: prompt },
+              { type: 'image_url', image_url: { url: String(att.dataUrl || '').trim() } }
+            ]
+          }
+        ]
+      },
+      signal: undefined,
+      onDelta: null,
+      abortState: null
+    })
+    return truncateInlineText(String(result?.content || '').trim(), 120)
+  } catch {
+    return ''
+  }
+}
+
+async function enrichImageAttachmentsForMemoryRecall(attachments = [], cfg = null) {
+  const list = Array.isArray(attachments) ? attachments : []
+  for (const att of list) {
+    if (!att || typeof att !== 'object') continue
+    if (att.kind !== 'image' || !String(att.dataUrl || '').trim()) continue
+    const currentText = String(att.text || '').trim()
+    const lacksSemanticText =
+      !currentText ||
+      /^(?:image|图片) metadata/i.test(currentText) ||
+      /(?:图片元数据|Dimensions:|ViewBox:)/i.test(currentText)
+    if (!lacksSemanticText) continue
+    const summary = await buildAttachmentVisionRecallSummary(att, cfg)
+    if (!summary) continue
+    att.text = [currentText, `图片摘要：${summary}`].filter(Boolean).join('\n')
+  }
+}
+
+async function flushMemoryCandidatesForRecord(record, options = {}) {
+  if (!record) return { flushed: false, items: [], remaining: [] }
+  if (record.memoryCandidateFlushInFlight) {
+    return { flushed: false, items: [], remaining: normalizeMemoryCandidateQueue(record.memoryCandidates) }
+  }
+  record.memoryCandidateFlushInFlight = true
+  clearMemoryCandidateFlushTimer(record)
+  try {
+    const queue = normalizeMemoryCandidateQueue(record.memoryCandidates)
+    if (!queue.length) {
+      record.memoryCandidates = []
+      record.memoryCandidateUpdatedAt = 0
+      return { flushed: false, items: [], remaining: [] }
+    }
+    const result = await flushMemoryCandidates({
+      candidates: queue,
+      systemPrompt: buildCombinedSystemContent(''),
+      force: options.force === true
+    }).catch((err) => {
+      console.warn('[chat memory] candidate flush failed:', err)
+      return { flushed: false, items: [], remaining: queue }
+    })
+
+    record.memoryCandidates = normalizeMemoryCandidateQueue(result?.remaining || [])
+    record.memoryCandidateUpdatedAt = record.memoryCandidates.length ? Date.now() : 0
+    if (record.memoryCandidates.length) {
+      scheduleMemoryCandidateFlush(record, { delayMs: options.retryDelayMs || 120000 })
+    }
+    return result
+  } finally {
+    record.memoryCandidateFlushInFlight = false
+  }
+}
+
+function scheduleMemoryCandidateFlush(record, options = {}) {
+  if (!record) return
+  clearMemoryCandidateFlushTimer(record)
+  const queue = normalizeMemoryCandidateQueue(record.memoryCandidates)
+  if (!queue.length) {
+    record.memoryCandidates = []
+    record.memoryCandidateUpdatedAt = 0
+    return
+  }
+  const delayMs = Math.max(1000, Number(options.delayMs || 90000))
+  record.memoryCandidateFlushTimer = window.setTimeout(() => {
+    record.memoryCandidateFlushTimer = null
+    void flushMemoryCandidatesForRecord(record, { force: false })
+  }, delayMs)
+}
+
+function queueMemoryCandidateForRecord(record, payload = {}) {
+  if (!record) return { queued: null, shouldFlush: false }
+  const result = enqueueMemoryCandidate(record.memoryCandidates, payload)
+  record.memoryCandidates = result.queue
+  record.memoryCandidateUpdatedAt = record.memoryCandidates.length ? Date.now() : 0
+  if (record.memoryCandidates.length) {
+    if (result.shouldFlush) {
+      void flushMemoryCandidatesForRecord(record, { force: true })
+    } else {
+      scheduleMemoryCandidateFlush(record)
+    }
+  } else {
+    clearMemoryCandidateFlushTimer(record)
+  }
+  return result
 }
 
 function inferMemorySessionTitle(record) {
@@ -3678,6 +3933,20 @@ const systemContent = computed(() => {
   if (mcpToolCatalogPromptText.value) blocks.push(mcpToolCatalogPromptText.value)
   return blocks.join('\n\n').trim()
 })
+
+function buildCombinedSystemContent(memorySystemContent = '') {
+  const blocks = []
+  if (systemContent.value) blocks.push(String(systemContent.value || '').trim())
+  if (memorySystemContent) {
+    blocks.push([
+      '以下是从历史对话中提炼出的长期记忆，仅在与当前问题相关时参考：',
+      '如果用户在询问自己的姓名、称呼、身份、偏好、语言、项目背景或回答习惯，而下面存在对应记忆，请优先直接依据记忆回答，不要忽略，也不要回答“不知道”。',
+      String(memorySystemContent || '').trim(),
+      '如果当前用户要求与你的长期记忆冲突，以用户当前明确要求为准。'
+    ].join('\n'))
+  }
+  return blocks.filter(Boolean).join('\n\n').trim()
+}
 
 function shouldIncludeSystemPromptForMediaGeneration() {
   if (basePromptMode.value === 'prompt') return !!selectedPromptId.value
@@ -6722,6 +6991,9 @@ function clearQueuedChatScrollCompensation() {
 
 function shouldApplyChatScrollCompensation() {
   if (isAtBottom.value) return false
+  const el = chatScrollEl.value || resolveScrollbarContainerEl()
+  const distanceFromBottom = el ? getDistanceFromBottom(el) : Number(chatScrollDistanceFromBottom.value || 0)
+  if (sending.value && distanceFromBottom > SCROLL_AUTO_DISABLE_DISTANCE_PX) return false
   if (!lastActiveUserChatScrollAt) return true
   return (Date.now() - lastActiveUserChatScrollAt) > CHAT_SCROLL_COMPENSATION_SUSPEND_MS
 }
@@ -7615,6 +7887,7 @@ async function autoPersistMemorySession(record, options = {}) {
   if (currentPath && !isAutoChatSessionPath(currentPath)) return currentPath
 
   const persistKey = getMemorySessionAutoPersistKey(record)
+  const shouldSyncActiveUi = options.syncActiveUi !== false
   const existingPersist = persistKey ? autoPersistMemorySessionInFlight.get(persistKey) : null
   if (existingPersist) return existingPersist
 
@@ -7629,7 +7902,8 @@ async function autoPersistMemorySession(record, options = {}) {
       let previousPayload = null
       if (currentPath) {
         try {
-          previousPayload = JSON.parse(String(await readFile(currentPath, 'utf-8') || ''))
+          const previousSnapshot = await readSessionJsonFile(currentPath)
+          previousPayload = previousSnapshot.ok ? previousSnapshot.value : null
         } catch {
           previousPayload = null
         }
@@ -7655,7 +7929,7 @@ async function autoPersistMemorySession(record, options = {}) {
       record.autoManaged = true
       record.updatedAt = Date.now()
 
-      if (isMemorySessionActive(record)) {
+      if (isMemorySessionActive(record) && shouldSyncActiveUi) {
         activeSessionFilePath.value = allocated.filePath
         activeSessionTitle.value = allocated.title
         void sessionTreeRef.value?.selectPath?.(allocated.filePath)
@@ -7723,8 +7997,9 @@ async function cleanupAutoChatSessions(options = {}) {
 
       try {
         let payload = null
-        try {
-          payload = JSON.parse(String(await readFile(entryPath, 'utf-8') || ''))
+      try {
+          const parsedPayload = await readSessionJsonFile(entryPath)
+          payload = parsedPayload.ok ? parsedPayload.value : null
         } catch {
           payload = null
         }
@@ -7756,10 +8031,15 @@ async function persistActiveMemorySessionBeforeLeaving(options = {}) {
   const previousPath = String(previous.activeSessionFilePath || '').trim()
   if (previousPath && previousPath === targetPath) return previous
 
+  await flushMemoryCandidatesForRecord(previous, { force: false })
+
   if (previousPath && !isAutoChatSessionPath(previousPath)) {
     await runSessionAutosave()
   } else {
-    await autoPersistMemorySession(previous, { notify: false })
+    await autoPersistMemorySession(previous, {
+      notify: false,
+      syncActiveUi: !targetPath
+    })
   }
   return previous
 }
@@ -8021,6 +8301,9 @@ function applyDefaultChatState() {
 
 function buildSessionSavePayload(options = {}) {
   const sessionLike = options.sessionLike || options.session || session
+  const activeRecord = getActiveMemorySession()
+  const memorySource =
+    sessionLike && Object.prototype.hasOwnProperty.call(sessionLike, 'memoryCandidates') ? sessionLike : activeRecord
   const state = options.state && typeof options.state === 'object' ? options.state : buildCurrentChatState()
   return {
     version: 1,
@@ -8030,6 +8313,10 @@ function buildSessionSavePayload(options = {}) {
     session: {
       messages: (sessionLike.messages || []).map(serializeDisplayMessageForSave).filter(Boolean),
       apiMessages: deepCopyJson(sessionLike.apiMessages || [], [])
+    },
+    memory: {
+      candidates: normalizeMemoryCandidateQueue(memorySource?.memoryCandidates),
+      candidateUpdatedAt: Number(memorySource?.memoryCandidateUpdatedAt || 0) || 0
     }
   }
 }
@@ -8068,7 +8355,8 @@ async function persistMemorySessionToBoundPath(record, options = {}) {
     })
     let previousPayload = null
     try {
-      previousPayload = JSON.parse(String(await readFile(filePath, 'utf-8') || ''))
+      const previousSnapshot = await readSessionJsonFile(filePath)
+      previousPayload = previousSnapshot.ok ? previousSnapshot.value : null
     } catch {
       previousPayload = null
     }
@@ -8126,7 +8414,8 @@ async function runSessionAutosave() {
     const payload = buildSessionSavePayload()
     let previousPayload = null
     try {
-      previousPayload = JSON.parse(String(await readFile(filePath, 'utf-8') || ''))
+      const previousSnapshot = await readSessionJsonFile(filePath)
+      previousPayload = previousSnapshot.ok ? previousSnapshot.value : null
     } catch {
       previousPayload = null
     }
@@ -8206,10 +8495,13 @@ function resetChatRuntimeState() {
   pendingAttachments.value = []
   abortController.value = null
   const record = getActiveMemorySession()
+  clearMemoryCandidateFlushTimer(record)
   record.messages = session.messages
   record.apiMessages = session.apiMessages
   record.input = ''
   record.pendingAttachments = []
+  record.memoryCandidates = []
+  record.memoryCandidateUpdatedAt = 0
   record.activeSessionFilePath = ''
   record.activeSessionTitle = ''
   record.title = DEFAULT_MEMORY_SESSION_TITLE
@@ -8282,6 +8574,7 @@ async function clearSession() {
     return
   }
 
+  await flushMemoryCandidatesForRecord(record, { force: true })
   resetChatRuntimeState()
   await nextTick()
   scheduleRefreshUserAnchorMeta()
@@ -8418,6 +8711,7 @@ async function closeActiveSession() {
   const boundPath = String(activeSessionFilePath.value || '').trim()
   if (!boundPath) return
 
+  await flushMemoryCandidatesForRecord(record, { force: true })
   try {
     await runSessionAutosave()
   } catch {
@@ -8670,8 +8964,7 @@ async function loadSessionFromFile(filePath) {
   }
 
   try {
-    const content = await readFile(relPath)
-    const parsed = safeJsonParse(String(content || ''))
+    const parsed = await readSessionJsonFile(relPath, { repairIfRecovered: true })
     if (!parsed.ok) {
       throw new Error('解析会话文件失败：' + (parsed.error?.message || '未知错误'))
     }
@@ -8690,6 +8983,8 @@ async function loadSessionFromFile(filePath) {
       : Array.isArray(data?.apiMessages)
         ? data.apiMessages
         : []
+    const memoryCandidates = normalizeMemoryCandidateQueue(data?.memory?.candidates)
+    const memoryCandidateUpdatedAt = Number(data?.memory?.candidateUpdatedAt || 0) || 0
 
     unbindSessionAutosave({ silent: true })
 
@@ -8721,6 +9016,8 @@ async function loadSessionFromFile(filePath) {
         title: loadedTitle,
         messages: displaySafe,
         apiMessages: deepCopyJson(apiSafe, []),
+        memoryCandidates,
+        memoryCandidateUpdatedAt,
         activeSessionFilePath: relPath,
         activeSessionTitle: loadedTitle,
         state: state || null,
@@ -8733,6 +9030,8 @@ async function loadSessionFromFile(filePath) {
       record.apiMessages = deepCopyJson(apiSafe, [])
       record.input = ''
       record.pendingAttachments = []
+      record.memoryCandidates = memoryCandidates
+      record.memoryCandidateUpdatedAt = memoryCandidateUpdatedAt
       record.activeSessionFilePath = relPath
       record.activeSessionTitle = loadedTitle
       record.state = state && typeof state === 'object' ? deepCopyJson(state, {}) : null
@@ -8747,6 +9046,11 @@ async function loadSessionFromFile(filePath) {
     input.value = ''
     pendingAttachments.value = []
     if (state) applyLoadedChatState(state)
+    if (record.memoryCandidates?.length) {
+      scheduleMemoryCandidateFlush(record, { delayMs: 3000 })
+    } else {
+      clearMemoryCandidateFlushTimer(record)
+    }
 
     await withChatSessionOpeningHeavyRender(async () => {
       await nextTick()
@@ -9220,7 +9524,8 @@ async function runChatRounds({
   setCurrentAssistantDisplay,
   abortState = null,
   assistantPlaceholderMode = 'text',
-  supportsVision = false
+  supportsVision = false,
+  memorySystemContent = ''
 }) {
   const targetSession = getRunSessionTarget(abortState)
   let tools = []
@@ -9283,6 +9588,7 @@ async function runChatRounds({
           messages: buildRequestMessages({
             baseUrl,
             model,
+            memorySystemContent,
             forceReasoningContent,
             compatToolCallIdAsFc: compatFcToolCallId,
             fallbackAllVisionMessages: imagesFallbackToText,
@@ -9569,12 +9875,13 @@ async function runUtoolsAiChatRound({ model, setCurrentAssistantDisplay, setAbor
     ].filter(Boolean).join('\n\n')
   }
 
+  const memorySystemContent = String(abortState?.memorySystemContent || '').trim()
   const requestUtoolsAi = (requestApiMessages, requestTools = tools) => {
     return window.utools.ai(
       {
         model,
         messages: buildUtoolsAiMessages({
-          systemContent: systemContent.value,
+          systemContent: buildCombinedSystemContent(memorySystemContent),
           apiMessages: requestApiMessages
         }),
         ...(requestTools.length ? { tools: requestTools } : {})
@@ -11015,6 +11322,8 @@ async function runChatSession({
   imageGenerationRequestOptionsOverride = null,
   videoGenerationRequestOptionsOverride = null,
   sessionRecord = null,
+  memorySystemContent = '',
+  memorySourceUserText = '',
   prepare
 }) {
   if (sending.value) return
@@ -11029,6 +11338,7 @@ async function runChatSession({
   const abortListeners = new Set()
   const requestAbortState = {
     aborted: false,
+    memorySystemContent,
     onAbort(listener) {
       if (typeof listener !== 'function') return () => {}
       if (requestAbortState.aborted) {
@@ -11120,6 +11430,7 @@ async function runChatSession({
             signal: requestHandle.signal,
             assistantPlaceholderMode: imageGenerationPlaceholderMode,
             supportsVision,
+            memorySystemContent,
             setCurrentAssistantDisplay: (m) => {
               currentAssistantDisplay = m
             },
@@ -11155,6 +11466,7 @@ async function runChatSession({
             signal: requestHandle.signal,
             assistantPlaceholderMode: videoGenerationPlaceholderMode,
             supportsVision,
+            memorySystemContent,
             setCurrentAssistantDisplay: (m) => {
               currentAssistantDisplay = m
             },
@@ -11168,6 +11480,7 @@ async function runChatSession({
           model,
           signal: requestHandle.signal,
           supportsVision,
+          memorySystemContent,
           setCurrentAssistantDisplay: (m) => {
             currentAssistantDisplay = m
           },
@@ -11231,6 +11544,22 @@ async function runChatSession({
       runRecord.updatedAt = Date.now()
       runRecord.title = inferMemorySessionTitle(runRecord)
       void autoPersistMemorySessionWhenIdle(runRecord)
+    }
+    const memoryConfig = chatConfig.value?.memory
+    const memoryEnabled = isChatMemoryEnabled(memoryConfig)
+    if (memoryEnabled && memoryConfig?.autoExtract !== false && !requestAbortState.aborted && requestMode === 'chat') {
+      const assistantApiMessages = Array.isArray(runRecord.apiMessages) ? runRecord.apiMessages : []
+      const latestAssistant = [...assistantApiMessages].reverse().find((msg) => msg?.role === 'assistant' && String(msg?.content || '').trim())
+      const userText = String(memorySourceUserText || '').trim()
+      const assistantText = String(latestAssistant?.content || '').trim()
+      if (userText && assistantText) {
+        queueMemoryCandidateForRecord(runRecord, {
+          userText,
+          assistantText,
+          systemPrompt: buildCombinedSystemContent(''),
+          summary: userText.slice(0, 140)
+        })
+      }
     }
     await maybeScrollToBottomForRun(requestAbortState)
     runRecordByAbortState.delete(requestAbortState)
@@ -12427,6 +12756,7 @@ function buildRequestMessages(options = {}) {
   const {
     baseUrl = '',
     model = '',
+    memorySystemContent = '',
     forceReasoningContent = false,
     compatToolCallIdAsFc = false,
     visionFallbackText = '',
@@ -12442,7 +12772,8 @@ function buildRequestMessages(options = {}) {
   })
 
   const msgs = []
-  if (systemContent.value) msgs.push({ role: 'system', content: systemContent.value })
+  const mergedSystemContent = buildCombinedSystemContent(memorySystemContent)
+  if (mergedSystemContent) msgs.push({ role: 'system', content: mergedSystemContent })
 
   const sourceMessages = Array.isArray(apiMessages) ? apiMessages : buildRequestApiMessages('openai-compatible', { tools })
   let latestVisionUserIndex = -1
@@ -15270,6 +15601,34 @@ async function send() {
   input.value = ''
   resetComposerInput()
   pendingAttachments.value = []
+  if (attachments.length) {
+    try {
+      await Promise.all(attachments.map((a) => ensureAttachmentParsed(a)))
+      await enrichImageAttachmentsForMemoryRecall(attachments, cfg)
+    } catch {
+      // ignore attachment parsing failure for recall
+    }
+  }
+  let memorySystemContent = ''
+  let attachmentRecallText = ''
+  if (cfg.requestMode === 'chat' && isChatMemoryEnabled(chatConfig.value?.memory)) {
+    try {
+      const requestRecord = getActiveMemorySession()
+      attachmentRecallText = buildMemoryRecallQueryFromAttachments(attachments)
+      const memoryQueryText = [
+        buildMemoryRecallQueryFromRecord(requestRecord, text),
+        attachmentRecallText
+      ].filter(Boolean).join('\n\n')
+      const recall = await buildMemoryInjection({
+        queryText: memoryQueryText,
+        userText: [text, attachmentRecallText].filter(Boolean).join('\n\n'),
+        systemPrompt: systemContent.value
+      })
+      memorySystemContent = String(recall?.text || '').trim()
+    } catch (err) {
+      console.warn('[chat memory] recall failed:', err)
+    }
+  }
 
   const userDisplay = createDisplayMessage('user', text || (attachments.length ? '(sent attachments)' : ''))
   if (attachments.length) {
@@ -15298,6 +15657,8 @@ async function send() {
   await runChatSession({
     ...cfg,
     sessionRecord: requestRecord,
+    memorySystemContent,
+    memorySourceUserText: [text, attachmentRecallText].filter(Boolean).join('\n\n'),
     prepare: async () => {
       if (isMemorySessionActive(requestRecord)) await scrollToBottom({ force: true })
       await prepareUserApiMessage({
@@ -15358,7 +15719,7 @@ watch(
 .chat-layout__content {
   min-width: 0;
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .chat-page {
@@ -15513,13 +15874,14 @@ watch(
   max-height: 100%;
   min-width: 0;
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
   background: transparent;
 }
 
 .chat-messages :deep(.n-card__content) {
   height: 100%;
   min-height: 0;
+  overflow: visible;
 }
 
 .chat-scroll-wrapper {
@@ -15527,7 +15889,7 @@ watch(
   height: 100%;
   min-width: 0;
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
 }
 
 
@@ -15653,6 +16015,9 @@ watch(
 
 .chat-anchor-rail:hover {
   transform: translateX(calc(100% + 8px));
+  box-shadow:
+    0 18px 34px rgba(15, 23, 42, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
 .chat-anchor-rail::-webkit-scrollbar {
@@ -16010,7 +16375,6 @@ watch(
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  contain: layout paint style;
   animation: chat-fade-up 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
@@ -16028,6 +16392,8 @@ watch(
   display: flex;
   align-items: flex-end;
   gap: 10px;
+  width: 100%;
+  min-width: 0;
   max-width: 100%;
 }
 
@@ -16134,12 +16500,19 @@ watch(
 .chat-item__bubble {
   max-width: min(calc(100% - 68px), 780px);
   width: fit-content;
+  min-width: 0;
   border-radius: 16px;
   padding: 10px 12px;
   border: 1px solid rgba(0, 0, 0, 0.06);
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(255, 255, 255, 0.78));
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
   transition: box-shadow 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.chat-item__content {
+  min-width: 0;
+  max-width: 100%;
+  overflow: visible;
 }
 
 .chat-item__bubble:hover {
@@ -16421,12 +16794,62 @@ watch(
 
 .chat-item__content :deep(.md-editor-preview-wrapper) {
   padding: 0;
+  height: auto !important;
+  min-height: 0;
+  max-width: 100%;
+  overflow: visible !important;
+}
+
+.chat-item__content :deep(.md-editor.md-editor-previewOnly) {
+  height: auto !important;
+  min-height: 0;
+  overflow: visible !important;
+  display: block;
+}
+
+.chat-item__content :deep(.md-editor.md-editor-previewOnly .md-editor-content) {
+  height: auto !important;
+  min-height: 0;
+  overflow: visible !important;
+  display: block;
 }
 
 .chat-item__content :deep(.md-editor-preview) {
   font-size: 14px;
   line-height: 1.65;
   background: transparent;
+  max-width: 100%;
+  overflow: visible !important;
+}
+
+.chat-item__content :deep(.md-editor-preview .md-editor-code) {
+  max-width: 100%;
+  overflow: visible !important;
+}
+
+.chat-item__content :deep(.md-editor-preview .md-editor-code pre) {
+  overflow: visible !important;
+}
+
+.chat-item__content :deep(.md-editor-preview .md-editor-code .md-editor-code-head) {
+  position: sticky;
+  top: 8px;
+  z-index: 4;
+}
+
+.chat-item__content :deep(.n-scrollbar-container),
+.chat-item__content :deep(.n-scrollbar-content) {
+  overflow: visible !important;
+}
+
+.chat-item__content :deep(.md-editor-preview pre),
+.chat-item__content :deep(.md-editor-preview table) {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.chat-item__content :deep(.md-editor-preview table) {
+  display: block;
 }
 
 .session-media-library-grid {
