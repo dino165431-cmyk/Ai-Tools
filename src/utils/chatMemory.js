@@ -84,7 +84,8 @@ const state = {
   loading: null,
   store: null,
   autoCleanTimer: null,
-  lastAutoCleanAt: 0
+  lastAutoCleanAt: 0,
+  loadVersion: 0
 }
 
 function nowIso() {
@@ -500,6 +501,15 @@ function clearAutoCleanTimer() {
   state.autoCleanTimer = null
 }
 
+export function resetMemoryStoreCache(options = {}) {
+  state.loadVersion += 1
+  state.ready = false
+  state.loading = null
+  state.store = null
+  state.lastAutoCleanAt = 0
+  if (options.clearAutoClean !== false) clearAutoCleanTimer()
+}
+
 function scheduleAutoCleanMemoryStore(options = {}) {
   clearAutoCleanTimer()
   const delayMs = Math.max(1000, Number(options.delayMs || MEMORY_CANDIDATE_IDLE_MS))
@@ -530,17 +540,20 @@ async function maybeAutoCleanMemoryStore(options = {}) {
   return cleaned
 }
 
-async function withStore() {
+async function withStore(options = {}) {
+  if (options.forceReload === true) resetMemoryStoreCache()
   if (state.store) return state.store
   if (!state.loading) {
+    const loadVersion = state.loadVersion
     state.loading = loadStoreFromDisk()
       .then((store) => {
+        if (loadVersion !== state.loadVersion) return state.store || store
         state.store = store
         state.ready = true
         return store
       })
       .finally(() => {
-        state.loading = null
+        if (loadVersion === state.loadVersion) state.loading = null
       })
   }
   return state.loading
@@ -1113,7 +1126,7 @@ export async function ensureMemoryStore() {
 }
 
 export async function listMemoryItems(options = {}) {
-  const store = await withStore()
+  const store = await withStore({ forceReload: options.forceReload === true })
   const lane = normalizeText(options?.lane).toLowerCase()
   const status = normalizeText(options?.status).toLowerCase()
   const items = sortMemoryItems((store.items || []).map((item) => normalizeMemoryItem(item)))

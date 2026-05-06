@@ -119,7 +119,7 @@
 </template>
 
 <script setup>
-import { ref, h, computed, onMounted, watch } from 'vue';
+import { ref, h, computed, onMounted, onBeforeUnmount, watch } from 'vue';
 import {
   FileTrayFullOutline,
   Folder,
@@ -328,6 +328,28 @@ onMounted(async () => {
   } catch (err) {
     runtimeIssue.value = describeFileOperationsError(err, '笔记功能');
     message.error(runtimeIssue.value);
+  }
+});
+
+function handleExternalNoteFilesChanged(e) {
+  const changedPath = String(e?.detail?.path || '').trim();
+  if (changedPath && changedPath !== 'note' && !changedPath.startsWith('note/')) return;
+  void refreshTree();
+}
+
+onMounted(() => {
+  try {
+    window.addEventListener('noteFilesChanged', handleExternalNoteFilesChanged);
+  } catch {
+    // ignore
+  }
+});
+
+onBeforeUnmount(() => {
+  try {
+    window.removeEventListener('noteFilesChanged', handleExternalNoteFilesChanged);
+  } catch {
+    // ignore
   }
 });
 

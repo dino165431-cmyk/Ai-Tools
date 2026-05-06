@@ -83,6 +83,56 @@ class FileOperations {
         }
     }
 
+    _dispatchWindowEvent(eventName, detail = {}) {
+        try {
+            if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return
+            const CustomEventCtor = window.CustomEvent || globalThis.CustomEvent
+            if (typeof CustomEventCtor !== 'function') return
+            window.dispatchEvent(new CustomEventCtor(eventName, { detail }))
+        } catch {
+            // ignore event dispatch failures
+        }
+    }
+
+    _normalizeRelativePath(relativePath) {
+        return String(relativePath || '').trim().replace(/\\/g, '/').replace(/^\/+/, '')
+    }
+
+    _notifyRestoredRelativePathsChanged(relativePaths = []) {
+        const normalizedPaths = [...new Set(
+            (Array.isArray(relativePaths) ? relativePaths : [relativePaths])
+                .map((item) => this._normalizeRelativePath(item))
+                .filter(Boolean)
+        )]
+        if (!normalizedPaths.length) return
+
+        this._dispatchWindowEvent('storageFilesChanged', { paths: normalizedPaths })
+
+        const notePaths = normalizedPaths.filter((item) => item === 'note' || item.startsWith('note/'))
+        if (notePaths.length) {
+            this._dispatchWindowEvent('noteFilesChanged', {
+                path: 'note',
+                paths: notePaths
+            })
+        }
+
+        const sessionPaths = normalizedPaths.filter((item) => item === 'session' || item.startsWith('session/'))
+        if (sessionPaths.length) {
+            this._dispatchWindowEvent('sessionFilesChanged', {
+                path: 'session',
+                paths: sessionPaths
+            })
+        }
+
+        const memoryPaths = normalizedPaths.filter((item) => item === 'chat-memory' || item.startsWith('chat-memory/'))
+        if (memoryPaths.length) {
+            this._dispatchWindowEvent('memoryStoreChanged', {
+                path: 'chat-memory',
+                paths: memoryPaths
+            })
+        }
+    }
+
     initCloudAutomation() {
         if (this._cloudAutomationInitialized) return
         this._cloudAutomationInitialized = true
@@ -560,6 +610,7 @@ class FileOperations {
             .filter((key) => String(key || '').trim() && !String(key).endsWith('/'))
         const total = remoteFiles.length
         let completed = 0
+        const changedRoots = new Set()
 
         for (const key of remoteFiles) {
             const fullPath = this._resolvePath(key)
@@ -567,8 +618,13 @@ class FileOperations {
             await this._retryOperation(() => s3.downloadFile(bucket, key, fullPath))
             completed += 1
             this._clearBlobCacheForRelativePath(key)
+            const normalizedKey = this._normalizeRelativePath(key)
+            const root = normalizedKey.split('/').filter(Boolean)[0]
+            if (root) changedRoots.add(root)
             if (progressCallback) progressCallback(completed, total)
         }
+
+        this._notifyRestoredRelativePathsChanged([...changedRoots])
 
         return { downloaded: total }
     }

@@ -721,7 +721,7 @@ import {
   normalizeChatContextWindowConfig
 } from '@/utils/chatContextWindow'
 import { DEFAULT_CHAT_MEMORY_CONFIG, normalizeChatMemoryConfig } from '@/utils/chatMemoryConfig'
-import { manageMemoryStore, rebuildMemoryEmbeddings } from '@/utils/chatMemory'
+import { manageMemoryStore, rebuildMemoryEmbeddings, resetMemoryStoreCache } from '@/utils/chatMemory'
 import { checkNotebookPythonLsp, detectNotebookPython, listNotebookPythonModules } from '@/utils/notebookRuntime'
 import { normalizeNotebookRuntimeConfig } from '@/utils/notebookRuntimeConfig'
 
@@ -1994,6 +1994,7 @@ async function handleCloudAction(action) {
         ? '云端同名文件已使用本地版本覆盖。'
         : '本地同名文件已使用云端版本覆盖。'
     cloudActionFeedback.current = Math.max(cloudActionFeedback.current, cloudActionFeedback.total)
+    if (action === 'restore') resetMemoryStoreCache()
     message.success(summary)
   } catch (err) {
     const label = getCloudActionLabel(action)
@@ -2017,8 +2018,8 @@ function confirmCloudAction(action) {
     content: options.content,
     positiveText: options.positiveText,
     negativeText: '取消',
-    onPositiveClick: async () => {
-      await handleCloudAction(action)
+    onPositiveClick: () => {
+      void handleCloudAction(action)
     }
   })
 }

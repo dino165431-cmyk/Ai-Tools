@@ -119,7 +119,7 @@
 </template>
 
 <script setup>
-import { computed, h, reactive, ref } from 'vue'
+import { computed, h, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import {
   NButton,
   NCard,
@@ -387,7 +387,7 @@ const columns = [
 async function refreshList() {
   loading.value = true
   try {
-    items.value = await listMemoryItems()
+    items.value = await listMemoryItems({ forceReload: true })
   } catch (err) {
     message.error(err?.message || String(err))
   } finally {
@@ -491,6 +491,28 @@ async function handleOpenFolder() {
     message.error(err?.message || String(err))
   }
 }
+
+function handleExternalMemoryStoreChanged(e) {
+  const changedPath = String(e?.detail?.path || '').trim()
+  if (changedPath && changedPath !== 'chat-memory' && !changedPath.startsWith('chat-memory/')) return
+  void refreshList()
+}
+
+onMounted(() => {
+  try {
+    window.addEventListener('memoryStoreChanged', handleExternalMemoryStoreChanged)
+  } catch {
+    // ignore
+  }
+})
+
+onBeforeUnmount(() => {
+  try {
+    window.removeEventListener('memoryStoreChanged', handleExternalMemoryStoreChanged)
+  } catch {
+    // ignore
+  }
+})
 
 refreshList()
 </script>
