@@ -26,8 +26,10 @@
               :data-inline-picker-index="index"
               :class="{
                 'is-active': index === inlineAgentActiveIndex,
-                'is-selected': agent.value === selectedAgentId
+                'is-selected': agent.value === selectedAgentId,
+                'is-disabled': busy
               }"
+              :disabled="busy"
               :title="[agent.label, agent.name && agent.name !== agent.id ? `@${agent.id}` : '', agent.providerLabel, agent.model].filter(Boolean).join('\n')"
               @mousedown.prevent="emit('apply-inline-agent-suggestion', agent.value)"
             >
@@ -60,9 +62,9 @@
               :class="{
                 'is-active': index === inlineCommandActiveIndex,
                 'is-selected': item.selected,
-                'is-disabled': item.disabled
+                'is-disabled': busy || item.disabled
               }"
-              :disabled="item.disabled"
+              :disabled="busy || item.disabled"
               :title="item.title || ''"
               @mousedown.prevent="emit('apply-inline-command-suggestion', item)"
             >
@@ -88,8 +90,8 @@
           :value="inputValue"
           type="textarea"
           :autosize="{ minRows: 4, maxRows: 12 }"
-          placeholder="输入消息……（回车发送，Shift+回车换行，@ 选择智能体，/prompt 提示词，/skill 技能，/mcp MCP）"
-          :disabled="sending"
+          :placeholder="composerPlaceholder"
+          :disabled="busy"
           @update:value="handleInputValueUpdate"
           @keydown="emit('input-keydown', $event)"
           @paste="emit('composer-paste', $event)"
@@ -170,7 +172,7 @@
                 size="small"
                 tertiary
                 circle
-                :disabled="sending || sessionMessagesLength === 0"
+                :disabled="busy || sessionMessagesLength === 0"
                 @click="emit('clear-session')"
               >
                 <template #icon>
@@ -183,7 +185,7 @@
 
           <n-tooltip trigger="hover">
             <template #trigger>
-              <n-button size="small" tertiary circle :disabled="sending" @click="emit('reset-chat-setup')">
+              <n-button size="small" tertiary circle :disabled="busy" @click="emit('reset-chat-setup')">
                 <template #icon>
                   <n-icon :component="RefreshOutline" size="12" />
                 </template>
@@ -194,7 +196,7 @@
 
           <n-tooltip trigger="hover">
             <template #trigger>
-              <n-button size="small" tertiary circle @click="emit('open-agent-modal')">
+              <n-button size="small" tertiary circle :disabled="busy" @click="emit('open-agent-modal')">
                 <template #icon>
                   <n-icon :component="Magento" size="12" />
                 </template>
@@ -205,7 +207,7 @@
 
           <n-tooltip trigger="hover">
             <template #trigger>
-              <n-button size="small" tertiary circle @click="emit('insert-inline-command-trigger', 'prompt')">
+              <n-button size="small" tertiary circle :disabled="busy" @click="emit('insert-inline-command-trigger', 'prompt')">
                 <template #icon>
                   <n-icon :component="PromptIcon" size="12" />
                 </template>
@@ -216,7 +218,7 @@
 
           <n-tooltip trigger="hover">
             <template #trigger>
-              <n-button size="small" tertiary circle @click="emit('insert-inline-command-trigger', 'skill')">
+              <n-button size="small" tertiary circle :disabled="busy" @click="emit('insert-inline-command-trigger', 'skill')">
                 <template #icon>
                   <n-icon :component="SkillLevelIntermediate" size="12" />
                 </template>
@@ -227,7 +229,7 @@
 
           <n-tooltip trigger="hover">
             <template #trigger>
-              <n-button size="small" tertiary circle @click="emit('insert-inline-command-trigger', 'mcp')">
+              <n-button size="small" tertiary circle :disabled="busy" @click="emit('insert-inline-command-trigger', 'mcp')">
                 <template #icon>
                   <n-icon :component="BareMetalServer02" size="12" />
                 </template>
@@ -238,7 +240,7 @@
 
           <n-tooltip trigger="hover">
             <template #trigger>
-              <n-button size="small" tertiary circle :disabled="sending" @click="emit('open-file-picker')">
+              <n-button size="small" tertiary circle :disabled="busy" @click="emit('open-file-picker')">
                 <template #icon>
                   <n-icon :component="AttachOutline" size="12" />
                 </template>
@@ -254,7 +256,7 @@
                 tertiary
                 circle
                 :type="webSearchEnabled ? 'primary' : 'default'"
-                :disabled="sending"
+                :disabled="busy"
                 @click="emit('toggle-web-search')"
               >
                 <template #icon>
@@ -272,6 +274,7 @@
                 tertiary
                 circle
                 :type="autoApproveTools ? 'primary' : 'default'"
+                :disabled="busy"
                 @click="emit('toggle-auto-approve-tools')"
               >
                 <template #icon>
@@ -289,6 +292,7 @@
                 tertiary
                 circle
                 :type="autoActivateAgentSkills ? 'primary' : 'default'"
+                :disabled="busy"
                 @click="emit('toggle-auto-activate-agent-skills')"
               >
                 <template #icon>
@@ -301,7 +305,7 @@
 
           <n-tooltip trigger="hover">
             <template #trigger>
-              <n-button size="small" tertiary circle :disabled="sending" @click="emit('cycle-tool-mode')">
+              <n-button size="small" tertiary circle :disabled="busy" @click="emit('cycle-tool-mode')">
                 <template #icon>
                   <n-icon :component="HardwareChipOutline" size="12" />
                 </template>
@@ -312,7 +316,7 @@
 
           <n-tooltip trigger="hover">
             <template #trigger>
-              <n-button size="small" tertiary circle :disabled="sending" @click="emit('open-context-window-modal')">
+              <n-button size="small" tertiary circle :disabled="busy" @click="emit('open-context-window-modal')">
                 <template #icon>
                   <n-icon :component="ChatbubbleEllipsesOutline" size="12" />
                 </template>
@@ -327,7 +331,7 @@
                 size="small"
                 tertiary
                 circle
-                :disabled="sending || refreshingMcpTools"
+                :disabled="busy || refreshingMcpTools"
                 @click="emit('refresh-active-mcp-tools')"
               >
                 <template #icon>
@@ -345,7 +349,7 @@
                 tertiary
                 circle
                 :type="thinkingEffortButtonType"
-                :disabled="sending"
+                :disabled="busy"
                 @click="emit('cycle-thinking-effort')"
               >
                 <template #icon>
@@ -361,12 +365,12 @@
             v-model:show="mediaPresetPopoverVisible"
             trigger="click"
             placement="top-start"
-            :disabled="sending"
+            :disabled="busy"
           >
             <template #trigger>
               <n-tooltip trigger="hover">
                 <template #trigger>
-                  <n-button size="small" tertiary circle :disabled="sending" title="生成参数预设">
+                  <n-button size="small" tertiary circle :disabled="busy" title="生成参数预设">
                     <template #icon>
                       <n-icon :component="SparklesOutline" size="12" />
                     </template>
@@ -409,7 +413,7 @@
 
           <ChatMediaGenerationParamsPopover
             :theme="theme"
-            :sending="sending"
+            :sending="busy"
             :image-generation-params-enabled="imageGenerationParamsEnabled"
             :image-generation-params="imageGenerationParams"
             :image-generation-params-summary="imageGenerationParamsSummary"
@@ -431,7 +435,7 @@
                 tertiary
                 circle
                 :type="imageGenerationButtonType"
-                :disabled="sending"
+                :disabled="busy"
                 @click="emit('cycle-image-generation-mode')"
               >
                 <template #icon>
@@ -449,7 +453,7 @@
                 tertiary
                 circle
                 :type="videoGenerationButtonType"
-                :disabled="sending"
+                :disabled="busy"
                 @click="emit('cycle-video-generation-mode')"
               >
                 <template #icon>
@@ -479,7 +483,7 @@
                 size="small"
                 type="primary"
                 circle
-                :loading="sending"
+                :loading="busy"
                 :disabled="!canSend"
                 @click="emit('send')"
               >
@@ -534,6 +538,10 @@ const props = defineProps({
     default: 'light'
   },
   sending: {
+    type: Boolean,
+    default: false
+  },
+  preparingSend: {
     type: Boolean,
     default: false
   },
@@ -772,6 +780,14 @@ const composerInputRef = ref(null)
 const inlineAgentListRef = ref(null)
 const inlineCommandListRef = ref(null)
 const mediaPresetPopoverVisible = ref(false)
+
+const busy = computed(() => props.sending || props.preparingSend)
+
+const composerPlaceholder = computed(() => {
+  if (props.preparingSend) return '正在准备发送，请稍候…'
+  if (props.sending) return '正在发送，请稍候…'
+  return '输入消息……（回车发送，Shift+回车换行，@ 选择智能体，/prompt 提示词，/skill 技能，/mcp MCP）'
+})
 
 function handleInputValueUpdate(value) {
   emit('update:inputValue', value)

@@ -23,6 +23,8 @@ const MEMORY_CANDIDATE_LIMIT = 64
 const MEMORY_CANDIDATE_BATCH_SIZE = 3
 const MEMORY_CANDIDATE_MAX = 12
 const MEMORY_CANDIDATE_IDLE_MS = 90 * 1000
+const MEMORY_AUTO_CLEAN_MIN_INTERVAL_MS = 10 * 60 * 1000
+const MEMORY_AUTO_CLEAN_ITEM_THRESHOLD = 12
 const MEMORY_PROFILE_KINDS = new Set(['profile', 'preference', 'style', 'constraint'])
 const MEMORY_PROFILE_KEYS = new Set([
   'name',
@@ -74,7 +76,9 @@ const MEMORY_QUERY_CUE_VARIANTS = [
 const state = {
   ready: false,
   loading: null,
-  store: null
+  store: null,
+  autoCleanTimer: null,
+  lastAutoCleanAt: 0
 }
 
 function nowIso() {
@@ -405,6 +409,46 @@ async function saveStoreToDisk(store) {
   return payload
 }
 
+function clearAutoCleanTimer() {
+  if (!state.autoCleanTimer) return
+  try {
+    clearTimeout(state.autoCleanTimer)
+  } catch {
+    // ignore timer cleanup failures
+  }
+  state.autoCleanTimer = null
+}
+
+function scheduleAutoCleanMemoryStore(options = {}) {
+  clearAutoCleanTimer()
+  const delayMs = Math.max(1000, Number(options.delayMs || MEMORY_CANDIDATE_IDLE_MS))
+  state.autoCleanTimer = setTimeout(() => {
+    state.autoCleanTimer = null
+    void maybeAutoCleanMemoryStore({ force: false })
+  }, delayMs)
+}
+
+async function maybeAutoCleanMemoryStore(options = {}) {
+  const store = await withStore()
+  const activeItems = (store.items || []).filter((item) => item && item.status !== 'deleted')
+  if (!activeItems.length) return store
+
+  const now = nowMs()
+  const dueByTime = now - Number(state.lastAutoCleanAt || 0) >= MEMORY_AUTO_CLEAN_MIN_INTERVAL_MS
+  const dueBySize = activeItems.length >= MEMORY_AUTO_CLEAN_ITEM_THRESHOLD
+  if (options.force !== true && !dueByTime && !dueBySize) {
+    scheduleAutoCleanMemoryStore({ delayMs: MEMORY_AUTO_CLEAN_MIN_INTERVAL_MS })
+    return store
+  }
+
+  const cleaned = await cleanMemoryStore()
+  state.lastAutoCleanAt = nowMs()
+  if ((cleaned?.items || []).length >= MEMORY_AUTO_CLEAN_ITEM_THRESHOLD) {
+    scheduleAutoCleanMemoryStore({ delayMs: MEMORY_AUTO_CLEAN_MIN_INTERVAL_MS })
+  }
+  return cleaned
+}
+
 async function withStore() {
   if (state.store) return state.store
   if (!state.loading) {
@@ -720,6 +764,7 @@ async function upsertExtractedMemoryItems(extracted = [], config = getMemoryConf
   store.items = sortMemoryItems(store.items)
   store.updatedAt = nowIso()
   await saveStoreToDisk(store)
+  scheduleAutoCleanMemoryStore()
   return nextItems
 }
 
@@ -768,7 +813,9 @@ export async function upsertMemoryItem(item) {
   else store.items[index] = merged
   store.items = sortMemoryItems(store.items)
   store.updatedAt = nowIso()
-  return await saveStoreToDisk(store)
+  const saved = await saveStoreToDisk(store)
+  scheduleAutoCleanMemoryStore()
+  return saved
 }
 
 export async function deleteMemoryItem(id) {
@@ -799,7 +846,9 @@ export async function updateMemoryItem(id, patch) {
   store.items[index] = merged
   store.items = sortMemoryItems(store.items)
   store.updatedAt = nowIso()
-  return await saveStoreToDisk(store)
+  const saved = await saveStoreToDisk(store)
+  scheduleAutoCleanMemoryStore()
+  return saved
 }
 
 export async function markMemoryItemUsed(id) {
@@ -833,7 +882,9 @@ export async function cleanMemoryStore() {
   }
   store.items = sortMemoryItems([...merged.values()].map((item) => normalizeMemoryItem(item)))
   store.updatedAt = nowIso()
-  return await saveStoreToDisk(store)
+  const saved = await saveStoreToDisk(store)
+  state.lastAutoCleanAt = nowMs()
+  return saved
 }
 
 export async function getResidentProfileItems(limit = getMemoryConfig().profileMaxItems) {
@@ -848,7 +899,7 @@ export async function getResidentProfileItems(limit = getMemoryConfig().profileM
   return unique.slice(0, Math.max(1, Math.min(20, Number(limit || config.profileMaxItems || 1))))
 }
 
-export async function extractAndStoreMemory({ userText, assistantText, systemPrompt, candidates } = {}) {
+export async function extractAndStoreMemory({ userText, assistantText, systemPrompt, candidates, autoClean = true } = {}) {
   const config = getMemoryConfig()
   if (!config.enabled || config.autoExtract === false) return []
 
@@ -864,7 +915,9 @@ export async function extractAndStoreMemory({ userText, assistantText, systemPro
     selection: config.extraction,
     conversationPairs
   })
-  return await upsertExtractedMemoryItems(extracted, config)
+  const items = await upsertExtractedMemoryItems(extracted, config)
+  if (autoClean && items.length) scheduleAutoCleanMemoryStore()
+  return items
 }
 
 export async function recallMemory({ queryText, limit = 5, includeProfile = false, lane = '' } = {}) {
@@ -1141,7 +1194,8 @@ export async function flushMemoryCandidates({ candidates, systemPrompt, force = 
 
   const items = await extractAndStoreMemory({
     candidates: queue,
-    systemPrompt: normalizeText(systemPrompt) || normalizeText(queue[queue.length - 1]?.systemPrompt)
+    systemPrompt: normalizeText(systemPrompt) || normalizeText(queue[queue.length - 1]?.systemPrompt),
+    autoClean: true
   }).catch(() => null)
 
   if (!Array.isArray(items)) {
@@ -1189,7 +1243,9 @@ export async function rebuildMemoryEmbeddings() {
   }
   store.items = sortMemoryItems(store.items)
   store.updatedAt = nowIso()
-  return await saveStoreToDisk(store)
+  const saved = await saveStoreToDisk(store)
+  scheduleAutoCleanMemoryStore()
+  return saved
 }
 
 export async function getMemoryRootPath() {

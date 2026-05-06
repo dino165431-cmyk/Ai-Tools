@@ -219,18 +219,6 @@ function toDisplayText(value, fallback = '-') {
   return text || fallback
 }
 
-function renderCellText(value, className = 'memory-cell-text') {
-  const text = toDisplayText(value)
-  return h(
-    'span',
-    {
-      class: className,
-      title: text === '-' ? undefined : text
-    },
-    text
-  )
-}
-
 function fillEditor(item = null) {
   const src = item && typeof item === 'object' ? item : {}
   editor.form.id = String(src.id || '')
@@ -315,25 +303,28 @@ const columns = [
   {
     title: '内容',
     key: 'text',
+    ellipsis: { tooltip: true },
     render(row) {
-      return renderCellText(row.summary || row.text, 'memory-cell-text memory-cell-text--content')
+      return toDisplayText(row.summary || row.text)
     }
   },
   {
     title: '画像键',
     key: 'profileKey',
     width: 132,
+    ellipsis: { tooltip: true },
     render(row) {
-      return renderCellText(row.profileKey)
+      return toDisplayText(row.profileKey)
     }
   },
   {
     title: '标签',
     key: 'tags',
     width: 122,
+    ellipsis: { tooltip: true },
     render(row) {
       const tags = Array.isArray(row.tags) ? row.tags : []
-      return renderCellText(tags.length ? tags.join(' / ') : '')
+      return toDisplayText(tags.length ? tags.join(' / ') : '')
     }
   },
   {
@@ -523,15 +514,6 @@ refreshList()
 
 .memory-table {
   width: 100%;
-}
-
-.memory-cell-text {
-  display: block;
-  width: 100%;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .memory-actions {

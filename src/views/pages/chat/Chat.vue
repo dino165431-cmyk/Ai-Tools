@@ -336,7 +336,7 @@
 
                   <n-tooltip trigger="hover">
                     <template #trigger>
-                      <n-button size="tiny" tertiary circle @click="regenerateAssistant(msg)" :disabled="sending">
+                      <n-button size="tiny" tertiary circle @click="regenerateAssistant(msg)" :disabled="sending || preparingSend">
                         <template #icon>
                           <n-icon :component="RefreshOutline" size="12" />
                         </template>
@@ -360,7 +360,7 @@
 
                   <n-tooltip trigger="hover">
                     <template #trigger>
-                      <n-button size="tiny" tertiary circle @click="toggleOrSubmitUserEdit(msg)" :disabled="sending">
+                      <n-button size="tiny" tertiary circle @click="toggleOrSubmitUserEdit(msg)" :disabled="sending || preparingSend">
                         <template #icon>
                           <n-icon :component="msg.editing ? CheckmarkOutline : PencilOutline" size="12" />
                         </template>
@@ -441,6 +441,7 @@
       :theme="theme"
       :attach-accept="ATTACH_ACCEPT"
       :sending="sending"
+      :preparing-send="preparingSend"
       :composer-input-key="composerInputKey"
       :input-value="input"
       :show-inline-agent-picker="showInlineAgentPicker"
@@ -1117,6 +1118,8 @@ import {
   countChatContextAttachmentMessages,
   countChatContextAttachmentSummaryMessages,
   DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG,
+  estimateMessageSize,
+  estimateMessagesSize,
   inspectChatContextWindow,
   normalizeChatContextWindowConfig,
   resolveChatContextWindowOptions
@@ -1129,6 +1132,7 @@ import {
 } from '@/utils/chatRequestCompat'
 import {
   buildMemoryInjection,
+  estimateMemoryCandidatePriority,
   enqueueMemoryCandidate,
   flushMemoryCandidates,
   normalizeMemoryCandidateQueue
@@ -1456,6 +1460,8 @@ const inlineCommandMatchStart = ref(-1)
 const inlineCommandMatchEnd = ref(-1)
 const inlineCommandActiveIndex = ref(0)
 const sending = ref(false)
+const preparingSend = ref(false)
+const preparingSendStage = ref('')
 const abortController = ref(null)
 const runRecordByAbortState = new WeakMap()
 const pendingAttachments = ref([])
@@ -1464,6 +1470,15 @@ const memorySessions = ref([])
 const activeMemorySessionId = ref('')
 const autoPersistMemorySessionInFlight = new Map()
 let autoChatCleanupTimer = null
+
+function createEmptyContextSummaryState() {
+  return {
+    summaryText: '',
+    coveredMessageCount: 0,
+    sourceHash: '',
+    updatedAt: 0
+  }
+}
 
 function createMemorySessionRecord(options = {}) {
   const now = Date.now()
@@ -1481,6 +1496,9 @@ function createMemorySessionRecord(options = {}) {
     memoryCandidateUpdatedAt: Number(options.memoryCandidateUpdatedAt || 0) || 0,
     memoryCandidateFlushTimer: null,
     memoryCandidateFlushInFlight: false,
+    contextSummary: options.contextSummary && typeof options.contextSummary === 'object'
+      ? deepCopyJson(options.contextSummary, {})
+      : createEmptyContextSummaryState(),
     activeSessionFilePath: String(options.activeSessionFilePath || '').trim(),
     activeSessionTitle: String(options.activeSessionTitle || '').trim(),
     state: options.state && typeof options.state === 'object' ? deepCopyJson(options.state, {}) : null,
@@ -1539,10 +1557,14 @@ function syncActiveRequestUiState(record = getMemorySessionById(activeMemorySess
   const activeRecord = record && isMemorySessionActive(record) ? record : getMemorySessionById(activeMemorySessionId.value)
   if (isMemorySessionChatRunning(activeRecord)) {
     sending.value = true
+    preparingSend.value = false
+    preparingSendStage.value = ''
     abortController.value = activeRecord.activeRequestAbortState || null
     return
   }
   sending.value = false
+  preparingSend.value = false
+  preparingSendStage.value = ''
   abortController.value = null
 }
 
@@ -1877,7 +1899,7 @@ async function flushMemoryCandidatesForRecord(record, options = {}) {
     }
     const result = await flushMemoryCandidates({
       candidates: queue,
-      systemPrompt: buildCombinedSystemContent(''),
+      systemPrompt: buildCombinedSystemContent('', { sessionRecord: record }),
       force: options.force === true
     }).catch((err) => {
       console.warn('[chat memory] candidate flush failed:', err)
@@ -3934,9 +3956,17 @@ const systemContent = computed(() => {
   return blocks.join('\n\n').trim()
 })
 
-function buildCombinedSystemContent(memorySystemContent = '') {
+function buildCombinedSystemContent(memorySystemContent = '', options = {}) {
   const blocks = []
   if (systemContent.value) blocks.push(String(systemContent.value || '').trim())
+  const summarySource =
+    options.sessionRecord && typeof options.sessionRecord === 'object'
+      ? options.sessionRecord
+      : getActiveMemorySession()
+  const summaryText = String(summarySource?.contextSummary?.summaryText || '').trim()
+  if (summaryText) {
+    blocks.push(buildContextSummaryPrelude(summaryText))
+  }
   if (memorySystemContent) {
     blocks.push([
       '以下是从历史对话中提炼出的长期记忆，仅在与当前问题相关时参考：',
@@ -4668,6 +4698,7 @@ function contextWindowPreviewOmittedReasonType(reason) {
 }
 
 const footerHint = computed(() => {
+  if (preparingSend.value) return preparingSendStage.value ? `准备中：${preparingSendStage.value}` : '准备发送中...'
   if (sending.value) return '发送中...'
   if (effectiveHeaderHint.value) return effectiveHeaderHint.value
   if (!systemContent.value) return '系统提示词为空。你可以先选择提示词、启用技能，或在上方输入临时系统提示词。'
@@ -4779,6 +4810,7 @@ const videoGenerationButtonType = computed(() => {
 })
 
 const canSend = computed(() => {
+  if (preparingSend.value || sending.value) return false
   return !!String(input.value || '').trim() || (pendingAttachments.value || []).length > 0
 })
 
@@ -8214,6 +8246,7 @@ function serializeDisplayMessageForSave(msg) {
 }
 
 function buildCurrentChatState() {
+  const activeRecord = getActiveMemorySession()
   return {
     selectedAgentId: selectedAgentId.value,
     selectedProviderId: selectedProviderId.value,
@@ -8237,7 +8270,8 @@ function buildCurrentChatState() {
     imageGenerationParamsEnabled: imageGenerationParamsEnabled.value,
     imageGenerationParams: deepCopyJson(imageGenerationParams, createDefaultImageGenerationParams()),
     videoGenerationParamsEnabled: videoGenerationParamsEnabled.value,
-    videoGenerationParams: deepCopyJson(videoGenerationParams, createDefaultVideoGenerationParams())
+    videoGenerationParams: deepCopyJson(videoGenerationParams, createDefaultVideoGenerationParams()),
+    contextSummary: deepCopyJson(activeRecord?.contextSummary || {}, {})
   }
 }
 
@@ -8316,7 +8350,8 @@ function buildSessionSavePayload(options = {}) {
     },
     memory: {
       candidates: normalizeMemoryCandidateQueue(memorySource?.memoryCandidates),
-      candidateUpdatedAt: Number(memorySource?.memoryCandidateUpdatedAt || 0) || 0
+      candidateUpdatedAt: Number(memorySource?.memoryCandidateUpdatedAt || 0) || 0,
+      contextSummary: deepCopyJson(memorySource?.contextSummary || {}, {})
     }
   }
 }
@@ -8899,6 +8934,12 @@ function applyLoadedChatState(state) {
   assignImageGenerationParams(state.imageGenerationParams || createDefaultImageGenerationParams())
   setVideoGenerationParamsEnabled(state.videoGenerationParamsEnabled === true)
   assignVideoGenerationParams(state.videoGenerationParams || createDefaultVideoGenerationParams())
+  const activeRecord = getActiveMemorySession()
+  if (activeRecord) {
+    activeRecord.contextSummary = state.contextSummary && typeof state.contextSummary === 'object'
+      ? deepCopyJson(state.contextSummary, {})
+      : createEmptyContextSummaryState()
+  }
 }
 
 async function loadSessionFromFile(filePath) {
@@ -8985,6 +9026,12 @@ async function loadSessionFromFile(filePath) {
         : []
     const memoryCandidates = normalizeMemoryCandidateQueue(data?.memory?.candidates)
     const memoryCandidateUpdatedAt = Number(data?.memory?.candidateUpdatedAt || 0) || 0
+    const contextSummary =
+      data?.memory?.contextSummary && typeof data.memory.contextSummary === 'object'
+        ? deepCopyJson(data.memory.contextSummary, {})
+        : state?.contextSummary && typeof state.contextSummary === 'object'
+          ? deepCopyJson(state.contextSummary, {})
+          : null
 
     unbindSessionAutosave({ silent: true })
 
@@ -9018,6 +9065,7 @@ async function loadSessionFromFile(filePath) {
         apiMessages: deepCopyJson(apiSafe, []),
         memoryCandidates,
         memoryCandidateUpdatedAt,
+        contextSummary,
         activeSessionFilePath: relPath,
         activeSessionTitle: loadedTitle,
         state: state || null,
@@ -9032,6 +9080,7 @@ async function loadSessionFromFile(filePath) {
       record.pendingAttachments = []
       record.memoryCandidates = memoryCandidates
       record.memoryCandidateUpdatedAt = memoryCandidateUpdatedAt
+      record.contextSummary = contextSummary || createEmptyContextSummaryState()
       record.activeSessionFilePath = relPath
       record.activeSessionTitle = loadedTitle
       record.state = state && typeof state === 'object' ? deepCopyJson(state, {}) : null
@@ -9589,11 +9638,16 @@ async function runChatRounds({
             baseUrl,
             model,
             memorySystemContent,
+            sessionRecord: targetSession,
             forceReasoningContent,
             compatToolCallIdAsFc: compatFcToolCallId,
             fallbackAllVisionMessages: imagesFallbackToText,
             tools: activeTools,
-            apiMessages: buildRequestApiMessages('openai-compatible', { tools: activeTools, apiMessages: targetSession.apiMessages }),
+            apiMessages: buildRequestApiMessages('openai-compatible', {
+              tools: activeTools,
+              apiMessages: targetSession.apiMessages,
+              contextSummary: targetSession?.contextSummary || null
+            }),
             plainTextToolFallback
           }),
           ...(activeTools.length ? { tools: activeTools, tool_choice: 'auto' } : {}),
@@ -9881,7 +9935,7 @@ async function runUtoolsAiChatRound({ model, setCurrentAssistantDisplay, setAbor
       {
         model,
         messages: buildUtoolsAiMessages({
-          systemContent: buildCombinedSystemContent(memorySystemContent),
+          systemContent: buildCombinedSystemContent(memorySystemContent, { sessionRecord: targetSession }),
           apiMessages: requestApiMessages
         }),
         ...(requestTools.length ? { tools: requestTools } : {})
@@ -9944,7 +9998,11 @@ async function runUtoolsAiChatRound({ model, setCurrentAssistantDisplay, setAbor
   })
 
   try {
-    const requestApiMessages = buildRequestApiMessages('utools-ai', { tools, apiMessages: targetSession.apiMessages })
+    const requestApiMessages = buildRequestApiMessages('utools-ai', {
+      tools,
+      apiMessages: targetSession.apiMessages,
+      contextSummary: targetSession?.contextSummary || null
+    })
     let request = requestUtoolsAi(requestApiMessages, tools)
     setAbortHandle(request)
     let result = null
@@ -10873,7 +10931,7 @@ function getVideoRequestOptionsFromMessage(msg) {
 }
 
 function canRegenerateMedia(msg, kind = 'image') {
-  if (sending.value) return false
+  if (sending.value || preparingSend.value) return false
   return !!getMediaRequestPrompt(msg, kind)
 }
 
@@ -10903,7 +10961,7 @@ function getVideoResumeRequestMeta(msg) {
 }
 
 function canResumeMediaTask(msg, kind = 'video') {
-  if (kind !== 'video' || isMediaTaskResuming(msg, kind)) return false
+  if (kind !== 'video' || preparingSend.value || isMediaTaskResuming(msg, kind)) return false
   if (assistantVisibleVideoCount(msg)) return false
   const task = msg?.videoTask
   const taskId = String(task?.id || '').trim()
@@ -10983,7 +11041,7 @@ function getOpenaiCompatibleMediaConfigOrHint(kind = 'image', sourceMessage = nu
 }
 
 async function submitMediaGenerationPrompt(kind, prompt, sourceMessage = null) {
-  if (sending.value) return
+  if (sending.value || preparingSend.value) return
   const text = String(prompt || '').trim()
   if (!text) {
     message.warning(kind === 'video' ? '视频生成提示词为空' : '图片生成提示词为空')
@@ -11198,6 +11256,7 @@ function createRequestAbortStateForMediaResume(requestHandle) {
 
 async function resumeMediaTask(msg, kind = 'video') {
   if (kind !== 'video') return
+  if (preparingSend.value) return
   if (!canResumeMediaTask(msg, kind)) {
     message.warning('当前视频任务缺少可恢复的轮询信息')
     return
@@ -11556,7 +11615,7 @@ async function runChatSession({
         queueMemoryCandidateForRecord(runRecord, {
           userText,
           assistantText,
-          systemPrompt: buildCombinedSystemContent(''),
+          systemPrompt: buildCombinedSystemContent('', { sessionRecord: runRecord }),
           summary: userText.slice(0, 140)
         })
       }
@@ -11675,7 +11734,7 @@ function getLatestRealUserPromptText(apiMessages = session.apiMessages) {
 }
 
 async function regenerateAssistant(msg) {
-  if (sending.value) return
+  if (sending.value || preparingSend.value) return
   const cfg = getRequestConfigOrHint()
   if (!cfg) return
 
@@ -11733,27 +11792,33 @@ async function regenerateAssistant(msg) {
   })
   if (!ok) return
 
-  truncateConversationAfterUser(userApiIndex, userDisplayIndex)
-  try {
+  await startPreparingSend(async () => {
+    truncateConversationAfterUser(userApiIndex, userDisplayIndex)
+    const requestRecord = getActiveMemorySession()
     const userDisplay = session.messages[userDisplayIndex]
-    const triggerText = [
-      String(userDisplay?.content || ''),
-      ...(Array.isArray(userDisplay?.attachments)
-        ? userDisplay.attachments.map((a) => String(a?.name || '')).filter(Boolean)
-        : [])
-    ]
-      .filter(Boolean)
-      .join(' ')
-    autoActivateAgentSkillsFromText(triggerText)
-  } catch {
-    // ignore
-  }
-  await runChatSession({ ...cfg, sessionRecord: getActiveMemorySession(), prepare: async () => scrollToBottom({ force: true }) })
+    const attachments = Array.isArray(userDisplay?.attachments) ? userDisplay.attachments : []
+    const userText = extractEditableUserTextFromContent(getUserApiMessageContentByIndex(userApiIndex) ?? userDisplay?.content)
+    const { memorySystemContent, attachmentRecallText } = await prepareChatRequestContext({
+      cfg,
+      text: userText,
+      attachments,
+      requestRecord
+    })
+    await runChatSession({
+      ...cfg,
+      sessionRecord: requestRecord,
+      memorySystemContent,
+      memorySourceUserText: [userText, attachmentRecallText].filter(Boolean).join('\n\n'),
+      prepare: async () => {
+        if (isMemorySessionActive(requestRecord)) await scrollToBottom({ force: true })
+      }
+    })
+  })
 }
 
 function toggleOrSubmitUserEdit(msg) {
   if (!msg || msg.role !== 'user') return
-  if (sending.value) return
+  if (sending.value || preparingSend.value) return
 
   if (!msg.editing) {
     clearAllUserEditingState()
@@ -11771,7 +11836,7 @@ function toggleOrSubmitUserEdit(msg) {
 
 async function submitUserEdit(msg) {
   if (!msg || msg.role !== 'user') return
-  if (sending.value) return
+  if (sending.value || preparingSend.value) return
 
   const draft = String(msg.editDraft ?? '').trim()
   const userApiIndex = resolveUserApiIndexForDisplayMessage(msg)
@@ -11811,19 +11876,37 @@ async function submitUserEdit(msg) {
   })
   if (!ok) return
 
-  msg.content = draft || (hasAttachments ? '(sent attachments)' : '')
-  msg.editing = false
-  msg.editDraft = ''
+  await startPreparingSend(async () => {
+    msg.content = draft || (hasAttachments ? '(sent attachments)' : '')
+    msg.editing = false
+    msg.editDraft = ''
 
-  if (session.apiMessages?.[userApiIndex]?.role === 'user') {
-    session.apiMessages[userApiIndex].content = mergeUserTextWithExistingAttachments(
-      session.apiMessages[userApiIndex].content,
-      draft
-    )
-  }
+    if (session.apiMessages?.[userApiIndex]?.role === 'user') {
+      session.apiMessages[userApiIndex].content = mergeUserTextWithExistingAttachments(
+        session.apiMessages[userApiIndex].content,
+        draft
+      )
+    }
 
-  truncateConversationAfterUser(userApiIndex, userDisplayIndex)
-  await runChatSession({ ...cfg, sessionRecord: getActiveMemorySession(), prepare: async () => scrollToBottom({ force: true }) })
+    truncateConversationAfterUser(userApiIndex, userDisplayIndex)
+    const requestRecord = getActiveMemorySession()
+    const attachments = Array.isArray(msg?.attachments) ? msg.attachments : []
+    const { memorySystemContent, attachmentRecallText } = await prepareChatRequestContext({
+      cfg,
+      text: draft,
+      attachments,
+      requestRecord
+    })
+    await runChatSession({
+      ...cfg,
+      sessionRecord: requestRecord,
+      memorySystemContent,
+      memorySourceUserText: [draft, attachmentRecallText].filter(Boolean).join('\n\n'),
+      prepare: async () => {
+        if (isMemorySessionActive(requestRecord)) await scrollToBottom({ force: true })
+      }
+    })
+  })
 }
 
 function toggleAutoApproveTools() {
@@ -12596,9 +12679,26 @@ async function getCurrentTurnAttachmentCharBudget(providerKind = 'openai-compati
 }
 
 function buildRequestApiMessages(providerKind = 'openai-compatible', options = {}) {
-  const { tools = [], reservedCharsOverride = null, apiMessages = null } = options || {}
+  const {
+    tools = [],
+    reservedCharsOverride = null,
+    apiMessages = null,
+    contextSummary = null
+  } = options || {}
+  const sourceMessages = Array.isArray(apiMessages) ? apiMessages : session.apiMessages
+  const summary =
+    contextSummary && typeof contextSummary === 'object'
+      ? contextSummary
+      : null
+  const summaryText = String(summary?.summaryText || '').trim()
+  const coveredMessageCount = Math.max(0, Math.floor(Number(summary?.coveredMessageCount || 0)))
+  const effectiveMessages =
+    summaryText && coveredMessageCount > 0 && coveredMessageCount <= sourceMessages.length
+      ? sourceMessages.slice(coveredMessageCount)
+      : sourceMessages
+
   return buildChatContextWindow(
-    Array.isArray(apiMessages) ? apiMessages : session.apiMessages,
+    effectiveMessages,
     buildChatContextWindowRuntimeOptions(contextWindowResolvedOptions.value, {
       providerKind,
       maxChars: getHistoryContextCharBudget({ tools, reservedCharsOverride })
@@ -12608,6 +12708,409 @@ function buildRequestApiMessages(providerKind = 'openai-compatible', options = {
 
 function extractRequestMessageTextContent(content) {
   return extractImageGenerationPromptFromContent(content)
+}
+
+function buildContextSummarySourceHash(messages = []) {
+  const compact = (Array.isArray(messages) ? messages : [])
+    .map((message) => {
+      if (!message || typeof message !== 'object') return ''
+      const role = String(message.role || '').trim()
+      const text = extractEditableUserTextFromContent(extractRequestMessageTextContent(message.content)).slice(0, 1200)
+      if (!role && !text) return ''
+      return `${role}:${text}`
+    })
+    .filter(Boolean)
+    .join('\n')
+  return compact.slice(0, 20000)
+}
+
+function buildContextSummaryTurnPairs(apiMessages = [], options = {}) {
+  const list = Array.isArray(apiMessages) ? apiMessages : []
+  const endExclusive = Number.isFinite(Number(options.endExclusive))
+    ? Math.max(0, Math.floor(Number(options.endExclusive)))
+    : list.length
+  const pairs = []
+  let currentUserText = ''
+  for (let index = 0; index < Math.min(endExclusive, list.length); index += 1) {
+    const message = list[index]
+    if (!message || typeof message !== 'object') continue
+    if (message.role === 'user') {
+      currentUserText = extractEditableUserTextFromContent(extractRequestMessageTextContent(message.content)).trim()
+      continue
+    }
+    if (message.role !== 'assistant') continue
+    const assistantText = extractEditableUserTextFromContent(extractRequestMessageTextContent(message.content)).trim()
+    if (!currentUserText && !assistantText) continue
+    pairs.push({
+      userText: currentUserText.slice(0, 3000),
+      assistantText: assistantText.slice(0, 4000),
+      summary: currentUserText.slice(0, 200)
+    })
+    currentUserText = ''
+  }
+  return pairs
+}
+
+function buildContextSummaryPrelude(summaryText = '') {
+  const text = String(summaryText || '').trim()
+  if (!text) return ''
+  return [
+    '以下是当前会话较早历史的压缩摘要，请将其视为背景，不要逐字复述：',
+    text
+  ].join('\n\n')
+}
+
+async function requestContextWindowSummary({
+  providerKind = 'openai-compatible',
+  baseUrl = '',
+  apiKey = '',
+  model = '',
+  systemPrompt = '',
+  conversationPairs = []
+} = {}) {
+  const pairs = Array.isArray(conversationPairs) ? conversationPairs.filter((item) => item && (item.userText || item.assistantText)) : []
+  if (!pairs.length) return ''
+
+  const prompt = [
+    '请把下面这段较早的多轮对话压缩成后续继续聊天可用的历史摘要。',
+    '保留：用户身份、长期偏好、约束、项目背景、关键已决策事项、未完成事项、重要事实。',
+    '删除：寒暄、重复表述、低信息量回复、工具噪声。',
+    '输出要求：使用简洁中文，分点总结，控制在 800 字以内，不要编造。'
+  ]
+
+  pairs.forEach((item, index) => {
+    prompt.push(
+      [
+        `片段 ${index + 1}`,
+        item.userText ? `用户：\n${item.userText}` : '',
+        item.assistantText ? `助手：\n${item.assistantText}` : ''
+      ].filter(Boolean).join('\n\n')
+    )
+  })
+
+  if (providerKind === 'utools-ai') {
+    if (!canUseUtoolsAi()) return ''
+    const result = await window.utools.ai({
+      model,
+      messages: buildUtoolsAiMessages({
+        systemContent: systemPrompt,
+        apiMessages: [{ role: 'user', content: prompt.join('\n\n') }]
+      })
+    })
+    return truncateText(String(result?.content || '').trim(), 1200, '（摘要已截断）')
+  }
+
+  if (!baseUrl || !apiKey || !model) return ''
+  const result = await streamChatCompletion({
+    baseUrl,
+    apiKey,
+    body: {
+      model,
+      stream: true,
+      temperature: 0.2,
+      messages: buildRequestMessages({
+        baseUrl,
+        model,
+        apiMessages: [{ role: 'user', content: prompt.join('\n\n') }],
+        memorySystemContent: '',
+        tools: []
+      }).map((message, index) => {
+        if (index === 0 && message.role === 'system' && systemPrompt) {
+          return { ...message, content: systemPrompt }
+        }
+        return message
+      })
+    },
+    signal: undefined,
+    onDelta: null,
+    abortState: null
+  })
+  return truncateText(String(result?.content || '').trim(), 1200, '（摘要已截断）')
+}
+
+function resolveContextSummaryCoverage({
+  sourceMessages = [],
+  cfg = null,
+  tools = [],
+  reservedCharsOverride = null,
+  targetSourceChars = null
+} = {}) {
+  const list = Array.isArray(sourceMessages) ? sourceMessages : []
+  if (!cfg || cfg.requestMode !== 'chat' || list.length < 10) {
+    return {
+      coveredCount: 0,
+      sourceSlice: [],
+      sourceHash: ''
+    }
+  }
+
+  const requestMessages = buildRequestApiMessages(cfg.providerKind || 'openai-compatible', {
+    tools,
+    reservedCharsOverride,
+    apiMessages: list
+  })
+  let coveredCount = Math.max(0, list.length - requestMessages.length)
+  if (coveredCount < 4 && Number.isFinite(Number(targetSourceChars))) {
+    const targetChars = Math.max(4000, Math.floor(Number(targetSourceChars)))
+    const keepRecentTurnsFull = Math.max(1, Number(contextWindowResolvedOptions.value?.keepRecentTurnsFull || 6))
+    const minKeptMessages = Math.min(list.length, Math.max(6, keepRecentTurnsFull * 2))
+    let keepStart = Math.max(0, list.length - minKeptMessages)
+    let keptChars = estimateMessagesSize(list.slice(keepStart))
+
+    while (keepStart > 0) {
+      const nextMessageChars = estimateMessageSize(list[keepStart - 1])
+      if (keptChars + nextMessageChars > targetChars) break
+      keepStart -= 1
+      keptChars += nextMessageChars
+    }
+
+    if (keepStart >= 4) coveredCount = keepStart
+  }
+
+  if (coveredCount < 4) {
+    return {
+      coveredCount: 0,
+      sourceSlice: [],
+      sourceHash: ''
+    }
+  }
+
+  const sourceSlice = list.slice(0, coveredCount)
+  return {
+    coveredCount,
+    sourceSlice,
+    sourceHash: buildContextSummarySourceHash(sourceSlice)
+  }
+}
+
+async function ensureContextWindowSummary({
+  cfg,
+  requestRecord,
+  tools = [],
+  reservedCharsOverride = null,
+  targetSourceChars = null,
+  force = false
+} = {}) {
+  if (!cfg || cfg.requestMode !== 'chat' || !requestRecord) return ''
+  const sourceMessages = Array.isArray(requestRecord.apiMessages) ? requestRecord.apiMessages : []
+  const { coveredCount, sourceSlice, sourceHash } = resolveContextSummaryCoverage({
+    sourceMessages,
+    cfg,
+    tools,
+    reservedCharsOverride,
+    targetSourceChars
+  })
+  if (coveredCount < 4) return ''
+
+  const cached = requestRecord.contextSummary && typeof requestRecord.contextSummary === 'object'
+    ? requestRecord.contextSummary
+    : null
+  if (!force && cached?.summaryText && cached.sourceHash === sourceHash && Number(cached.coveredMessageCount || 0) === coveredCount) {
+    return String(cached.summaryText || '').trim()
+  }
+
+  const conversationPairs = buildContextSummaryTurnPairs(sourceMessages, { endExclusive: coveredCount })
+  if (!conversationPairs.length) return ''
+
+  const summaryText = await requestContextWindowSummary({
+    providerKind: cfg.providerKind,
+    baseUrl: cfg.baseUrl,
+    apiKey: cfg.apiKey,
+    model: cfg.model,
+    systemPrompt: '你是一个对话历史压缩器，只输出供后续对话继续使用的忠实摘要。',
+    conversationPairs
+  }).catch((err) => {
+    console.warn('[chat context summary] generation failed:', err)
+    return ''
+  })
+
+  requestRecord.contextSummary = {
+    summaryText: String(summaryText || '').trim(),
+    coveredMessageCount: coveredCount,
+    sourceHash,
+    updatedAt: Date.now()
+  }
+  return String(requestRecord.contextSummary.summaryText || '').trim()
+}
+
+function syncContextSummaryCacheForRecord(requestRecord, coverage = null) {
+  if (!requestRecord || typeof requestRecord !== 'object') return null
+  const cached = requestRecord.contextSummary && typeof requestRecord.contextSummary === 'object'
+    ? requestRecord.contextSummary
+    : null
+  if (!cached) return null
+
+  const coveredCount = Math.max(0, Math.floor(Number(coverage?.coveredCount || 0)))
+  const sourceHash = String(coverage?.sourceHash || '')
+  if (
+    !String(cached.summaryText || '').trim() ||
+    coveredCount < 4 ||
+    !sourceHash ||
+    coveredCount > (Array.isArray(requestRecord.apiMessages) ? requestRecord.apiMessages.length : 0)
+  ) {
+    requestRecord.contextSummary = createEmptyContextSummaryState()
+    return requestRecord.contextSummary
+  }
+
+  return cached
+}
+
+async function prepareChatRequestContext({
+  cfg,
+  text = '',
+  attachments = [],
+  requestRecord = null,
+  includeMemoryRecall = true
+} = {}) {
+  const safeText = String(text || '').trim()
+  const safeAttachments = Array.isArray(attachments) ? attachments : []
+  const targetRecord = requestRecord || getActiveMemorySession()
+
+  const triggerText = safeText || safeAttachments.map((a) => String(a?.name || '')).filter(Boolean).join(' ')
+  try {
+    autoActivateAgentSkillsFromText(triggerText)
+  } catch {
+    // ignore
+  }
+
+  if (safeAttachments.length) {
+    try {
+      preparingSendStage.value = '正在解析附件'
+      await Promise.all(safeAttachments.map((a) => ensureAttachmentParsed(a)))
+      await enrichImageAttachmentsForMemoryRecall(safeAttachments, cfg)
+    } catch {
+      // ignore attachment parsing failure for recall
+    }
+  }
+
+  let memorySystemContent = ''
+  let attachmentRecallText = ''
+  if (includeMemoryRecall && cfg?.requestMode === 'chat' && isChatMemoryEnabled(chatConfig.value?.memory)) {
+    try {
+      preparingSendStage.value = '正在召回记忆'
+      attachmentRecallText = buildMemoryRecallQueryFromAttachments(safeAttachments)
+      const memoryQueryText = [
+        buildMemoryRecallQueryFromRecord(targetRecord, safeText),
+        attachmentRecallText
+      ].filter(Boolean).join('\n\n')
+      const recall = await buildMemoryInjection({
+        queryText: memoryQueryText,
+        userText: [safeText, attachmentRecallText].filter(Boolean).join('\n\n'),
+        systemPrompt: systemContent.value
+      })
+      memorySystemContent = String(recall?.text || '').trim()
+    } catch (err) {
+      console.warn('[chat memory] recall failed:', err)
+    }
+  }
+
+  try {
+    preparingSendStage.value = '正在压缩历史'
+    if (cfg?.requestMode !== 'chat') {
+      return {
+        requestRecord: targetRecord,
+        memorySystemContent,
+        attachmentRecallText
+      }
+    }
+    const contextCfg = chatConfig.value?.contextWindow
+    const resolvedContext = resolveChatContextWindowOptions(contextCfg)
+    const requestTools = []
+    const combinedSystemContent = buildCombinedSystemContent(memorySystemContent, { sessionRecord: targetRecord })
+    const reservedChars = calculateReservedRequestChars({ systemContent: combinedSystemContent, tools: requestTools })
+    const historyBudget = getHistoryContextCharBudget({ reservedCharsOverride: reservedChars, tools: requestTools })
+    const summaryTriggerChars = Math.min(
+      resolvedContext.maxCharsExpanded || historyBudget,
+      Math.max(12000, Math.floor((historyBudget - reservedChars) * 0.72))
+    )
+    const sourceMessages = Array.isArray(targetRecord.apiMessages) ? targetRecord.apiMessages : []
+    const sourceChars = estimateMessagesSize(sourceMessages)
+    const coverage = resolveContextSummaryCoverage({
+      sourceMessages,
+      cfg,
+      tools: requestTools,
+      reservedCharsOverride: reservedChars,
+      targetSourceChars: summaryTriggerChars
+    })
+    const cachedSummary = syncContextSummaryCacheForRecord(targetRecord, coverage)
+    const sourceBudgetMessages = buildRequestApiMessages(cfg.providerKind || 'openai-compatible', {
+      tools: requestTools,
+      reservedCharsOverride: reservedChars,
+      apiMessages: sourceMessages,
+      contextSummary: targetRecord?.contextSummary || null
+    })
+    const contextWouldTrim = sourceBudgetMessages.length < sourceMessages.length
+    const summaryMissing = !String(cachedSummary?.summaryText || '').trim()
+    const summaryStale =
+      coverage.coveredCount >= 4 &&
+      (
+        coverage.sourceHash !== String(cachedSummary?.sourceHash || '') ||
+        coverage.coveredCount !== Math.max(0, Math.floor(Number(cachedSummary?.coveredMessageCount || 0)))
+      )
+    const shouldSummarize =
+      sourceMessages.length >= 10 &&
+      (
+        sourceMessages.length > 28 ||
+        sourceChars >= summaryTriggerChars ||
+        contextWouldTrim ||
+        summaryMissing ||
+        summaryStale
+      )
+    if (shouldSummarize && (sourceChars >= summaryTriggerChars || contextWouldTrim || summaryMissing || summaryStale)) {
+      await ensureContextWindowSummary({
+        cfg,
+        requestRecord: targetRecord,
+        tools: requestTools,
+        reservedCharsOverride: reservedChars,
+        targetSourceChars: summaryTriggerChars,
+        force: summaryStale
+      })
+    }
+  } catch (err) {
+    console.warn('[chat context summary] prepare failed:', err)
+  } finally {
+    preparingSendStage.value = '正在发送'
+  }
+
+  return {
+    requestRecord: targetRecord,
+    memorySystemContent,
+    attachmentRecallText
+  }
+}
+
+async function withPreparingSend(task) {
+  if (sending.value || preparingSend.value) return false
+  preparingSend.value = true
+  preparingSendStage.value = '正在准备上下文'
+  try {
+    await task?.()
+    return true
+  } finally {
+    preparingSend.value = false
+    preparingSendStage.value = ''
+  }
+}
+
+async function startPreparingSend(task) {
+  if (sending.value || preparingSend.value) return false
+  preparingSend.value = true
+  preparingSendStage.value = '正在准备上下文'
+  let released = false
+  const release = () => {
+    if (released) return
+    released = true
+    preparingSend.value = false
+    preparingSendStage.value = ''
+  }
+  try {
+    await task?.({ release })
+    release()
+    return true
+  } catch (err) {
+    release()
+    throw err
+  }
 }
 
 function isLikelyImageGenerationPrompt(text) {
@@ -12757,6 +13260,7 @@ function buildRequestMessages(options = {}) {
     baseUrl = '',
     model = '',
     memorySystemContent = '',
+    sessionRecord = null,
     forceReasoningContent = false,
     compatToolCallIdAsFc = false,
     visionFallbackText = '',
@@ -12772,10 +13276,15 @@ function buildRequestMessages(options = {}) {
   })
 
   const msgs = []
-  const mergedSystemContent = buildCombinedSystemContent(memorySystemContent)
+  const mergedSystemContent = buildCombinedSystemContent(memorySystemContent, { sessionRecord })
   if (mergedSystemContent) msgs.push({ role: 'system', content: mergedSystemContent })
 
-  const sourceMessages = Array.isArray(apiMessages) ? apiMessages : buildRequestApiMessages('openai-compatible', { tools })
+  const sourceMessages = Array.isArray(apiMessages)
+    ? apiMessages
+    : buildRequestApiMessages('openai-compatible', {
+        tools,
+        contextSummary: sessionRecord?.contextSummary || null
+      })
   let latestVisionUserIndex = -1
   for (let i = sourceMessages.length - 1; i >= 0; i -= 1) {
     const candidate = sourceMessages[i]
@@ -15580,7 +16089,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
 }
 
 async function send() {
-  if (sending.value) return
+  if (sending.value || preparingSend.value) return
   clearAllUserEditingState()
 
   const cfg = getRequestConfigOrHint()
@@ -15590,87 +16099,60 @@ async function send() {
   const attachments = Array.isArray(pendingAttachments.value) ? pendingAttachments.value.slice() : []
   if (!text && !attachments.length) return
 
-  // 智能体预设技能：根据 triggers 自动启用，并按需挂载 skill MCP
-  try {
-    const triggerText = text || attachments.map((a) => String(a?.name || '')).filter(Boolean).join(' ')
-    autoActivateAgentSkillsFromText(triggerText)
-  } catch {
-    // ignore
-  }
+  await withPreparingSend(async () => {
+    input.value = ''
+    resetComposerInput()
+    pendingAttachments.value = []
+    const requestRecord = getActiveMemorySession()
+    const { memorySystemContent, attachmentRecallText } = await prepareChatRequestContext({
+      cfg,
+      text,
+      attachments,
+      requestRecord
+    })
 
-  input.value = ''
-  resetComposerInput()
-  pendingAttachments.value = []
-  if (attachments.length) {
-    try {
-      await Promise.all(attachments.map((a) => ensureAttachmentParsed(a)))
-      await enrichImageAttachmentsForMemoryRecall(attachments, cfg)
-    } catch {
-      // ignore attachment parsing failure for recall
+    const userDisplay = createDisplayMessage('user', text || (attachments.length ? '(sent attachments)' : ''))
+    if (attachments.length) {
+      userDisplay.attachmentsExpanded = false
+      userDisplay.attachments = attachments
     }
-  }
-  let memorySystemContent = ''
-  let attachmentRecallText = ''
-  if (cfg.requestMode === 'chat' && isChatMemoryEnabled(chatConfig.value?.memory)) {
-    try {
-      const requestRecord = getActiveMemorySession()
-      attachmentRecallText = buildMemoryRecallQueryFromAttachments(attachments)
-      const memoryQueryText = [
-        buildMemoryRecallQueryFromRecord(requestRecord, text),
-        attachmentRecallText
-      ].filter(Boolean).join('\n\n')
-      const recall = await buildMemoryInjection({
-        queryText: memoryQueryText,
-        userText: [text, attachmentRecallText].filter(Boolean).join('\n\n'),
-        systemPrompt: systemContent.value
-      })
-      memorySystemContent = String(recall?.text || '').trim()
-    } catch (err) {
-      console.warn('[chat memory] recall failed:', err)
+    session.messages.push(userDisplay)
+    autoScrollEnabled.value = true
+    scheduleRefreshUserAnchorMeta()
+    await scrollToBottom({ force: true })
+    if (cfg.requestMode === 'image-generation') {
+      const referenceImages = await collectAttachmentMediaReferenceImages(attachments, userDisplay)
+      cfg.imageGenerationRequestOptionsOverride = mergeReferenceImagesIntoRequestOptions(
+        cfg.imageGenerationRequestOptionsOverride && typeof cfg.imageGenerationRequestOptionsOverride === 'object'
+          ? cfg.imageGenerationRequestOptionsOverride
+          : {},
+        referenceImages,
+        'image'
+      )
     }
-  }
+    if (cfg.requestMode === 'video-generation') {
+      await startDetachedVideoGeneration({ cfg, text, attachments, userDisplay })
+      return
+    }
 
-  const userDisplay = createDisplayMessage('user', text || (attachments.length ? '(sent attachments)' : ''))
-  if (attachments.length) {
-    userDisplay.attachmentsExpanded = false
-    userDisplay.attachments = attachments
-  }
-  session.messages.push(userDisplay)
-  const requestRecord = getActiveMemorySession()
-  autoScrollEnabled.value = true
-  scheduleRefreshUserAnchorMeta()
-  await scrollToBottom({ force: true })
-  if (cfg.requestMode === 'image-generation') {
-    const referenceImages = await collectAttachmentMediaReferenceImages(attachments, userDisplay)
-    cfg.imageGenerationRequestOptionsOverride = mergeReferenceImagesIntoRequestOptions(
-      cfg.imageGenerationRequestOptionsOverride && typeof cfg.imageGenerationRequestOptionsOverride === 'object'
-        ? cfg.imageGenerationRequestOptionsOverride
-        : {},
-      referenceImages,
-      'image'
-    )
-  }
-  if (cfg.requestMode === 'video-generation') {
-    await startDetachedVideoGeneration({ cfg, text, attachments, userDisplay })
-    return
-  }
-  await runChatSession({
-    ...cfg,
-    sessionRecord: requestRecord,
-    memorySystemContent,
-    memorySourceUserText: [text, attachmentRecallText].filter(Boolean).join('\n\n'),
-    prepare: async () => {
-      if (isMemorySessionActive(requestRecord)) await scrollToBottom({ force: true })
-      await prepareUserApiMessage({
-        text,
-        attachments,
-        userDisplay,
-        preferVision: cfg.supportsVision !== false,
-        providerKind: cfg.providerKind || 'openai-compatible',
-        sessionTarget: requestRecord,
-        imageAttachmentMode: cfg.requestMode === 'image-generation' ? 'media-reference' : 'chat'
-      })
-    }
+    await runChatSession({
+      ...cfg,
+      sessionRecord: requestRecord,
+      memorySystemContent,
+      memorySourceUserText: [text, attachmentRecallText].filter(Boolean).join('\n\n'),
+      prepare: async () => {
+        if (isMemorySessionActive(requestRecord)) await scrollToBottom({ force: true })
+        await prepareUserApiMessage({
+          text,
+          attachments,
+          userDisplay,
+          preferVision: cfg.supportsVision !== false,
+          providerKind: cfg.providerKind || 'openai-compatible',
+          sessionTarget: requestRecord,
+          imageAttachmentMode: cfg.requestMode === 'image-generation' ? 'media-reference' : 'chat'
+        })
+      }
+    })
   })
 }
 
@@ -16334,7 +16816,6 @@ watch(
   min-width: 0;
   width: 100%;
   max-width: 100%;
-  overflow-x: hidden;
   overflow-anchor: none;
 }
 
@@ -16825,6 +17306,7 @@ watch(
 .chat-item__content :deep(.md-editor-preview .md-editor-code) {
   max-width: 100%;
   overflow: visible !important;
+  position: relative;
 }
 
 .chat-item__content :deep(.md-editor-preview .md-editor-code pre) {
@@ -16833,8 +17315,9 @@ watch(
 
 .chat-item__content :deep(.md-editor-preview .md-editor-code .md-editor-code-head) {
   position: sticky;
-  top: 8px;
-  z-index: 4;
+  top: 0;
+  z-index: 6;
+  background: var(--md-theme-code-before-bg-color);
 }
 
 .chat-item__content :deep(.n-scrollbar-container),
@@ -16846,6 +17329,11 @@ watch(
 .chat-item__content :deep(.md-editor-preview table) {
   max-width: 100%;
   overflow-x: auto;
+}
+
+.chat-item__content :deep(.md-editor-preview pre code) {
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .chat-item__content :deep(.md-editor-preview table) {

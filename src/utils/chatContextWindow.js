@@ -635,7 +635,7 @@ function selectTurnMessages(turn, { toolPolicy, compact }) {
   return cloneTurnMessages(turn, toolPolicy)
 }
 
-function estimateMessageSize(message) {
+export function estimateMessageSize(message) {
   if (!isMessageLike(message)) return 0
   return (
     String(message.role || '').length +
@@ -645,7 +645,7 @@ function estimateMessageSize(message) {
   )
 }
 
-function estimateMessagesSize(messages) {
+export function estimateMessagesSize(messages) {
   return (Array.isArray(messages) ? messages : []).reduce((total, message) => total + estimateMessageSize(message), 0)
 }
 
