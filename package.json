@@ -3,7 +3,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "node --loader ./tests/alias-loader.mjs --test --experimental-test-isolation=none \"tests/*.test.js\""
+    "test": "node --import ./tests/register-alias.mjs --test --experimental-test-isolation=none \"tests/*.test.js\""
   },
   "dependencies": {
     "cropperjs": "^1.6.2",

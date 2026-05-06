@@ -25,6 +25,9 @@ const MEMORY_CANDIDATE_MAX = 12
 const MEMORY_CANDIDATE_IDLE_MS = 90 * 1000
 const MEMORY_AUTO_CLEAN_MIN_INTERVAL_MS = 10 * 60 * 1000
 const MEMORY_AUTO_CLEAN_ITEM_THRESHOLD = 12
+const PROFILE_MEMORY_MERGE_MIN_SIMILARITY = 0.72
+const PROFILE_MEMORY_MERGE_STRONG_SIMILARITY = 0.84
+const RELEVANT_MEMORY_MERGE_MIN_SIMILARITY = 0.92
 const MEMORY_PROFILE_KINDS = new Set(['profile', 'preference', 'style', 'constraint'])
 const MEMORY_PROFILE_KEYS = new Set([
   'name',
@@ -72,6 +75,9 @@ const MEMORY_QUERY_CUE_VARIANTS = [
     terms: ['工作', '职业', '职位', '角色']
   }
 ]
+const GENERIC_ENTITY_TOKEN_RE =
+  /(用户|名字|姓名|称呼|名为|偏好|风格|语气|语言|项目|职业|身份|角色|公司|回答|回复|assistant|answer|reply|style|tone|language|preference|project|name|user|profile|identity|job|role|company)/i
+const ENTITY_TOKEN_RE = /[a-z0-9][a-z0-9._-]{1,}|[\u3400-\u9fff]{2,}/giu
 
 const state = {
   ready: false,
@@ -112,6 +118,28 @@ function safeDateMs(value, fallback = 0) {
 
 function normalizeStringList(list) {
   return [...new Set((Array.isArray(list) ? list : []).map((item) => normalizeText(item)).filter(Boolean))]
+}
+
+function normalizeComparableKey(value, separator = '') {
+  const text = normalizeText(value)
+  if (!text) return ''
+  let normalized = text
+  try {
+    normalized = normalized.normalize('NFKC')
+  } catch {
+    // ignore unicode normalization failures
+  }
+  const replaced = normalized.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, separator)
+  if (!separator) return replaced
+  return replaced.replace(new RegExp(`${separator}+`, 'g'), separator).replace(new RegExp(`^${separator}+|${separator}+$`, 'g'), '')
+}
+
+function normalizeIdentitySignature(value) {
+  return normalizeComparableKey(value, '')
+}
+
+function normalizeProfileKeyName(value) {
+  return normalizeComparableKey(value, '_')
 }
 
 function cosineSimilarity(a, b) {
@@ -158,6 +186,21 @@ function normalizeEmbeddingVector(raw) {
   return raw.map((n) => Number(n) || 0)
 }
 
+function buildMemoryComparableText(item) {
+  if (!item || typeof item !== 'object') return ''
+  return normalizeText(
+    [
+      item.summary,
+      item.text,
+      ...(Array.isArray(item.tags) ? item.tags : []),
+      ...(Array.isArray(item.aliases) ? item.aliases : []),
+      item.notes
+    ]
+      .filter(Boolean)
+      .join(' ')
+  )
+}
+
 function collectKeywordTokens(text) {
   const normalized = normalizeText(text).toLowerCase()
   if (!normalized) return []
@@ -191,6 +234,44 @@ function collectKeywordTokens(text) {
   })
 
   return [...tokens].slice(0, 64)
+}
+
+function collectEntityLikeTokens(text = '', options = {}) {
+  const normalized = normalizeText(text).toLowerCase()
+  if (!normalized) return []
+  const profileParts = normalizeProfileKeyName(options?.profileKey)
+    .split('_')
+    .map((part) => part.trim())
+    .filter(Boolean)
+  const out = new Set()
+  const matches = normalized.match(ENTITY_TOKEN_RE) || []
+  matches.forEach((match) => {
+    const token = normalizeText(match).toLowerCase()
+    if (!token || token.length < 2) return
+    if (GENERIC_ENTITY_TOKEN_RE.test(token)) return
+    if (profileParts.some((part) => part && token.includes(part))) return
+    out.add(token)
+  })
+  return [...out]
+}
+
+function countTokenOverlap(a = [], b = []) {
+  if (!Array.isArray(a) || !Array.isArray(b) || !a.length || !b.length) return 0
+  const right = new Set(b.map((item) => normalizeText(item).toLowerCase()).filter(Boolean))
+  let count = 0
+  for (const token of new Set(a.map((item) => normalizeText(item).toLowerCase()).filter(Boolean))) {
+    if (right.has(token)) count += 1
+  }
+  return count
+}
+
+function hasComparableSignatureContainment(a, b, minLength = 12) {
+  const left = normalizeIdentitySignature(a)
+  const right = normalizeIdentitySignature(b)
+  if (!left || !right) return false
+  const shorter = left.length <= right.length ? left : right
+  const longer = left.length <= right.length ? right : left
+  return shorter.length >= minLength && longer.includes(shorter)
 }
 
 function estimateQuerySegmentWeight(text = '') {
@@ -554,6 +635,7 @@ function buildExtractionPrompt({ conversationPairs, systemPrompt }) {
   const blocks = [
     '你是一个长期记忆提取器。请从下面的多轮对话片段里提取适合长期保存的记忆，严格输出 JSON 数组。',
     '每一项格式：{ "kind": "profile|preference|style|constraint|fact|project", "text": "...", "summary": "...", "confidence": 0~1, "tags": ["..."], "profileKey": "可选", "dedupeKey": "可选" }。',
+    '对于画像项优先提供稳定的 profileKey；如果 dedupeKey 不能稳定命名，可以留空，不要只改分隔符、前后缀或同义表达。',
     '优先提取用户画像、长期偏好、回答风格偏好、项目长期约束、稳定事实、持续中的项目背景。',
     '不要提取一次性的寒暄、短期上下文、当前轮立即失效的信息。',
     '如果没有值得保存的内容，输出 []。'
@@ -691,11 +773,287 @@ function upsertMergedItem(existing, patch) {
   return next
 }
 
-function getMemoryIdentityKey(item) {
+function pickPreferredStatus(a = '', b = '') {
+  const rank = (status) => {
+    const normalized = normalizeText(status).toLowerCase()
+    if (normalized === 'active') return 2
+    if (normalized === 'archived') return 1
+    if (normalized === 'deleted') return 0
+    return -1
+  }
+  return rank(a) >= rank(b) ? normalizeText(a) || 'active' : normalizeText(b) || 'active'
+}
+
+function pickEarlierTimestamp(a = '', b = '') {
+  const aMs = safeDateMs(a)
+  const bMs = safeDateMs(b)
+  if (!aMs) return normalizeText(b)
+  if (!bMs) return normalizeText(a)
+  return aMs <= bMs ? normalizeText(a) : normalizeText(b)
+}
+
+function pickLaterTimestamp(a = '', b = '') {
+  const aMs = safeDateMs(a)
+  const bMs = safeDateMs(b)
+  if (!aMs) return normalizeText(b)
+  if (!bMs) return normalizeText(a)
+  return aMs >= bMs ? normalizeText(a) : normalizeText(b)
+}
+
+function pickPreferredTextValue(existingValue = '', incomingValue = '', options = {}) {
+  const existingText = normalizeText(existingValue)
+  const incomingText = normalizeText(incomingValue)
+  if (!existingText) return incomingText
+  if (!incomingText) return existingText
+  if (options.preferIncomingContent === true) return incomingText
+  return existingText.length >= incomingText.length ? existingText : incomingText
+}
+
+function buildMergedMemoryItem(existing, incoming, options = {}) {
+  const prev = normalizeMemoryItem(existing)
+  const next = normalizeMemoryItem(incoming)
+  return upsertMergedItem(prev, {
+    ...next,
+    id: prev.id,
+    kind: prev.kind || next.kind,
+    scope: prev.scope || next.scope,
+    status: pickPreferredStatus(prev.status, next.status),
+    createdAt: pickEarlierTimestamp(prev.createdAt, next.createdAt) || prev.createdAt,
+    text: pickPreferredTextValue(prev.text, next.text, options),
+    summary: pickPreferredTextValue(prev.summary, next.summary, options),
+    confidence: Math.max(prev.confidence, next.confidence),
+    hitCount: Math.max(prev.hitCount, next.hitCount),
+    lastUsedAt: pickLaterTimestamp(prev.lastUsedAt, next.lastUsedAt),
+    profileKey: normalizeText(prev.profileKey || next.profileKey),
+    dedupeKey: normalizeText(prev.dedupeKey || next.dedupeKey),
+    tags: normalizeStringList([...(prev.tags || []), ...(next.tags || [])]),
+    aliases: normalizeStringList([...(prev.aliases || []), ...(next.aliases || [])]),
+    notes: pickPreferredTextValue(prev.notes, next.notes, options),
+    embedding: prev.embedding.length >= next.embedding.length ? prev.embedding : next.embedding,
+    source: {
+      ...(prev.source && typeof prev.source === 'object' ? prev.source : {}),
+      ...(next.source && typeof next.source === 'object' ? next.source : {})
+    }
+  })
+}
+
+function isNameLikeProfileKey(profileKey = '') {
+  const key = normalizeProfileKeyName(profileKey)
+  return (
+    key === 'name' ||
+    key.includes('nickname') ||
+    key.includes('display_name') ||
+    key.includes('preferred_name') ||
+    key.includes('real_name')
+  )
+}
+
+function canonicalizeProfileKeyTokens(profileKey = '') {
+  const key = normalizeProfileKeyName(profileKey)
+  if (!key) return []
+  const rawTokens = key.split('_').map((token) => token.trim()).filter(Boolean)
+  const normalized = rawTokens.map((token) => {
+    if (['answer', 'response', 'reply'].includes(token)) return 'response'
+    if (['style', 'tone', 'format', 'structured', 'structure'].includes(token)) return 'style'
+    if (['language', 'lang', 'locale'].includes(token)) return 'language'
+    if (['doc', 'document', 'note'].includes(token)) return 'document'
+    if (['update', 'overwrite', 'replace', 'rewrite', 'edit'].includes(token)) return 'update'
+    if (['material', 'asset', 'creative'].includes(token)) return 'asset'
+    if (['matching', 'match', 'matcher'].includes(token)) return 'match'
+    if (['project', 'workspace', 'repo', 'repository', 'codebase'].includes(token)) return 'project'
+    if (['user', 'profile', 'preference', 'preferred', 'default', 'setting', 'info'].includes(token)) return ''
+    return token
+  })
+  return [...new Set(normalized.filter(Boolean))]
+}
+
+function inferProfileSemanticGroupFromText(text = '') {
+  const normalized = normalizeText(text).toLowerCase()
+  if (!normalized) return ''
+  if (/(名字|姓名|称呼|昵称|preferred name|display name|nickname|\bname\b)/i.test(normalized)) return 'identity:name'
+  if (/(语言|中文|英文|language|locale)/i.test(normalized)) return 'preference:language'
+  if (/(回答|回复|语气|风格|结构化|先结论后步骤|answer|response|reply|tone|style|format)/i.test(normalized)) return 'style:response'
+  if (/(文档|笔记|document|doc|note).*(更新|覆盖|替换|overwrite|replace|update)|(?:update|overwrite|replace).*(?:document|doc|note)/i.test(normalized)) {
+    return 'preference:doc_update'
+  }
+  if (/(素材|物料|asset|material|creative).*(匹配|match|matching)|(?:match|matching).*(?:asset|material|creative)/i.test(normalized)) {
+    return 'preference:material_matching'
+  }
+  return ''
+}
+
+function getProfileKeySemanticGroup(profileKey = '') {
+  const key = normalizeProfileKeyName(profileKey)
+  if (!key) return ''
+  if (isNameLikeProfileKey(key)) return 'identity:name'
+  const tokens = canonicalizeProfileKeyTokens(key)
+  if (!tokens.length) return `key:${key}`
+  if (tokens.includes('language')) return 'preference:language'
+  if (tokens.includes('response') && tokens.includes('style')) return 'style:response'
+  if (tokens.includes('document') && tokens.includes('update')) return 'preference:doc_update'
+  if (tokens.includes('asset') && tokens.includes('match')) return 'preference:material_matching'
+  return `generic:${tokens.sort().join('.')}`
+}
+
+function areProfileKeysCompatible(leftKey = '', rightKey = '') {
+  const left = normalizeProfileKeyName(leftKey)
+  const right = normalizeProfileKeyName(rightKey)
+  if (!left || !right) return false
+  if (left === right) return true
+  const leftGroup = getProfileKeySemanticGroup(left)
+  const rightGroup = getProfileKeySemanticGroup(right)
+  return !!leftGroup && leftGroup === rightGroup
+}
+
+function getProfileSemanticIdentity(item) {
   if (!item) return ''
-  if (item.dedupeKey) return item.dedupeKey
-  if (item.profileKey) return `${item.kind}:${item.profileKey}`
-  return `${item.kind}:${normalizeText(item.summary || item.text).toLowerCase()}`
+  const profileKey = normalizeProfileKeyName(item.profileKey)
+  if (profileKey) {
+    const semanticGroup = getProfileKeySemanticGroup(profileKey)
+    if (semanticGroup) return `profile-group:${semanticGroup}`
+    return `profile-key:${profileKey}`
+  }
+  const dedupeKey = normalizeIdentitySignature(item.dedupeKey)
+  if (dedupeKey) return `profile-dedupe:${dedupeKey}`
+  const inferredGroup = inferProfileSemanticGroupFromText(buildMemoryComparableText(item))
+  if (inferredGroup) return `profile-group:${inferredGroup}`
+  const comparableText = normalizeIdentitySignature(buildMemoryComparableText(item))
+  return comparableText ? `profile-text:${comparableText}` : ''
+}
+
+function getMemorySemanticMergeScore(existing, incoming, config = getDefaultMemoryConfig()) {
+  if (!existing || !incoming) return -1
+  if (normalizeText(existing.id) && normalizeText(existing.id) === normalizeText(incoming.id)) return 2
+
+  const laneA = getMemoryLane(existing)
+  const laneB = getMemoryLane(incoming)
+  if (laneA !== laneB) return -1
+
+  const dedupeA = normalizeIdentitySignature(existing.dedupeKey)
+  const dedupeB = normalizeIdentitySignature(incoming.dedupeKey)
+  if (dedupeA && dedupeB && dedupeA === dedupeB) return 1.2
+
+  const textA = buildMemoryComparableText(existing)
+  const textB = buildMemoryComparableText(incoming)
+  const signatureA = normalizeIdentitySignature(textA)
+  const signatureB = normalizeIdentitySignature(textB)
+  if (signatureA && signatureB && signatureA === signatureB) return 1.1
+
+  const keywordOverlap = countTokenOverlap(collectKeywordTokens(textA), collectKeywordTokens(textB))
+  const entityOverlap = countTokenOverlap(
+    collectEntityLikeTokens(textA, { profileKey: existing.profileKey }),
+    collectEntityLikeTokens(textB, { profileKey: incoming.profileKey })
+  )
+  const embeddingScore =
+    existing.embedding.length && incoming.embedding.length ? cosineSimilarity(existing.embedding, incoming.embedding) : 0
+  const containsEquivalentText = hasComparableSignatureContainment(signatureA, signatureB)
+
+  if (laneA === 'profile') {
+    const profileKeyA = normalizeProfileKeyName(existing.profileKey)
+    const profileKeyB = normalizeProfileKeyName(incoming.profileKey)
+    const exactSameProfileKey = !!profileKeyA && !!profileKeyB && profileKeyA === profileKeyB
+    const compatibleProfileKey = areProfileKeysCompatible(profileKeyA, profileKeyB)
+    const semanticGroupA = getProfileKeySemanticGroup(profileKeyA) || inferProfileSemanticGroupFromText(textA)
+    const semanticGroupB = getProfileKeySemanticGroup(profileKeyB) || inferProfileSemanticGroupFromText(textB)
+
+    if (!profileKeyA || !profileKeyB) {
+      if (semanticGroupA && semanticGroupB && semanticGroupA !== semanticGroupB) return -1
+      if (containsEquivalentText && keywordOverlap >= 2) return 0.99
+      if (keywordOverlap >= 3 && embeddingScore >= PROFILE_MEMORY_MERGE_STRONG_SIMILARITY) return embeddingScore
+      return -1
+    }
+
+    if (!compatibleProfileKey) {
+      if (containsEquivalentText && keywordOverlap >= 2 && embeddingScore >= PROFILE_MEMORY_MERGE_STRONG_SIMILARITY) return embeddingScore
+      return -1
+    }
+
+    if (isNameLikeProfileKey(profileKeyA) || isNameLikeProfileKey(profileKeyB)) {
+      if (containsEquivalentText && entityOverlap >= 1) return 1.05
+      if (entityOverlap >= 1 && embeddingScore >= 0.55) return 0.9
+      return -1
+    }
+
+    const minSimilarity = Math.max(
+      clampNumber(config?.minSimilarity, getDefaultMemoryConfig().minSimilarity, 0, 1) + 0.24,
+      PROFILE_MEMORY_MERGE_MIN_SIMILARITY
+    )
+    if (containsEquivalentText && keywordOverlap >= 2) return 1.02
+    if (!exactSameProfileKey && containsEquivalentText && keywordOverlap >= 1) return 1.01
+    if (keywordOverlap >= 3 && embeddingScore >= minSimilarity) return embeddingScore
+    if (keywordOverlap >= 2 && embeddingScore >= PROFILE_MEMORY_MERGE_STRONG_SIMILARITY) return embeddingScore
+    return -1
+  }
+
+  if (normalizeText(existing.kind).toLowerCase() !== normalizeText(incoming.kind).toLowerCase()) return -1
+  if (containsEquivalentText && keywordOverlap >= 2) return 0.96
+  const minSimilarity = Math.max(
+    clampNumber(config?.minSimilarity, getDefaultMemoryConfig().minSimilarity, 0, 1) + 0.5,
+    RELEVANT_MEMORY_MERGE_MIN_SIMILARITY
+  )
+  if (keywordOverlap >= 3 && embeddingScore >= minSimilarity) return embeddingScore
+  return -1
+}
+
+function findMemoryMergeCandidateIndex(items = [], candidate, config = getDefaultMemoryConfig()) {
+  const list = Array.isArray(items) ? items : []
+  const candidateStatus = normalizeText(candidate?.status).toLowerCase() || 'active'
+  const identityKey = getMemoryIdentityKey(candidate)
+  const exactIndex = list.findIndex((item) => {
+    if (!item) return false
+    if ((normalizeText(item.status).toLowerCase() || 'active') !== candidateStatus) return false
+    return getMemoryIdentityKey(item) === identityKey
+  })
+  if (exactIndex >= 0) return exactIndex
+
+  let bestIndex = -1
+  let bestScore = -1
+  for (let index = 0; index < list.length; index += 1) {
+    const item = list[index]
+    if (!item) continue
+    if ((normalizeText(item.status).toLowerCase() || 'active') !== candidateStatus) continue
+    const score = getMemorySemanticMergeScore(item, candidate, config)
+    if (score > bestScore) {
+      bestScore = score
+      bestIndex = index
+    }
+  }
+  return bestScore > 0 ? bestIndex : -1
+}
+
+export function getMemoryIdentityKey(item) {
+  if (!item) return ''
+  const dedupeKey = normalizeIdentitySignature(item.dedupeKey)
+  if (dedupeKey) return `dedupe:${dedupeKey}`
+  const profileKey = normalizeProfileKeyName(item.profileKey)
+  if (profileKey) return `${normalizeText(item.kind).toLowerCase()}:${profileKey}`
+  return `${normalizeText(item.kind).toLowerCase()}:${normalizeIdentitySignature(item.summary || item.text)}`
+}
+
+export function dedupeMemoryItems(items = [], config = getDefaultMemoryConfig()) {
+  const source = sortMemoryItems((Array.isArray(items) ? items : []).map((item) => normalizeMemoryItem(item)))
+  const merged = []
+  let mergedCount = 0
+
+  for (const item of source) {
+    if (!item || item.status === 'deleted') continue
+    const existingIndex = findMemoryMergeCandidateIndex(merged, item, config)
+    if (existingIndex === -1) {
+      merged.push(item)
+      continue
+    }
+    merged[existingIndex] = buildMergedMemoryItem(merged[existingIndex], item)
+    mergedCount += 1
+  }
+
+  return {
+    items: sortMemoryItems(merged.map((item) => normalizeMemoryItem(item))),
+    stats: {
+      inputCount: source.filter((item) => item && item.status !== 'deleted').length,
+      outputCount: merged.length,
+      mergedCount
+    }
+  }
 }
 
 async function markMemoryItemsUsed(ids = []) {
@@ -731,11 +1089,7 @@ async function upsertExtractedMemoryItems(extracted = [], config = getMemoryConf
       config.embedding
     ).catch(() => [])
 
-    const identityKey = getMemoryIdentityKey(normalized)
-    const existingIndex = store.items.findIndex((item) => {
-      if (item.status === 'deleted') return false
-      return getMemoryIdentityKey(item) === identityKey
-    })
+    const existingIndex = findMemoryMergeCandidateIndex(store.items, normalized, config)
 
     if (existingIndex === -1) {
       store.items.push(normalized)
@@ -743,21 +1097,7 @@ async function upsertExtractedMemoryItems(extracted = [], config = getMemoryConf
       continue
     }
 
-    store.items[existingIndex] = upsertMergedItem(store.items[existingIndex], {
-      ...normalized,
-      text:
-        store.items[existingIndex].text.length >= normalized.text.length
-          ? store.items[existingIndex].text
-          : normalized.text,
-      summary:
-        store.items[existingIndex].summary.length >= normalized.summary.length
-          ? store.items[existingIndex].summary
-          : normalized.summary,
-      confidence: Math.max(store.items[existingIndex].confidence, normalized.confidence),
-      embedding: normalized.embedding.length ? normalized.embedding : store.items[existingIndex].embedding,
-      tags: normalizeStringList([...(store.items[existingIndex].tags || []), ...(normalized.tags || [])]),
-      aliases: normalizeStringList([...(store.items[existingIndex].aliases || []), ...(normalized.aliases || [])])
-    })
+    store.items[existingIndex] = buildMergedMemoryItem(store.items[existingIndex], normalized)
     nextItems.push(store.items[existingIndex])
   }
 
@@ -793,9 +1133,10 @@ export async function upsertMemoryItem(item) {
   const store = await withStore()
   const next = normalizeMemoryItem(item)
   const config = getMemoryConfig()
-  const index = store.items.findIndex((row) => String(row.id || '') === String(next.id))
+  const directIndex = store.items.findIndex((row) => String(row.id || '') === String(next.id))
+  const index = directIndex >= 0 ? directIndex : findMemoryMergeCandidateIndex(store.items, next, config)
   const previous = index >= 0 ? store.items[index] : null
-  let merged = index === -1 ? next : upsertMergedItem(store.items[index], next)
+  let merged = index === -1 ? next : buildMergedMemoryItem(store.items[index], next, { preferIncomingContent: directIndex === -1 })
   const shouldRefreshEmbedding =
     index === -1 ||
     !Array.isArray(merged.embedding) ||
@@ -857,34 +1198,12 @@ export async function markMemoryItemUsed(id) {
 
 export async function cleanMemoryStore() {
   const store = await withStore()
-  const merged = new Map()
-  for (const item of store.items || []) {
-    if (!item || item.status === 'deleted') continue
-    const key = getMemoryIdentityKey(item) || stableStringify(item)
-    const prev = merged.get(key)
-    if (!prev) {
-      merged.set(key, item)
-      continue
-    }
-    merged.set(
-      key,
-      upsertMergedItem(prev, {
-        ...item,
-        text: prev.text.length >= item.text.length ? prev.text : item.text,
-        summary: prev.summary.length >= item.summary.length ? prev.summary : item.summary,
-        confidence: Math.max(prev.confidence, item.confidence),
-        hitCount: Math.max(prev.hitCount, item.hitCount),
-        embedding: prev.embedding.length >= item.embedding.length ? prev.embedding : item.embedding,
-        tags: normalizeStringList([...(prev.tags || []), ...(item.tags || [])]),
-        aliases: normalizeStringList([...(prev.aliases || []), ...(item.aliases || [])])
-      })
-    )
-  }
-  store.items = sortMemoryItems([...merged.values()].map((item) => normalizeMemoryItem(item)))
+  const { items, stats } = dedupeMemoryItems(store.items || [], getMemoryConfig())
+  store.items = items
   store.updatedAt = nowIso()
   const saved = await saveStoreToDisk(store)
   state.lastAutoCleanAt = nowMs()
-  return saved
+  return { ...saved, stats }
 }
 
 export async function getResidentProfileItems(limit = getMemoryConfig().profileMaxItems) {
@@ -894,7 +1213,7 @@ export async function getResidentProfileItems(limit = getMemoryConfig().profileM
     (store.items || [])
       .filter((item) => item.status === 'active' && getMemoryLane(item) === 'profile')
       .sort((a, b) => scoreProfileItem(b) - scoreProfileItem(a)),
-    (item) => item.profileKey || item.dedupeKey || `${item.kind}:${normalizeText(item.summary || item.text).toLowerCase()}`
+    (item) => getProfileSemanticIdentity(item) || getMemoryIdentityKey(item)
   )
   return unique.slice(0, Math.max(1, Math.min(20, Number(limit || config.profileMaxItems || 1))))
 }
@@ -966,7 +1285,7 @@ export async function recallMemory({ queryText, limit = 5, includeProfile = fals
   for (const row of scored) {
     const item = row.item
     if (getMemoryLane(item) === 'profile') {
-      const profileIdentity = item.profileKey || getMemoryIdentityKey(item)
+      const profileIdentity = getProfileSemanticIdentity(item) || getMemoryIdentityKey(item)
       if (pickedProfileKeys.has(profileIdentity)) continue
       pickedProfileKeys.add(profileIdentity)
     }
@@ -994,8 +1313,8 @@ export function buildMemoryContextBlock(input = [], options = {}) {
 
   const profileLines = dedupeBy(
     profileItems
-      .filter((item) => item?.status !== 'deleted' && item?.status !== 'archived')
-      .map((item) => ({ id: item.id, text: buildRecallText(item), key: item.profileKey || getMemoryIdentityKey(item) }))
+      .filter((item) => item?.status === 'active')
+      .map((item) => ({ id: item.id, text: buildRecallText(item), key: getProfileSemanticIdentity(item) || getMemoryIdentityKey(item) }))
       .filter((item) => item.text),
     (item) => item.key
   )

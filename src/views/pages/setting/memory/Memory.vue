@@ -460,9 +460,10 @@ async function handleArchive(row) {
 async function handleClean() {
   cleaning.value = true
   try {
-    await manageMemoryStore('clean')
+    const result = await manageMemoryStore('clean')
     await refreshList()
-    message.success('记忆已完成清洗与合并')
+    const mergedCount = Number(result?.stats?.mergedCount || 0)
+    message.success(mergedCount > 0 ? `记忆已完成清洗与合并，本次合并 ${mergedCount} 条重复项` : '记忆已完成清洗，未发现可合并的重复项')
   } catch (err) {
     message.error(err?.message || String(err))
   } finally {
