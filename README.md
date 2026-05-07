@@ -1,18 +1,116 @@
 # AI Tools
 
-一个基于 **Vue 3 + Vite + Naive UI** 开发的 **uTools AI 工具箱插件**，集成 AI 对话、Markdown 笔记、智能体配置、提示词管理、Skill 管理、MCP 工具接入和定时任务能力，适合在 uTools 内构建个人 AI 工作流与知识管理中心。
+一个运行在 uTools 内的 AI 工具箱插件，围绕“聊天、笔记、自动化、扩展接入”四条主线组织能力。项目基于 Vue 3 + Vite 构建，适合把个人 AI 助手、知识沉淀和工具调用整合到一个桌面工作台里。
 
-## 功能特性
+## 它能做什么
 
-- **AI 聊天对话**：支持会话管理、模型切换、系统提示词配置、智能体选择、附件上下文、Markdown 渲染与工具调用结果展示。
-- **Markdown 笔记管理**：支持多标签编辑、文件树管理、Markdown 预览、图片处理、笔记密码保护与密码重置。
-- **模型服务商配置**：可管理不同 AI Provider 及其模型参数，用于灵活切换不同模型服务。
-- **智能体与提示词管理**：支持维护 Agent 配置与 Prompt 模板，便于复用不同场景的对话策略。
-- **Skill 管理**：支持管理可复用技能能力，扩展智能体在特定任务中的执行方式。
-- **MCP 接入**：支持配置和调用 MCP 服务，将外部工具能力接入聊天流程。
-- **定时任务**：支持配置周期性任务，适合自动化执行固定 AI 工作流。
-- **深色/浅色主题**：跟随配置切换主题，优化长时间使用体验。
-- **uTools 插件入口**：支持通过 uTools 插件关键字和超级面板快速唤起 AI 问答入口。
+### 1. 聊天工作台
+
+- 支持多会话管理、新建会话、保存会话、会话列表浏览与继续对话
+- 支持服务商、模型、智能体、提示词、技能、MCP 服务自由组合
+- 支持附件参与上下文，包括常见文档、图片等内容解析
+- 支持 Markdown 渲染、代码高亮、工具调用过程展示、思考过程折叠查看
+- 支持编辑后重发、重新生成、复制消息、会话媒体库等高频操作
+- 支持图片/视频生成参数配置与媒体结果管理
+- 支持上下文窗口策略，控制历史消息、附件与前导信息的注入方式
+- 支持聊天记忆，可沉淀事实、偏好、风格、约束等长期信息
+
+### 2. 笔记系统
+
+- 支持普通 Markdown 笔记与 Notebook 式“超级笔记”
+- 支持文件树、标签页、多笔记并行编辑
+- 支持 Mermaid、ECharts、数学公式等增强内容
+- 支持附件清理、笔记链接复制、Markdown 链接复制、HTML 导出
+- 支持单篇笔记密码保护
+- 支持通过全局配置密码为笔记提供恢复能力，便于忘记单篇密码时重置
+
+### 3. Notebook Runtime
+
+- 为超级笔记提供独立运行时能力
+- 支持配置 Python 路径、虚拟环境目录、Kernel 名称、启动超时、执行超时
+- 支持 Python LSP 检测与补全能力检查
+- 支持按笔记绑定运行环境
+- 支持 notebook magic 指令、受管虚拟环境创建与依赖安装
+
+### 4. 配置中心
+
+#### 服务商
+
+- 可接入兼容 OpenAI 风格接口的模型服务
+- 支持拉取模型列表并选择启用模型
+- 内置 uTools 官方 AI 服务商入口，可直接同步 uTools 已配置模型
+
+#### 智能体
+
+- 可为智能体绑定默认模型、提示词、技能、MCP 服务
+- 支持设置高级模型参数，如 temperature、top_p、max_tokens、reasoning effort 等
+
+#### 提示词
+
+- 支持新增、编辑、删除本地提示词
+- 可作为默认系统提示词或智能体专属提示词使用
+
+#### 技能
+
+- 支持内联技能
+- 支持导入目录型技能或单独导入 `SKILL.md`
+- 支持为技能绑定触发词、标签、正则、意图和 MCP 依赖
+
+#### MCP
+
+- 支持 `stdio`、`sse`、`streamableHttp`、`http` 四种接入方式
+- 支持请求头、环境变量、工作目录、超时、keep-alive 等配置
+- 支持工具启用范围控制
+- 支持在界面中直接测试工具、查看 prompts、查看 resources
+
+#### 笔记配置
+
+- 支持模板与图表相关配置
+- 用于统一管理笔记侧的增强编辑体验
+
+#### 全局配置
+
+- 支持主题切换
+- 支持数据存储根目录切换
+- 支持默认系统提示词配置
+- 支持联网搜索代理与搜索 API 配置
+- 支持图片/视频生成默认模式配置
+- 支持聊天上下文窗口配置
+- 支持聊天记忆配置、向量重建、清洗与目录管理
+- 支持云同步配置
+- 支持配置导入/导出
+- 支持全局配置密码与安全问题重置
+
+### 5. 自动化与同步
+
+#### 定时任务
+
+- 支持单次执行、间隔触发、每日、每周、每月定时任务
+- 可指定执行智能体、任务内容、附带技能、附带 MCP 服务
+- 可自动保存任务执行会话
+- 当前定时任务仅在插件运行期间触发
+
+#### 云同步
+
+- 支持备份到云端
+- 支持以本地为准同步到云端
+- 支持从云端恢复到本地
+- 支持自动备份和自动恢复开关
+- 当前实现面向 S3 兼容存储
+
+### 6. uTools 集成
+
+- 通过 `AI Tools` 入口打开完整工作台
+- 通过超级面板 `问 AI` 直接把输入带入聊天场景
+- 使用 preload 能力桥接文件操作、会话、笔记、MCP、Notebook Runtime、云同步等本地功能
+
+## 适合的使用场景
+
+- 把多个模型服务统一放进一个桌面入口
+- 边聊天边沉淀笔记、图表和 Notebook 内容
+- 让智能体按固定配置调用本地或远程工具
+- 为日常重复任务建立轻量自动化
+- 在本地维护自己的 AI 知识工作流
 
 ## 技术栈
 
@@ -21,48 +119,50 @@
 - Vite 6
 - Naive UI
 - md-editor-v3
-- highlight.js
+- Mermaid
+- ECharts
 - KaTeX
+- highlight.js
 - pdfjs-dist
 - mammoth
 - xlsx
 - jszip
 - cropperjs
+- uTools Plugin API
 - Node.js Test Runner
-- uTools Plugin API / preload 扩展
 
-## 目录结构
+## 项目结构
 
 ```text
 .
-├── public/
-│   ├── plugin.json              # uTools 插件配置
-│   ├── logo.png                 # 插件图标
-│   └── preload/                 # uTools preload 服务与内置 MCP/文件能力
-├── src/
-│   ├── components/              # 通用组件与 Markdown 渲染组件
-│   ├── router/                  # 路由配置
-│   ├── utils/                   # 聊天、MCP、笔记、文件、加密、定时任务等工具模块
-│   ├── views/
-│   │   ├── layout/              # 主布局
-│   │   └── pages/
-│   │       ├── chat/            # AI 聊天页面
-│   │       ├── note/            # Markdown 笔记页面
-│   │       └── setting/         # Provider / Agent / Prompt / Skill / MCP / Timed Task / Config
-│   ├── workers/                 # 附件文本解析 Worker
-│   ├── App.vue
-│   └── main.js
-├── tests/                       # 单元测试
-├── index.html
-├── vite.config.js
-└── package.json
+|-- public/
+|   |-- plugin.json              # uTools 插件入口配置
+|   |-- logo.png
+|   `-- preload/                 # preload 服务、内置 MCP、文件/云/运行时桥接
+|-- src/
+|   |-- components/              # 通用组件
+|   |-- router/                  # 路由配置
+|   |-- utils/                   # 聊天、笔记、MCP、记忆、云同步、运行时等核心逻辑
+|   |-- views/
+|   |   |-- layout/              # 主布局
+|   |   `-- pages/
+|   |       |-- chat/            # 聊天页
+|   |       |-- note/            # 笔记页
+|   |       `-- setting/         # 各类设置页
+|   |-- workers/                 # 文本解析等 Worker
+|   |-- App.vue
+|   `-- main.js
+|-- tests/                       # 单元测试
+|-- index.html
+|-- vite.config.js
+`-- package.json
 ```
 
 ## 本地开发
 
 ### 环境要求
 
-- Node.js 18+（建议使用 LTS 版本）
+- Node.js 18+
 - uTools 开发环境
 
 ### 安装依赖
@@ -77,9 +177,9 @@ npm install
 npm run dev
 ```
 
-启动后，前端开发服务默认运行在 `http://localhost:5173`，`public/plugin.json` 中的 `development.main` 已指向该地址，可用于 uTools 插件开发调试。
+默认会启动在 `http://localhost:5173`。`public/plugin.json` 中已经把开发入口指向这个地址，便于在 uTools 中联调。
 
-### 构建生产版本
+### 构建
 
 ```bash
 npm run build
@@ -91,19 +191,18 @@ npm run build
 npm test
 ```
 
-## uTools 插件配置
+当前测试覆盖了聊天上下文、媒体生成、记忆、MCP、Notebook Runtime、笔记加密、文件操作、图表转换等核心模块。
 
-插件入口配置位于 `public/plugin.json`，当前包含两个入口：
+## 插件入口
 
-- `AI Tools`：打开插件主界面
-- 超级面板 `问 AI`：通过输入内容直接进入 AI 问答场景
+`public/plugin.json` 当前定义了两个入口：
 
-preload 逻辑位于 `public/preload/services.js`，并通过 `public/preload/builtins/` 和 `public/preload/utils/` 提供文件操作、配置管理、笔记服务、会话服务、MCP Client、S3 操作等能力。
+- `AI Tools`：打开完整主界面
+- `问 AI`：从超级面板直接进入聊天
 
-## 项目说明
+## 说明
 
-该项目适合用作桌面端个人 AI 助手插件基础工程。你可以在现有功能上继续扩展新的模型服务商、新的 MCP 工具、新的 Skill 执行逻辑，或者将笔记模块与聊天上下文进一步打通，形成更完整的个人知识工作流。
+- 这是一个明显偏“本地工作流”的 uTools 插件，不是纯网页应用
+- 部分能力依赖 uTools 提供的运行环境与 preload 注入能力
+- Notebook Runtime、本地搜索代理等配置只保存在当前电脑本地，不参与普通云同步覆盖
 
-## 项目描述
-
-**AI Tools 是一款运行在 uTools 平台上的桌面端 AI 效率插件，基于 Vue 3 和 Vite 构建，集成智能对话、Markdown 笔记、Agent/Prompt 管理、Skill 扩展、MCP 工具调用和定时任务能力，旨在帮助用户在本地桌面环境中快速搭建可配置、可扩展的个人 AI 工作流与知识管理系统。**
