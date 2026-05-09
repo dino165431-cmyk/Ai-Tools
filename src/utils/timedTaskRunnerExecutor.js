@@ -11,6 +11,11 @@ import {
   buildRequestOverridesFromAgentModelParams,
   normalizeAgentModelParams
 } from '@/utils/agentModelParams'
+import {
+  sanitizeRequestToolMessages,
+  shouldIncludeReasoningContent,
+  shouldRetryWithReasoningContent
+} from '@/utils/chatRequestCompat'
 import { buildSkillFileIndexLines, getSkillDescription, isDirectorySkill } from '@/utils/skillUtils'
 import {
   buildUtoolsAiMessages,
@@ -23,6 +28,7 @@ import { extractAssistantTextFromPayload } from '@/utils/chatAssistantResponse'
 import { stringifyToolResultForModel } from '@/utils/toolResultForModel'
 import { createDirectory, exists, writeFile } from '@/utils/fileOperations'
 import { getOrCreateMCPClient, releaseMCPClient, closePooledMCPClient } from '@/utils/mcpClient'
+import { isSystemPrompt } from '@/utils/promptConfig'
 
 const SESSION_ROOT = 'session'
 const TIMED_TASK_DIR_NAME = '定时任务'
@@ -386,7 +392,7 @@ function getProviderById(providerId) {
 function getPromptById(promptId) {
   const id = String(promptId || '').trim()
   if (!id) return null
-  return (promptsRef.value || []).find((p) => p && p._id === id) || null
+  return (promptsRef.value || []).find((p) => p && p._id === id && isSystemPrompt(p)) || null
 }
 
 function getSkillById(skillId) {
@@ -491,7 +497,9 @@ function buildRequestMessages({ systemPrompt, apiMessages, compatToolCallIdAsFc 
   const msgs = []
   if (systemPrompt) msgs.push({ role: 'system', content: systemPrompt })
 
-  for (const m of apiMessages || []) {
+  const sourceMessages = Array.isArray(apiMessages) ? apiMessages : []
+
+  for (const m of sourceMessages) {
     if (!m || typeof m !== 'object') continue
     const cloned = { ...m }
 
@@ -508,13 +516,21 @@ function buildRequestMessages({ systemPrompt, apiMessages, compatToolCallIdAsFc 
 
       if (cloned.role === 'tool' && typeof cloned.tool_call_id === 'string' && cloned.tool_call_id.startsWith('call_')) {
         cloned.call_id = cloned.tool_call_id
+        cloned.tool_call_id = `fc_${cloned.tool_call_id.slice('call_'.length)}`
       }
+    }
+
+    if (cloned.role !== 'assistant') {
+      delete cloned.reasoning_content
+      delete cloned.reasoning
+      delete cloned.thinking
+      delete cloned.thought
     }
 
     msgs.push(cloned)
   }
 
-  return msgs
+  return sanitizeRequestToolMessages(msgs, { compatToolCallIdAsFc })
 }
 
 function normalizeToolCalls(msg) {
@@ -820,15 +836,37 @@ export async function runTimedTaskOnce(task, options = {}) {
   const timeoutTimer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
 
   let compatFcToolCallId = false
+  let forceReasoningContent = false
 
   try {
     const maxRounds = 60
     for (let round = 0; round < maxRounds; round++) {
       const reqMessages = buildRequestMessages({ systemPrompt, apiMessages, compatToolCallIdAsFc: compatFcToolCallId })
+      const needsReasoningContent = shouldIncludeReasoningContent({
+        baseUrl,
+        model,
+        forceReasoningContent,
+        apiMessages
+      })
+      const normalizedReqMessages = reqMessages.map((message) => {
+        if (!message || typeof message !== 'object') return message
+        if (message.role !== 'assistant') return message
+        const cloned = { ...message }
+        if (needsReasoningContent) {
+          const rc = cloned.reasoning_content ?? cloned.reasoning ?? cloned.thinking ?? cloned.thought ?? ''
+          cloned.reasoning_content = typeof rc === 'string' ? rc : stableStringify(rc)
+        } else {
+          delete cloned.reasoning_content
+          delete cloned.reasoning
+          delete cloned.thinking
+          delete cloned.thought
+        }
+        return cloned
+      })
       const body = {
         model,
         stream: false,
-        messages: reqMessages,
+        messages: normalizedReqMessages,
         ...(tools.length ? { tools, tool_choice: 'auto' } : {}),
         ...requestOverrides
       }
@@ -844,6 +882,10 @@ export async function runTimedTaskOnce(task, options = {}) {
             compatFcToolCallId = true
             continue
           }
+          if (!forceReasoningContent && shouldRetryWithReasoningContent(errText)) {
+            forceReasoningContent = true
+            continue
+          }
           throw err
         }
       }
@@ -853,11 +895,13 @@ export async function runTimedTaskOnce(task, options = {}) {
       const msg = choice.message || {}
 
       const assistantContent = toText(msg.content ?? choice.text ?? json.content ?? json.text) || extractAssistantTextFromPayload(json)
+      const assistantReasoning = toText(msg.reasoning_content ?? msg.reasoning ?? json.reasoning_content ?? json.reasoning)
       const toolCalls = normalizeToolCalls(msg)
 
       const assistantApiMsg = {
         role: 'assistant',
         content: String(assistantContent || ''),
+        ...(assistantReasoning ? { reasoning_content: String(assistantReasoning) } : {}),
         ...(toolCalls.length ? { tool_calls: toolCalls } : {})
       }
       apiMessages.push(assistantApiMsg)

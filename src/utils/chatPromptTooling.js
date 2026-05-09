@@ -19,6 +19,92 @@ export function buildBasePromptSelectionState(promptId, defaultSystemPrompt = ''
   }
 }
 
+export function buildCustomSystemPromptState(promptText = '', explicit = null) {
+  const rawPromptText = String(promptText ?? '')
+  const hasPromptText = !!normalizePromptText(rawPromptText)
+  return {
+    basePromptMode: 'custom',
+    selectedPromptId: null,
+    customSystemPrompt: rawPromptText,
+    customSystemPromptExplicit: explicit === null
+      ? hasPromptText
+      : explicit === true && hasPromptText
+  }
+}
+
+export function buildMergedChatState(defaultState = {}, persistedState = {}) {
+  const base = defaultState && typeof defaultState === 'object' ? { ...defaultState } : {}
+  const override = persistedState && typeof persistedState === 'object' ? { ...persistedState } : {}
+  return {
+    ...base,
+    ...override
+  }
+}
+
+export function resolveSystemPromptModalApplyState(currentState = {}, options = {}) {
+  const basePromptMode = String(currentState?.basePromptMode || '').trim() === 'prompt' ? 'prompt' : 'custom'
+  const selectedPromptId = String(options?.selectedPromptId || currentState?.selectedPromptId || '').trim()
+  const selectedPromptContent = String(options?.selectedPromptContent ?? '')
+  const draftText = String(options?.draftText ?? '')
+  const currentCustomSystemPrompt = String(currentState?.customSystemPrompt ?? '')
+  const currentCustomSystemPromptExplicit = currentState?.customSystemPromptExplicit === true
+
+  if (
+    basePromptMode === 'prompt' &&
+    selectedPromptId &&
+    normalizePromptText(draftText) === normalizePromptText(selectedPromptContent)
+  ) {
+    return {
+      basePromptMode: 'prompt',
+      selectedPromptId,
+      customSystemPrompt: '',
+      customSystemPromptExplicit: false
+    }
+  }
+
+  if (
+    basePromptMode === 'custom' &&
+    normalizePromptText(draftText) === normalizePromptText(currentCustomSystemPrompt)
+  ) {
+    return buildCustomSystemPromptState(currentCustomSystemPrompt, currentCustomSystemPromptExplicit)
+  }
+
+  return buildCustomSystemPromptState(draftText)
+}
+
+export function hasActiveBasePromptSelection(currentState = {}) {
+  const basePromptMode = String(currentState?.basePromptMode || '').trim()
+  const selectedPromptId = String(currentState?.selectedPromptId || '').trim()
+  return basePromptMode === 'prompt' && !!selectedPromptId
+}
+
+export function isPromptModalSelectionCurrentBasePrompt(parsedValue, currentState = {}) {
+  const parsedType = String(parsedValue?.type || '').trim()
+  const parsedPromptId = String(parsedValue?.promptId || '').trim()
+  if (parsedType !== 'local' || !parsedPromptId) return false
+
+  const selectedPromptId = String(currentState?.selectedPromptId || '').trim()
+  return hasActiveBasePromptSelection(currentState) && selectedPromptId === parsedPromptId
+}
+
+export function shouldClearBasePromptSelectionFromPromptModal(parsedValue, currentState = {}) {
+  const parsedType = String(parsedValue?.type || '').trim()
+  const parsedPromptId = String(parsedValue?.promptId || '').trim()
+  if (parsedType !== 'local' || parsedPromptId) return false
+
+  return hasActiveBasePromptSelection(currentState)
+}
+
+export function shouldClearBasePromptSelectionImmediately(currentState = {}, parsedValue = null) {
+  if (!hasActiveBasePromptSelection(currentState)) return false
+
+  const parsedType = String(parsedValue?.type || '').trim()
+  const parsedPromptId = String(parsedValue?.promptId || '').trim()
+  if (!parsedType) return true
+
+  return parsedType === 'local' && !parsedPromptId
+}
+
 export const AGENT_SKILL_LAZY_LOAD_GUIDANCE_LINES = Object.freeze([
   '## 技能（按需加载）',
   '- 以下为智能体预设技能，默认只提供名称、描述和文件索引。',

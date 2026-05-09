@@ -48,11 +48,17 @@
 
           <n-flex align="center" wrap :size="6" style="margin-top: 6px;">
             <n-tag v-if="prompt.builtin" size="small" type="info" bordered>内置</n-tag>
+            <n-tag size="small" :type="promptTypeTagType(prompt)" bordered>
+              {{ promptTypeLabel(prompt) }}
+            </n-tag>
             <n-tag v-if="prompt.description" size="small" type="info" bordered>
               有描述
             </n-tag>
             <n-tag v-if="prompt.content" size="small" type="success" bordered>
               有内容
+            </n-tag>
+            <n-tag v-if="getPromptVariableCount(prompt) > 0" size="small" type="warning" bordered>
+              变量 {{ getPromptVariableCount(prompt) }}
             </n-tag>
           </n-flex>
 
@@ -91,14 +97,36 @@
           />
         </n-form-item>
 
+        <n-form-item label="类型" path="type">
+          <n-select
+            v-model:value="formData.type"
+            :disabled="readOnly"
+            :options="promptTypeOptions"
+            placeholder="请选择提示词类型"
+          />
+        </n-form-item>
+
         <n-form-item label="内容" path="content">
           <n-input
             v-model:value="formData.content"
             :disabled="readOnly"
             type="textarea"
             :autosize="{ minRows: 6, maxRows: 14 }"
-            placeholder="可选：提示词内容"
+            :placeholder="formData.type === PROMPT_TYPE_USER ? '可选：用户提示词内容，可使用 {{变量名}}、{{变量名|说明}} 或 {{变量名=默认值}}' : '可选：提示词内容'"
           />
+        </n-form-item>
+        <n-form-item v-if="formData.type === PROMPT_TYPE_USER && promptVariables.length" label="变量">
+          <n-flex wrap :size="6">
+            <n-tag
+              v-for="item in promptVariables"
+              :key="item.name"
+              size="small"
+              type="warning"
+              bordered
+            >
+              {{ item.name }}<span v-if="item.default !== undefined"> = {{ item.default }}</span>
+            </n-tag>
+          </n-flex>
         </n-form-item>
       </n-form>
       <template #footer>
@@ -117,7 +145,7 @@
 import { ref, reactive, computed } from 'vue'
 import {
   NCard, NFlex, NIcon, NButton, NInput, NText, NTag, NEllipsis,
-  NModal, NForm, NFormItem, useDialog, useMessage
+  NModal, NForm, NFormItem, NSelect, useDialog, useMessage
 } from 'naive-ui'
 import { Trash } from '@vicons/fa'
 import { Prompt } from '@vicons/tabler'
@@ -129,9 +157,17 @@ import {
   deletePrompt,
   getTheme
 } from '@/utils/configListener'
+import {
+  PROMPT_TYPE_OPTIONS,
+  PROMPT_TYPE_USER,
+  PROMPT_TYPE_SYSTEM,
+  extractPromptVariables,
+  normalizePromptType
+} from '@/utils/promptConfig'
 
 const prompts = getPrompts()
 const theme = getTheme()
+const promptTypeOptions = PROMPT_TYPE_OPTIONS
 
 const dialog = useDialog()
 const message = useMessage()
@@ -146,11 +182,31 @@ const readOnly = computed(() => modalMode.value === 'edit' && currentEditBuiltin
 const formData = reactive({
   name: '',
   description: '',
+  type: PROMPT_TYPE_SYSTEM,
   content: ''
 })
 
 const rules = {
   name: { required: true, message: '名称为必填项', trigger: ['blur', 'input'] }
+}
+
+const promptVariables = computed(() => {
+  if (normalizePromptType(formData.type) !== PROMPT_TYPE_SYSTEM) {
+    return extractPromptVariables(formData.content)
+  }
+  return []
+})
+
+function promptTypeLabel(prompt) {
+  return normalizePromptType(prompt?.type) === PROMPT_TYPE_USER ? '用户提示词' : '系统提示词'
+}
+
+function promptTypeTagType(prompt) {
+  return normalizePromptType(prompt?.type) === PROMPT_TYPE_USER ? 'warning' : 'success'
+}
+
+function getPromptVariableCount(prompt) {
+  return extractPromptVariables(prompt?.content).length
 }
 
 const cardStyle = computed(() => ({
@@ -165,6 +221,7 @@ const openAddModal = () => {
   currentEditBuiltin.value = false
   formData.name = ''
   formData.description = ''
+  formData.type = PROMPT_TYPE_SYSTEM
   formData.content = ''
   formRef.value?.restoreValidation()
   showModal.value = true
@@ -176,6 +233,7 @@ const openEditModal = (prompt) => {
   currentEditBuiltin.value = !!prompt.builtin
   formData.name = prompt.name || ''
   formData.description = prompt.description || ''
+  formData.type = normalizePromptType(prompt.type)
   formData.content = prompt.content || ''
   formRef.value?.restoreValidation()
   showModal.value = true
@@ -198,6 +256,7 @@ const handleSave = () => {
       const promptData = {
         name,
         description: formData.description || '',
+        type: normalizePromptType(formData.type),
         content: formData.content || ''
       }
 

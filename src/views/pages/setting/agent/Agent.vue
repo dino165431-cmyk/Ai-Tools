@@ -341,6 +341,7 @@ import {
   getMcpServers,
   getTheme
 } from '@/utils/configListener'
+import { isSystemPrompt } from '@/utils/promptConfig'
 
 // 数据源
 const agents = getAgents()
@@ -352,7 +353,7 @@ const mcps = getMcpServers()
 
 // 选择器选项
 const providerOptions = computed(() => providers.value || [])
-const promptOptions = computed(() => prompts.value || [])
+const promptOptions = computed(() => (prompts.value || []).filter((prompt) => isSystemPrompt(prompt)))
 const skillOptions = computed(() => skills.value || [])
 const mcpOptions = computed(() => mcps.value || [])
 
@@ -362,8 +363,14 @@ const getProviderName = (id) => {
   return p ? p.name : id
 }
 const getPromptName = (id) => {
-  const p = prompts.value.find(p => p._id === id)
+  const p = prompts.value.find(p => p._id === id && isSystemPrompt(p))
   return p ? p.name : id
+}
+
+const getSystemPromptById = (id) => {
+  const promptId = String(id || '').trim()
+  if (!promptId) return null
+  return prompts.value.find((prompt) => prompt && prompt._id === promptId && isSystemPrompt(prompt)) || null
 }
 
 // UI ״̬
@@ -445,7 +452,7 @@ const openEditModal = (agent) => {
   formData.model = agent.model || null
   formData.skills = agent.skills || []
   formData.mcp = agent.mcp || []
-  formData.prompt = agent.prompt || null
+  formData.prompt = getSystemPromptById(agent.prompt)?._id || null
   assignFormModelParams(agent.modelParams)
   formRef.value?.restoreValidation()
   showModal.value = true
@@ -500,7 +507,7 @@ const handleSave = () => {
             model: formData.model,
             skills: formData.skills.length ? formData.skills : [],
             mcp: formData.mcp.length ? formData.mcp : [],
-            prompt: formData.prompt,
+            prompt: getSystemPromptById(formData.prompt)?._id || null,
             modelParams: compactAgentModelParams(formData.modelParams)
           }
 

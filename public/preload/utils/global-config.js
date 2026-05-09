@@ -229,6 +229,7 @@ function buildBuiltinPrompt() {
         _id: BUILTIN_PROMPT_ID,
         name: 'Ai Tools 助手（内置）',
         description: '覆盖笔记查阅/记录与配置管理的系统提示词，强调标准 Skill 导入优先、旧版内联 Skill 兼容、敏感配置保护与工具调用规范。',
+        type: 'system',
         content: [
             '你是 Ai Tools 插件内置助手。你可以使用本插件提供的 MCP 工具读取和修改真实数据与配置。',
             '',
@@ -708,10 +709,32 @@ function normalizeNoteConfig(raw, legacyChatConfig) {
     }
 }
 
-function syncConfigStructure(rawConfig) {
+function normalizePromptAndAgentBindingsInConfig(rawConfig) {
     const config = rawConfig && typeof rawConfig === 'object' && !Array.isArray(rawConfig)
         ? { ...rawConfig }
         : {}
+    const promptsMapRaw = config.prompts && typeof config.prompts === 'object' && !Array.isArray(config.prompts) ? config.prompts : {}
+    const promptsMap = Object.fromEntries(
+        Object.entries(promptsMapRaw).map(([id, prompt]) => [id, normalizePromptConfigEntry(prompt, id)])
+    )
+    const agentsMapRaw = config.agents && typeof config.agents === 'object' && !Array.isArray(config.agents) ? config.agents : {}
+    const agentsMap = Object.fromEntries(
+        Object.entries(agentsMapRaw).map(([id, agent]) => {
+            const normalizedAgent = agent && typeof agent === 'object' && !Array.isArray(agent) ? { ...agent } : {}
+            normalizedAgent.prompt = sanitizeAgentPromptReference(normalizedAgent.prompt, promptsMap)
+            return [id, normalizedAgent]
+        })
+    )
+
+    return {
+        ...config,
+        prompts: promptsMap,
+        agents: agentsMap
+    }
+}
+
+function syncConfigStructure(rawConfig) {
+    const config = normalizePromptAndAgentBindingsInConfig(rawConfig)
     const chatConfig = normalizeChatConfig(config.chatConfig)
     const noteConfig = normalizeNoteConfig(config.noteConfig, config.chatConfig)
     const noteSecurity = noteConfig.noteSecurity
@@ -962,6 +985,32 @@ function mergeBuiltinAgent(override, builtinAgent) {
     if (out.mcp.length && out.mcp.every((id) => oldDefault.has(id))) out.mcp = []
 
     return out
+}
+
+function normalizePromptType(value) {
+    return String(value || '').trim().toLowerCase() === 'user' ? 'user' : 'system'
+}
+
+function isSystemPromptConfig(prompt) {
+    return normalizePromptType(prompt?.type) === 'system'
+}
+
+function normalizePromptConfigEntry(rawPrompt, fallbackId = '') {
+    const src = rawPrompt && typeof rawPrompt === 'object' && !Array.isArray(rawPrompt) ? rawPrompt : {}
+    const normalized = {
+        ...src,
+        type: normalizePromptType(src.type)
+    }
+    if (!normalized._id && fallbackId) normalized._id = fallbackId
+    return normalized
+}
+
+function sanitizeAgentPromptReference(promptId, promptsMap) {
+    const id = String(promptId || '').trim()
+    if (!id) return null
+    if (BUILTIN_PROMPT_IDS.includes(id)) return id
+    const prompt = promptsMap && typeof promptsMap === 'object' ? promptsMap[id] : null
+    return prompt && isSystemPromptConfig(prompt) ? id : null
 }
 
 function mergeBuiltinProvider(_override, builtinProvider) {
@@ -1774,7 +1823,7 @@ class GlobalConfig {
     }
 
     _buildPublicConfig(raw) {
-        const config = this._clone(this._isPlainObject(raw) ? raw : this._defaultConfig)
+        const config = normalizePromptAndAgentBindingsInConfig(this._clone(this._isPlainObject(raw) ? raw : this._defaultConfig))
         const normalizedNoteConfig = normalizeNoteConfig(config.noteConfig, config.chatConfig)
         config.noteConfig = {
             ...normalizedNoteConfig,
@@ -1786,9 +1835,21 @@ class GlobalConfig {
     }
 
     _buildExportableConfig(raw) {
-        const config = this._stripNotebookRuntimeFromStorageConfig(raw)
+        const config = normalizePromptAndAgentBindingsInConfig(this._stripNotebookRuntimeFromStorageConfig(raw))
         this._hydrateDirectorySkillCacheSnapshot(config)
         return config
+    }
+
+    _buildBuiltinRepairStorageConfig(raw, repaired) {
+        const base = this._isPlainObject(raw) ? this._clone(raw) : {}
+        return {
+            ...base,
+            mcpServers: this._clone(repaired?.mcpServers || {}),
+            skills: this._clone(repaired?.skills || {}),
+            prompts: this._clone(repaired?.prompts || {}),
+            agents: this._clone(repaired?.agents || {}),
+            providers: this._clone(repaired?.providers || {})
+        }
     }
 
     _getRaw() {
@@ -1810,11 +1871,19 @@ class GlobalConfig {
 
         const normalized = syncConfigStructure(this._clone(config))
         const merged = this._mergeDefaults(normalized, this._defaultConfig);
-        return syncConfigStructure(merged);
+        const repaired = syncConfigStructure(merged)
+        const builtinChanged = this._applyBuiltinsInPlace(repaired)
+        if (builtinChanged) {
+            const healedStorage = this._buildBuiltinRepairStorageConfig(config, repaired)
+            utools.dbCryptoStorage.setItem(this.STORAGE_KEY, healedStorage)
+        }
+
+        return repaired;
     }
 
     _save(raw) {
-        const sanitized = this._stripNotebookRuntimeFromStorageConfig(raw)
+        const normalized = normalizePromptAndAgentBindingsInConfig(this._clone(raw))
+        const sanitized = this._stripNotebookRuntimeFromStorageConfig(normalized)
         this._ensureWritableDataStorageRoot(sanitized)
         utools.dbCryptoStorage.setItem(this.STORAGE_KEY, sanitized);
         if (typeof window !== 'undefined' && window.dispatchEvent) {
@@ -3148,7 +3217,10 @@ class GlobalConfig {
         if (config.agents[item._id]) {
             throw new Error(`Agent with id ${item._id} already exists`);
         }
-        config.agents[item._id] = item;
+        config.agents[item._id] = {
+            ...item,
+            prompt: sanitizeAgentPromptReference(item?.prompt, config.prompts)
+        };
         this._save(config);
         return config.agents;
     }
@@ -3165,7 +3237,16 @@ class GlobalConfig {
             return config.agents
         }
 
-        config.agents[id] = { ...config.agents[id], ...updatedFields };
+        config.agents[id] = {
+            ...config.agents[id],
+            ...updatedFields,
+            prompt: sanitizeAgentPromptReference(
+                Object.prototype.hasOwnProperty.call(updatedFields || {}, 'prompt')
+                    ? updatedFields?.prompt
+                    : config.agents[id]?.prompt,
+                config.prompts
+            )
+        };
         this._save(config);
         return config.agents;
     }
@@ -3228,10 +3309,13 @@ class GlobalConfig {
     addPrompt(item) {
         const config = this._getRaw();
         if (!this._isPlainObject(config.prompts)) config.prompts = {};
-        if (config.prompts[item._id]) {
-            throw new Error(`Prompt with id ${item._id} already exists`);
+        const normalizedItem = normalizePromptConfigEntry(item, item?._id)
+        const promptId = String(normalizedItem?._id || '').trim()
+        if (!promptId) throw new Error('Prompt _id is required');
+        if (config.prompts[promptId]) {
+            throw new Error(`Prompt with id ${promptId} already exists`);
         }
-        config.prompts[item._id] = item;
+        config.prompts[promptId] = normalizedItem;
         this._save(config);
         return config.prompts;
     }
@@ -3240,7 +3324,7 @@ class GlobalConfig {
         if (id === BUILTIN_PROMPT_ID) throw new Error('内置 Prompt 不可修改');
         const config = this._getRaw();
         if (!config.prompts[id]) throw new Error('Prompt not found');
-        config.prompts[id] = { ...config.prompts[id], ...updatedFields };
+        config.prompts[id] = normalizePromptConfigEntry({ ...config.prompts[id], ...updatedFields }, id);
         this._save(config);
         return config.prompts;
     }

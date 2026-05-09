@@ -412,7 +412,10 @@ async function submitEditor() {
       text,
       tags: normalizeTags(editor.form.tagsText),
       confidence: Number(editor.form.confidence || 0.8),
-      dedupeKey: editor.form.dedupeKey
+      dedupeKey: editor.form.dedupeKey,
+      source: {
+        type: 'manual'
+      }
     }
     if (editor.mode === 'create') {
       await upsertMemoryItem(payload)

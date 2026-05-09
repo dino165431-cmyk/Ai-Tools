@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <n-space vertical size="large" class="chat-shell">
     <n-layout embedded has-sider sider-placement="right" class="chat-shell__layout">
       <n-layout-content class="chat-layout__content" :content-style="layoutContentStyle">
@@ -150,7 +150,7 @@
     <div class="chat-messages-shell">
       <n-card class="chat-messages" :bordered="false" content-style="padding: 0; height: 100%;">
         <div class="chat-scroll-wrapper">
-          <n-scrollbar ref="scrollbarRef" style="height: 100%;" @scroll="handleChatScroll">
+          <n-scrollbar ref="scrollbarRef" style="height: 100%;" @scroll="handleChatScroll" @wheel.passive="handleChatWheel">
             <div ref="chatListRef" class="chat-list">
             <div v-if="!session.messages.length" class="chat-empty-state">
               <div class="chat-empty-state__panel">
@@ -509,7 +509,6 @@
       @update-video-generation-params="assignVideoGenerationParams"
       @reset-video-generation-params="resetVideoGenerationParams"
       @clear-session="clearSession"
-      @reset-chat-setup="resetChatSetup"
       @open-agent-modal="openAgentModal"
       @insert-inline-command-trigger="insertInlineCommandTrigger"
       @open-file-picker="openFilePicker"
@@ -717,7 +716,7 @@
       <template #footer>
         <n-flex justify="space-between" align="center" :size="12">
           <n-flex :size="8">
-            <n-button size="small" @click="resetSystemPromptToSelectedPrompt" :disabled="!selectedPromptId">
+            <n-button size="small" @click="resetSystemPromptToSelectedPrompt" :disabled="!hasSelectedSystemPrompt">
               重置为提示词
             </n-button>
             <n-button size="small" @click="clearCustomSystemPrompt">
@@ -879,7 +878,7 @@
           />
         </n-form-item>
         <n-text depth="3" style="font-size: 12px; display: block; margin-left: 90px;">
-          本地提示词会切换系统提示词；MCP 提示词会按标准调用 prompts/get，并插入到当前输入框。
+          本地系统提示词会切换当前系统提示词；本地用户提示词与 MCP 提示词会插入到当前输入框。
         </n-text>
 
         <template v-if="selectedPromptModalKind === 'mcp'">
@@ -895,6 +894,22 @@
             该 MCP 提示词无参数，将直接插入输入框。
           </n-text>
         </template>
+        <template v-else-if="selectedLocalPromptForModal && selectedLocalPromptVariables.length">
+          <McpArgumentForm
+            :params="selectedLocalPromptVariables"
+            :form-data="promptUserArgsForm"
+            max-height="260px"
+            padding="0"
+            label-width="120px"
+          />
+        </template>
+        <n-text
+          v-else-if="selectedLocalPromptForModal && isUserPrompt(selectedLocalPromptForModal)"
+          depth="3"
+          style="font-size: 12px; display: block; margin-left: 90px;"
+        >
+          该用户提示词无变量，将直接插入输入框。
+        </n-text>
       </n-form>
 
       <template #footer>
@@ -1105,11 +1120,26 @@ import {
 import {
   AGENT_SKILL_LAZY_LOAD_GUIDANCE_LINES,
   buildBasePromptSelectionState,
+  buildMergedChatState,
+  buildCustomSystemPromptState,
   COMPACT_MCP_CATALOG_NOTE,
   COMPACT_MCP_TOOL_GUIDANCE_LINES,
+  hasActiveBasePromptSelection,
   INTERNAL_TOOL_SPECS,
-  normalizePromptText
+  isPromptModalSelectionCurrentBasePrompt,
+  normalizePromptText,
+  resolveSystemPromptModalApplyState,
+  shouldClearBasePromptSelectionImmediately,
+  shouldClearBasePromptSelectionFromPromptModal
 } from '@/utils/chatPromptTooling'
+import {
+  buildPromptVariableValues,
+  extractPromptVariables,
+  isSystemPrompt,
+  isUserPrompt,
+  renderPromptTemplate,
+  resetPromptVariableFormData
+} from '@/utils/promptConfig'
 import {
   buildChatContextWindow,
   buildChatContextWindowRuntimeOptions,
@@ -1128,7 +1158,9 @@ import {
   calculateHistoryContextCharBudget,
   calculateReservedRequestChars,
   estimateToolDefinitionsChars,
-  shouldIncludeReasoningContent
+  sanitizeRequestToolMessages,
+  shouldIncludeReasoningContent,
+  shouldRetryWithReasoningContent
 } from '@/utils/chatRequestCompat'
 import {
   buildMemoryInjection,
@@ -1146,6 +1178,7 @@ import {
   shouldFallbackChatCompletionsToResponses,
   shouldFallbackResponsesToChatCompletions,
   shouldPreferResponsesApiForModel,
+  shouldRetryWithoutParallelToolCalls,
   shouldRetryResponsesWithoutStreaming
 } from '@/utils/openaiResponsesCompat.js'
 import {
@@ -1335,7 +1368,9 @@ function getDefaultSystemPromptText() {
 }
 
 function applyBasePromptSelection(promptId) {
-  const nextState = buildBasePromptSelectionState(promptId, getDefaultSystemPromptText())
+  const prompt = findLocalPromptById(promptId)
+  const nextPromptId = prompt && isSystemPrompt(prompt) ? prompt._id : null
+  const nextState = buildBasePromptSelectionState(nextPromptId, getDefaultSystemPromptText())
   selectedPromptId.value = nextState.selectedPromptId
   basePromptMode.value = nextState.basePromptMode
   customSystemPrompt.value = nextState.customSystemPrompt
@@ -1436,6 +1471,7 @@ const agentModalSelectedId = ref(null)
 const showPromptModal = ref(false)
 const promptModalSelectedId = ref(null)
 const promptMcpArgsForm = reactive({})
+const promptUserArgsForm = reactive({})
 const loadingMcpPrompts = ref(false)
 const mcpPromptCatalog = ref([])
 let mcpPromptCatalogLoadPromise = null
@@ -1710,6 +1746,7 @@ function restoreMemorySession(record, options = {}) {
   else clearMemoryCandidateFlushTimer(record)
   resetComposerInput()
   syncActiveRequestUiState(record)
+  autoScrollSuspendedByUser.value = false
   if (options.syncTreeSelection !== false) syncSessionTreeSelectionForRecord(record)
   scheduleRefreshUserAnchorMeta()
   if (!options.skipScroll) void nextTick(() => scrollToBottom({ force: true }))
@@ -1739,11 +1776,16 @@ function clearMemoryCandidateFlushTimer(record) {
   record.memoryCandidateFlushTimer = null
 }
 
-function buildMemoryRecallQueryFromRecord(record, currentUserText = '') {
+function buildMemoryRecallQueryFromRecord(record, currentUserText = '', options = {}) {
   const parts = []
   const currentText = String(currentUserText || '').trim()
   if (currentText) parts.push(currentText)
-  const messages = Array.isArray(record?.messages) ? record.messages : []
+  const excludeLatestUserTurn = options.excludeLatestUserTurn === true
+  let messages = Array.isArray(record?.messages) ? record.messages : []
+  if (excludeLatestUserTurn && messages.length) {
+    const lastMessage = messages[messages.length - 1]
+    if (lastMessage?.role === 'user') messages = messages.slice(0, -1)
+  }
   const recent = messages
     .filter((msg) => msg?.role === 'user' || msg?.role === 'assistant')
     .slice(-4)
@@ -1899,7 +1941,7 @@ async function flushMemoryCandidatesForRecord(record, options = {}) {
     }
     const result = await flushMemoryCandidates({
       candidates: queue,
-      systemPrompt: buildCombinedSystemContent('', { sessionRecord: record }),
+      systemPrompt: String(options.systemPrompt || '').trim() || buildCombinedSystemContent('', { sessionRecord: record }),
       force: options.force === true
     }).catch((err) => {
       console.warn('[chat memory] candidate flush failed:', err)
@@ -1915,6 +1957,23 @@ async function flushMemoryCandidatesForRecord(record, options = {}) {
   } finally {
     record.memoryCandidateFlushInFlight = false
   }
+}
+
+function flushMemoryCandidatesInBackground(record, options = {}) {
+  if (!record) return
+  const queue = normalizeMemoryCandidateQueue(record.memoryCandidates)
+  if (!queue.length) return
+  const systemPrompt = String(options.systemPrompt || '').trim() || buildCombinedSystemContent('', { sessionRecord: record })
+  const snapshot = {
+    ...record,
+    memoryCandidates: queue
+  }
+  window.setTimeout(() => {
+    void flushMemoryCandidatesForRecord(snapshot, {
+      ...options,
+      systemPrompt
+    })
+  }, 0)
 }
 
 function scheduleMemoryCandidateFlush(record, options = {}) {
@@ -2006,7 +2065,7 @@ const CHAT_RECENT_HEAVY_RENDER_COUNT = 24
 const CHAT_HEAVY_RENDER_SEED_COUNT = 32
 const CHAT_HEAVY_RENDER_VIEWPORT_BUFFER = 6
 const CHAT_HEAVY_RENDER_ROOT_MARGIN_PX = 720
-const CHAT_SCROLL_COMPENSATION_SUSPEND_MS = 160
+const CHAT_SCROLL_COMPENSATION_SUSPEND_MS = 640
 const CHAT_TOOL_COMPACT_MIN_MESSAGES = 120
 const CHAT_TOOL_COMPACT_MIN_TOOL_MESSAGES = 32
 const CHAT_TOOL_COMPACT_ITEM_FIXED_HEIGHT = 72
@@ -2945,10 +3004,19 @@ const agentOptions = computed(() => {
 })
 
 const promptOptions = computed(() => {
-  const localOptions = (prompts.value || []).map((p) => ({
-    label: p.name || p._id,
-    value: makeLocalPromptOptionValue(p._id)
-  }))
+  const localSystemOptions = (prompts.value || [])
+    .filter((p) => isSystemPrompt(p))
+    .map((p) => ({
+      label: p.name || p._id,
+      value: makeLocalPromptOptionValue(p._id)
+    }))
+
+  const localUserOptions = (prompts.value || [])
+    .filter((p) => isUserPrompt(p))
+    .map((p) => ({
+      label: p.name || p._id,
+      value: makeLocalPromptOptionValue(p._id)
+    }))
 
   const mcpOptions = (mcpPromptCatalog.value || []).map((item) => ({
     label: item.label,
@@ -2957,13 +3025,19 @@ const promptOptions = computed(() => {
   }))
 
   const groups = []
-  if (localOptions.length) groups.push({ type: 'group', label: '本地提示词（系统提示词）', key: 'local-prompts', children: localOptions })
+  if (localSystemOptions.length) groups.push({ type: 'group', label: '本地提示词（系统提示词）', key: 'local-system-prompts', children: localSystemOptions })
+  if (localUserOptions.length) groups.push({ type: 'group', label: '本地提示词（插入输入框）', key: 'local-user-prompts', children: localUserOptions })
   if (mcpOptions.length) groups.push({ type: 'group', label: 'MCP 提示词（插入输入框）', key: 'mcp-prompts', children: mcpOptions })
-  return groups.length ? groups : localOptions
+  return groups.length ? groups : localSystemOptions
 })
 
 const selectedPromptModalParsedValue = computed(() => parsePromptOptionValue(promptModalSelectedId.value))
 const selectedPromptModalKind = computed(() => selectedPromptModalParsedValue.value.type)
+const selectedLocalPromptForModal = computed(() => {
+  const parsed = selectedPromptModalParsedValue.value
+  if (parsed.type !== 'local') return null
+  return (prompts.value || []).find((item) => item && item._id === parsed.promptId) || null
+})
 const selectedMcpPromptForModal = computed(() => {
   const parsed = selectedPromptModalParsedValue.value
   if (parsed.type !== 'mcp') return null
@@ -2974,6 +3048,11 @@ const selectedMcpPromptArgs = computed(() => {
   if (!Array.isArray(args)) return []
   return args
 })
+const selectedLocalPromptVariables = computed(() => {
+  const prompt = selectedLocalPromptForModal.value
+  if (!prompt || !isUserPrompt(prompt)) return []
+  return extractPromptVariables(prompt.content)
+})
 
 watch(
   selectedMcpPromptArgs,
@@ -2981,6 +3060,25 @@ watch(
     resetMcpArgFormData(args, promptMcpArgsForm)
   },
   { deep: true }
+)
+
+watch(
+  selectedLocalPromptVariables,
+  (args) => {
+    resetPromptVariableFormData(args, promptUserArgsForm)
+  },
+  { deep: true }
+)
+
+watch(
+  [prompts, basePromptMode, selectedPromptId],
+  () => {
+    if (basePromptMode.value !== 'prompt') return
+    const prompt = findLocalPromptById(selectedPromptId.value)
+    if (prompt && isSystemPrompt(prompt)) return
+    applyBasePromptSelection(null)
+  },
+  { flush: 'post' }
 )
 
 const skillOptions = computed(() => {
@@ -3101,7 +3199,11 @@ const inlineCommandSuggestions = computed(() => {
         if (!id) return null
         const label = String(prompt?.name || prompt?._id || '').trim()
         const description = truncateInlineText(prompt?.content, 72)
-        const selected = selectedPromptId.value === id
+        const isSystem = isSystemPrompt(prompt)
+        const selected = isSystem && hasActiveBasePromptSelection({
+          basePromptMode: basePromptMode.value,
+          selectedPromptId: selectedPromptId.value
+        }) && selectedPromptId.value === id
         const score = query
           ? getInlinePickerMatchScore([label, id, description], query)
           : selected ? -1 : 10
@@ -3111,9 +3213,9 @@ const inlineCommandSuggestions = computed(() => {
           id,
           label: label || id,
           description,
-          meta: '本地',
+          meta: isSystem ? '本地 · 系统' : '本地 · 用户',
           selected,
-          selectedTag: '当前',
+          selectedTag: isSystem ? '当前' : '',
           score
         }
       })
@@ -3622,6 +3724,12 @@ function findMcpPromptCatalogItem(serverId, promptName) {
   return (mcpPromptCatalog.value || []).find((item) => item?.serverId === sid && item?.name === name) || null
 }
 
+function findLocalPromptById(promptId) {
+  const id = String(promptId || '').trim()
+  if (!id) return null
+  return (prompts.value || []).find((item) => item && item._id === id) || null
+}
+
 const selectedAgentHoverText = computed(() => {
   const agent = selectedAgent.value
   if (!agent) return '未选择智能体'
@@ -3731,14 +3839,21 @@ watch(
 const activePromptLabel = computed(() => {
   if (basePromptMode.value === 'custom') return customSystemPrompt.value ? '临时' : ''
   if (!selectedPromptId.value) return ''
-  const p = (prompts.value || []).find((x) => x._id === selectedPromptId.value)
+  const p = findLocalPromptById(selectedPromptId.value)
+  if (!p || !isSystemPrompt(p)) return ''
   return p?.name || p?._id || 'Prompt'
 })
+
+const hasSelectedSystemPrompt = computed(() => hasActiveBasePromptSelection({
+  basePromptMode: basePromptMode.value,
+  selectedPromptId: selectedPromptId.value
+}) && !!activePromptLabel.value)
 
 const basePromptText = computed(() => {
   if (basePromptMode.value === 'custom') return String(customSystemPrompt.value || '').trim()
   if (!selectedPromptId.value) return ''
-  const p = (prompts.value || []).find((x) => x._id === selectedPromptId.value)
+  const p = findLocalPromptById(selectedPromptId.value)
+  if (!p || !isSystemPrompt(p)) return ''
   return String(p?.content || '').trim()
 })
 
@@ -3979,7 +4094,7 @@ function buildCombinedSystemContent(memorySystemContent = '', options = {}) {
 }
 
 function shouldIncludeSystemPromptForMediaGeneration() {
-  if (basePromptMode.value === 'prompt') return !!selectedPromptId.value
+  if (basePromptMode.value === 'prompt') return hasSelectedSystemPrompt.value
   return customSystemPromptExplicit.value && !!normalizePromptText(customSystemPrompt.value)
 }
 
@@ -4065,6 +4180,7 @@ const systemButtonText = computed(() => {
     return '系统：临时'
   }
   if (!selectedPromptId.value) return '系统：无'
+  if (!activePromptLabel.value) return '系统：无'
   return `提示词：${activePromptLabel.value}`
 })
 
@@ -4086,7 +4202,8 @@ const basePromptSourceText = computed(() => {
     return '临时自定义'
   }
   if (!selectedPromptId.value) return '无'
-  const p = (prompts.value || []).find((x) => x._id === selectedPromptId.value)
+  const p = findLocalPromptById(selectedPromptId.value)
+  if (!p || !isSystemPrompt(p)) return '无'
   return `提示词：${p?.name || p?._id || selectedPromptId.value}`
 })
 
@@ -5589,7 +5706,7 @@ function buildToolExecutionMessageContent(options = {}) {
   return lines.join('\n').trim()
 }
 
-function createPendingToolExecutionMessage({ serverName = '', toolName = '', argsText = '{}', autoApproved = false, traceStreamId = '', argsObj = null } = {}) {
+function createPendingToolExecutionMessage({ serverName = '', toolName = '', argsText = '{}', autoApproved = false, traceStreamId = '', argsObj = null, toolCallId = '' } = {}) {
   const targetAgentLabel = isAgentRunToolName(toolName)
     ? String(argsObj?.agent_name || argsObj?.agent_id || argsObj?.name || argsObj?.id || '').trim()
     : ''
@@ -5611,11 +5728,20 @@ function createPendingToolExecutionMessage({ serverName = '', toolName = '', arg
       toolName: String(toolName || '').trim(),
       toolArgsText: String(argsText || '').trim() || '{}',
       toolAutoApproved: !!autoApproved,
+      toolCallId: String(toolCallId || '').trim(),
       toolSubMeta: targetAgentLabel ? `智能体：${targetAgentLabel}` : '',
       toolTraceStreamId: String(traceStreamId || '').trim(),
       toolLiveTrace: []
     }
   )
+}
+
+function createToolExecutionResultMessage(content = '', extra = {}, toolCallId = '') {
+  const normalizedExtra = extra && typeof extra === 'object' ? { ...extra } : {}
+  if (!String(normalizedExtra.toolCallId || '').trim() && toolCallId) {
+    normalizedExtra.toolCallId = String(toolCallId || '').trim()
+  }
+  return createDisplayMessage('tool', content, normalizedExtra)
 }
 
 function buildToolExecutionResultSubMeta(result) {
@@ -5702,6 +5828,10 @@ function canCoalesceToolResultIntoPending(pending, result) {
   if (!pending || !result) return false
   if (!isToolMessage(pending) || String(result.role || '').trim() !== 'tool') return false
   if (getToolMessageStatus(pending) !== 'running') return false
+
+  const pendingCallId = String(pending.toolCallId || '').trim()
+  const resultCallId = String(result.toolCallId || '').trim()
+  if (pendingCallId || resultCallId) return pendingCallId && resultCallId && pendingCallId === resultCallId
 
   const pendingMeta = String(pending.toolMeta || '').trim()
   const resultMeta = String(result.toolMeta || '').trim()
@@ -6310,9 +6440,10 @@ function toggleAttachmentsExpanded(msg) {
 }
 
 const autoScrollEnabled = ref(true)
+const autoScrollSuspendedByUser = ref(false)
 const isAtBottom = ref(true)
 const SCROLL_BOTTOM_THRESHOLD_PX = 12
-const SCROLL_AUTO_DISABLE_DISTANCE_PX = 100
+const SCROLL_AUTO_DISABLE_DISTANCE_PX = 160
 
 const chatScrollEl = ref(null)
 const chatListRef = ref(null)
@@ -6347,6 +6478,8 @@ let pendingChatScrollCompensationRafId = 0
 let lastProcessedChatScrollTop = 0
 let didProcessChatScroll = false
 let lastActiveUserChatScrollAt = 0
+let programmaticChatScrollUntil = 0
+let sessionResetPromise = null
 
 function estimateChatMessageHeight(msg) {
   if (isFixedCompactToolMessage(msg)) return CHAT_TOOL_COMPACT_ITEM_FIXED_HEIGHT
@@ -6737,15 +6870,24 @@ function shouldFollowStreamingScroll(options = {}) {
   const allowNearBottom = options.allowNearBottom !== false
   const el = chatScrollEl.value || resolveScrollbarContainerEl()
   if (!el) return false
+  if (autoScrollSuspendedByUser.value || !autoScrollEnabled.value) return false
   const distanceFromBottom = getDistanceFromBottom(el)
   const nearBottom = distanceFromBottom <= SCROLL_AUTO_DISABLE_DISTANCE_PX
   if (!nearBottom) {
-    if (autoScrollEnabled.value) autoScrollEnabled.value = false
-    return false
+    const recentUserScroll = (
+      lastActiveUserChatScrollAt > 0 &&
+      (Date.now() - lastActiveUserChatScrollAt) <= CHAT_SCROLL_COMPENSATION_SUSPEND_MS &&
+      Date.now() > programmaticChatScrollUntil
+    )
+    if (recentUserScroll) return false
   }
-  if (!autoScrollEnabled.value) return false
   if (!allowNearBottom) return distanceFromBottom <= SCROLL_BOTTOM_THRESHOLD_PX
   return true
+}
+
+function markProgrammaticChatScroll(durationMs = CHAT_SCROLL_COMPENSATION_SUSPEND_MS) {
+  const duration = Math.max(120, Number(durationMs) || 0)
+  programmaticChatScrollUntil = Date.now() + duration
 }
 
 function maybeScheduleStreamingScroll(options = {}) {
@@ -7008,6 +7150,7 @@ function queueChatScrollCompensation(deltaPx) {
     const el = chatScrollEl.value || resolveScrollbarContainerEl()
     if (!el) return
     const nextTop = Math.max(0, Number(el.scrollTop || 0) + totalDelta)
+    markProgrammaticChatScroll()
     el.scrollTop = nextTop
     updateAtBottomState(el)
   })
@@ -7023,6 +7166,7 @@ function clearQueuedChatScrollCompensation() {
 
 function shouldApplyChatScrollCompensation() {
   if (isAtBottom.value) return false
+  if (autoScrollSuspendedByUser.value) return false
   const el = chatScrollEl.value || resolveScrollbarContainerEl()
   const distanceFromBottom = el ? getDistanceFromBottom(el) : Number(chatScrollDistanceFromBottom.value || 0)
   if (sending.value && distanceFromBottom > SCROLL_AUTO_DISABLE_DISTANCE_PX) return false
@@ -7509,12 +7653,32 @@ function toggleSessionSider() {
 }
 
 function activateAutoScroll() {
+  autoScrollSuspendedByUser.value = false
   autoScrollEnabled.value = true
   scrollToBottom({ force: true })
 }
 
 function handleChatScroll(e) {
-  queueProcessChatScroll(resolveScrollbarContainerEl() || e?.target)
+  const targetEl = resolveScrollbarContainerEl() || e?.target
+  const currentTop = Number(targetEl?.scrollTop || 0)
+  const previousTop = didProcessChatScroll ? lastProcessedChatScrollTop : Number(chatScrollTop.value || 0)
+  const isProgrammaticScroll = Date.now() <= programmaticChatScrollUntil
+  if (!isProgrammaticScroll && Math.abs(currentTop - previousTop) > 1) lastActiveUserChatScrollAt = Date.now()
+  if (!isProgrammaticScroll && currentTop + 1 < previousTop) {
+    autoScrollSuspendedByUser.value = true
+    autoScrollEnabled.value = false
+  }
+  queueProcessChatScroll(targetEl)
+}
+
+function handleChatWheel(e) {
+  const deltaY = Number(e?.deltaY || 0)
+  if (!deltaY) return
+  lastActiveUserChatScrollAt = Date.now()
+  if (deltaY < 0) {
+    autoScrollSuspendedByUser.value = true
+    autoScrollEnabled.value = false
+  }
 }
 
 let pendingChatScrollEl = null
@@ -7532,22 +7696,23 @@ function processChatScroll(elMaybe) {
   const { distanceFromBottom, atBottom } = updateAtBottomState(el)
   primeHydratedRenderedChatMessages()
   const nextScrollTop = Number(chatScrollTop.value || 0)
+  const isProgrammaticScroll = Date.now() <= programmaticChatScrollUntil
   const isUserScrollingUp = didProcessChatScroll && (nextScrollTop + 1 < prevScrollTop)
   const isUserScrollingDown = didProcessChatScroll && (nextScrollTop > prevScrollTop + 1)
-  if (isUserScrollingUp || isUserScrollingDown) lastActiveUserChatScrollAt = Date.now()
+  if (!isProgrammaticScroll && (isUserScrollingUp || isUserScrollingDown)) lastActiveUserChatScrollAt = Date.now()
   lastProcessedChatScrollTop = nextScrollTop
   didProcessChatScroll = true
 
-  if (atBottom) {
-    const wasDisabled = !autoScrollEnabled.value
+  if (!isProgrammaticScroll && isUserScrollingUp) {
+    autoScrollSuspendedByUser.value = true
+    autoScrollEnabled.value = false
+  } else if (atBottom) {
+    const wasDisabled = !autoScrollEnabled.value || autoScrollSuspendedByUser.value
+    autoScrollSuspendedByUser.value = false
     autoScrollEnabled.value = true
     if (wasDisabled) scrollToBottom({ force: true })
-  } else if (autoScrollEnabled.value) {
-    if (isUserScrollingUp || distanceFromBottom > SCROLL_AUTO_DISABLE_DISTANCE_PX) autoScrollEnabled.value = false
-  } else if (sending.value && distanceFromBottom <= SCROLL_AUTO_DISABLE_DISTANCE_PX && isUserScrollingDown) {
-    // 用户从上方滚回接近底部时，如果模型仍在回复，则恢复自动滚动
-    autoScrollEnabled.value = true
-    scrollToBottom({ force: true })
+  } else if (!isProgrammaticScroll && autoScrollEnabled.value && distanceFromBottom > SCROLL_AUTO_DISABLE_DISTANCE_PX) {
+    autoScrollEnabled.value = false
   }
 
   updateActiveAnchorFromScroll(el)
@@ -7579,6 +7744,7 @@ function clearQueuedChatScrollProcessing() {
   lastProcessedChatScrollTop = 0
   didProcessChatScroll = false
   lastActiveUserChatScrollAt = 0
+  programmaticChatScrollUntil = 0
 }
 
 async function scrollToBottom(options = {}) {
@@ -7592,19 +7758,13 @@ async function scrollToBottom(options = {}) {
     const force = scrollToBottomForcePending
     scrollToBottomForcePending = false
 
-    if (!force && !autoScrollEnabled.value) {
-      // 只要在阈值内，模型回复时就自动滚到底部
-      const el = chatScrollEl.value || resolveScrollbarContainerEl()
-      if (!sending.value || !el) return
-      const distanceFromBottom = getDistanceFromBottom(el)
-      if (distanceFromBottom > SCROLL_AUTO_DISABLE_DISTANCE_PX) return
-      autoScrollEnabled.value = true
-    }
+    if (!force && (!autoScrollEnabled.value || autoScrollSuspendedByUser.value)) return
 
     const el = chatScrollEl.value || resolveScrollbarContainerEl()
     if (!el) return
 
     const nextTop = Math.max(0, el.scrollHeight - el.clientHeight)
+    markProgrammaticChatScroll()
     try {
       el.scrollTo({ top: nextTop, behavior: 'auto' })
     } catch {
@@ -7850,6 +8010,11 @@ function deepCopyJson(value, fallback) {
   }
 }
 
+function parseIsoTimeMs(value, fallback = 0) {
+  const ms = Date.parse(String(value || ''))
+  return Number.isFinite(ms) && ms > 0 ? ms : fallback
+}
+
 function buildDefaultSessionName(sessionLike = session) {
   const firstUser = (sessionLike?.messages || []).find((msg) => msg?.role === 'user')
   const prompt = extractEditableUserTextFromContent(firstUser?.content ?? '')
@@ -7966,7 +8131,10 @@ async function autoPersistMemorySession(record, options = {}) {
         activeSessionTitle.value = allocated.title
         void sessionTreeRef.value?.selectPath?.(allocated.filePath)
       }
-      void sessionTreeRef.value?.touchPath?.(allocated.filePath, { label: allocated.title })
+      void sessionTreeRef.value?.touchPath?.(allocated.filePath, {
+        label: allocated.title,
+        createdTimeMs: Number(record.createdAt || 0) || Date.now()
+      })
       pruneDormantMemorySessions()
       return allocated.filePath
     } catch (err) {
@@ -8247,14 +8415,22 @@ function serializeDisplayMessageForSave(msg) {
 
 function buildCurrentChatState() {
   const activeRecord = getActiveMemorySession()
+  const normalizedBasePromptState = basePromptMode.value === 'prompt'
+    ? {
+        basePromptMode: 'prompt',
+        selectedPromptId: selectedPromptId.value,
+        customSystemPrompt: '',
+        customSystemPromptExplicit: false
+      }
+    : buildCustomSystemPromptState(customSystemPrompt.value, customSystemPromptExplicit.value)
   return {
     selectedAgentId: selectedAgentId.value,
     selectedProviderId: selectedProviderId.value,
     selectedModel: selectedModel.value,
-    basePromptMode: basePromptMode.value,
-    selectedPromptId: selectedPromptId.value,
-    customSystemPrompt: customSystemPrompt.value,
-    customSystemPromptExplicit: customSystemPromptExplicit.value,
+    basePromptMode: normalizedBasePromptState.basePromptMode,
+    selectedPromptId: normalizedBasePromptState.selectedPromptId,
+    customSystemPrompt: normalizedBasePromptState.customSystemPrompt,
+    customSystemPromptExplicit: normalizedBasePromptState.customSystemPromptExplicit,
     selectedSkillIds: deepCopyJson(selectedSkillIds.value, []),
     agentSkillIds: deepCopyJson(agentSkillIds.value, []),
     activatedAgentSkillIds: deepCopyJson(activatedAgentSkillIds.value, []),
@@ -8278,14 +8454,15 @@ function buildCurrentChatState() {
 function buildDefaultChatState() {
   const rawDefaultSystemPrompt = String(chatConfig.value?.defaultSystemPrompt || '')
   const defaultModel = resolveDefaultModelSelectionFromConfig()
+  const defaultPromptState = buildCustomSystemPromptState(rawDefaultSystemPrompt, false)
   return {
     selectedAgentId: null,
     selectedProviderId: defaultModel.providerId || null,
     selectedModel: defaultModel.model || '',
-    basePromptMode: 'custom',
-    selectedPromptId: null,
-    customSystemPrompt: rawDefaultSystemPrompt,
-    customSystemPromptExplicit: false,
+    basePromptMode: defaultPromptState.basePromptMode,
+    selectedPromptId: defaultPromptState.selectedPromptId,
+    customSystemPrompt: defaultPromptState.customSystemPrompt,
+    customSystemPromptExplicit: defaultPromptState.customSystemPromptExplicit,
     selectedSkillIds: [],
     agentSkillIds: [],
     activatedAgentSkillIds: [],
@@ -8303,6 +8480,10 @@ function buildDefaultChatState() {
     videoGenerationParamsEnabled: false,
     videoGenerationParams: createDefaultVideoGenerationParams()
   }
+}
+
+function buildHydratedChatState(state) {
+  return buildMergedChatState(buildDefaultChatState(), state)
 }
 
 function applyDefaultChatState() {
@@ -8383,10 +8564,16 @@ async function persistMemorySessionToBoundPath(record, options = {}) {
   if (!filePath || isAutoChatSessionPath(filePath)) return ''
 
   try {
+    const stateSnapshot =
+      options.state && typeof options.state === 'object'
+        ? deepCopyJson(options.state, {})
+        : record.state && typeof record.state === 'object'
+          ? deepCopyJson(record.state, {})
+          : buildCurrentChatState()
     await prepareSessionMediaAssetsForSave(record, { notify: options.notify, sessionFilePath: filePath })
     const payload = buildSessionSavePayload({
       sessionLike: record,
-      state: record.state && typeof record.state === 'object' ? record.state : buildCurrentChatState()
+      state: stateSnapshot
     })
     let previousPayload = null
     try {
@@ -8407,7 +8594,10 @@ async function persistMemorySessionToBoundPath(record, options = {}) {
 
     await writeFile(filePath, JSON.stringify(payload, null, 2))
     record.updatedAt = Date.now()
-    void sessionTreeRef.value?.touchPath?.(filePath, { label: title })
+    void sessionTreeRef.value?.touchPath?.(filePath, {
+      label: title,
+      createdTimeMs: Number(record.createdAt || 0) || Date.now()
+    })
     return filePath
   } catch (err) {
     if (options.notify !== false) message.error('自动保存失败：' + (err?.message || String(err)))
@@ -8526,6 +8716,7 @@ function resetChatRuntimeState() {
   userAnchorMeta.value = []
   activeAnchorId.value = null
   autoScrollEnabled.value = true
+  autoScrollSuspendedByUser.value = false
   input.value = ''
   pendingAttachments.value = []
   abortController.value = null
@@ -8547,6 +8738,29 @@ function resetChatRuntimeState() {
   record.state = applyDefaultChatState()
   record.updatedAt = Date.now()
   syncActiveRequestUiState(record)
+}
+
+async function waitForMemorySessionChatIdle(record, options = {}) {
+  const target = record || getActiveMemorySession()
+  const timeoutMs = Math.max(0, Number(options.timeoutMs) || 1200)
+  const startedAt = Date.now()
+  while (target && isMemorySessionChatRunning(target)) {
+    if ((Date.now() - startedAt) >= timeoutMs) return false
+    await nextTick()
+    await waitForLayoutFrame()
+    await new Promise((resolve) => window.setTimeout(resolve, 24))
+  }
+  return !target || !isMemorySessionChatRunning(target)
+}
+
+async function runExclusiveSessionReset(task) {
+  if (sessionResetPromise) return sessionResetPromise
+  sessionResetPromise = Promise.resolve()
+    .then(() => task())
+    .finally(() => {
+      sessionResetPromise = null
+    })
+  return sessionResetPromise
 }
 
 function hasUncommittedChatDraft(targetPath = '') {
@@ -8590,13 +8804,16 @@ async function confirmSwitchSessionWithDraft(targetPath = '') {
   })
 }
 
-async function clearSession() {
-  if (sending.value) return
+async function clearSessionImpl() {
+  const record = getActiveMemorySession()
+  const chatIdle = await waitForMemorySessionChatIdle(record)
+  if (!chatIdle) {
+    message.warning('刚结束生成，正在整理最后内容，请稍后再试')
+    return
+  }
 
   const hasContent = (session.messages && session.messages.length) || (session.apiMessages && session.apiMessages.length)
-  if (!hasContent) return
-
-  const record = getActiveMemorySession()
+  saveActiveMemorySessionDraft()
   if (Number(record?.runningTaskCount || 0) > 0) {
     await detachRunningSessionToHistory({ notify: false })
     message.info('当前会话仍有后台任务，已转入后台并新建会话')
@@ -8605,14 +8822,29 @@ async function clearSession() {
 
   const boundPath = String(activeSessionFilePath.value || '').trim()
   if (boundPath) {
-    await closeActiveSession()
+    await closeActiveSessionImpl({ skipIdleCheck: true })
     return
   }
 
-  await flushMemoryCandidatesForRecord(record, { force: true })
+  if (!hasContent) {
+    resetChatSetupUiState()
+    message.success('已重置为初始状态')
+    return
+  }
+
+  flushMemoryCandidatesInBackground(record, {
+    force: true,
+    systemPrompt: buildCombinedSystemContent('', { sessionRecord: record })
+  })
+  resetChatSetupUiState()
   resetChatRuntimeState()
   await nextTick()
   scheduleRefreshUserAnchorMeta()
+  message.success('已清空当前会话')
+}
+
+async function clearSession() {
+  return runExclusiveSessionReset(clearSessionImpl)
 }
 
 async function openSaveSessionModal() {
@@ -8730,13 +8962,15 @@ async function handleSessionPathDeleted(deletedPath, deletedSessionPayloads = []
   }
 }
 
-async function closeActiveSession() {
-  if (sending.value) {
-    message.warning('正在生成中，无法关闭会话绑定')
-    return
-  }
-
+async function closeActiveSessionImpl(options = {}) {
   const record = getActiveMemorySession()
+  if (!options.skipIdleCheck) {
+    const chatIdle = await waitForMemorySessionChatIdle(record)
+    if (!chatIdle) {
+      message.warning('刚结束生成，正在整理最后内容，请稍后再试')
+      return
+    }
+  }
   if (Number(record?.runningTaskCount || 0) > 0) {
     await detachRunningSessionToHistory({ notify: false })
     message.info('当前会话仍有后台任务，已转入后台并新建会话')
@@ -8746,11 +8980,14 @@ async function closeActiveSession() {
   const boundPath = String(activeSessionFilePath.value || '').trim()
   if (!boundPath) return
 
-  await flushMemoryCandidatesForRecord(record, { force: true })
-  try {
-    await runSessionAutosave()
-  } catch {
-    // ignore
+  const snapshot = {
+    ...record,
+    messages: Array.isArray(record.messages) ? [...record.messages] : [],
+    apiMessages: Array.isArray(record.apiMessages) ? deepCopyJson(record.apiMessages, []) : [],
+    pendingAttachments: Array.isArray(record.pendingAttachments) ? [...record.pendingAttachments] : [],
+    memoryCandidates: normalizeMemoryCandidateQueue(record.memoryCandidates),
+    contextSummary: deepCopyJson(record.contextSummary || {}, {}),
+    state: buildCurrentChatState()
   }
 
   unbindSessionAutosave({ silent: true })
@@ -8764,7 +9001,20 @@ async function closeActiveSession() {
   await nextTick()
   scheduleRefreshUserAnchorMeta()
 
+  void (async () => {
+    await flushMemoryCandidatesForRecord(snapshot, { force: true })
+    try {
+      await persistMemorySessionToBoundPath(snapshot, { notify: false, state: snapshot.state })
+    } catch {
+      // ignore
+    }
+  })()
+
   message.info('已关闭会话绑定并清空当前会话')
+}
+
+async function closeActiveSession(options = {}) {
+  return runExclusiveSessionReset(() => closeActiveSessionImpl(options))
 }
 
 function isLikelyMarkdownContent(content) {
@@ -8887,57 +9137,69 @@ function normalizeLoadedDisplayMessages(messages) {
 
 function applyLoadedChatState(state) {
   if (!state || typeof state !== 'object') return
+  const hydratedState = buildHydratedChatState(state)
 
-  if ('selectedAgentId' in state) selectedAgentId.value = state.selectedAgentId || null
-  if ('selectedProviderId' in state) selectedProviderId.value = state.selectedProviderId || null
-  if ('selectedModel' in state) selectedModel.value = String(state.selectedModel || '').trim()
+  selectedAgentId.value = hydratedState.selectedAgentId || null
+  selectedProviderId.value = hydratedState.selectedProviderId || null
+  selectedModel.value = String(hydratedState.selectedModel || '').trim()
 
-  if ('basePromptMode' in state) {
-    const mode = String(state.basePromptMode || '').trim()
-    basePromptMode.value = mode === 'prompt' ? 'prompt' : 'custom'
+  const promptModeCandidate = String(hydratedState.basePromptMode || '').trim()
+  if (promptModeCandidate === 'prompt') {
+    const prompt = findLocalPromptById(hydratedState.selectedPromptId || null)
+    if (prompt && isSystemPrompt(prompt)) {
+      const nextState = buildBasePromptSelectionState(prompt._id, getDefaultSystemPromptText())
+      basePromptMode.value = nextState.basePromptMode
+      selectedPromptId.value = nextState.selectedPromptId
+      customSystemPrompt.value = nextState.customSystemPrompt
+      customSystemPromptExplicit.value = false
+    } else {
+      applyBasePromptSelection(null)
+    }
+  } else {
+    const nextState = buildCustomSystemPromptState(
+      String(hydratedState.customSystemPrompt || ''),
+      hydratedState.customSystemPromptExplicit === true
+    )
+    basePromptMode.value = nextState.basePromptMode
+    selectedPromptId.value = nextState.selectedPromptId
+    customSystemPrompt.value = nextState.customSystemPrompt
+    customSystemPromptExplicit.value = nextState.customSystemPromptExplicit
   }
 
-  if ('selectedPromptId' in state) selectedPromptId.value = state.selectedPromptId || null
-  if ('customSystemPrompt' in state) customSystemPrompt.value = String(state.customSystemPrompt || '')
-  customSystemPromptExplicit.value = state.customSystemPromptExplicit === true
-  if (basePromptMode.value === 'prompt' && !selectedPromptId.value) {
-    applyBasePromptSelection(null)
-  }
+  if (Array.isArray(hydratedState.selectedSkillIds)) selectedSkillIds.value = normalizeStringList(hydratedState.selectedSkillIds)
+  if (Array.isArray(hydratedState.agentSkillIds)) agentSkillIds.value = normalizeStringList(hydratedState.agentSkillIds)
+  if (Array.isArray(hydratedState.activatedAgentSkillIds)) activatedAgentSkillIds.value = normalizeStringList(hydratedState.activatedAgentSkillIds)
+  if (Array.isArray(hydratedState.manualMcpIds)) manualMcpIds.value = normalizeStringList(hydratedState.manualMcpIds)
 
-  if (Array.isArray(state.selectedSkillIds)) selectedSkillIds.value = normalizeStringList(state.selectedSkillIds)
-  if (Array.isArray(state.agentSkillIds)) agentSkillIds.value = normalizeStringList(state.agentSkillIds)
-  if (Array.isArray(state.activatedAgentSkillIds)) activatedAgentSkillIds.value = normalizeStringList(state.activatedAgentSkillIds)
-  if (Array.isArray(state.manualMcpIds)) manualMcpIds.value = normalizeStringList(state.manualMcpIds)
+  if (typeof hydratedState.webSearchEnabled === 'boolean') webSearchEnabled.value = hydratedState.webSearchEnabled
+  if (typeof hydratedState.autoApproveTools === 'boolean') autoApproveTools.value = hydratedState.autoApproveTools
+  if (typeof hydratedState.autoActivateAgentSkills === 'boolean') autoActivateAgentSkills.value = hydratedState.autoActivateAgentSkills
 
-  if (typeof state.webSearchEnabled === 'boolean') webSearchEnabled.value = state.webSearchEnabled
-  if (typeof state.autoApproveTools === 'boolean') autoApproveTools.value = state.autoApproveTools
-  if (typeof state.autoActivateAgentSkills === 'boolean') autoActivateAgentSkills.value = state.autoActivateAgentSkills
-
-  const toolModeCandidate = String(state.toolMode || '').trim()
+  const toolModeCandidate = String(hydratedState.toolMode || '').trim()
   if (toolModeCandidate === 'auto' || toolModeCandidate === 'expanded' || toolModeCandidate === 'compact') {
     toolMode.value = toolModeCandidate
   }
 
-  const effectiveModeCandidate = String(state.effectiveToolMode || '').trim()
+  const effectiveModeCandidate = String(hydratedState.effectiveToolMode || '').trim()
   if (effectiveModeCandidate === 'expanded' || effectiveModeCandidate === 'compact') {
     effectiveToolMode.value = effectiveModeCandidate
   }
 
-  const effort = String(state.thinkingEffort || '').trim()
+  const effort = String(hydratedState.thinkingEffort || '').trim()
   if (effort === 'auto' || effort === 'low' || effort === 'medium' || effort === 'high') {
     thinkingEffort.value = effort
   }
 
-  imageGenerationMode.value = normalizeImageGenerationMode(state.imageGenerationMode)
-  videoGenerationMode.value = normalizeImageGenerationMode(state.videoGenerationMode)
-  setImageGenerationParamsEnabled(state.imageGenerationParamsEnabled === true)
-  assignImageGenerationParams(state.imageGenerationParams || createDefaultImageGenerationParams())
-  setVideoGenerationParamsEnabled(state.videoGenerationParamsEnabled === true)
-  assignVideoGenerationParams(state.videoGenerationParams || createDefaultVideoGenerationParams())
+  imageGenerationMode.value = normalizeImageGenerationMode(hydratedState.imageGenerationMode)
+  videoGenerationMode.value = normalizeImageGenerationMode(hydratedState.videoGenerationMode)
+  setImageGenerationParamsEnabled(hydratedState.imageGenerationParamsEnabled === true)
+  assignImageGenerationParams(hydratedState.imageGenerationParams || createDefaultImageGenerationParams())
+  setVideoGenerationParamsEnabled(hydratedState.videoGenerationParamsEnabled === true)
+  assignVideoGenerationParams(hydratedState.videoGenerationParams || createDefaultVideoGenerationParams())
   const activeRecord = getActiveMemorySession()
   if (activeRecord) {
-    activeRecord.contextSummary = state.contextSummary && typeof state.contextSummary === 'object'
-      ? deepCopyJson(state.contextSummary, {})
+    activeRecord.contextSummary = hydratedState.contextSummary && typeof hydratedState.contextSummary === 'object'
+      ? deepCopyJson(hydratedState.contextSummary, {})
       : createEmptyContextSummaryState()
   }
 }
@@ -9011,7 +9273,14 @@ async function loadSessionFromFile(filePath) {
     }
 
     const data = parsed.value
-    const state = data?.state && typeof data.state === 'object' ? data.state : null
+    const persistedState = data?.state && typeof data.state === 'object' ? data.state : null
+    const state = persistedState ? buildHydratedChatState(persistedState) : buildDefaultChatState()
+    const sessionCreatedAtMs =
+      parseIsoTimeMs(data?.source?.startedAt) ||
+      parseIsoTimeMs(data?.source?.createdAt) ||
+      parseIsoTimeMs(data?.createdAt) ||
+      parseIsoTimeMs(data?.savedAt) ||
+      Date.now()
 
     const displayMessages = Array.isArray(data?.session?.messages)
       ? data.session.messages
@@ -9061,6 +9330,7 @@ async function loadSessionFromFile(filePath) {
     if (!record) {
       record = createMemorySessionRecord({
         title: loadedTitle,
+        createdAt: sessionCreatedAtMs,
         messages: displaySafe,
         apiMessages: deepCopyJson(apiSafe, []),
         memoryCandidates,
@@ -9068,12 +9338,13 @@ async function loadSessionFromFile(filePath) {
         contextSummary,
         activeSessionFilePath: relPath,
         activeSessionTitle: loadedTitle,
-        state: state || null,
+        state,
         autoManaged: isAutoChatSessionPath(relPath)
       })
       memorySessions.value = [...memorySessions.value, record]
     } else {
       record.title = loadedTitle
+      record.createdAt = Number(record.createdAt || 0) || sessionCreatedAtMs
       record.messages = displaySafe
       record.apiMessages = deepCopyJson(apiSafe, [])
       record.input = ''
@@ -9083,7 +9354,7 @@ async function loadSessionFromFile(filePath) {
       record.contextSummary = contextSummary || createEmptyContextSummaryState()
       record.activeSessionFilePath = relPath
       record.activeSessionTitle = loadedTitle
-      record.state = state && typeof state === 'object' ? deepCopyJson(state, {}) : null
+      record.state = deepCopyJson(state, {})
       record.autoManaged = isAutoChatSessionPath(relPath)
       record.updatedAt = Date.now()
     }
@@ -9094,7 +9365,7 @@ async function loadSessionFromFile(filePath) {
     session.apiMessages = record.apiMessages
     input.value = ''
     pendingAttachments.value = []
-    if (state) applyLoadedChatState(state)
+    applyLoadedChatState(state)
     if (record.memoryCandidates?.length) {
       scheduleMemoryCandidateFlush(record, { delayMs: 3000 })
     } else {
@@ -9598,6 +9869,7 @@ async function runChatRounds({
   let imagesFallbackToText = false
   let compatFcToolCallId = isFcToolCallIdCompatEnabled(baseUrl)
   let plainTextToolFallback = false
+  let parallelToolCallsMode = 'enabled'
 
   for (let round = 0; round < maxRounds; round++) {
     throwIfAborted(abortState)
@@ -9650,7 +9922,13 @@ async function runChatRounds({
             }),
             plainTextToolFallback
           }),
-          ...(activeTools.length ? { tools: activeTools, tool_choice: 'auto' } : {}),
+          ...(activeTools.length
+            ? {
+                tools: activeTools,
+                tool_choice: 'auto',
+                ...(parallelToolCallsMode === 'enabled' ? { parallel_tool_calls: true } : {})
+              }
+            : {}),
           ...buildActiveRequestOverrides({ omitReasoningEffort })
         }
 
@@ -9689,6 +9967,11 @@ async function runChatRounds({
           continue
         }
 
+        if (parallelToolCallsMode === 'enabled' && shouldRetryWithoutParallelToolCalls(errText)) {
+          parallelToolCallsMode = 'disabled'
+          continue
+        }
+
         if (!plainTextToolFallback && hasToolStateMessages(targetSession.apiMessages) && shouldRetryToolContinuationAsPlainText(errText)) {
           plainTextToolFallback = true
           message.warning('当前端点的工具续跑接口临时不可用，已改为用纯文本工具结果继续回答。')
@@ -9696,8 +9979,7 @@ async function runChatRounds({
         }
 
         if (!forceReasoningContent) {
-          const lower = errText.toLowerCase()
-          if (lower.includes('reasoning_content') && lower.includes('missing')) {
+          if (shouldRetryWithReasoningContent(errText)) {
             // DeepSeek thinking_mode 下，后续请求里的 assistant 消息需要带上 reasoning_content
             forceReasoningContent = true
             continue
@@ -9789,9 +10071,16 @@ async function runChatRounds({
       break
     }
 
-    for (const toolCall of normalizedToolCalls) {
-      throwIfAborted(abortState)
-      const exec = await executeToolCall(toolCall, toolMap, lastReasoningText || String(result.reasoning || ''), abortState)
+    const toolExecResults = await executeToolCallsParallel(
+      normalizedToolCalls,
+      toolMap,
+      lastReasoningText || String(result.reasoning || ''),
+      abortState
+    )
+
+    for (let index = 0; index < normalizedToolCalls.length; index += 1) {
+      const toolCall = normalizedToolCalls[index]
+      const exec = toolExecResults[index]
       throwIfAborted(abortState)
       targetSession.apiMessages.push({
         role: 'tool',
@@ -12252,7 +12541,27 @@ async function applyInlineCommandSuggestion(item) {
       return
     }
 
-    applyBasePromptSelection(parsed.promptId || null)
+    const localPrompt = findLocalPromptById(parsed.promptId || null)
+    if (!localPrompt) {
+      message.warning('未找到该本地提示词，请刷新后重试')
+      removeInlineCommandToken()
+      return
+    }
+
+    if (isUserPrompt(localPrompt)) {
+      removeInlineCommandToken()
+      const variables = extractPromptVariables(localPrompt.content)
+      if (!variables.length) {
+        applyLocalPromptToComposer(localPrompt, {})
+        return
+      }
+      promptModalSelectedId.value = makeLocalPromptOptionValue(localPrompt._id)
+      resetPromptVariableFormData(variables, promptUserArgsForm)
+      showPromptModal.value = true
+      return
+    }
+
+    applyBasePromptSelection(localPrompt._id)
     removeInlineCommandToken()
     return
   }
@@ -12351,25 +12660,34 @@ function openSystemPromptModal() {
 }
 
 function applyCustomSystemPrompt() {
-  basePromptMode.value = 'custom'
-  customSystemPrompt.value = String(systemPromptDraft.value || '')
-  customSystemPromptExplicit.value = !!normalizePromptText(customSystemPrompt.value)
+  const selectedPrompt = findLocalPromptById(selectedPromptId.value)
+  const nextState = resolveSystemPromptModalApplyState(
+    {
+      basePromptMode: basePromptMode.value,
+      selectedPromptId: selectedPromptId.value,
+      customSystemPrompt: customSystemPrompt.value,
+      customSystemPromptExplicit: customSystemPromptExplicit.value
+    },
+    {
+      draftText: systemPromptDraft.value,
+      selectedPromptId: selectedPromptId.value,
+      selectedPromptContent: isSystemPrompt(selectedPrompt) ? String(selectedPrompt?.content || '') : ''
+    }
+  )
+  basePromptMode.value = nextState.basePromptMode
+  selectedPromptId.value = nextState.selectedPromptId
+  customSystemPrompt.value = nextState.customSystemPrompt
+  customSystemPromptExplicit.value = nextState.customSystemPromptExplicit
   showSystemPromptModal.value = false
 }
 
 function clearCustomSystemPrompt() {
-  basePromptMode.value = 'custom'
-  customSystemPrompt.value = ''
-  customSystemPromptExplicit.value = false
   systemPromptDraft.value = ''
 }
 
 function resetSystemPromptToSelectedPrompt() {
-  basePromptMode.value = 'prompt'
-  customSystemPrompt.value = ''
-  customSystemPromptExplicit.value = false
-  const p = (prompts.value || []).find((x) => x._id === selectedPromptId.value)
-  systemPromptDraft.value = String(p?.content || '')
+  const p = findLocalPromptById(selectedPromptId.value)
+  systemPromptDraft.value = isSystemPrompt(p) ? String(p?.content || '') : ''
 }
 
 function syncContextWindowDraft(raw = chatConfig.value?.contextWindow) {
@@ -12425,11 +12743,7 @@ function openAgentModal() {
   showAgentModal.value = true
 }
 
-async function resetChatSetup() {
-  if (String(activeSessionFilePath.value || '').trim()) {
-    await closeActiveSession()
-  }
-
+function resetChatSetupUiState() {
   clearInlinePickers()
 
   // 关闭弹窗
@@ -12491,7 +12805,25 @@ async function resetChatSetup() {
   selectedModel.value = ''
   hasAppliedDefaultModel.value = false
   tryApplyDefaultModelFromConfig({ force: true })
+}
 
+async function resetChatSetup() {
+  const record = getActiveMemorySession()
+  if (Number(record?.runningTaskCount || 0) > 0) {
+    await detachRunningSessionToHistory({ notify: false })
+    message.info('当前会话仍有后台任务，已转入后台并新建会话')
+    return
+  }
+
+  if (String(activeSessionFilePath.value || '').trim()) {
+    await closeActiveSession()
+    return
+  }
+
+  resetChatSetupUiState()
+  resetChatRuntimeState()
+  await nextTick()
+  scheduleRefreshUserAnchorMeta()
   message.success('已重置为初始状态')
 }
 
@@ -12526,14 +12858,27 @@ function applyAgentModal() {
 
 function openPromptModal() {
   clearInlinePickers()
-  promptModalSelectedId.value = selectedPromptId.value ? makeLocalPromptOptionValue(selectedPromptId.value) : null
+  promptModalSelectedId.value = hasActiveBasePromptSelection({
+    basePromptMode: basePromptMode.value,
+    selectedPromptId: selectedPromptId.value
+  })
+    ? makeLocalPromptOptionValue(selectedPromptId.value)
+    : null
+  resetPromptVariableFormData(selectedLocalPromptVariables.value, promptUserArgsForm)
   showPromptModal.value = true
   void ensureMcpPromptCatalogLoaded({ silent: true })
 }
 
 function clearSelectedPrompt() {
+  const parsedBeforeClear = selectedPromptModalParsedValue.value
   promptModalSelectedId.value = null
-  applyBasePromptSelection(null)
+  resetPromptVariableFormData([], promptUserArgsForm)
+  if (shouldClearBasePromptSelectionImmediately({
+    basePromptMode: basePromptMode.value,
+    selectedPromptId: selectedPromptId.value
+  }, parsedBeforeClear)) {
+    applyBasePromptSelection(null)
+  }
   showPromptModal.value = false
 }
 
@@ -12560,7 +12905,40 @@ async function applyPromptModal() {
     return
   }
 
-  applyBasePromptSelection(parsed.promptId || null)
+  const localPrompt = findLocalPromptById(parsed.promptId || null)
+  if (!localPrompt) {
+    if (
+      shouldClearBasePromptSelectionFromPromptModal(parsed, {
+        basePromptMode: basePromptMode.value,
+        selectedPromptId: selectedPromptId.value
+      }) ||
+      isPromptModalSelectionCurrentBasePrompt(parsed, {
+        basePromptMode: basePromptMode.value,
+        selectedPromptId: selectedPromptId.value
+      })
+    ) {
+      applyBasePromptSelection(null)
+    }
+    showPromptModal.value = false
+    return
+  }
+
+  if (isUserPrompt(localPrompt)) {
+    let values = {}
+    try {
+      values = buildLocalPromptArgsFromModal()
+    } catch (err) {
+      message.warning(err?.message || String(err))
+      return
+    }
+
+    const ok = applyLocalPromptToComposer(localPrompt, values)
+    if (!ok) return
+    showPromptModal.value = false
+    return
+  }
+
+  applyBasePromptSelection(localPrompt._id)
   showPromptModal.value = false
 }
 
@@ -12960,7 +13338,8 @@ async function prepareChatRequestContext({
   text = '',
   attachments = [],
   requestRecord = null,
-  includeMemoryRecall = true
+  includeMemoryRecall = true,
+  excludeLatestUserTurnFromMemoryRecall = false
 } = {}) {
   const safeText = String(text || '').trim()
   const safeAttachments = Array.isArray(attachments) ? attachments : []
@@ -12990,7 +13369,9 @@ async function prepareChatRequestContext({
       preparingSendStage.value = '正在召回记忆'
       attachmentRecallText = buildMemoryRecallQueryFromAttachments(safeAttachments)
       const memoryQueryText = [
-        buildMemoryRecallQueryFromRecord(targetRecord, safeText),
+        buildMemoryRecallQueryFromRecord(targetRecord, safeText, {
+          excludeLatestUserTurn: excludeLatestUserTurnFromMemoryRecall
+        }),
         attachmentRecallText
       ].filter(Boolean).join('\n\n')
       const recall = await buildMemoryInjection({
@@ -13269,12 +13650,6 @@ function buildRequestMessages(options = {}) {
     apiMessages = null,
     tools = []
   } = options || {}
-  const needsReasoningContent = shouldIncludeReasoningContent({
-    baseUrl,
-    model,
-    forceReasoningContent
-  })
-
   const msgs = []
   const mergedSystemContent = buildCombinedSystemContent(memorySystemContent, { sessionRecord })
   if (mergedSystemContent) msgs.push({ role: 'system', content: mergedSystemContent })
@@ -13285,6 +13660,12 @@ function buildRequestMessages(options = {}) {
         tools,
         contextSummary: sessionRecord?.contextSummary || null
       })
+  const needsReasoningContent = shouldIncludeReasoningContent({
+    baseUrl,
+    model,
+    forceReasoningContent,
+    apiMessages: sourceMessages
+  })
   let latestVisionUserIndex = -1
   for (let i = sourceMessages.length - 1; i >= 0; i -= 1) {
     const candidate = sourceMessages[i]
@@ -13323,6 +13704,7 @@ function buildRequestMessages(options = {}) {
 
       if (cloned.role === 'tool' && typeof cloned.tool_call_id === 'string' && cloned.tool_call_id.startsWith('call_')) {
         cloned.call_id = cloned.tool_call_id
+        cloned.tool_call_id = `fc_${cloned.tool_call_id.slice('call_'.length)}`
       }
     }
 
@@ -13349,7 +13731,7 @@ function buildRequestMessages(options = {}) {
     msgs.push(cloned)
   }
 
-  return msgs
+  return sanitizeRequestToolMessages(msgs, { compatToolCallIdAsFc })
 }
 
 function safeJsonParse(text) {
@@ -13664,6 +14046,10 @@ function buildMcpPromptArgsFromModal() {
   return undefined
 }
 
+function buildLocalPromptArgsFromModal() {
+  return buildPromptVariableValues(selectedLocalPromptVariables.value, promptUserArgsForm)
+}
+
 function stringifyPromptContentBlock(content) {
   if (content === undefined || content === null) return ''
   if (typeof content === 'string') return content
@@ -13723,6 +14109,11 @@ function insertTextIntoComposer(text) {
   focusComposerAt(before.length + prefix.length + insertion.length)
 }
 
+function formatLocalUserPromptForComposer(prompt, values) {
+  const content = renderPromptTemplate(prompt?.content, values).trim()
+  return content
+}
+
 async function applyMcpPromptToComposer(item, args) {
   const serverId = String(item?.serverId || '').trim()
   const promptName = String(item?.name || '').trim()
@@ -13753,6 +14144,17 @@ async function applyMcpPromptToComposer(item, args) {
     message.error('获取 MCP 提示词失败：' + (err?.message || String(err)))
     return false
   }
+}
+
+function applyLocalPromptToComposer(prompt, values) {
+  const rendered = formatLocalUserPromptForComposer(prompt, values)
+  if (!rendered) {
+    message.warning('该用户提示词内容为空')
+    return false
+  }
+  insertTextIntoComposer(rendered)
+  message.success('用户提示词已插入输入框，可继续编辑后发送')
+  return true
 }
 
 function normalizeOneLine(text, maxLen = 120) {
@@ -14630,6 +15032,7 @@ function createDisplayMessage(role, content = '', extra = {}) {
     base.toolStatus = role === 'tool_call' ? 'running' : 'success'
     base.toolName = ''
     base.toolServerName = ''
+    base.toolCallId = ''
     base.toolArgsText = ''
     base.toolAutoApproved = false
     base.toolSubMeta = ''
@@ -15025,40 +15428,65 @@ async function executeBuiltinWebTool({ mapping, argsObj, serverName, toolName, a
   return { ok: false, content: `未知联网工具：${internal}`, display: `### 联网工具结果\n- 错误：未知联网工具：${internal}` }
 }
 
-async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState = null) {
-  const targetSession = getRunSessionTarget(abortState)
-  throwIfAborted(abortState)
+function normalizeToolCallExecutionContext(toolCall, toolMap) {
   const fn = toolCall?.function?.name
   const argsRaw = toolCall?.function?.arguments || ''
+  const toolCallId = String(toolCall?.id || '').trim()
   const mapping = toolMap.get(fn)
   const serverName = mapping?.serverName || '未知'
   const toolName = mapping?.toolName || fn
-
   const parsedArgs = safeJsonParse(argsRaw)
   const argsObj = parsedArgs.ok && parsedArgs.value && typeof parsedArgs.value === 'object' ? parsedArgs.value : {}
   const argsText = parsedArgs.ok ? stableStringify(parsedArgs.value) : argsRaw
 
-  const pendingToolMessage = createPendingToolExecutionMessage({
+  return {
+    toolCall,
+    toolCallId,
+    fn,
+    mapping,
     serverName,
     toolName,
-    argsText: argsText || '{}',
+    argsRaw,
+    argsObj,
+    argsText: argsText || '{}'
+  }
+}
+
+async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, abortState = null) {
+  const targetSession = getRunSessionTarget(abortState)
+  throwIfAborted(abortState)
+  const context = normalizeToolCallExecutionContext(toolCall, toolMap)
+
+  const pendingToolMessage = createPendingToolExecutionMessage({
+    serverName: context.serverName,
+    toolName: context.toolName,
+    argsText: context.argsText,
     autoApproved: autoApproveTools.value,
-    argsObj
+    argsObj: context.argsObj,
+    toolCallId: context.toolCallId
   })
   targetSession.messages.push(pendingToolMessage)
   await maybeScrollToBottomForRun(abortState)
 
-  if (!mapping) {
-    const errorText = `未在工具注册表中找到：${fn}`
-    targetSession.messages.push(createDisplayMessage('tool', `### 工具结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-    return { ok: false, content: errorText }
+  if (!context.mapping) {
+    targetSession.messages.push(
+      createToolExecutionResultMessage(`### 工具结果\n- 错误：未在工具注册表中找到：${context.fn}`, {
+        toolMeta: `${context.serverName} / ${context.toolName}`
+      }, context.toolCallId)
+    )
+    return {
+      ...context,
+      pendingToolMessage,
+      skipped: true,
+      execResult: { ok: false, content: `未在工具注册表中找到：${context.fn}` }
+    }
   }
 
   if (!autoApproveTools.value) {
     const ok = await confirmToolCall({
-      serverName,
-      toolName,
-      argsText: argsText || '{}',
+      serverName: context.serverName,
+      toolName: context.toolName,
+      argsText: context.argsText,
       reasoningText: lastReasoningText,
       abortState
     })
@@ -15066,20 +15494,66 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     throwIfAborted(abortState)
     if (!ok) {
       targetSession.messages.push(
-        createDisplayMessage('tool', `### 工具结果\n- 工具：\`${toolName}\`\n- 状态：**已拒绝**`, {
-          toolMeta: `${serverName} / ${toolName}`
-        })
+        createToolExecutionResultMessage(`### 工具结果\n- 工具：\`${context.toolName}\`\n- 状态：**已拒绝**`, {
+          toolMeta: `${context.serverName} / ${context.toolName}`
+        }, context.toolCallId)
       )
-      return { ok: false, content: '用户拒绝了工具调用' }
+      return {
+        ...context,
+        pendingToolMessage,
+        skipped: true,
+        execResult: { ok: false, content: '用户拒绝了工具调用' }
+      }
     }
   }
+
+  return {
+    ...context,
+    pendingToolMessage,
+    skipped: false
+  }
+}
+
+function getToolCallParallelExecutionKey(prepared = {}) {
+  const mapping = prepared?.mapping
+  if (mapping?.type === 'internal' && mapping.internal === 'mcp_call') {
+    const argsObj = prepared?.argsObj && typeof prepared.argsObj === 'object' ? prepared.argsObj : {}
+    const serverIdCandidate = String(argsObj?.server_id ?? argsObj?.serverId ?? argsObj?.id ?? '').trim()
+    const serverNameCandidate = String(argsObj?.server_name ?? argsObj?.serverName ?? argsObj?.server ?? '').trim()
+    const server = resolveActiveMcpServer({ idCandidate: serverIdCandidate, nameCandidate: serverNameCandidate })
+    if (server?.keepAlive && server?._id) return `mcp-call:${server._id}`
+    return `parallel:${newId()}`
+  }
+
+  if (mapping?.type === 'mcp') {
+    const server = activeMcpServers.value.find((s) => s._id === mapping.serverId)
+    if (server?.keepAlive && server?._id) return `mcp:${server._id}`
+    return `parallel:${newId()}`
+  }
+
+  return `parallel:${newId()}`
+}
+
+async function executePreparedToolCall(prepared, abortState = null) {
+  const targetSession = getRunSessionTarget(abortState)
+  throwIfAborted(abortState)
+  const {
+    mapping,
+    serverName,
+    toolName,
+    toolCallId,
+    argsObj,
+    pendingToolMessage
+  } = prepared || {}
+  const createCurrentToolResultMessage = (content = '', extra = {}) =>
+    createToolExecutionResultMessage(content, extra, toolCallId)
 
   if (mapping?.type === 'internal' && (mapping.internal === 'web_search' || mapping.internal === 'web_read')) {
     try {
       const exec = await executeBuiltinWebTool({ mapping, argsObj, serverName, toolName, abortState })
       throwIfAborted(abortState)
       targetSession.messages.push(
-        createDisplayMessage('tool', exec.display || `### 联网工具结果\n\n\`\`\`json\n${exec.content || ''}\n\`\`\``, {
+        createCurrentToolResultMessage(exec.display || `### 联网工具结果\n\n\`\`\`json\n${exec.content || ''}\n\`\`\``, {
           toolMeta: `${serverName} / ${toolName}`,
           toolName,
           toolServerName: serverName,
@@ -15092,7 +15566,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     } catch (err) {
       if (isAbortError(err) || abortState?.aborted) throw createAbortError()
       const errorText = err?.message || String(err)
-      targetSession.messages.push(createDisplayMessage('tool', `### 联网工具结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      targetSession.messages.push(createCurrentToolResultMessage(`### 联网工具结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
       await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: `错误：${errorText}` }
     }
@@ -15105,14 +15579,14 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
 
     if (!target || !target._id) {
       const errorText = `未找到要读取的技能文件。可用技能：${stableStringify(listSelectedSkillsBrief())}`
-      targetSession.messages.push(createDisplayMessage('tool', `### 技能文件读取结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      targetSession.messages.push(createCurrentToolResultMessage(`### 技能文件读取结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
       await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
 
     if (!pathCandidate) {
       const errorText = 'path 不能为空'
-      targetSession.messages.push(createDisplayMessage('tool', `### 技能文件读取结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      targetSession.messages.push(createCurrentToolResultMessage(`### 技能文件读取结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
       await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
@@ -15135,8 +15609,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
       const resultText = ['OK: read_skill_file', `skill_id: ${skillId}`, `skill_name: ${skillName}`, `path: ${resolvedPath}`, '', content].join('\n')
       throwIfAborted(abortState)
       targetSession.messages.push(
-        createDisplayMessage(
-          'tool',
+        createCurrentToolResultMessage(
           `### 技能文件读取结果\n- 技能：**${skillName}**\n- 路径：\`${resolvedPath}\`\n\n\`\`\`\n${content}\n\`\`\``,
           { toolMeta: `${serverName} / ${toolName}` }
         )
@@ -15146,7 +15619,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     } catch (err) {
       if (isAbortError(err) || abortState?.aborted) throw createAbortError()
       const errorText = err?.message || String(err)
-      targetSession.messages.push(createDisplayMessage('tool', `### 技能文件读取结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      targetSession.messages.push(createCurrentToolResultMessage(`### 技能文件读取结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
       await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
@@ -15160,7 +15633,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
 
     if (!target || !target._id) {
       const errorText = `未找到要执行脚本的技能。可用技能：${stableStringify(listSelectedSkillsBrief())}`
-      targetSession.messages.push(createDisplayMessage('tool', `### 技能脚本执行结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      targetSession.messages.push(createCurrentToolResultMessage(`### 技能脚本执行结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
       await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
@@ -15168,7 +15641,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     const resolvedScript = resolveSkillScriptTarget(target, pathCandidate)
     if (!resolvedScript.ok) {
       const errorText = resolvedScript.error || '脚本路径无效'
-      targetSession.messages.push(createDisplayMessage('tool', `### 技能脚本执行结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      targetSession.messages.push(createCurrentToolResultMessage(`### 技能脚本执行结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
       await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
@@ -15245,7 +15718,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
         serverName,
         toolName
       }
-      targetSession.messages.push(createDisplayMessage('tool', sections.join('\n\n'), {
+      targetSession.messages.push(createCurrentToolResultMessage(sections.join('\n\n'), {
         toolMeta: `${serverName} / ${toolName}`,
         images,
         toolName,
@@ -15259,7 +15732,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
       if (isAbortError(err) || abortState?.aborted) throw createAbortError()
       if (successfulScriptResult) return successfulScriptResult
       const errorText = err?.message || String(err)
-      targetSession.messages.push(createDisplayMessage('tool', `### 技能脚本执行结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      targetSession.messages.push(createCurrentToolResultMessage(`### 技能脚本执行结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
       await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
@@ -15290,7 +15763,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
         .filter((x) => x?.id)
         .slice(0, 30)
       const errorText = `未找到要启用的技能（仅可启用当前已选择的技能）。可用技能：${stableStringify(list)}`
-      targetSession.messages.push(createDisplayMessage('tool', `### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      targetSession.messages.push(createCurrentToolResultMessage(`### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
       return { ok: false, content: errorText }
     }
 
@@ -15308,7 +15781,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
       } catch (err) {
         if (isAbortError(err) || abortState?.aborted) throw createAbortError()
         const errorText = err?.message || String(err)
-        targetSession.messages.push(createDisplayMessage('tool', `### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+        targetSession.messages.push(createCurrentToolResultMessage(`### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
         await maybeScrollToBottomForRun(abortState)
         return { ok: false, content: errorText }
       }
@@ -15348,11 +15821,8 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
 
     throwIfAborted(abortState)
     targetSession.messages.push(
-      createDisplayMessage(
-        'tool',
+      createCurrentToolResultMessage(
         `### 技能启用结果\n- 技能：**${skillName}**\n- 状态：**${isAgentSkill ? (changed ? '已启用' : '已启用过') : '无需启用'}**\n- MCP：${mcpNameList.length ? mcpNameList.map((n) => `\`${n}\``).join(', ') : '（无）'}${missingMcpIds.length ? `\n- 缺失的 MCP 配置：${missingMcpIds.map((id) => `\`${id}\``).join(', ')}` : ''}`,
-
-
         { toolMeta: `${serverName} / ${toolName}` }
       )
     )
@@ -15377,7 +15847,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     const targets = Array.from(uniq.values())
     if (!targets.length) {
       const errorText = `未找到要启用的技能（仅可启用当前已选择的技能）。可用技能：${stableStringify(listSelectedSkillsBrief())}`
-      targetSession.messages.push(createDisplayMessage('tool', `### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      targetSession.messages.push(createCurrentToolResultMessage(`### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
       await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
@@ -15456,11 +15926,8 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     const resultText = stableStringify(resultObj)
     throwIfAborted(abortState)
     targetSession.messages.push(
-      createDisplayMessage(
-        'tool',
+      createCurrentToolResultMessage(
         `### 技能启用结果\n- 已启用：${activated.length ? activated.length : 0}\n- 已启用过：${already.length ? already.length : 0}\n- 无需启用：${noop.length ? noop.length : 0}\n- MCP：${mountedMcpNames.size ? Array.from(mountedMcpNames).map((n) => `\`${n}\``).join(', ') : '（无）'}${missingMcpIds.size ? `\n- 缺失的 MCP 配置：${Array.from(missingMcpIds).map((id) => `\`${id}\``).join(', ')}` : ''}`,
-
-
         { toolMeta: `${serverName} / ${toolName}` }
       )
     )
@@ -15477,7 +15944,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     const confirm = argsObj?.confirm === true
     if (!confirm) {
       const errorText = '请在执行前传入 confirm=true，避免系统提示词被意外膨胀。'
-      targetSession.messages.push(createDisplayMessage('tool', `### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      targetSession.messages.push(createCurrentToolResultMessage(`### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
       await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
@@ -15489,7 +15956,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     })
     if (!targets.length) {
       const errorText = '当前上下文中没有可启用的智能体预设技能。'
-      targetSession.messages.push(createDisplayMessage('tool', `### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      targetSession.messages.push(createCurrentToolResultMessage(`### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
       await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
@@ -15592,14 +16059,14 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     const targetServers = resolved ? [resolved] : activeServers
     if (!targetServers.length) {
       const errorText = `当前没有可用的 MCP 服务。可用：${stableStringify(listActiveMcpServersBrief())}`
-      targetSession.messages.push(createDisplayMessage('tool', `### MCP 发现\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      targetSession.messages.push(createCurrentToolResultMessage(`### MCP 发现\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
       await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
 
     if (toolFilter && targetServers.length !== 1) {
       const errorText = '提供 tool 时也必须同时提供 server_id，避免在多个服务之间产生歧义。'
-      targetSession.messages.push(createDisplayMessage('tool', `### MCP 发现\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      targetSession.messages.push(createCurrentToolResultMessage(`### MCP 发现\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
       await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
@@ -15639,8 +16106,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
         const err = result?.error || new Error('listTools failed')
         const errorText = err?.message || String(err)
         targetSession.messages.push(
-          createDisplayMessage(
-            'tool',
+          createCurrentToolResultMessage(
             `### MCP 发现\n- 服务：**${server.name || server._id}**\n- 错误：${errorText}`,
             { toolMeta: `${server.name || server._id} / MCP` }
           )
@@ -15659,7 +16125,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
         null
       if (!fuzzy) {
         const errorText = `未找到工具：${toolFilter}（服务：${server.name || server._id}）`
-        targetSession.messages.push(createDisplayMessage('tool', `### MCP 发现\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / MCP` }))
+        targetSession.messages.push(createCurrentToolResultMessage(`### MCP 发现\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / MCP` }))
         await maybeScrollToBottomForRun(abortState)
         return { ok: false, content: errorText }
       }
@@ -15683,7 +16149,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
       const resultText = stableStringify(resultObj)
       throwIfAborted(abortState)
       targetSession.messages.push(
-        createDisplayMessage('tool', `### MCP 工具详情\n\n\`\`\`json\n${resultText}\n\`\`\``, {
+        createCurrentToolResultMessage(`### MCP 工具详情\n\n\`\`\`json\n${resultText}\n\`\`\``, {
           toolMeta: `${server.name || server._id} / ${fuzzy.name}`
         })
       )
@@ -15746,7 +16212,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     const resultText = stableStringify(resultObj)
     throwIfAborted(abortState)
     targetSession.messages.push(
-      createDisplayMessage('tool', `### MCP 发现\n\n\`\`\`json\n${resultText}\n\`\`\``, { toolMeta: `${serverName} / ${toolName}` })
+      createCurrentToolResultMessage(`### MCP 发现\n\n\`\`\`json\n${resultText}\n\`\`\``, { toolMeta: `${serverName} / ${toolName}` })
     )
     await maybeScrollToBottomForRun(abortState)
     return {
@@ -15761,7 +16227,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     const resultObj = { ok: true, servers: listActiveMcpServersBrief(100) }
     const resultText = stableStringify(resultObj)
     targetSession.messages.push(
-      createDisplayMessage('tool', `### MCP 服务器\n\n\`\`\`json\n${resultText}\n\`\`\``, { toolMeta: `${serverName} / ${toolName}` })
+      createCurrentToolResultMessage(`### MCP 服务器\n\n\`\`\`json\n${resultText}\n\`\`\``, { toolMeta: `${serverName} / ${toolName}` })
     )
     await maybeScrollToBottomForRun(abortState)
     return { ok: true, content: resultText }
@@ -15773,13 +16239,13 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     const server = resolveActiveMcpServer({ idCandidate: serverIdCandidate, nameCandidate: serverNameCandidate })
     if (!server || !server._id) {
       const errorText = `未找到 MCP 服务器。可用：${stableStringify(listActiveMcpServersBrief())}`
-      targetSession.messages.push(createDisplayMessage('tool', `### MCP 工具列表\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      targetSession.messages.push(createCurrentToolResultMessage(`### MCP 工具列表\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
       await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
     if (server.disabled) {
       const errorText = `MCP 服务器已禁用：${server.name || server._id}`
-      targetSession.messages.push(createDisplayMessage('tool', `### MCP 工具列表\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / MCP` }))
+      targetSession.messages.push(createCurrentToolResultMessage(`### MCP 工具列表\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / MCP` }))
       await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
@@ -15796,8 +16262,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
       const err = listResult.error || new Error('listTools failed')
       const errorText = err?.message || String(err)
       targetSession.messages.push(
-        createDisplayMessage(
-          'tool',
+        createCurrentToolResultMessage(
           `### MCP 工具列表\n- 服务：**${server.name || server._id}**\n- 错误：${errorText}`,
           { toolMeta: `${server.name || server._id} / MCP` }
         )
@@ -15818,7 +16283,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
         null
       if (!fuzzy) {
         const errorText = `未找到工具：${toolFilter}（服务：${server.name || server._id}）`
-        targetSession.messages.push(createDisplayMessage('tool', `### MCP 工具列表\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / MCP` }))
+        targetSession.messages.push(createCurrentToolResultMessage(`### MCP 工具列表\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / MCP` }))
         await maybeScrollToBottomForRun(abortState)
         return { ok: false, content: errorText }
       }
@@ -15836,7 +16301,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
       const resultText = stableStringify(resultObj)
       throwIfAborted(abortState)
       targetSession.messages.push(
-        createDisplayMessage('tool', `### MCP 工具详情\n\n\`\`\`json\n${resultText}\n\`\`\``, { toolMeta: `${server.name || server._id} / ${fuzzy.name}` })
+        createCurrentToolResultMessage(`### MCP 工具详情\n\n\`\`\`json\n${resultText}\n\`\`\``, { toolMeta: `${server.name || server._id} / ${fuzzy.name}` })
       )
       await maybeScrollToBottomForRun(abortState)
       return { ok: true, content: resultText }
@@ -15859,7 +16324,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     const resultText = stableStringify(resultObj)
     throwIfAborted(abortState)
     targetSession.messages.push(
-      createDisplayMessage('tool', `### MCP 工具列表\n\n\`\`\`json\n${resultText}\n\`\`\``, { toolMeta: `${server.name || server._id} / MCP` })
+      createCurrentToolResultMessage(`### MCP 工具列表\n\n\`\`\`json\n${resultText}\n\`\`\``, { toolMeta: `${server.name || server._id} / MCP` })
     )
     await maybeScrollToBottomForRun(abortState)
     return { ok: true, content: resultText }
@@ -15875,7 +16340,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
 
     if (!tool) {
       const errorText = '缺少 tool 字段。'
-      targetSession.messages.push(createDisplayMessage('tool', `### MCP 工具调用\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      targetSession.messages.push(createCurrentToolResultMessage(`### MCP 工具调用\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
       await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
@@ -15883,13 +16348,13 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     const server = resolveActiveMcpServer({ idCandidate: serverIdCandidate, nameCandidate: serverNameCandidate })
     if (!server || !server._id) {
       const errorText = `未找到 MCP 服务。可用：${stableStringify(listActiveMcpServersBrief())}`
-      targetSession.messages.push(createDisplayMessage('tool', `### MCP 工具调用\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+      targetSession.messages.push(createCurrentToolResultMessage(`### MCP 工具调用\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
       await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
     if (server.disabled) {
       const errorText = `MCP 服务已禁用：${server.name || server._id}`
-      targetSession.messages.push(createDisplayMessage('tool', `### MCP 工具调用\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / MCP` }))
+      targetSession.messages.push(createCurrentToolResultMessage(`### MCP 工具调用\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / MCP` }))
       await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
@@ -15897,7 +16362,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     const allow = Array.isArray(server.allowTools) ? server.allowTools.map((x) => String(x || '').trim()).filter(Boolean) : []
     if (allow.length && !allow.includes(tool)) {
       const errorText = `该工具不在 allowTools 白名单中：${tool}`
-      targetSession.messages.push(createDisplayMessage('tool', `### MCP 工具调用\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / ${tool}` }))
+      targetSession.messages.push(createCurrentToolResultMessage(`### MCP 工具调用\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / ${tool}` }))
       await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
@@ -15942,8 +16407,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
       })
       throwIfAborted(abortState)
       targetSession.messages.push(
-        createDisplayMessage(
-          'tool',
+        createCurrentToolResultMessage(
           displayText,
           {
             toolMeta: `${server.name || server._id} / ${tool}`,
@@ -15975,7 +16439,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
       closeMcpClientSafely(server, client, pooled)
       const errorText = err?.message || String(err)
       targetSession.messages.push(
-        createDisplayMessage('tool', `### MCP 工具结果\n- 工具：\`${tool}\`\n- 错误：${errorText}`, {
+        createCurrentToolResultMessage(`### MCP 工具结果\n- 工具：\`${tool}\`\n- 错误：${errorText}`, {
           toolMeta: `${server.name || server._id} / ${tool}`
         })
       )
@@ -15993,12 +16457,12 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
   const server = activeMcpServers.value.find((s) => s._id === mapping.serverId)
   if (!server) {
     const errorText = `未找到 MCP 服务器：${mapping.serverId}`
-    targetSession.messages.push(createDisplayMessage('tool', `### 工具结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+    targetSession.messages.push(createCurrentToolResultMessage(`### 工具结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
     return { ok: false, content: errorText }
   }
   if (server.disabled) {
     const errorText = `MCP 服务器已禁用：${serverName}`
-    targetSession.messages.push(createDisplayMessage('tool', `### 工具结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
+    targetSession.messages.push(createCurrentToolResultMessage(`### 工具结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
     return { ok: false, content: errorText }
   }
 
@@ -16043,8 +16507,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     })
     throwIfAborted(abortState)
     targetSession.messages.push(
-      createDisplayMessage(
-        'tool',
+      createCurrentToolResultMessage(
         displayText,
         {
           toolMeta: `${serverName} / ${toolName}`,
@@ -16075,7 +16538,7 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
     closeMcpClientSafely(server, client, pooled)
     const errorText = err?.message || String(err)
     targetSession.messages.push(
-      createDisplayMessage('tool', `### 工具结果\n- 工具：\`${toolName}\`\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` })
+      createCurrentToolResultMessage(`### 工具结果\n- 工具：\`${toolName}\`\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` })
     )
     await maybeScrollToBottomForRun(abortState)
     return { ok: false, content: `错误：${errorText}` }
@@ -16086,6 +16549,45 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
       // ignore
     }
   }
+}
+
+async function executeToolCallsParallel(toolCalls, toolMap, lastReasoningText, abortState = null) {
+  const preparedCalls = []
+  for (const toolCall of Array.isArray(toolCalls) ? toolCalls : []) {
+    throwIfAborted(abortState)
+    preparedCalls.push(await prepareToolCallExecution(toolCall, toolMap, lastReasoningText, abortState))
+  }
+
+  const results = new Array(preparedCalls.length)
+  const chainsByKey = new Map()
+
+  preparedCalls.forEach((prepared, index) => {
+    if (prepared?.skipped) {
+      results[index] = prepared.execResult
+      return
+    }
+
+    const key = getToolCallParallelExecutionKey(prepared)
+    const previous = chainsByKey.get(key) || Promise.resolve()
+    const current = previous.then(async () => {
+      throwIfAborted(abortState)
+      return executePreparedToolCall(prepared, abortState)
+    })
+    chainsByKey.set(key, current.catch(() => {}))
+    results[index] = current
+  })
+
+  const resolved = await Promise.all(results.map(async (entry) => {
+    if (entry && typeof entry?.then === 'function') return entry
+    return entry
+  }))
+  throwIfAborted(abortState)
+  return resolved
+}
+
+async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState = null) {
+  const [result] = await executeToolCallsParallel([toolCall], toolMap, lastReasoningText, abortState)
+  return result
 }
 
 async function send() {
@@ -16103,14 +16605,6 @@ async function send() {
     input.value = ''
     resetComposerInput()
     pendingAttachments.value = []
-    const requestRecord = getActiveMemorySession()
-    const { memorySystemContent, attachmentRecallText } = await prepareChatRequestContext({
-      cfg,
-      text,
-      attachments,
-      requestRecord
-    })
-
     const userDisplay = createDisplayMessage('user', text || (attachments.length ? '(sent attachments)' : ''))
     if (attachments.length) {
       userDisplay.attachmentsExpanded = false
@@ -16118,17 +16612,43 @@ async function send() {
     }
     session.messages.push(userDisplay)
     autoScrollEnabled.value = true
+    autoScrollSuspendedByUser.value = false
     scheduleRefreshUserAnchorMeta()
     await scrollToBottom({ force: true })
-    if (cfg.requestMode === 'image-generation') {
-      const referenceImages = await collectAttachmentMediaReferenceImages(attachments, userDisplay)
-      cfg.imageGenerationRequestOptionsOverride = mergeReferenceImagesIntoRequestOptions(
-        cfg.imageGenerationRequestOptionsOverride && typeof cfg.imageGenerationRequestOptionsOverride === 'object'
-          ? cfg.imageGenerationRequestOptionsOverride
-          : {},
-        referenceImages,
-        'image'
-      )
+    const requestRecord = getActiveMemorySession()
+    let memorySystemContent = ''
+    let attachmentRecallText = ''
+    try {
+      const prepared = await prepareChatRequestContext({
+        cfg,
+        text,
+        attachments,
+        requestRecord,
+        excludeLatestUserTurnFromMemoryRecall: true
+      })
+      memorySystemContent = prepared.memorySystemContent
+      attachmentRecallText = prepared.attachmentRecallText
+      if (cfg.requestMode === 'image-generation') {
+        const referenceImages = await collectAttachmentMediaReferenceImages(attachments, userDisplay)
+        cfg.imageGenerationRequestOptionsOverride = mergeReferenceImagesIntoRequestOptions(
+          cfg.imageGenerationRequestOptionsOverride && typeof cfg.imageGenerationRequestOptionsOverride === 'object'
+            ? cfg.imageGenerationRequestOptionsOverride
+            : {},
+          referenceImages,
+          'image'
+        )
+      }
+    } catch (err) {
+      removeDisplayMessageById(userDisplay.id)
+      input.value = text
+      pendingAttachments.value = attachments
+      resetComposerInput()
+      autoScrollEnabled.value = true
+      autoScrollSuspendedByUser.value = false
+      scheduleRefreshUserAnchorMeta()
+      await scrollToBottom({ force: true })
+      message.error('发送准备失败：' + (err?.message || String(err)))
+      return
     }
     if (cfg.requestMode === 'video-generation') {
       await startDetachedVideoGeneration({ cfg, text, attachments, userDisplay })

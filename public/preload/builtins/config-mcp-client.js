@@ -326,7 +326,6 @@ function normalizeAgentFields(item) {
   if ('name' in out) out.name = cleanString(out.name)
   if ('provider' in out) out.provider = normalizeOptionalString(out.provider)
   if ('model' in out) out.model = normalizeOptionalString(out.model)
-  if ('prompt' in out) out.prompt = normalizeOptionalString(out.prompt)
   if ('skills' in out) out.skills = normalizeStringList(out.skills)
   if ('mcp' in out) out.mcp = normalizeStringList(out.mcp)
   return out
@@ -364,6 +363,35 @@ function normalizeProviderFields(item) {
   if ('baseurl' in out) out.baseurl = cleanString(out.baseurl)
   if ('apikey' in out) out.apikey = cleanString(out.apikey)
   if ('selectModels' in out) out.selectModels = normalizeStringList(out.selectModels)
+  return out
+}
+
+function normalizePromptType(val) {
+  return cleanString(val).toLowerCase() === 'user' ? 'user' : 'system'
+}
+
+function isSystemPromptItem(prompt) {
+  return normalizePromptType(prompt?.type) === 'system'
+}
+
+function sanitizeAgentPromptReference(promptId, globalConfig) {
+  const id = normalizeOptionalString(promptId)
+  if (!id) return null
+  try {
+    const prompt = globalConfig.getPrompt(id)
+    return isSystemPromptItem(prompt) ? id : null
+  } catch {
+    return null
+  }
+}
+
+function normalizePromptFields(item) {
+  const src = isPlainObject(item) ? item : {}
+  const out = { ...src }
+  if ('name' in out) out.name = cleanString(out.name)
+  if ('description' in out) out.description = cleanString(out.description)
+  if ('content' in out) out.content = typeof out.content === 'string' ? out.content : ''
+  if ('type' in out) out.type = normalizePromptType(out.type)
   return out
 }
 
@@ -492,6 +520,11 @@ const SKILL_IMPORT_FIELDS = {
 const PROMPT_FIELDS = {
   name: { type: 'string', description: '提示词名称。' },
   description: { type: 'string', description: '提示词描述，可选。' },
+  type: {
+    type: 'string',
+    enum: ['system', 'user'],
+    description: '提示词类型。system 表示选择后替换系统提示词；user 表示可带变量并插入输入框。默认 system。'
+  },
   content: { type: 'string', description: '提示词内容。新增时必填。' }
 }
 
@@ -501,7 +534,7 @@ const AGENT_FIELDS = {
   model: { type: 'string', description: '可选；默认模型名。空字符串表示取消指定。' },
   skills: { ...STRING_ARRAY_SCHEMA, description: '可选；Skill 的 _id 数组。' },
   mcp: { ...STRING_ARRAY_SCHEMA, description: '可选；MCP 的 _id 数组。' },
-  prompt: { type: 'string', description: '可选；Prompt 的 _id。空字符串表示取消绑定。' }
+  prompt: { type: 'string', description: '可选；系统提示词 Prompt 的 _id。用户提示词不会绑定到智能体，传入后会自动忽略。空字符串表示取消绑定。' }
 }
 
 const PROVIDER_FIELDS = {
@@ -694,7 +727,7 @@ const TOOLS = [
   // Prompts
   {
     name: 'config_list_prompts',
-    description: '列出提示词配置摘要。返回 _id、name、description，可用于后续 update/delete。',
+    description: '列出提示词配置摘要。返回 _id、name、description、type，可用于后续 update/delete。',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false }
   },
   {
@@ -742,12 +775,12 @@ const TOOLS = [
   // Agents
   {
     name: 'config_list_agents',
-    description: '列出智能体配置摘要。返回 _id、provider、model、skills、mcp、prompt 等，可用于后续 update/delete。',
+    description: '列出智能体配置摘要。返回 _id、provider、model、skills、mcp、prompt 等，可用于后续 update/delete。prompt 仅会返回系统提示词绑定。',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false }
   },
   {
     name: 'config_add_agent',
-    description: '新增智能体（不允许覆盖内置）。' + CONFIG_ADD_FULL_OBJECT_NOTE + ' skills / mcp 必须是 _id 数组。',
+    description: '新增智能体（不允许覆盖内置）。' + CONFIG_ADD_FULL_OBJECT_NOTE + ' skills / mcp 必须是 _id 数组；prompt 仅支持系统提示词。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -760,7 +793,7 @@ const TOOLS = [
   },
   {
     name: 'config_update_agent',
-    description: '修改智能体。' + CONFIG_LIST_FIRST_NOTE + CONFIG_UPDATE_PATCH_NOTE + ' 内置智能体仅允许修改 provider/model/mcp；自定义智能体可按 patch 更新其他字段。',
+    description: '修改智能体。' + CONFIG_LIST_FIRST_NOTE + CONFIG_UPDATE_PATCH_NOTE + ' 内置智能体仅允许修改 provider/model/mcp；自定义智能体可按 patch 更新其他字段。prompt 仅支持系统提示词。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1102,25 +1135,27 @@ class BuiltinConfigMcpClient {
         _id: p?._id,
         name: p?.name,
         description: p?.description,
+        type: normalizePromptType(p?.type),
         builtin: !!p?.builtin
       }))
       return { ok: true, items: list }
     }
     if (name === 'config_add_prompt') {
       const id = cleanString(params.id) || randomId('prompt')
-      const item = {
+      const item = normalizePromptFields({
         _id: id,
         name: cleanString(params.name) || id,
         description: cleanString(params.description),
+        type: params.type,
         content: typeof params.content === 'string' ? params.content : ''
-      }
+      })
       globalConfig.addPrompt(item)
       return { ok: true, id }
     }
     if (name === 'config_update_prompt') {
       const id = cleanString(params.id)
       if (!id) throw new Error('id 必填')
-      const patch = sanitizePatchObject(params.patch)
+      const patch = normalizePromptFields(sanitizePatchObject(params.patch))
       globalConfig.updatePrompt(id, patch)
       return { ok: true, id }
     }
@@ -1155,7 +1190,7 @@ class BuiltinConfigMcpClient {
         model: params.model,
         skills: params.skills,
         mcp: params.mcp,
-        prompt: params.prompt
+        prompt: sanitizeAgentPromptReference(params.prompt, globalConfig)
       })
       globalConfig.addAgent(item)
       return { ok: true, id }
@@ -1164,6 +1199,9 @@ class BuiltinConfigMcpClient {
       const id = cleanString(params.id)
       if (!id) throw new Error('id 必填')
       const patch = normalizeAgentFields(sanitizePatchObject(params.patch))
+      if (Object.prototype.hasOwnProperty.call(params.patch || {}, 'prompt')) {
+        patch.prompt = sanitizeAgentPromptReference(params.patch?.prompt, globalConfig)
+      }
       globalConfig.updateAgent(id, patch)
       return { ok: true, id }
     }

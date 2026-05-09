@@ -68,6 +68,18 @@ export function shouldRetryResponsesWithoutStreaming(errorText) {
   )
 }
 
+export function shouldRetryWithoutParallelToolCalls(errorText) {
+  const lower = normalizeString(errorText).toLowerCase()
+  if (!lower || !lower.includes('parallel_tool_calls')) return false
+  return (
+    lower.includes('unsupported') ||
+    lower.includes('not supported') ||
+    lower.includes('unknown parameter') ||
+    lower.includes('extra inputs are not permitted') ||
+    lower.includes('invalid request')
+  )
+}
+
 function extractTextFromChatContentPart(part) {
   if (!part || typeof part !== 'object') return ''
   if (typeof part.text === 'string') return part.text
@@ -220,6 +232,7 @@ export function buildResponsesRequestBodyFromChatBody(chatBody = {}, options = {
   const tools = (Array.isArray(body.tools) ? body.tools : []).map(convertChatToolToResponsesTool).filter(Boolean)
   if (tools.length) responsesBody.tools = tools
   if (body.tool_choice !== undefined) responsesBody.tool_choice = body.tool_choice
+  if (body.parallel_tool_calls !== undefined) responsesBody.parallel_tool_calls = !!body.parallel_tool_calls
 
   if (body.reasoning_effort) {
     responsesBody.reasoning = {

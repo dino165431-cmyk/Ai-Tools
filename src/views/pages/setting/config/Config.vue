@@ -196,90 +196,28 @@
                 记忆会同时沉淀长期事实、用户偏好、回答风格偏向和稳定约束。向量模型未配置时，会自动降级成关键词召回。
               </n-text>
             </n-flex>
-            <n-flex :size="10" wrap>
-              <n-button type="primary" :loading="memorySaving" @click="saveMemoryConfig">保存记忆配置</n-button>
+            <n-flex align="center" :size="10" wrap>
+              <n-flex align="center" :size="8">
+                <n-text depth="3">启用记忆</n-text>
+                <n-switch :value="memoryDraft.enabled" :loading="memorySaving" @update:value="handleToggleMemoryEnabled" />
+              </n-flex>
+              <n-flex align="center" :size="8">
+                <n-text depth="3">自动提取</n-text>
+                <n-switch
+                  :value="memoryDraft.autoExtract"
+                  :disabled="memoryDraft.enabled !== true"
+                  :loading="memorySaving"
+                  @update:value="handleToggleMemoryAutoExtract"
+                />
+              </n-flex>
+              <n-button @click="openMemoryConfigModal">编辑记忆配置</n-button>
               <n-button :disabled="memoryDraft.enabled !== true" @click="openMemoryPage">记忆管理</n-button>
             </n-flex>
           </n-flex>
 
-          <n-flex wrap :size="12">
-            <n-form-item label="启用记忆" style="flex: 1; min-width: 220px; margin-bottom: 0;">
-              <n-switch v-model:value="memoryDraft.enabled" />
-            </n-form-item>
-            <n-form-item label="自动提取" style="flex: 1; min-width: 220px; margin-bottom: 0;">
-              <n-switch v-model:value="memoryDraft.autoExtract" :disabled="memoryDraft.enabled !== true" />
-            </n-form-item>
-          </n-flex>
-
-          <n-flex wrap :size="12">
-            <n-form-item label="提取服务商" style="flex: 1; min-width: 260px; margin-bottom: 0;">
-              <n-select
-                v-model:value="memoryDraft.extraction.providerId"
-                :options="memoryProviderOptions"
-                :disabled="memoryDraft.enabled !== true"
-                clearable
-              />
-            </n-form-item>
-            <n-form-item label="提取模型" style="flex: 1; min-width: 260px; margin-bottom: 0;">
-              <n-select
-                v-model:value="memoryDraft.extraction.model"
-                :options="memoryExtractionModelOptions"
-                :disabled="memoryDraft.enabled !== true || !memoryDraft.extraction.providerId"
-                clearable
-              />
-            </n-form-item>
-          </n-flex>
-
-          <n-flex wrap :size="12">
-            <n-form-item label="向量服务商" style="flex: 1; min-width: 260px; margin-bottom: 0;">
-              <n-select
-                v-model:value="memoryDraft.embedding.providerId"
-                :options="memoryEmbeddingProviderOptions"
-                :disabled="memoryDraft.enabled !== true"
-                clearable
-              />
-            </n-form-item>
-            <n-form-item label="向量模型" style="flex: 1; min-width: 260px; margin-bottom: 0;">
-              <n-select
-                v-model:value="memoryDraft.embedding.model"
-                :options="memoryEmbeddingModelOptions"
-                :disabled="memoryDraft.enabled !== true || !memoryDraft.embedding.providerId"
-                clearable
-              />
-            </n-form-item>
-          </n-flex>
-
-          <n-flex wrap :size="12">
-            <n-form-item label="召回 TopK" style="flex: 1; min-width: 220px; margin-bottom: 0;">
-              <n-input-number v-model:value="memoryDraft.topK" :min="1" :max="20" :disabled="memoryDraft.enabled !== true" style="width: 220px;" />
-            </n-form-item>
-            <n-form-item label="注入字符上限" style="flex: 1; min-width: 220px; margin-bottom: 0;">
-              <n-input-number v-model:value="memoryDraft.maxInjectChars" :min="400" :max="8000" :step="100" :disabled="memoryDraft.enabled !== true" style="width: 220px;" />
-            </n-form-item>
-            <n-form-item label="最小相似度" style="flex: 1; min-width: 220px; margin-bottom: 0;">
-              <n-input-number v-model:value="memoryDraft.minSimilarity" :min="0" :max="1" :step="0.01" :disabled="memoryDraft.enabled !== true" style="width: 220px;" />
-            </n-form-item>
-          </n-flex>
-
-          <n-flex wrap :size="12">
-            <n-form-item label="最小置信度" style="flex: 1; min-width: 220px; margin-bottom: 0;">
-              <n-input-number v-model:value="memoryDraft.minConfidence" :min="0" :max="1" :step="0.01" :disabled="memoryDraft.enabled !== true" style="width: 220px;" />
-            </n-form-item>
-            <n-form-item label="画像条数上限" style="flex: 1; min-width: 220px; margin-bottom: 0;">
-              <n-input-number v-model:value="memoryDraft.profileMaxItems" :min="1" :max="20" :disabled="memoryDraft.enabled !== true" style="width: 220px;" />
-            </n-form-item>
-            <n-form-item label="相关记忆上限" style="flex: 1; min-width: 220px; margin-bottom: 0;">
-              <n-input-number v-model:value="memoryDraft.relevantMaxItems" :min="1" :max="20" :disabled="memoryDraft.enabled !== true" style="width: 220px;" />
-            </n-form-item>
-          </n-flex>
-
-          <n-alert type="info" :show-icon="false">
-            记忆提取模型可选内置 uTools AI 或兼容 OpenAI 的聊天模型；向量模型建议使用标准 embeddings 接口，因此这里只显示兼容 OpenAI 的服务商。
-          </n-alert>
-
           <n-flex wrap :size="10">
             <n-button secondary :disabled="memoryDraft.enabled !== true" :loading="memoryRebuilding" @click="handleRebuildMemory">重建向量</n-button>
-            <n-button secondary :disabled="memoryDraft.enabled !== true" @click="handleCleanMemoryStore">清洗与合并</n-button>
+            <n-button secondary :disabled="memoryDraft.enabled !== true" @click="handleCleanMemoryStore">清洗与整理</n-button>
             <n-button secondary :loading="memoryOpening" @click="handleOpenMemoryFolder">打开记忆目录</n-button>
           </n-flex>
         </n-flex>
@@ -431,6 +369,78 @@
         <n-flex justify="flex-end" :size="12">
           <n-button @click="closeContextWindowModal">取消</n-button>
           <n-button type="primary" :loading="contextWindowModal.loading" @click="saveContextWindow">保存</n-button>
+        </n-flex>
+      </template>
+    </n-modal>
+
+    <n-modal v-model:show="memoryConfigModal.show" preset="card" title="编辑聊天记忆配置" style="width: 760px; max-width: 95%;">
+      <n-flex vertical :size="12">
+        <n-alert type="info" :show-icon="false">
+          记忆提取模型可选内置 uTools AI 或兼容 OpenAI 的聊天模型；向量模型建议使用标准 embeddings 接口，因此这里只显示兼容 OpenAI 的服务商。
+        </n-alert>
+        <n-form label-placement="left" label-width="120px">
+          <n-form-item label="提取服务商">
+            <n-select
+              v-model:value="memoryDraft.extraction.providerId"
+              :options="memoryProviderOptions"
+              :disabled="memoryDraft.enabled !== true"
+              clearable
+            />
+          </n-form-item>
+          <n-form-item label="提取模型">
+            <n-select
+              v-model:value="memoryDraft.extraction.model"
+              :options="memoryExtractionModelOptions"
+              :disabled="memoryDraft.enabled !== true || !memoryDraft.extraction.providerId"
+              clearable
+            />
+          </n-form-item>
+          <n-form-item label="向量服务商">
+            <n-select
+              v-model:value="memoryDraft.embedding.providerId"
+              :options="memoryEmbeddingProviderOptions"
+              :disabled="memoryDraft.enabled !== true"
+              clearable
+            />
+          </n-form-item>
+          <n-form-item label="向量模型">
+            <n-select
+              v-model:value="memoryDraft.embedding.model"
+              :options="memoryEmbeddingModelOptions"
+              :disabled="memoryDraft.enabled !== true || !memoryDraft.embedding.providerId"
+              clearable
+            />
+          </n-form-item>
+          <n-form-item label="记忆总上限">
+            <n-flex vertical :size="6" style="width: 100%;">
+              <n-input-number v-model:value="memoryDraft.storeMaxItems" :min="20" :max="5000" :step="10" :disabled="memoryDraft.enabled !== true" style="width: 220px;" />
+              <n-text depth="3">达到上限后会自动优先保留高价值画像、常用记忆和手动维护的条目。</n-text>
+            </n-flex>
+          </n-form-item>
+          <n-form-item label="召回 TopK">
+            <n-input-number v-model:value="memoryDraft.topK" :min="1" :max="20" :disabled="memoryDraft.enabled !== true" style="width: 220px;" />
+          </n-form-item>
+          <n-form-item label="注入字符上限">
+            <n-input-number v-model:value="memoryDraft.maxInjectChars" :min="400" :max="8000" :step="100" :disabled="memoryDraft.enabled !== true" style="width: 220px;" />
+          </n-form-item>
+          <n-form-item label="最小相似度">
+            <n-input-number v-model:value="memoryDraft.minSimilarity" :min="0" :max="1" :step="0.01" :disabled="memoryDraft.enabled !== true" style="width: 220px;" />
+          </n-form-item>
+          <n-form-item label="最小置信度">
+            <n-input-number v-model:value="memoryDraft.minConfidence" :min="0" :max="1" :step="0.01" :disabled="memoryDraft.enabled !== true" style="width: 220px;" />
+          </n-form-item>
+          <n-form-item label="画像条数上限">
+            <n-input-number v-model:value="memoryDraft.profileMaxItems" :min="1" :max="20" :disabled="memoryDraft.enabled !== true" style="width: 220px;" />
+          </n-form-item>
+          <n-form-item label="相关记忆上限">
+            <n-input-number v-model:value="memoryDraft.relevantMaxItems" :min="1" :max="20" :disabled="memoryDraft.enabled !== true" style="width: 220px;" />
+          </n-form-item>
+        </n-form>
+      </n-flex>
+      <template #footer>
+        <n-flex justify="flex-end" :size="12">
+          <n-button @click="closeMemoryConfigModal">取消</n-button>
+          <n-button type="primary" :loading="memoryConfigModal.loading" @click="saveMemoryConfig">保存</n-button>
         </n-flex>
       </template>
     </n-modal>
@@ -794,6 +804,10 @@ const contextWindowModal = reactive({
   loading: false
 })
 const contextWindowDraft = reactive({ ...DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG })
+const memoryConfigModal = reactive({
+  show: false,
+  loading: false
+})
 const cloudConfigModal = reactive({
   show: false,
   loading: false,
@@ -1028,8 +1042,10 @@ const memoryConfigSummary = computed(() => {
     : '向量模型未配置，将降级为关键词召回'
   return [
     '已启用',
+    memory.autoExtract ? '自动提取开启' : '自动提取关闭',
     extractionText,
     embeddingText,
+    `总上限 ${memory.storeMaxItems} 条`,
     `召回 TopK ${memory.topK}`,
     `注入上限 ${memory.maxInjectChars} 字符`
   ].join(' / ')
@@ -1753,8 +1769,20 @@ async function saveContextWindow() {
   }
 }
 
+function openMemoryConfigModal() {
+  syncMemoryDraft(chatConfig.value?.memory)
+  memoryConfigModal.show = true
+  memoryConfigModal.loading = false
+}
+
+function closeMemoryConfigModal() {
+  memoryConfigModal.show = false
+  memoryConfigModal.loading = false
+}
+
 async function saveMemoryConfig() {
   memorySaving.value = true
+  memoryConfigModal.loading = true
   try {
     const normalized = normalizeChatMemoryConfig({
       ...memoryDraft,
@@ -1762,13 +1790,27 @@ async function saveMemoryConfig() {
       embedding: { ...memoryDraft.embedding }
     })
     await updateChatConfig({ memory: normalized })
+    await manageMemoryStore('clean').catch(() => null)
     syncMemoryDraft(normalized)
+    closeMemoryConfigModal()
     message.success('聊天记忆配置已保存')
   } catch (err) {
+    syncMemoryDraft(chatConfig.value?.memory)
     message.error(err?.message || String(err))
   } finally {
     memorySaving.value = false
+    memoryConfigModal.loading = false
   }
+}
+
+async function handleToggleMemoryEnabled(value) {
+  memoryDraft.enabled = value === true
+  await saveMemoryConfig()
+}
+
+async function handleToggleMemoryAutoExtract(value) {
+  memoryDraft.autoExtract = value === true
+  await saveMemoryConfig()
 }
 
 function openMemoryPage() {
@@ -1804,8 +1846,17 @@ async function handleOpenMemoryFolder() {
 
 async function handleCleanMemoryStore() {
   try {
-    await manageMemoryStore('clean')
-    message.success('记忆已完成清洗与合并')
+    const result = await manageMemoryStore('clean')
+    const mergedCount = Number(result?.stats?.mergedCount || 0)
+    const trimmedCount = Number(result?.stats?.trimmedCount || 0)
+    if (mergedCount > 0 || trimmedCount > 0) {
+      const parts = []
+      if (mergedCount > 0) parts.push(`合并 ${mergedCount} 条重复项`)
+      if (trimmedCount > 0) parts.push(`按总上限清理 ${trimmedCount} 条低优先级记忆`)
+      message.success(`记忆已完成清洗与整理，本次${parts.join('，')}`)
+      return
+    }
+    message.success('记忆已完成清洗与整理，未发现可合并或需要清理的条目')
   } catch (err) {
     message.error(err?.message || String(err))
   }

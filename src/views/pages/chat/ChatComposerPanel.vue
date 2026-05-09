@@ -185,17 +185,6 @@
 
           <n-tooltip trigger="hover">
             <template #trigger>
-              <n-button size="small" tertiary circle :disabled="busy" @click="emit('reset-chat-setup')">
-                <template #icon>
-                  <n-icon :component="RefreshOutline" size="12" />
-                </template>
-              </n-button>
-            </template>
-            重置配置（并关闭会话绑定）
-          </n-tooltip>
-
-          <n-tooltip trigger="hover">
-            <template #trigger>
               <n-button size="small" tertiary circle :disabled="busy" @click="emit('open-agent-modal')">
                 <template #icon>
                   <n-icon :component="Magento" size="12" />
@@ -757,7 +746,6 @@ const emit = defineEmits([
   'update-video-generation-params',
   'reset-video-generation-params',
   'clear-session',
-  'reset-chat-setup',
   'open-agent-modal',
   'insert-inline-command-trigger',
   'open-file-picker',

@@ -850,6 +850,64 @@ function buildMergedMemoryItem(existing, incoming, options = {}) {
   })
 }
 
+function getMemoryRetentionScore(item) {
+  if (!item || item.status === 'deleted') return -Infinity
+  const status = normalizeText(item.status).toLowerCase() || 'active'
+  const lane = getMemoryLane(item)
+  const sourceType = normalizeText(item?.source?.type).toLowerCase()
+  const confidenceScore = clampNumber(item.confidence, 0.5, 0, 1) * 30
+  const hitScore = Math.min(20, Math.log10((Number(item.hitCount) || 0) + 1) * 10)
+  const updatedMs = safeDateMs(item.updatedAt) || safeDateMs(item.createdAt)
+  const updatedDays = updatedMs ? Math.max(0, (Date.now() - updatedMs) / 86400000) : 9999
+  const recencyScore = Math.max(0, 18 - Math.min(18, updatedDays * 0.25))
+  const lastUsedMs = safeDateMs(item.lastUsedAt)
+  const lastUsedDays = lastUsedMs ? Math.max(0, (Date.now() - lastUsedMs) / 86400000) : 9999
+  const usageScore = lastUsedMs ? Math.max(0, 18 - Math.min(18, lastUsedDays * 0.35)) : 0
+  const laneBonus = lane === 'profile' ? 45 : 0
+  const keyBonus = item.profileKey ? 8 : 0
+  const manualBonus = sourceType === 'manual' ? 20 : 0
+  const archivedPenalty = status === 'archived' ? -40 : 0
+  return laneBonus + keyBonus + manualBonus + confidenceScore + hitScore + recencyScore + usageScore + archivedPenalty
+}
+
+function trimMemoryItemsToConfiguredLimit(items = [], config = getDefaultMemoryConfig()) {
+  const list = Array.isArray(items) ? items.map((item) => normalizeMemoryItem(item)) : []
+  const nonDeleted = list.filter((item) => item.status !== 'deleted')
+  const limit = Math.max(1, Number(config?.storeMaxItems || getDefaultMemoryConfig().storeMaxItems))
+  if (nonDeleted.length <= limit) {
+    return {
+      items: sortMemoryItems(list),
+      stats: {
+        trimmedCount: 0,
+        limit,
+        keptCount: nonDeleted.length
+      }
+    }
+  }
+
+  const ranked = [...nonDeleted]
+    .map((item) => ({
+      item,
+      score: getMemoryRetentionScore(item),
+      updatedAtMs: safeDateMs(item.updatedAt) || safeDateMs(item.createdAt)
+    }))
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score
+      return b.updatedAtMs - a.updatedAtMs
+    })
+
+  const keepIds = new Set(ranked.slice(0, limit).map((row) => row.item.id))
+  const kept = nonDeleted.filter((item) => keepIds.has(item.id))
+  return {
+    items: sortMemoryItems(kept),
+    stats: {
+      trimmedCount: Math.max(0, nonDeleted.length - kept.length),
+      limit,
+      keptCount: kept.length
+    }
+  }
+}
+
 function isNameLikeProfileKey(profileKey = '') {
   const key = normalizeProfileKeyName(profileKey)
   return (
@@ -1059,12 +1117,15 @@ export function dedupeMemoryItems(items = [], config = getDefaultMemoryConfig())
     mergedCount += 1
   }
 
+  const trimmed = trimMemoryItemsToConfiguredLimit(merged, config)
   return {
-    items: sortMemoryItems(merged.map((item) => normalizeMemoryItem(item))),
+    items: trimmed.items,
     stats: {
       inputCount: source.filter((item) => item && item.status !== 'deleted').length,
-      outputCount: merged.length,
-      mergedCount
+      outputCount: trimmed.items.filter((item) => item && item.status !== 'deleted').length,
+      mergedCount,
+      trimmedCount: Number(trimmed?.stats?.trimmedCount || 0),
+      storeLimit: Number(trimmed?.stats?.limit || 0)
     }
   }
 }
@@ -1114,11 +1175,21 @@ async function upsertExtractedMemoryItems(extracted = [], config = getMemoryConf
     nextItems.push(store.items[existingIndex])
   }
 
-  store.items = sortMemoryItems(store.items)
+  const trimmed = trimMemoryItemsToConfiguredLimit(store.items, config)
+  store.items = trimmed.items
+  const persistedById = new Map((store.items || []).map((item) => [String(item.id || ''), item]))
+  const persistedNextItems = []
+  const seenIds = new Set()
+  for (const item of nextItems) {
+    const id = String(item?.id || '')
+    if (!id || seenIds.has(id) || !persistedById.has(id)) continue
+    seenIds.add(id)
+    persistedNextItems.push(persistedById.get(id))
+  }
   store.updatedAt = nowIso()
   await saveStoreToDisk(store)
   scheduleAutoCleanMemoryStore()
-  return nextItems
+  return persistedNextItems
 }
 
 export async function ensureMemoryStore() {
@@ -1165,7 +1236,8 @@ export async function upsertMemoryItem(item) {
   }
   if (index === -1) store.items.push(merged)
   else store.items[index] = merged
-  store.items = sortMemoryItems(store.items)
+  const trimmed = trimMemoryItemsToConfiguredLimit(store.items, config)
+  store.items = trimmed.items
   store.updatedAt = nowIso()
   const saved = await saveStoreToDisk(store)
   scheduleAutoCleanMemoryStore()
@@ -1198,7 +1270,8 @@ export async function updateMemoryItem(id, patch) {
     ).catch(() => merged.embedding || [])
   }
   store.items[index] = merged
-  store.items = sortMemoryItems(store.items)
+  const trimmed = trimMemoryItemsToConfiguredLimit(store.items, config)
+  store.items = trimmed.items
   store.updatedAt = nowIso()
   const saved = await saveStoreToDisk(store)
   scheduleAutoCleanMemoryStore()

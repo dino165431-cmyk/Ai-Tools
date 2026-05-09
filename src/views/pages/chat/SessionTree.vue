@@ -509,6 +509,20 @@ function statTimeMs(statInfo) {
   return parseTimeMs(statInfo?.mtime)
 }
 
+function parseSessionCreatedTimeMs(value) {
+  return parseTimeMs(value)
+}
+
+function resolveSessionCreatedTimeMs(data, statInfo) {
+  return (
+    parseSessionCreatedTimeMs(data?.source?.startedAt) ||
+    parseSessionCreatedTimeMs(data?.source?.createdAt) ||
+    parseSessionCreatedTimeMs(data?.createdAt) ||
+    parseSessionCreatedTimeMs(data?.savedAt) ||
+    statTimeMs(statInfo)
+  )
+}
+
 async function readSessionFileMeta(entryPath, statInfo) {
   const fileName = String(entryPath || '').split('/').pop() || ''
   const fallbackName = String(fileName || '').replace(/\.json$/i, '')
@@ -529,12 +543,7 @@ async function readSessionFileMeta(entryPath, statInfo) {
   const autoChat = isAutoChatPath(entryPath, data)
   const titleRaw = String(data?.title || '').trim()
   const title = titleRaw || stripGeneratedTimePrefix(fallbackName)
-  const timeMs =
-    parseTimeMs(data?.source?.startedAt) ||
-    parseTimeMs(data?.source?.createdAt) ||
-    parseTimeMs(data?.createdAt) ||
-    parseTimeMs(data?.savedAt) ||
-    statTimeMs(statInfo)
+  const timeMs = resolveSessionCreatedTimeMs(data, statInfo)
 
   const metaLabel = formatTreeMetaDate(timeMs)
 
@@ -793,19 +802,27 @@ function touchPath(entryPath, options = {}) {
     String(normalizedPath.split('/').pop() || normalizedPath).replace(/\.json$/i, '')
   )
   const nextLabel = String(options.label || '').trim() || existingNode?.label || fallbackLabel
+  const createdTimeMs = Number(options.createdTimeMs || 0)
   const nextNode = existingNode
     ? {
         ...existingNode,
         label: nextLabel,
-        metaLabel: formatTreeMetaDate(now),
-        sortTimeMs: now
+        metaLabel: existingNode.metaLabel || formatTreeMetaDate(existingNode.sortTimeMs || createdTimeMs || now),
+        sortTimeMs: Number(existingNode.sortTimeMs || createdTimeMs || now)
       }
     : {
         ...createTreeNode(normalizedPath, false),
-        label: nextLabel
+        label: nextLabel,
+        metaLabel: formatTreeMetaDate(createdTimeMs || now),
+        sortTimeMs: createdTimeMs || now
       }
 
   return upsertTreeNode(parentPath || props.root, nextNode)
+}
+
+function resolveCreatedTimeMsForPayload(payload) {
+  if (!payload || typeof payload !== 'object') return 0
+  return resolveSessionCreatedTimeMs(payload, null)
 }
 
 function updateTreeStateAfterPathChange(oldBase, newBase) {
@@ -1133,7 +1150,10 @@ async function saveSessionInSelectedFolder() {
     expandedKeys.value = nextExpanded
     folderExpandedKeys.value = nextFolderExpanded
 
-    touchPath(fullPath, { label: name })
+    touchPath(fullPath, {
+      label: name,
+      createdTimeMs: resolveCreatedTimeMsForPayload(payload)
+    })
     await selectPath(fullPath)
     emit('saved', fullPath)
     message.success('会话已保存')

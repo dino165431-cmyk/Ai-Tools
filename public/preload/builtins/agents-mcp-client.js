@@ -89,6 +89,21 @@ function normalizeToolApprovalMode(value) {
   return TOOL_APPROVAL_MODES.includes(normalized) ? normalized : 'auto'
 }
 
+function normalizePromptType(value) {
+  return cleanString(value).toLowerCase() === 'user' ? 'user' : 'system'
+}
+
+function isSystemPromptItem(prompt) {
+  return normalizePromptType(prompt?.type) === 'system'
+}
+
+function getSystemPromptById(promptsMap, promptId) {
+  const id = cleanString(promptId)
+  if (!id || !isPlainObject(promptsMap)) return null
+  const prompt = promptsMap[id]
+  return prompt && isSystemPromptItem(prompt) ? prompt : null
+}
+
 function resolveTraceStreamIdFromAgentRunParams(params) {
   if (!isPlainObject(params)) return ''
   return cleanString(params.__trace_stream_id || params.trace_stream_id)
@@ -855,7 +870,7 @@ function closeNestedClientSafely(server, client, pooled = false) {
 
 function buildAgentBrief(agent, config) {
   const provider = agent?.provider ? config?.providers?.[agent.provider] : null
-  const prompt = agent?.prompt ? config?.prompts?.[agent.prompt] : null
+  const prompt = getSystemPromptById(config?.prompts, agent?.prompt)
   const skillNames = normalizeStringList(agent?.skills).map((id) => config?.skills?.[id]?.name || id)
   const mcpNames = normalizeStringList(agent?.mcp).map((id) => config?.mcpServers?.[id]?.name || id)
   return {
@@ -863,7 +878,7 @@ function buildAgentBrief(agent, config) {
     name: cleanString(agent?.name) || cleanString(agent?._id),
     provider: cleanString(provider?.name || agent?.provider),
     model: cleanString(agent?.model),
-    prompt: cleanString(prompt?.name || agent?.prompt),
+    prompt: cleanString(prompt?.name || prompt?._id),
     skills: skillNames,
     mcp: mcpNames,
     builtin: !!agent?.builtin
@@ -982,7 +997,7 @@ async function resolveExecutionProfile({ config, agent, trace }) {
   const model = cleanString(agent?.model || chatConfig.defaultModel || providerModels[0] || '')
   if (!model) throw new Error('Model is not configured on Agent or defaults')
 
-  const prompt = agent?.prompt ? prompts[agent.prompt] : null
+  const prompt = getSystemPromptById(prompts, agent?.prompt)
   const basePromptText = prompt ? cleanString(prompt.content) : cleanString(chatConfig.defaultSystemPrompt)
   const skillIds = unionStrings(agent?.skills)
   const skillObjects = skillIds.map((id) => skills[id]).filter(Boolean)
