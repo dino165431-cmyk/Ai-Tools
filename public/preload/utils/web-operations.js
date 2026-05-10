@@ -351,6 +351,31 @@ function shouldRetryWithInsecureTls(err, target, options = {}, allowInsecureTlsF
     isTlsCertificateError(err)
 }
 
+function isInsecureTlsFallbackEnabled(options = {}, webSearchConfig = {}) {
+  if (Object.prototype.hasOwnProperty.call(options, 'allowInsecureTlsFallback')) {
+    return options.allowInsecureTlsFallback === true
+  }
+  return webSearchConfig.allowInsecureTlsFallback === true
+}
+
+function buildInsecureTlsFallbackWarning(target, err, viaProxy = false) {
+  const targetUrl = target?.toString?.() || String(target || '')
+  const errorCode = cleanString(err?.code)
+  const errorMessage = cleanString(err?.message || err)
+  const transportLabel = viaProxy ? 'HTTPS 代理隧道' : '直连 HTTPS'
+  return [
+    `[web] ${transportLabel} 证书校验失败，已按显式配置降级为不校验证书重试。`,
+    `目标: ${targetUrl || 'unknown'}`,
+    `风险: 当前请求将跳过 TLS 证书校验，可能遭受中间人攻击，请仅在受信任环境中临时使用。`,
+    errorCode ? `错误码: ${errorCode}` : '',
+    errorMessage ? `错误信息: ${errorMessage}` : ''
+  ].filter(Boolean).join(' ')
+}
+
+function warnInsecureTlsFallback(target, err, viaProxy = false) {
+  console.warn(buildInsecureTlsFallbackWarning(target, err, viaProxy))
+}
+
 function requestTextViaHttpsProxy(target, proxy, { timeoutMs, maxBytes, redirects, headers, options, method = 'GET', bodyBuffer = Buffer.alloc(0), proxyTunnelRetries = 1, insecureTls = false }) {
   return new Promise((resolve, reject) => {
     let settled = false
@@ -874,9 +899,7 @@ function requestText(url, options = {}) {
   const proxy = options.useProxy === false ? null : normalizeProxyUrl(getConfiguredProxyUrl(options.proxyUrl))
   const client = target.protocol === 'http:' ? http : https
   let requestClient = client
-  const allowInsecureTlsFallback = options.allowInsecureTlsFallback !== undefined
-    ? options.allowInsecureTlsFallback !== false
-    : webSearchConfig.allowInsecureTlsFallback !== false
+  const allowInsecureTlsFallback = isInsecureTlsFallbackEnabled(options, webSearchConfig)
   const headers = {
     Accept: options.accept || 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5',
     'Accept-Language': options.language || 'zh-CN,zh;q=0.9,en;q=0.8',
@@ -924,6 +947,7 @@ function requestText(url, options = {}) {
         : 1
     }).catch((err) => {
       if (shouldRetryWithInsecureTls(err, target, options, allowInsecureTlsFallback)) {
+        warnInsecureTlsFallback(target, err, true)
         return requestText(url, { ...options, insecureTls: true })
       }
       throw err
@@ -987,6 +1011,7 @@ function requestText(url, options = {}) {
       })
       req.on('error', (err) => {
         if (shouldRetryWithInsecureTls(err, target, options, allowInsecureTlsFallback)) {
+          warnInsecureTlsFallback(target, err, false)
           requestText(url, { ...options, insecureTls: true }).then(resolve, reject)
           return
         }
@@ -1222,11 +1247,14 @@ module.exports = {
     buildWebSearchApiAttempts,
     buildWebSearchAttempts,
     decodeResponseText,
+    buildInsecureTlsFallbackWarning,
+    isInsecureTlsFallbackEnabled,
     isTlsCertificateError,
     mergeSearchResults,
     normalizeBingResultUrl,
     parseBochaSearchApiResponse,
     parseBraveSearchApiResponse,
-    parseDuckDuckGoInstantAnswerApiResponse
+    parseDuckDuckGoInstantAnswerApiResponse,
+    shouldRetryWithInsecureTls
   }
 }

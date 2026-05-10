@@ -1,5 +1,5 @@
 /**
- * 前端 MCP 客户端桥接，实际调用 `window.createMCPClient`（由 preload 注入）。
+ * 前端 MCP 客户端桥接，实际调用 `globalThis.aiToolsApi.dangerous.mcp.createClient`。
  *
  * 默认行为：每次创建一个新的 MCP client，由调用方负责 close。
  * keepAlive：当 `serverConfig.keepAlive === true` 且存在 `_id` 时，会复用同一个 client，
@@ -44,7 +44,7 @@ function getServerConfigFingerprint(serverConfig) {
 }
 
 export function createMCPClient(serverConfig) {
-  return window?.createMCPClient?.(serverConfig)
+  return globalThis?.aiToolsApi?.dangerous?.mcp?.createClient?.(serverConfig)
 }
 
 export function normalizeMcpPromptArgs(args) {

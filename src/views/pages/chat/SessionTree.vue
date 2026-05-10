@@ -143,6 +143,7 @@ const runtimeIssue = ref('')
 let pendingRefreshRequested = false
 let pendingRefreshSilent = true
 let refreshPromise = null
+let externalRefreshTimer = null
 
 const showContextMenu = ref(false)
 const menuX = ref(0)
@@ -248,7 +249,13 @@ async function moveSessionAssetDirectoryForRename(oldPath, newPath) {
 function handleExternalSessionFilesChanged(e) {
   const changedPath = String(e?.detail?.path || '').trim()
   if (changedPath && !changedPath.startsWith(String(props.root || ''))) return
-  refreshTree({ silent: true })
+  if (externalRefreshTimer) {
+    clearTimeout(externalRefreshTimer)
+  }
+  externalRefreshTimer = window.setTimeout(() => {
+    externalRefreshTimer = null
+    void refreshTree({ silent: true })
+  }, 180)
 }
 
 function getPathDepth(p) {
@@ -302,6 +309,10 @@ onBeforeUnmount(() => {
     window.removeEventListener('sessionFilesChanged', handleExternalSessionFilesChanged)
   } catch {
     // ignore
+  }
+  if (externalRefreshTimer) {
+    clearTimeout(externalRefreshTimer)
+    externalRefreshTimer = null
   }
 })
 

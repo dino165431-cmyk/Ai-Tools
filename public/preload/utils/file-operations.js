@@ -11,6 +11,8 @@ const CLOUD_AUTO_RESTORE_DEBOUNCE_MS = 15000
 const CLOUD_AUTO_BACKUP_MIN_INTERVAL_MS = 5 * 60 * 1000
 const CLOUD_AUTO_REQUIRED_KEYS = ['region', 'accessKeyId', 'secretAccessKey', 'bucket']
 const EXTERNAL_WATCH_DEBOUNCE_MS = 500
+const EXTERNAL_WATCH_RESCAN_DEBOUNCE_MS = 250
+const EXTERNAL_WATCH_POLL_INTERVAL_MS = 2000
 const INTERNAL_MUTATION_SUPPRESS_MS = 1500
 
 let electronShell = null
@@ -43,6 +45,7 @@ class FileOperations {
             return FileOperations.instance
         }
         FileOperations.instance = this
+        this._disposed = false
         this._imageBlobCache = new Map()
         this._cloudAutomationInitialized = false
         this._cloudAutoBackupReady = false
@@ -59,8 +62,11 @@ class FileOperations {
         this._cloudAutoRestorePending = false
         this._externalWatchers = new Map()
         this._externalWatchDebounceTimers = new Map()
+        this._externalWatchResyncTimers = new Map()
         this._internalMutationSuppressUntil = new Map()
         this._lastWatcherRootSignature = ''
+        this._globalConfigChangedListener = null
+        this._recursiveExternalWatchSupported = null
     }
 
     _revokeCachedBlobUrl(cacheKey) {
@@ -196,15 +202,301 @@ class FileOperations {
         this._externalWatchDebounceTimers.set(root, timer)
     }
 
-    _closeExternalWatchers() {
-        for (const watcher of this._externalWatchers.values()) {
+    _queueExternalWatcherResync(rootRelPath) {
+        const root = this._normalizeRelativePath(rootRelPath)
+        if (!root) return
+
+        const existingTimer = this._externalWatchResyncTimers.get(root)
+        if (existingTimer) clearTimeout(existingTimer)
+
+        const timer = setTimeout(() => {
+            this._externalWatchResyncTimers.delete(root)
+            try {
+                this._restartExternalWatcherForRoot(root)
+            } catch (err) {
+                console.warn?.(`[External watch] resync failed for ${root}:`, err)
+            }
+        }, EXTERNAL_WATCH_RESCAN_DEBOUNCE_MS)
+
+        this._externalWatchResyncTimers.set(root, timer)
+    }
+
+    _createExternalWatcherEntry(rootRel, absPath) {
+        return {
+            rootRel,
+            absPath,
+            mode: 'unknown',
+            watcher: null,
+            childWatchers: new Map(),
+            pollTimer: null,
+            snapshot: new Map()
+        }
+    }
+
+    _closeWatcherEntry(entry) {
+        if (!entry) return
+        try {
+            entry.watcher?.close?.()
+        } catch {
+            // ignore close failures
+        }
+        entry.watcher = null
+
+        for (const watcher of entry.childWatchers?.values?.() || []) {
             try {
                 watcher?.close?.()
             } catch {
                 // ignore close failures
             }
         }
+        entry.childWatchers?.clear?.()
+
+        if (entry.pollTimer) {
+            clearInterval(entry.pollTimer)
+            entry.pollTimer = null
+        }
+
+        entry.snapshot = new Map()
+    }
+
+    _closeExternalWatchers() {
+        for (const entry of this._externalWatchers.values()) {
+            this._closeWatcherEntry(entry)
+        }
         this._externalWatchers.clear()
+        for (const timer of this._externalWatchResyncTimers.values()) {
+            clearTimeout(timer)
+        }
+        this._externalWatchResyncTimers.clear()
+    }
+
+    _handleExternalWatchEvent(entry, filename = '') {
+        const rootRel = this._normalizeRelativePath(entry?.rootRel)
+        if (!rootRel) return
+
+        const rawName = typeof filename === 'string' ? filename : ''
+        const normalizedRel = rawName
+            ? `${rootRel}/${String(rawName).replace(/\\/g, '/')}`.replace(/\/+/g, '/')
+            : rootRel
+        const relevant = rootRel === 'note'
+            ? contentIndex._internal.isRelevantWatchedPath('note', normalizedRel)
+            : contentIndex._internal.isRelevantWatchedPath('session', normalizedRel)
+        if (!relevant && normalizedRel !== rootRel) return
+        this._queueExternalTreeRefresh(rootRel, normalizedRel)
+    }
+
+    _shouldRetryExternalWatchWithoutRecursive(err) {
+        const code = String(err?.code || '').toUpperCase()
+        const message = String(err?.message || '')
+        return code === 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM'
+            || code === 'ERR_INVALID_OPT_VALUE'
+            || code === 'ERR_INVALID_ARG_VALUE'
+            || /recursive/i.test(message)
+    }
+
+    _detectRecursiveExternalWatchSupport() {
+        if (typeof this._recursiveExternalWatchSupported === 'boolean') {
+            return this._recursiveExternalWatchSupported
+        }
+        return true
+    }
+
+    _watchDirectory(entry, dirAbs, relativeFromRoot = '') {
+        const normalizedDirRel = this._normalizeRelativePath(relativeFromRoot)
+        const watcher = fsSync.watch(dirAbs, (_eventType, filename) => {
+            const childName = typeof filename === 'string' ? String(filename) : ''
+            const relative = normalizedDirRel && childName
+                ? `${normalizedDirRel}/${childName}`
+                : normalizedDirRel || childName
+            this._handleExternalWatchEvent(entry, relative)
+            this._queueExternalWatcherResync(entry.rootRel)
+        })
+        entry.childWatchers.set(dirAbs, watcher)
+        return watcher
+    }
+
+    _listWatchableDirectories(rootRel, rootAbs) {
+        const queue = [{ abs: rootAbs, rel: '' }]
+        const dirs = []
+
+        while (queue.length) {
+            const current = queue.shift()
+            dirs.push(current)
+
+            let entries = []
+            try {
+                entries = fsSync.readdirSync(current.abs, { withFileTypes: true })
+            } catch (err) {
+                if (err?.code === 'ENOENT') continue
+                throw err
+            }
+
+            for (const entry of entries) {
+                if (!entry?.isDirectory?.()) continue
+                const childRel = current.rel ? `${current.rel}/${entry.name}` : entry.name
+                const normalizedRel = `${rootRel}/${childRel}`.replace(/\/+/g, '/')
+                const relevant = rootRel === 'note'
+                    ? contentIndex._internal.isRelevantWatchedPath('note', normalizedRel)
+                    : contentIndex._internal.isRelevantWatchedPath('session', normalizedRel)
+                if (!relevant) continue
+                queue.push({
+                    abs: path.join(current.abs, entry.name),
+                    rel: childRel
+                })
+            }
+        }
+
+        return dirs
+    }
+
+    _captureExternalWatchSnapshot(rootRel, rootAbs) {
+        const entriesMap = new Map()
+        const queue = [{ abs: rootAbs, rel: '' }]
+
+        while (queue.length) {
+            const current = queue.shift()
+            let entries = []
+            try {
+                entries = fsSync.readdirSync(current.abs, { withFileTypes: true })
+            } catch (err) {
+                if (err?.code === 'ENOENT') continue
+                throw err
+            }
+
+            for (const entry of entries) {
+                const childRel = current.rel ? `${current.rel}/${entry.name}` : entry.name
+                const normalizedRel = `${rootRel}/${childRel}`.replace(/\/+/g, '/')
+                const relevant = rootRel === 'note'
+                    ? contentIndex._internal.isRelevantWatchedPath('note', normalizedRel)
+                    : contentIndex._internal.isRelevantWatchedPath('session', normalizedRel)
+                if (!relevant) continue
+
+                if (entry.isDirectory()) {
+                    entriesMap.set(normalizedRel, 'dir')
+                    queue.push({
+                        abs: path.join(current.abs, entry.name),
+                        rel: childRel
+                    })
+                    continue
+                }
+
+                if (entry.isFile()) {
+                    let statInfo = null
+                    try {
+                        statInfo = fsSync.statSync(path.join(current.abs, entry.name))
+                    } catch (err) {
+                        if (err?.code === 'ENOENT') continue
+                        throw err
+                    }
+                    entriesMap.set(normalizedRel, `file:${Number(statInfo?.mtimeMs || 0)}:${Number(statInfo?.size || 0)}`)
+                }
+            }
+        }
+
+        return entriesMap
+    }
+
+    _armRecursiveExternalWatcher(entry) {
+        const watcher = fsSync.watch(entry.absPath, { recursive: true }, (_eventType, filename) => {
+            this._handleExternalWatchEvent(entry, filename)
+        })
+        entry.mode = 'native-recursive'
+        entry.watcher = watcher
+        return true
+    }
+
+    _armDirectoryTreeExternalWatcher(entry) {
+        const directories = this._listWatchableDirectories(entry.rootRel, entry.absPath)
+        for (const directory of directories) {
+            this._watchDirectory(entry, directory.abs, directory.rel)
+        }
+        entry.mode = 'directory-tree'
+        return true
+    }
+
+    _armPollingExternalWatcher(entry) {
+        entry.snapshot = this._captureExternalWatchSnapshot(entry.rootRel, entry.absPath)
+        entry.pollTimer = setInterval(() => {
+            try {
+                const nextSnapshot = this._captureExternalWatchSnapshot(entry.rootRel, entry.absPath)
+                const previousSnapshot = entry.snapshot || new Map()
+                let changed = false
+
+                for (const [filePath, signature] of nextSnapshot.entries()) {
+                    if (!previousSnapshot.has(filePath) || previousSnapshot.get(filePath) !== signature) {
+                        changed = true
+                        break
+                    }
+                }
+
+                if (!changed) {
+                    for (const filePath of previousSnapshot.keys()) {
+                        if (!nextSnapshot.has(filePath)) {
+                            changed = true
+                            break
+                        }
+                    }
+                }
+
+                entry.snapshot = nextSnapshot
+                if (changed) {
+                    this._queueExternalTreeRefresh(entry.rootRel, entry.rootRel)
+                }
+            } catch (err) {
+                if (err?.code === 'ENOENT') {
+                    entry.snapshot = new Map()
+                    this._queueExternalTreeRefresh(entry.rootRel, entry.rootRel)
+                    return
+                }
+                console.warn?.(`[External watch] polling failed for ${entry.rootRel}:`, err)
+            }
+        }, EXTERNAL_WATCH_POLL_INTERVAL_MS)
+        entry.mode = 'polling'
+        return true
+    }
+
+    _startExternalWatcherForRoot(rootRel, absPath) {
+        const entry = this._createExternalWatcherEntry(rootRel, absPath)
+        this._externalWatchers.set(rootRel, entry)
+
+        try {
+            if (this._detectRecursiveExternalWatchSupport()) {
+                try {
+                    this._armRecursiveExternalWatcher(entry)
+                    this._recursiveExternalWatchSupported = true
+                    return
+                } catch (err) {
+                    if (this._shouldRetryExternalWatchWithoutRecursive(err)) {
+                        this._recursiveExternalWatchSupported = false
+                        console.warn?.(`[External watch] recursive mode unavailable for ${rootRel}, falling back:`, err)
+                    } else {
+                        throw err
+                    }
+                }
+            }
+
+            try {
+                this._armDirectoryTreeExternalWatcher(entry)
+                return
+            } catch (err) {
+                console.warn?.(`[External watch] directory-tree mode failed for ${rootRel}, falling back to polling:`, err)
+                this._closeWatcherEntry(entry)
+            }
+
+            this._armPollingExternalWatcher(entry)
+        } catch (err) {
+            this._closeWatcherEntry(entry)
+            this._externalWatchers.delete(rootRel)
+            throw err
+        }
+    }
+
+    _restartExternalWatcherForRoot(rootRel) {
+        const existing = this._externalWatchers.get(rootRel)
+        if (!existing) return
+        const absPath = existing.absPath
+        this._closeWatcherEntry(existing)
+        this._startExternalWatcherForRoot(rootRel, absPath)
     }
 
     _ensureExternalWatchers() {
@@ -228,18 +520,7 @@ class FileOperations {
             const absPath = path.join(rootAbs, rootRel)
             try {
                 fsSync.mkdirSync(absPath, { recursive: true })
-                const watcher = fsSync.watch(absPath, { recursive: true }, (_eventType, filename) => {
-                    const rawName = typeof filename === 'string' ? filename : ''
-                    const normalizedRel = rawName
-                        ? `${rootRel}/${String(rawName).replace(/\\/g, '/')}`.replace(/\/+/g, '/')
-                        : rootRel
-                    const relevant = rootRel === 'note'
-                        ? contentIndex._internal.isRelevantWatchedPath('note', normalizedRel)
-                        : contentIndex._internal.isRelevantWatchedPath('session', normalizedRel)
-                    if (!relevant && normalizedRel !== rootRel) return
-                    this._queueExternalTreeRefresh(rootRel, normalizedRel)
-                })
-                this._externalWatchers.set(rootRel, watcher)
+                this._startExternalWatcherForRoot(rootRel, absPath)
             } catch (err) {
                 console.warn?.(`[External watch] failed for ${rootRel}:`, err)
             }
@@ -251,7 +532,11 @@ class FileOperations {
             await contentIndex.upsertPath(relativePath)
         } catch (err) {
             console.warn?.('[Content index] write sync failed:', err)
-            await contentIndex.markDirtyByPath(relativePath, 'write_failed')
+            try {
+                await contentIndex.markDirtyByPath(relativePath, 'write_failed')
+            } catch (markErr) {
+                console.warn?.('[Content index] dirty mark failed after write sync failure:', markErr)
+            }
         }
     }
 
@@ -275,16 +560,18 @@ class FileOperations {
 
     initCloudAutomation() {
         if (this._cloudAutomationInitialized) return
+        this._disposed = false
         this._cloudAutomationInitialized = true
 
         this._handleCloudAutomationConfigChange(this._getCloudConfigSafe())
         this._ensureExternalWatchers()
 
         if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
-            window.addEventListener('globalConfigChanged', (event) => {
+            this._globalConfigChangedListener = (event) => {
                 this._handleCloudAutomationConfigChange(event?.detail?.cloudConfig)
                 this._ensureExternalWatchers()
-            })
+            }
+            window.addEventListener('globalConfigChanged', this._globalConfigChangedListener)
         }
     }
 
@@ -364,6 +651,7 @@ class FileOperations {
     }
 
     _scheduleCloudAutoBackup() {
+        if (this._disposed) return
         if (!this._cloudAutomationInitialized || !this._isCloudAutoBackupReady()) return
 
         this._clearCloudAutoBackupTimer()
@@ -380,6 +668,7 @@ class FileOperations {
     }
 
     _scheduleCloudAutoRestore() {
+        if (this._disposed) return
         if (!this._cloudAutomationInitialized || !this._isCloudAutoRestoreReady()) return
 
         this._clearCloudAutoRestoreTimer()
@@ -398,6 +687,7 @@ class FileOperations {
     }
 
     _schedulePendingCloudAutoOperation() {
+        if (this._disposed) return
         if (this._cloudAutoRestorePending) {
             this._cloudAutoRestorePending = false
             this._scheduleCloudAutoRestore()
@@ -430,6 +720,7 @@ class FileOperations {
     }
 
     async _runCloudAutoBackup() {
+        if (this._disposed) return
         if (!this._isCloudAutoBackupReady()) return
 
         if (this._isCloudAutoOperationRunning()) {
@@ -450,6 +741,7 @@ class FileOperations {
     }
 
     async _runCloudAutoRestore() {
+        if (this._disposed) return
         if (!this._isCloudAutoRestoreReady()) return
 
         if (this._isCloudAutoOperationRunning()) {
@@ -850,6 +1142,38 @@ class FileOperations {
         for (const key of [...this._imageBlobCache.keys()]) {
             this._revokeCachedBlobUrl(key)
         }
+    }
+
+    dispose() {
+        this._disposed = true
+        this._cloudAutomationInitialized = false
+        this._cloudAutoBackupReady = false
+        this._cloudAutoBackupSignature = ''
+        this._cloudAutoBackupPending = false
+        this._cloudAutoRestoreReady = false
+        this._cloudAutoRestoreSignature = ''
+        this._cloudAutoRestorePending = false
+        this._cloudOperationRunning = false
+        this._cloudAutoBackupRunning = false
+        this._cloudAutoRestoreRunning = false
+        this._clearCloudAutoBackupTimer()
+        this._clearCloudAutoRestoreTimer()
+        this._closeExternalWatchers()
+        for (const timer of this._externalWatchDebounceTimers.values()) {
+            clearTimeout(timer)
+        }
+        this._externalWatchDebounceTimers.clear()
+        this._internalMutationSuppressUntil.clear()
+        this._lastWatcherRootSignature = ''
+        if (this._globalConfigChangedListener && typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+            try {
+                window.removeEventListener('globalConfigChanged', this._globalConfigChangedListener)
+            } catch {
+                // ignore
+            }
+        }
+        this._globalConfigChangedListener = null
+        this.clearImageBlobCache()
     }
 }
 

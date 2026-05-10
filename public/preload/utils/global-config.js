@@ -379,7 +379,7 @@ const LOCAL_NOTEBOOK_RUNTIME_CONFIG_FILENAME = 'notebook-runtime.json'
 const LOCAL_WEB_SEARCH_CONFIG_FILENAME = 'web-search.json'
 const DEFAULT_WEB_SEARCH_CONFIG = Object.freeze({
     proxyUrl: '',
-    allowInsecureTlsFallback: true,
+    allowInsecureTlsFallback: false,
     searchApiProvider: 'none',
     searchApiKey: '',
     searchApiEndpoint: '',
@@ -423,7 +423,7 @@ function normalizeWebSearchConfig(raw) {
     const usesCredentialedApi = provider === 'brave_search' || provider === 'bocha_search'
     return {
         proxyUrl: typeof src.proxyUrl === 'string' ? src.proxyUrl.trim() : '',
-        allowInsecureTlsFallback: src.allowInsecureTlsFallback !== false,
+        allowInsecureTlsFallback: src.allowInsecureTlsFallback === true,
         searchApiProvider: provider,
         searchApiKey: usesCredentialedApi && typeof src.searchApiKey === 'string' ? src.searchApiKey.trim() : '',
         searchApiEndpoint: usesCredentialedApi && typeof src.searchApiEndpoint === 'string' ? src.searchApiEndpoint.trim() : '',
@@ -1905,42 +1905,187 @@ class GlobalConfig {
         return config
     }
 
-    _buildBuiltinRepairStorageConfig(raw, repaired) {
+    _buildStorageRepairConfig(raw, repaired) {
         const base = this._isPlainObject(raw) ? this._clone(raw) : {}
-        return {
+        const sanitized = this._stripNotebookRuntimeFromStorageConfig(
+            this._clone(this._isPlainObject(repaired) ? repaired : this._defaultConfig)
+        )
+        const healed = {
             ...base,
-            mcpServers: this._clone(repaired?.mcpServers || {}),
-            skills: this._clone(repaired?.skills || {}),
-            prompts: this._clone(repaired?.prompts || {}),
-            agents: this._clone(repaired?.agents || {}),
-            providers: this._clone(repaired?.providers || {})
+            theme: sanitized.theme,
+            chatConfig: this._clone(sanitized.chatConfig),
+            contentSearchConfig: this._clone(sanitized.contentSearchConfig),
+            noteConfig: this._clone(sanitized.noteConfig),
+            configSecurity: this._clone(sanitized.configSecurity),
+            agents: this._clone(sanitized.agents),
+            providers: this._clone(sanitized.providers),
+            prompts: this._clone(sanitized.prompts),
+            skills: this._clone(sanitized.skills),
+            mcpServers: this._clone(sanitized.mcpServers),
+            timedTask: this._clone(sanitized.timedTask),
+            dataStorageRoot: sanitized.dataStorageRoot,
+            cloudConfig: this._clone(sanitized.cloudConfig)
+        }
+
+        if (Object.prototype.hasOwnProperty.call(sanitized, 'webSearchConfig')) {
+            healed.webSearchConfig = this._clone(sanitized.webSearchConfig)
+        } else if (Object.prototype.hasOwnProperty.call(healed, 'webSearchConfig')) {
+            delete healed.webSearchConfig
+        }
+
+        return healed
+    }
+
+    _formatStorageSize(sizeBytes) {
+        const bytes = Number(sizeBytes)
+        if (!Number.isFinite(bytes) || bytes < 0) return '未知大小'
+        if (bytes < 1024) return `${bytes} B`
+        if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(2)} KB`
+        return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
+    }
+
+    _isLikelyStorageQuotaError(err) {
+        const text = [
+            err?.name,
+            err?.code,
+            err?.message
+        ].filter(Boolean).join(' ')
+        return /(quota|limit|size|space|capacity|too\s+large|max|exceed|overflow|full|超限|上限|过大|空间不足)/i.test(text)
+    }
+
+    _buildStorageOperationError(action, err, meta = {}) {
+        const details = []
+        if (meta.reason) details.push(String(meta.reason))
+        if (meta.serializationFailed) {
+            details.push('请检查是否包含循环引用、BigInt 或其他不可序列化值')
+        }
+        if (Number.isFinite(meta.sizeBytes)) {
+            details.push(`当前序列化后大小约 ${this._formatStorageSize(meta.sizeBytes)}`)
+        }
+
+        const causeMessage = err?.message ? String(err.message).trim() : String(err || '').trim()
+        if (causeMessage) {
+            details.push(`底层错误：${causeMessage}`)
+        }
+
+        const wrapped = new Error(details.length ? `${action}失败：${details.join('；')}` : `${action}失败`)
+        if (err !== undefined) wrapped.cause = err
+        if (err?.code !== undefined) wrapped.code = err.code
+        if (Number.isFinite(meta.sizeBytes)) wrapped.sizeBytes = meta.sizeBytes
+        if (meta.serializationFailed) wrapped.serializationFailed = true
+        if (meta.quotaLikely) wrapped.quotaLikely = true
+        wrapped.storageAction = action
+        return wrapped
+    }
+
+    _serializeStoragePayload(raw, action = '保存配置') {
+        try {
+            const json = JSON.stringify(raw)
+            if (typeof json !== 'string') {
+                throw this._buildStorageOperationError(action, null, {
+                    reason: '配置序列化结果为空，无法写入存储',
+                    serializationFailed: true
+                })
+            }
+            return {
+                json,
+                sizeBytes: Buffer.byteLength(json, 'utf8')
+            }
+        } catch (err) {
+            if (err?.serializationFailed) throw err
+            throw this._buildStorageOperationError(action, err, {
+                reason: '配置无法序列化',
+                serializationFailed: true
+            })
+        }
+    }
+
+    _readStorageValue(key) {
+        try {
+            return utools.dbCryptoStorage.getItem(key)
+        } catch (err) {
+            throw this._buildStorageOperationError('读取配置', err, {
+                reason: '无法从加密存储读取配置'
+            })
+        }
+    }
+
+    _writeStorageValue(key, value, action = '保存配置') {
+        const { sizeBytes } = this._serializeStoragePayload(value, action)
+        try {
+            utools.dbCryptoStorage.setItem(key, value)
+        } catch (err) {
+            const maybeQuota = this._isLikelyStorageQuotaError(err)
+            throw this._buildStorageOperationError(action, err, {
+                reason: maybeQuota ? '配置写入失败，可能超出存储容量限制' : '配置写入失败',
+                sizeBytes,
+                quotaLikely: maybeQuota
+            })
+        }
+        return { sizeBytes }
+    }
+
+    _tryRepairStorage(raw, reason, sourceError = null) {
+        try {
+            this._writeStorageValue(this.STORAGE_KEY, raw, '修复配置存储')
+            return true
+        } catch (repairError) {
+            if (sourceError) {
+                console.warn(`全局配置自动修复失败：${reason}`, repairError, sourceError)
+            } else {
+                console.warn(`全局配置自动修复失败：${reason}`, repairError)
+            }
+            return false
         }
     }
 
     _getRaw() {
-        let config = utools.dbCryptoStorage.getItem(this.STORAGE_KEY);
-        if (!config) {
-            return this._clone(this._defaultConfig);
+        let stored = null
+        try {
+            stored = this._readStorageValue(this.STORAGE_KEY)
+        } catch (readError) {
+            const fallback = this._clone(this._defaultConfig)
+            console.warn('读取全局配置失败，已回退到默认配置。', readError)
+            this._tryRepairStorage(
+                this._buildStorageRepairConfig({}, fallback),
+                '读取存储异常，已回退到默认配置',
+                readError
+            )
+            return fallback
         }
 
-        // 兼容旧版本配置：补齐新增字段
-        if (!this._isPlainObject(config)) {
-            return this._clone(this._defaultConfig);
+        if (stored === null || stored === undefined) {
+            return this._clone(this._defaultConfig)
         }
 
-        const migrated = this._migrateLegacyNotebookRuntimeConfig(config)
-        config = migrated.config
+        const repairReasons = []
+        let rawConfig = stored
+        if (!this._isPlainObject(rawConfig)) {
+            repairReasons.push('配置根对象已损坏，已回退为默认结构')
+            rawConfig = {}
+        }
+
+        const migrated = this._migrateLegacyNotebookRuntimeConfig(rawConfig)
+        rawConfig = migrated.config
         if (migrated.changed) {
-            utools.dbCryptoStorage.setItem(this.STORAGE_KEY, config)
+            repairReasons.push('已迁移旧版 notebookRuntime 配置')
         }
 
-        const normalized = syncConfigStructure(this._clone(config))
+        const normalized = syncConfigStructure(this._clone(rawConfig))
         const merged = this._mergeDefaults(normalized, this._defaultConfig);
         const repaired = syncConfigStructure(merged)
-        const builtinChanged = this._applyBuiltinsInPlace(repaired)
-        if (builtinChanged) {
-            const healedStorage = this._buildBuiltinRepairStorageConfig(config, repaired)
-            utools.dbCryptoStorage.setItem(this.STORAGE_KEY, healedStorage)
+        if (this._applyBuiltinsInPlace(repaired)) {
+            repairReasons.push('已补齐缺失或损坏的内置配置')
+        }
+
+        const healedStorage = this._buildStorageRepairConfig(rawConfig, repaired)
+        if (!safeJsonEquals(rawConfig, healedStorage)) {
+            repairReasons.push('已修复缺失字段或错误类型')
+        }
+
+        if (repairReasons.length) {
+            console.warn(`检测到全局配置异常，准备自动修复：${repairReasons.join('；')}`)
+            this._tryRepairStorage(healedStorage, repairReasons.join('；'))
         }
 
         return repaired;
@@ -1950,7 +2095,7 @@ class GlobalConfig {
         const normalized = normalizePromptAndAgentBindingsInConfig(this._clone(raw))
         const sanitized = this._stripNotebookRuntimeFromStorageConfig(normalized)
         this._ensureWritableDataStorageRoot(sanitized)
-        utools.dbCryptoStorage.setItem(this.STORAGE_KEY, sanitized);
+        this._writeStorageValue(this.STORAGE_KEY, sanitized, '保存配置')
         if (typeof window !== 'undefined' && window.dispatchEvent) {
             window.dispatchEvent(new CustomEvent('globalConfigChanged', { detail: this._buildPublicConfig(sanitized) }));
         }

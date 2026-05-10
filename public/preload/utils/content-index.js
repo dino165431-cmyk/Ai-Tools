@@ -48,6 +48,8 @@ const rebuildPromises = new Map()
 const maintenanceTimers = new Map()
 const INDEX_MAINTENANCE_DEBOUNCE_MS = 1200
 let lastObservedContentSearchConfigSignature = ''
+let globalConfigMaintenanceListener = null
+let contentIndexInitialized = false
 
 function toPosixPath(value) {
   return String(value || '').replace(/\\/g, '/')
@@ -91,6 +93,98 @@ function normalizeSearchText(value, maxLength = MAX_INDEX_SEARCH_TEXT_LENGTH) {
     .replace(/\n{3,}/g, '\n\n')
     .trim()
     .slice(0, maxLength)
+}
+
+function stripUtf8Bom(text) {
+  const source = String(text ?? '')
+  return source.charCodeAt(0) === 0xfeff ? source.slice(1) : source
+}
+
+function findFirstJsonValueRange(text) {
+  const source = stripUtf8Bom(text)
+  let start = 0
+  while (start < source.length && /\s/.test(source[start])) start += 1
+  if (start >= source.length) return null
+
+  const first = source[start]
+  if (first === '{' || first === '[') {
+    let depth = 0
+    let inString = false
+    let escaped = false
+    for (let index = start; index < source.length; index += 1) {
+      const char = source[index]
+      if (inString) {
+        if (escaped) escaped = false
+        else if (char === '\\') escaped = true
+        else if (char === '"') inString = false
+        continue
+      }
+
+      if (char === '"') {
+        inString = true
+        continue
+      }
+      if (char === '{' || char === '[') {
+        depth += 1
+        continue
+      }
+      if (char === '}' || char === ']') {
+        depth -= 1
+        if (depth < 0) return null
+        if (depth === 0) {
+          return {
+            start,
+            end: index + 1,
+            jsonText: source.slice(start, index + 1),
+            trailingText: source.slice(index + 1)
+          }
+        }
+      }
+    }
+    return null
+  }
+
+  const scalarMatch = source.slice(start).match(
+    /^(true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|"(?:\\.|[^"\\])*")/
+  )
+  if (!scalarMatch) return null
+  const jsonText = scalarMatch[0]
+  const end = start + jsonText.length
+  return {
+    start,
+    end,
+    jsonText,
+    trailingText: source.slice(end)
+  }
+}
+
+function parseRecoverableJsonText(text) {
+  const source = stripUtf8Bom(text)
+  try {
+    return {
+      ok: true,
+      value: JSON.parse(source),
+      recovered: false,
+      normalizedText: source
+    }
+  } catch (error) {
+    const range = findFirstJsonValueRange(source)
+    if (!range || !/\S/.test(range.trailingText || '')) {
+      return { ok: false, error }
+    }
+    try {
+      return {
+        ok: true,
+        value: JSON.parse(range.jsonText),
+        recovered: true,
+        normalizedText: range.jsonText,
+        trailingText: range.trailingText,
+        error
+      }
+    } catch {
+      return { ok: false, error }
+    }
+  }
 }
 
 async function readTextSnippet(absPath, maxBytes) {
@@ -394,6 +488,12 @@ function cancelIndexMaintenance(kind) {
   maintenanceTimers.delete(key)
 }
 
+function clearAllMaintenanceTimers() {
+  for (const kind of [...maintenanceTimers.keys()]) {
+    cancelIndexMaintenance(kind)
+  }
+}
+
 function scheduleIndexMaintenance(kind, options = {}) {
   const key = String(kind || '').trim()
   if (!key || !INDEX_KINDS[key]) return null
@@ -435,17 +535,36 @@ function syncMaintenanceForConfigChange(config) {
   })
 }
 
-function attachGlobalConfigMaintenanceListener() {
+function init() {
+  if (contentIndexInitialized) return dispose
+  contentIndexInitialized = true
   try {
     if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return
-    window.addEventListener('globalConfigChanged', (event) => {
+    globalConfigMaintenanceListener = (event) => {
       const nextConfig = event?.detail
       if (!nextConfig || typeof nextConfig !== 'object') return
       syncMaintenanceForConfigChange(nextConfig.contentSearchConfig)
-    })
+    }
+    window.addEventListener('globalConfigChanged', globalConfigMaintenanceListener)
     syncMaintenanceForConfigChange(getCurrentConfig().contentSearchConfig)
   } catch (err) {
     console.warn?.('[Content index] config maintenance listener failed:', err)
+  }
+  return dispose
+}
+
+function dispose() {
+  contentIndexInitialized = false
+  clearAllMaintenanceTimers()
+  lastObservedContentSearchConfigSignature = ''
+  try {
+    if (globalConfigMaintenanceListener && typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+      window.removeEventListener('globalConfigChanged', globalConfigMaintenanceListener)
+    }
+  } catch (err) {
+    console.warn?.('[Content index] remove listener failed:', err)
+  } finally {
+    globalConfigMaintenanceListener = null
   }
 }
 
@@ -614,7 +733,9 @@ async function readIndex(kind) {
   const absPath = getIndexAbsPath(kind)
   try {
     const raw = await fs.readFile(absPath, 'utf-8')
-    const parsed = JSON.parse(String(raw || ''))
+    const parsedResult = parseRecoverableJsonText(String(raw || ''))
+    if (!parsedResult.ok) throw parsedResult.error
+    const parsed = parsedResult.value
     if (!parsed || parsed.version !== INDEX_VERSION || parsed.kind !== kind) return null
     const base = {
       ...createEmptyIndex(kind),
@@ -647,7 +768,51 @@ async function writeIndex(kind, indexData) {
   }, null, 2)
   const tempPath = `${absPath}.tmp`
   await fs.writeFile(tempPath, payload, 'utf-8')
-  await fs.rename(tempPath, absPath)
+
+  const canRetryRename = (err) => {
+    const code = String(err?.code || '').toUpperCase()
+    return code === 'EPERM' || code === 'EBUSY' || code === 'EACCES'
+  }
+
+  let renamed = false
+  let lastError = null
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await fs.rename(tempPath, absPath)
+      renamed = true
+      break
+    } catch (err) {
+      lastError = err
+      if (!canRetryRename(err) || attempt >= 4) break
+      await new Promise((resolve) => setTimeout(resolve, 40 * (attempt + 1)))
+    }
+  }
+
+  if (!renamed) {
+    try {
+      await fs.unlink(absPath)
+    } catch (err) {
+      if (err?.code !== 'ENOENT') {
+        // ignore and try final rename anyway
+      }
+    }
+    try {
+      await fs.rename(tempPath, absPath)
+      renamed = true
+    } catch (err) {
+      lastError = err
+    }
+  }
+
+  if (!renamed) {
+    try {
+      await fs.unlink(tempPath)
+    } catch {
+      // ignore cleanup failures
+    }
+    throw lastError || new Error(`Failed to write content index: ${kind}`)
+  }
+
   return absPath
 }
 
@@ -1166,6 +1331,8 @@ async function movePath(fromRelativePath, toRelativePath, options = {}) {
 }
 
 module.exports = {
+  init,
+  dispose,
   getSystemDirRelPath,
   getIndexDirRelPath,
   getIndexRelPath,
@@ -1190,8 +1357,9 @@ module.exports = {
     readIndex,
     scheduleIndexMaintenance,
     cancelIndexMaintenance,
-    syncMaintenanceForConfigChange
+    syncMaintenanceForConfigChange,
+    clearAllMaintenanceTimers
   }
 }
 
-attachGlobalConfigMaintenanceListener()
+init()

@@ -141,8 +141,11 @@
             clearable
           />
           <n-checkbox v-model:checked="webSearchConfigDraft.allowInsecureTlsFallback">
-            证书链异常时自动降级重试
+            显式允许 TLS 证书异常时跳过证书校验重试（高风险）
           </n-checkbox>
+          <n-text depth="3">
+            默认关闭。开启后，证书异常时会改为不校验证书继续请求，可能带来中间人攻击风险，仅建议在受信任网络中临时使用。
+          </n-text>
         </n-flex>
       </n-card>
 
@@ -905,7 +908,7 @@ const notebookRuntimeModal = reactive({
 })
 const webSearchConfigDraft = reactive({
   proxyUrl: '',
-  allowInsecureTlsFallback: true,
+  allowInsecureTlsFallback: false,
   searchApiProvider: 'none',
   searchApiKey: '',
   searchApiEndpoint: '',
@@ -1044,7 +1047,9 @@ const notebookRuntimeSummary = computed(() => {
 
 const webSearchProxySummary = computed(() => {
   const proxyUrl = String(webSearchConfig.value?.proxyUrl || '').trim()
-  const tlsLabel = webSearchConfig.value?.allowInsecureTlsFallback === false ? '证书兜底关闭' : '证书兜底开启'
+  const tlsLabel = webSearchConfig.value?.allowInsecureTlsFallback === true
+    ? 'TLS 不安全降级已显式开启'
+    : 'TLS 不安全降级默认关闭'
   const apiProvider = String(webSearchConfig.value?.searchApiProvider || 'none')
   const apiLabel = apiProvider === 'bocha_search'
     ? '博查 API 优先'
@@ -1273,7 +1278,7 @@ watch(
   () => webSearchConfig.value,
   (next) => {
     webSearchConfigDraft.proxyUrl = String(next?.proxyUrl || '').trim()
-    webSearchConfigDraft.allowInsecureTlsFallback = next?.allowInsecureTlsFallback !== false
+    webSearchConfigDraft.allowInsecureTlsFallback = next?.allowInsecureTlsFallback === true
     webSearchConfigDraft.searchApiProvider = String(next?.searchApiProvider || 'none')
     webSearchConfigDraft.searchApiKey = String(next?.searchApiKey || '')
     webSearchConfigDraft.searchApiEndpoint = String(next?.searchApiEndpoint || '')
@@ -1451,7 +1456,7 @@ async function saveWebSearchConfig() {
     }
     await updateWebSearchConfig({
       proxyUrl,
-      allowInsecureTlsFallback: webSearchConfigDraft.allowInsecureTlsFallback !== false,
+      allowInsecureTlsFallback: webSearchConfigDraft.allowInsecureTlsFallback === true,
       searchApiProvider,
       searchApiKey: searchApiProvider === 'bocha_search' || searchApiProvider === 'brave_search' ? searchApiKey : '',
       searchApiEndpoint: searchApiProvider === 'bocha_search' || searchApiProvider === 'brave_search' ? searchApiEndpoint : '',

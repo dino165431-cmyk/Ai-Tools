@@ -1558,6 +1558,7 @@ async function runAgentWithOpenAICompatible({ profile, task, trace, runState, ma
     apiMessages.push({
       role: 'assistant',
       content: String(assistantContent || ''),
+      ...(reasoningContent ? { reasoning_content: String(reasoningContent || '') } : {}),
       ...(toolCalls.length ? { tool_calls: toolCalls } : {})
     })
 

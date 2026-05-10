@@ -35,6 +35,9 @@ export function buildCustomSystemPromptState(promptText = '', explicit = null) {
 export function buildMergedChatState(defaultState = {}, persistedState = {}) {
   const base = defaultState && typeof defaultState === 'object' ? { ...defaultState } : {}
   const override = persistedState && typeof persistedState === 'object' ? { ...persistedState } : {}
+  if (override.contextWindow && typeof override.contextWindow === 'object' && !Array.isArray(override.contextWindow)) {
+    override.contextWindow = { ...override.contextWindow }
+  }
   return {
     ...base,
     ...override

@@ -1,15 +1,39 @@
-﻿function getNotebookRuntimeApi() {
-  return globalThis?.notebookRuntime
+const DANGEROUS_NOTEBOOK_METHODS = new Set([
+  'createSession',
+  'executeCell',
+  'provideInputReply',
+  'executeMagicSpecs',
+  'interruptMagicExecution',
+  'interruptSession',
+  'restartSession',
+  'forceRestartSession',
+  'shutdownSession',
+  'installDependencies',
+  'createManagedVenv'
+])
+
+function getAiToolsApi() {
+  return globalThis?.aiToolsApi
+}
+
+function getNotebookRuntimeApi(methodName) {
+  const bridge = getAiToolsApi()
+  return DANGEROUS_NOTEBOOK_METHODS.has(methodName)
+    ? bridge?.dangerous?.notebook
+    : bridge?.notebook
 }
 
 function rejectNotInjected(methodName) {
+  const namespace = DANGEROUS_NOTEBOOK_METHODS.has(methodName)
+    ? 'aiToolsApi.dangerous.notebook'
+    : 'aiToolsApi.notebook'
   return Promise.reject(
-    new Error(`notebookRuntime.${methodName} 未注入（请在 uTools 插件环境中运行）`)
+    new Error(`${namespace}.${methodName} 未注入（请在 uTools 插件环境中运行）`)
   )
 }
 
 function callNotebookRuntime(methodName, ...args) {
-  const api = getNotebookRuntimeApi()
+  const api = getNotebookRuntimeApi(methodName)
   const fn = api?.[methodName]
   if (typeof fn !== 'function') return rejectNotInjected(methodName)
 

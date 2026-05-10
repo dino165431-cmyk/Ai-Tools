@@ -159,6 +159,7 @@ import {
 import path from 'path-browserify';
 import { copyTextToClipboard } from '@/utils/clipboard';
 import { ensureMarkdownPreviewRuntime } from '@/utils/mdEditorRuntime';
+import { sanitizeSvgTree } from '@/utils/sanitizeSvg';
 import {
   safeDecodeURIComponent as safeDecodeURIComponentUtil,
   stripUrlHashAndQuery as stripUrlHashAndQueryUtil,
@@ -353,7 +354,8 @@ onBeforeUnmount(() => {
   }
 });
 
-async function refreshTree() {
+async function refreshTree(options = {}) {
+  const silent = options?.silent === true;
   if (refreshing.value) return;
   refreshing.value = true;
   try {
@@ -383,10 +385,14 @@ async function refreshTree() {
       }
     }
 
-    message.success('目录已刷新');
+    if (!silent) {
+      message.success('目录已刷新');
+    }
   } catch (err) {
     runtimeIssue.value = describeFileOperationsError(err, '笔记功能');
-    message.error('刷新目录失败：' + runtimeIssue.value);
+    if (!silent) {
+      message.error('刷新目录失败：' + runtimeIssue.value);
+    }
   } finally {
     refreshing.value = false;
   }
@@ -992,8 +998,8 @@ async function renderDiagramBlocksForExport(dom, { theme = 'light' } = {}) {
           const { svg } = await mermaid.render(`note-export-mermaid-${Date.now()}-${index}`, source, renderHost);
           const wrapper = dom.createElement('div');
           wrapper.className = 'note-export-diagram note-export-diagram--mermaid';
-          wrapper.innerHTML = svg || '';
-          wrapper.querySelectorAll('script').forEach((node) => node.remove());
+          const safeSvg = sanitizeSvgTree(svg || '', { aggressive: true });
+          wrapper.appendChild(dom.importNode(safeSvg, true));
           wrapper.querySelector('svg')?.removeAttribute('height');
           pre.replaceWith(wrapper);
         } catch (err) {
@@ -1575,26 +1581,115 @@ async function ensureDirectoryExists(dirPath) {
   }
 }
 
+const DIRECTORY_COPY_CONCURRENCY = 8;
+
+function createAsyncTaskQueue() {
+  const items = [];
+  const waiters = [];
+  let closed = false;
+
+  return {
+    push(item) {
+      if (closed) return;
+      const waiter = waiters.shift();
+      if (waiter) {
+        waiter({ value: item, done: false });
+        return;
+      }
+      items.push(item);
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      while (waiters.length) {
+        const waiter = waiters.shift();
+        waiter({ value: undefined, done: true });
+      }
+    },
+    async shift() {
+      if (items.length) {
+        return { value: items.shift(), done: false };
+      }
+      if (closed) {
+        return { value: undefined, done: true };
+      }
+      return new Promise((resolve) => waiters.push(resolve));
+    }
+  };
+}
+
+async function copyDirectoryWithConcurrency(srcPath, destPath, options = {}) {
+  const queue = createAsyncTaskQueue();
+  const workerCount = Math.max(1, Number(options.concurrency) || DIRECTORY_COPY_CONCURRENCY);
+  const mergeDirectories = options.mergeDirectories === true;
+  const skipExistingFiles = options.skipExistingFiles === true;
+  const binary = options.binary === true;
+  let pendingTasks = 0;
+  let firstError = null;
+
+  const enqueue = (task) => {
+    pendingTasks += 1;
+    queue.push(task);
+  };
+
+  enqueue({ type: 'directory', srcPath, destPath });
+
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const { value: task, done } = await queue.shift();
+      if (done) return;
+
+      try {
+        if (task.type === 'directory') {
+          if (mergeDirectories) {
+            await ensureDirectoryExists(task.destPath);
+          } else {
+            await createDirectory(task.destPath);
+          }
+
+          const entries = await listDirectory(task.srcPath);
+          for (const entry of entries) {
+            const statInfo = await stat(entry);
+            const relative = entry.substring(task.srcPath.length + 1);
+            const destEntry = toPosixPath(task.destPath + '/' + relative);
+            if (statInfo.isDirectory()) {
+              enqueue({ type: 'directory', srcPath: entry, destPath: destEntry });
+            } else {
+              enqueue({ type: 'file', srcPath: entry, destPath: destEntry });
+            }
+          }
+        } else {
+          if (skipExistingFiles && (await exists(task.destPath))) continue;
+          const fileContent = binary ? await readFile(task.srcPath, null) : await readFile(task.srcPath);
+          await writeFile(task.destPath, fileContent);
+        }
+      } catch (err) {
+        if (!firstError) firstError = err;
+      } finally {
+        pendingTasks -= 1;
+        if (pendingTasks === 0) {
+          queue.close();
+        }
+      }
+    }
+  });
+
+  await Promise.all(workers);
+
+  if (firstError) {
+    throw firstError;
+  }
+}
+
 /**
  * 复制文件夹内容到目标文件夹（如目标已存在则合并），以二进制方式复制文件（避免图片损坏）
  */
 async function copyFolderMergeBinary(srcPath, destPath) {
-  await ensureDirectoryExists(destPath);
-  const entries = await listDirectory(srcPath);
-  await Promise.all(
-    entries.map(async (entry) => {
-      const statInfo = await stat(entry);
-      const relative = entry.substring(srcPath.length + 1);
-      const destEntry = toPosixPath(destPath + '/' + relative);
-      if (statInfo.isDirectory()) {
-        await copyFolderMergeBinary(entry, destEntry);
-        return;
-      }
-      if (await exists(destEntry)) return;
-      const fileContent = await readFile(entry, null);
-      await writeFile(destEntry, fileContent);
-    })
-  );
+  await copyDirectoryWithConcurrency(srcPath, destPath, {
+    binary: true,
+    skipExistingFiles: true,
+    mergeDirectories: true
+  });
 }
 
 async function renameNoteWithImagesMove(oldNotePath, newNotePath) {
@@ -1610,10 +1705,14 @@ async function renameNoteWithImagesMove(oldNotePath, newNotePath) {
     oldAssetsDirRel !== newAssetsDirRel &&
     (await exists(oldAssetsDirRel));
 
+  const originalContent = await readFile(oldNotePath, 'utf-8');
+  const rewrittenContent = rewriteNoteAssetsLinksInMarkdown(originalContent, oldDocName, newDocName);
   let assetsMoved = false;
+  let newAssetsDirExisted = false;
+  let noteMoved = false;
   if (needSyncAssets) {
-    const destExists = await exists(newAssetsDirRel);
-    if (!destExists) {
+    newAssetsDirExisted = await exists(newAssetsDirRel);
+    if (!newAssetsDirExisted) {
       try {
         await moveItem(oldAssetsDirRel, newAssetsDirRel);
         assetsMoved = true;
@@ -1626,19 +1725,24 @@ async function renameNoteWithImagesMove(oldNotePath, newNotePath) {
   }
 
   try {
-    const content = await readFile(oldNotePath, 'utf-8');
-    const rewritten = rewriteNoteAssetsLinksInMarkdown(content, oldDocName, newDocName);
-    if (rewritten !== content) {
-      await writeFile(oldNotePath, rewritten);
+    await moveItem(oldNotePath, newNotePath);
+    noteMoved = true;
+
+    if (rewrittenContent !== originalContent) {
+      await writeFile(newNotePath, rewrittenContent);
     }
   } catch (err) {
+    if (noteMoved) {
+      await moveItem(newNotePath, oldNotePath).catch(() => {});
+    }
     if (needSyncAssets && assetsMoved) {
       await moveItem(newAssetsDirRel, oldAssetsDirRel).catch(() => {});
     }
+    if (needSyncAssets && !assetsMoved && !newAssetsDirExisted) {
+      await deleteItem(newAssetsDirRel).catch(() => {});
+    }
     throw err;
   }
-
-  await moveItem(oldNotePath, newNotePath);
 
   if (needSyncAssets) {
     if (!assetsMoved && (await exists(oldAssetsDirRel))) {
@@ -1784,21 +1888,7 @@ async function renameNode(node) {
 
 // 复制文件夹（辅助函数）
 async function copyFolder(srcPath, destPath) {
-  await createDirectory(destPath);
-  const entries = await listDirectory(srcPath);
-  await Promise.all(
-    entries.map(async (entry) => {
-      const statInfo = await stat(entry);
-      const relative = entry.substring(srcPath.length + 1);
-      const destEntry = destPath + '/' + relative;
-      if (statInfo.isDirectory()) {
-        await copyFolder(entry, destEntry);
-        return;
-      }
-      const fileContent = await readFile(entry);
-      await writeFile(destEntry, fileContent);
-    })
-  );
+  await copyDirectoryWithConcurrency(srcPath, destPath);
 }
 
 // ---------- 删除（集成图片清理）----------

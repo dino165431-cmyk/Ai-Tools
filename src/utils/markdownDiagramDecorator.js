@@ -5,6 +5,7 @@ import {
   getDiagramFenceMetaForLine,
   normalizeDiagramSizeMeta
 } from '@/utils/diagramFenceMeta'
+import { sanitizeSvgTree } from '@/utils/sanitizeSvg'
 import '@/styles/markdownDiagramDecorator.css'
 
 function escapeHtml(text) {
@@ -201,73 +202,6 @@ function readBlobAsDataUrl(blob) {
     reader.onerror = () => reject(new Error('\u8bfb\u53d6\u56fe\u8868\u8d44\u6e90\u5931\u8d25'))
     reader.readAsDataURL(blob)
   })
-}
-
-function sanitizeSvgCssText(cssText) {
-  return String(cssText || '')
-    .replace(/@import[^;]+;/gi, '')
-    .replace(/url\(([^)]+)\)/gi, (match, rawValue) => {
-      const value = String(rawValue || '')
-        .trim()
-        .replace(/^['"]|['"]$/g, '')
-
-      if (!value) return 'none'
-      if (value.startsWith('#') || value.startsWith('data:')) return match
-      return 'none'
-    })
-}
-
-function isExternalSvgReference(value) {
-  const text = String(value || '').trim()
-  if (!text) return false
-  if (text.startsWith('#') || text.startsWith('data:')) return false
-  return true
-}
-
-function sanitizeSvgTree(svgInput, { aggressive = false } = {}) {
-  const svg = parseSvgInput(svgInput)
-
-  svg.querySelectorAll('script').forEach((node) => node.remove())
-  if (aggressive) {
-    svg.querySelectorAll('foreignObject').forEach((node) => node.remove())
-  }
-
-  Array.from(svg.querySelectorAll('*')).forEach((node) => {
-    const tagName = String(node.nodeName || '').toLowerCase()
-
-    if (tagName === 'style') {
-      node.textContent = sanitizeSvgCssText(node.textContent || '')
-      return
-    }
-
-    if (node.hasAttribute('style')) {
-      node.setAttribute('style', sanitizeSvgCssText(node.getAttribute('style')))
-    }
-
-    const href = String(
-      node.getAttribute('href') ||
-        node.getAttribute('xlink:href') ||
-        node.getAttributeNS?.('http://www.w3.org/1999/xlink', 'href') ||
-        ''
-    ).trim()
-
-    if (tagName !== 'image' && isExternalSvgReference(href)) {
-      node.removeAttribute('href')
-      node.removeAttribute('xlink:href')
-      node.removeAttributeNS?.('http://www.w3.org/1999/xlink', 'href')
-    }
-
-    ;['fill', 'stroke', 'filter', 'mask', 'clip-path', 'marker-start', 'marker-mid', 'marker-end'].forEach(
-      (attrName) => {
-        const value = String(node.getAttribute(attrName) || '').trim()
-        if (!/url\(/i.test(value)) return
-        if (/url\(\s*['"]?(#|data:)/i.test(value)) return
-        node.removeAttribute(attrName)
-      }
-    )
-  })
-
-  return svg
 }
 
 async function inlineSvgExternalAssets(svgInput, options = {}) {

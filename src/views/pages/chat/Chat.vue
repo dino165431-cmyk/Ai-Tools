@@ -1265,7 +1265,8 @@ import {
 } from '@/utils/chatInlinePicker'
 import { createDirectory, deleteItem, exists, listDirectory, readFile, resolvePath, stat, writeFile } from '@/utils/fileOperations'
 import { requestOpenNoteFile } from '@/utils/noteOpenBridge'
-import { buildNoteHrefFromPath, resolveNoteAbsPathFromHref, splitMarkdownLinkDestination } from '@/utils/notePathUtils'
+import { buildNoteHrefFromPath, resolveNoteAbsPathFromHref, safeDecodeURIComponent, splitMarkdownLinkDestination } from '@/utils/notePathUtils'
+import { getSafeExternalUrl, safeOpenExternal } from '@/utils/safeOpenExternal'
 import {
   contentHasUserAttachments,
   extractEditableUserTextFromContent,
@@ -1352,6 +1353,7 @@ const sessionTreeRef = ref(null)
 const sessionSiderCollapsed = ref(true)
 const activeSessionFilePath = ref('')
 const activeSessionTitle = ref('')
+const sessionContextWindowOverride = ref(null)
 const isCompactChatLayout = ref(false)
 const isDenseChatLayout = ref(false)
 
@@ -1416,7 +1418,7 @@ watch(
 const selectedSkillIds = ref([])
 const manualMcpIds = ref([])
 const webSearchEnabled = ref(false)
-const autoApproveTools = ref(true)
+const autoApproveTools = ref(false)
 const autoActivateAgentSkills = ref(true)
 
 // 工具模式：
@@ -2063,12 +2065,14 @@ const COMPACT_CHAT_BREAKPOINT = 980
 const DENSE_CHAT_BREAKPOINT = 720
 const CHAT_VIRTUALIZATION_MIN_MESSAGES = 40
 const CHAT_VIRTUALIZATION_OVERSCAN_PX = 720
+const CHAT_VIRTUALIZATION_FORCE_RENDER_MARGIN_PX = 360
 const CHAT_LIST_GAP_PX = 14
 const CHAT_DEFAULT_MESSAGE_HEIGHT = 180
 const CHAT_RECENT_HEAVY_RENDER_COUNT = 24
 const CHAT_HEAVY_RENDER_SEED_COUNT = 32
 const CHAT_HEAVY_RENDER_VIEWPORT_BUFFER = 6
 const CHAT_HEAVY_RENDER_ROOT_MARGIN_PX = 720
+const CHAT_HEAVY_RENDER_MAX_HYDRATED = 96
 const CHAT_SCROLL_COMPENSATION_SUSPEND_MS = 640
 const CHAT_TOOL_COMPACT_MIN_MESSAGES = 120
 const CHAT_TOOL_COMPACT_MIN_TOOL_MESSAGES = 32
@@ -2099,7 +2103,7 @@ watch(
   () => chatConfig.value?.contextWindow,
   (next) => {
     if (showContextWindowModal.value) return
-    syncContextWindowDraft(next)
+    if (!sessionContextWindowOverride.value) syncContextWindowDraft(next)
   },
   { immediate: true, deep: true }
 )
@@ -4308,8 +4312,14 @@ const contextWindowHistoryFocusBehaviorText = computed(() => {
   return '当前偏好：平衡最近对话与更早的附件摘要。'
 })
 
-const contextWindowConfig = computed(() => normalizeChatContextWindowConfig(chatConfig.value?.contextWindow))
-const contextWindowResolvedOptions = computed(() => resolveChatContextWindowOptions(chatConfig.value?.contextWindow))
+const globalContextWindowConfig = computed(() => normalizeChatContextWindowConfig(chatConfig.value?.contextWindow))
+const effectiveContextWindowConfig = computed(() => {
+  return sessionContextWindowOverride.value
+    ? normalizeChatContextWindowConfig(sessionContextWindowOverride.value)
+    : globalContextWindowConfig.value
+})
+const contextWindowConfig = computed(() => effectiveContextWindowConfig.value)
+const contextWindowResolvedOptions = computed(() => resolveChatContextWindowOptions(effectiveContextWindowConfig.value))
 
 const contextWindowBudgetPlan = computed(() => {
   const providerKind = isUtoolsBuiltinProvider(selectedProvider.value) ? 'utools-ai' : 'openai-compatible'
@@ -4320,7 +4330,7 @@ const contextWindowBudgetPlan = computed(() => {
   const systemChars = String(systemContent.value || '').length
   const reservedChars = systemChars + toolSchemaChars
   const sourceChars = estimateMessagesSize(Array.isArray(session.apiMessages) ? session.apiMessages : [])
-  const basePlan = resolveChatContextWindowBudgetPlan(chatConfig.value?.contextWindow, {
+  const basePlan = resolveChatContextWindowBudgetPlan(effectiveContextWindowConfig.value, {
     reservedChars,
     sourceChars
   })
@@ -4336,7 +4346,7 @@ const contextWindowBudgetPlan = computed(() => {
 })
 
 const contextWindowPreviewConfig = computed(() => {
-  const raw = showContextWindowModal.value ? contextWindowDraft : chatConfig.value?.contextWindow
+  const raw = showContextWindowModal.value ? contextWindowDraft : effectiveContextWindowConfig.value
   return resolveChatContextWindowOptions(normalizeChatContextWindowConfig(raw))
 })
 
@@ -4364,7 +4374,7 @@ function buildContextWindowStats({ includeRequestDetails = false } = {}) {
   const systemChars = String(systemContent.value || '').length
   const reservedChars = systemChars + toolSchemaChars
   const sourceChars = estimateMessagesSize(rawMessages)
-  const budgetPlan = resolveChatContextWindowBudgetPlan(chatConfig.value?.contextWindow, {
+  const budgetPlan = resolveChatContextWindowBudgetPlan(effectiveContextWindowConfig.value, {
     reservedChars,
     sourceChars
   })
@@ -4788,6 +4798,7 @@ function matchesContextWindowOmittedFilter(entry, filterKey = 'all') {
 
 function contextWindowPreviewModeLabel(entry) {
   const mode = String(entry?.mode || '')
+  const variant = String(entry?.variant || mode || '')
   if (mode === 'prelude') return '前导'
   if (mode === 'full') return '完整'
   if (mode === 'compact') return '压缩'
@@ -4855,6 +4866,27 @@ function contextWindowPreviewOmittedReasonType(reason) {
   if (key === 'attachment_policy_disabled') return 'info'
   if (key === 'prelude_budget_exhausted') return 'default'
   return 'warning'
+}
+
+function contextWindowPreviewModeLabelV2(entry) {
+  const mode = String(entry?.mode || '')
+  const variant = String(entry?.variant || mode || '')
+  if (mode === 'compact') {
+    if (variant === 'compact_text') return '强压缩'
+    if (variant === 'compact_tight') return '极强压缩'
+    if (variant === 'compact_adaptive') return '自适应压缩'
+  }
+  return contextWindowPreviewModeLabel(entry)
+}
+
+function contextWindowPreviewEntryNoteV2(entry) {
+  if (entry?.mode === 'compact' && !entry?.omitted && !entry?.hasAttachment) {
+    const variant = String(entry?.variant || 'compact')
+    if (variant === 'compact_text') return '该轮次已进入强压缩，较长文本会截短，并尽量保留前后关键内容。'
+    if (variant === 'compact_tight') return '该轮次已进入更强压缩，为了保住更多历史，只保留了更精简的上下文。'
+    if (variant === 'compact_adaptive') return '该轮次已按剩余预算自适应压缩，尽量在不超预算的前提下保留更多历史。'
+  }
+  return contextWindowPreviewEntryNote(entry)
 }
 
 const footerHint = computed(() => {
@@ -5056,20 +5088,6 @@ async function openChatNoteFromHref(href) {
   return true
 }
 
-function openExternalHref(href) {
-  try {
-    globalThis?.utools?.shellOpenExternal?.(href)
-  } catch {
-    // ignore
-  }
-
-  try {
-    if (!globalThis?.utools?.shellOpenExternal) window.open(href, '_blank', 'noopener')
-  } catch {
-    // ignore
-  }
-}
-
 async function handleChatPreviewLinkClick(e) {
   const link = e.target?.closest?.('a')
   if (!link || !chatPreviewLinkRoot?.contains(link)) return
@@ -5080,8 +5098,8 @@ async function handleChatPreviewLinkClick(e) {
   e.preventDefault()
   e.stopPropagation()
 
-  if (/^https?:\/\//i.test(href) || /^mailto:/i.test(href)) {
-    openExternalHref(href)
+  if (getSafeExternalUrl(href)) {
+    safeOpenExternal(href)
     return
   }
 
@@ -5099,13 +5117,14 @@ function handleChatPreviewLinkContextMenu(e) {
   e.preventDefault()
   e.stopPropagation()
 
-  if (/^mailto:/i.test(href)) {
-    copyToClipboard(String(href).replace(/^mailto:/i, '').split('?')[0])
+  const externalUrl = getSafeExternalUrl(href)
+  if (externalUrl?.protocol === 'mailto:') {
+    copyToClipboard(safeDecodeURIComponent(externalUrl.pathname))
     return
   }
 
-  if (/^https?:\/\//i.test(href)) {
-    copyToClipboard(href)
+  if (externalUrl?.protocol === 'https:') {
+    copyToClipboard(externalUrl.toString())
     return
   }
 
@@ -6133,8 +6152,10 @@ async function handleBuiltinAgentsToolApprovalRequest(event) {
   const agentName = String(detail.agentName || '').trim()
   const extraLines = agentName ? ['智能体：' + agentName] : []
 
+  const autoApproved = shouldAutoApproveToolExecution()
+
   let approved = null
-  if (autoApproveTools.value) {
+  if (autoApproved) {
     approved = true
   } else {
     approved = await confirmToolCall({
@@ -6202,11 +6223,7 @@ function downloadChatImage(img) {
       })
       .catch((err) => {
         copyChatImageLink(img)
-        try {
-          globalThis?.utools?.shellOpenExternal?.(src)
-        } catch {
-          // ignore
-        }
+        safeOpenExternal(src)
         message.info('已复制图片链接。如无法直接下载，请在浏览器中打开后再保存。' + ((err && err.message) ? `（${err.message}）` : ''))
       })
     return
@@ -6267,11 +6284,7 @@ function downloadChatVideo(video) {
       })
       .catch((err) => {
         copyChatVideoLink(video)
-        try {
-          globalThis?.utools?.shellOpenExternal?.(src)
-        } catch {
-          // ignore
-        }
+        safeOpenExternal(src)
         message.info('已复制视频链接。如无法直接下载，请在浏览器中打开后再保存。' + ((err && err.message) ? `（${err.message}）` : ''))
       })
     return
@@ -6425,9 +6438,9 @@ const pendingAttachmentActions = {
 
 const contextWindowPreviewHelpers = {
   modeType: contextWindowPreviewModeType,
-  modeLabel: contextWindowPreviewModeLabel,
+  modeLabel: contextWindowPreviewModeLabelV2,
   entryLabel: contextWindowPreviewEntryLabel,
-  entryNote: contextWindowPreviewEntryNote,
+  entryNote: contextWindowPreviewEntryNoteV2,
   omittedReasonType: contextWindowPreviewOmittedReasonType,
   omittedReasonLabel: contextWindowPreviewOmittedReasonLabel,
   formatApproxChars
@@ -6671,9 +6684,56 @@ function mergeHydratedHeavyChatMessageIds(ids) {
   return true
 }
 
+function pruneHydratedHeavyChatMessageIds(options = {}) {
+  const current = hydratedHeavyChatMessageIds.value
+  if (!(current instanceof Set) || !current.size) return false
+
+  const requestedLimit = Number(options.limit)
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.max(0, Math.round(requestedLimit))
+    : CHAT_HEAVY_RENDER_MAX_HYDRATED
+  if (current.size <= limit) return false
+
+  const keepIds = new Set()
+  const renderedIds = renderedChatMessageIdSet.value
+  renderedIds.forEach((id) => keepIds.add(id))
+  visibleHeavyChatMessageIds.value.forEach((id) => keepIds.add(id))
+  recentHeavyChatMessageIds.value.forEach((id) => keepIds.add(id))
+  forcedRenderedChatMessageIdSet.value.forEach((id) => keepIds.add(id))
+
+  const items = Array.isArray(chatVirtualLayout.value?.items) ? chatVirtualLayout.value.items : []
+  const buffer = Math.max(0, CHAT_HEAVY_RENDER_VIEWPORT_BUFFER)
+  const start = Math.max(0, Number(renderedChatRange.value?.start || 0) - buffer)
+  const end = Math.min(items.length - 1, Number(renderedChatRange.value?.end || -1) + buffer)
+  for (let i = start; i <= end; i += 1) {
+    const id = String(items[i]?.id || '').trim()
+    if (id) keepIds.add(id)
+  }
+
+  for (let i = items.length - 1; i >= 0 && keepIds.size < limit; i -= 1) {
+    const msg = items[i]?.msg
+    const id = String(msg?.id || '').trim()
+    if (!id || !current.has(id) || !isMarkdownHeavyRenderCandidate(msg)) continue
+    keepIds.add(id)
+  }
+
+  if (keepIds.size >= current.size) return false
+
+  const next = new Set()
+  current.forEach((id) => {
+    if (keepIds.has(id)) next.add(id)
+  })
+  if (areStringSetsEqual(current, next)) return false
+  hydratedHeavyChatMessageIds.value = next
+  return true
+}
+
 function rememberHydratedHeavyChatMessage(messageId) {
   const id = String(messageId || '').trim()
-  return !!id && mergeHydratedHeavyChatMessageIds([id])
+  if (!id) return false
+  const changed = mergeHydratedHeavyChatMessageIds([id])
+  pruneHydratedHeavyChatMessageIds()
+  return changed
 }
 
 let chatSessionOpeningHeavyRenderToken = 0
@@ -6732,7 +6792,9 @@ function primeHydratedRenderedChatMessages(options = {}) {
     ids.add(id)
   }
   if (!ids.size) return false
-  return mergeHydratedHeavyChatMessageIds(ids)
+  const changed = mergeHydratedHeavyChatMessageIds(ids)
+  pruneHydratedHeavyChatMessageIds()
+  return changed
 }
 
 function primeHydratedMountedHeavyChatMessages() {
@@ -6744,7 +6806,9 @@ function primeHydratedMountedHeavyChatMessages() {
     ids.add(id)
   }
   if (!ids.size) return false
-  return mergeHydratedHeavyChatMessageIds(ids)
+  const changed = mergeHydratedHeavyChatMessageIds(ids)
+  pruneHydratedHeavyChatMessageIds()
+  return changed
 }
 
 function findFirstItemBottomGte(items, targetBottom) {
@@ -6844,11 +6908,19 @@ function resolveChatRenderRange(layout, scrollTop, viewportHeight) {
   if (start >= items.length) end = items.length - 1
 
   const forcedIds = forcedRenderedChatMessageIdSet.value
+  const forceMargin = Math.max(0, Number(CHAT_VIRTUALIZATION_FORCE_RENDER_MARGIN_PX) || 0)
+  const forceViewportTop = Math.max(0, viewportTop - forceMargin)
+  const forceViewportBottom = viewportBottom + forceMargin
   let forcedStart = start
   let forcedEnd = end
   forcedIds.forEach((id) => {
     const index = layout.idToIndex.get(id)
     if (!Number.isInteger(index)) return
+    const item = items[index]
+    if (!item) return
+    // Keep nearby interactive items mounted without letting distant tail/history items
+    // stretch the render window into one huge continuous block.
+    if (item.bottom < forceViewportTop || item.top > forceViewportBottom) return
     forcedStart = Math.min(forcedStart, index)
     forcedEnd = Math.max(forcedEnd, index)
   })
@@ -8490,6 +8562,9 @@ function buildCurrentChatState() {
     imageGenerationParams: deepCopyJson(imageGenerationParams, createDefaultImageGenerationParams()),
     videoGenerationParamsEnabled: videoGenerationParamsEnabled.value,
     videoGenerationParams: deepCopyJson(videoGenerationParams, createDefaultVideoGenerationParams()),
+    contextWindow: sessionContextWindowOverride.value
+      ? deepCopyJson(normalizeChatContextWindowConfig(sessionContextWindowOverride.value), null)
+      : null,
     contextSummary: deepCopyJson(activeRecord?.contextSummary || {}, {})
   }
 }
@@ -8511,7 +8586,7 @@ function buildDefaultChatState() {
     activatedAgentSkillIds: [],
     manualMcpIds: [],
     webSearchEnabled: false,
-    autoApproveTools: true,
+    autoApproveTools: false,
     autoActivateAgentSkills: true,
     toolMode: 'auto',
     effectiveToolMode: 'expanded',
@@ -8521,7 +8596,8 @@ function buildDefaultChatState() {
     imageGenerationParamsEnabled: false,
     imageGenerationParams: createDefaultImageGenerationParams(),
     videoGenerationParamsEnabled: false,
-    videoGenerationParams: createDefaultVideoGenerationParams()
+    videoGenerationParams: createDefaultVideoGenerationParams(),
+    contextWindow: null
   }
 }
 
@@ -8531,6 +8607,7 @@ function buildHydratedChatState(state) {
 
 function applyDefaultChatState() {
   const state = buildDefaultChatState()
+  sessionContextWindowOverride.value = null
   applyLoadedChatState(state)
 
   const rawDefaultSystemPrompt = String(state.customSystemPrompt || '')
@@ -9181,6 +9258,11 @@ function normalizeLoadedDisplayMessages(messages) {
 function applyLoadedChatState(state) {
   if (!state || typeof state !== 'object') return
   const hydratedState = buildHydratedChatState(state)
+
+  sessionContextWindowOverride.value =
+    hydratedState.contextWindow && typeof hydratedState.contextWindow === 'object'
+      ? deepCopyJson(normalizeChatContextWindowConfig(hydratedState.contextWindow), null)
+      : null
 
   selectedAgentId.value = hydratedState.selectedAgentId || null
   selectedProviderId.value = hydratedState.selectedProviderId || null
@@ -12733,7 +12815,7 @@ function resetSystemPromptToSelectedPrompt() {
   systemPromptDraft.value = isSystemPrompt(p) ? String(p?.content || '') : ''
 }
 
-function syncContextWindowDraft(raw = chatConfig.value?.contextWindow) {
+function syncContextWindowDraft(raw = effectiveContextWindowConfig.value) {
   Object.assign(contextWindowDraft, resolveChatContextWindowOptions(raw))
 }
 
@@ -12750,21 +12832,24 @@ function handleContextWindowPresetChange(value) {
 }
 
 function resetContextWindowDraftToDefault() {
-  Object.assign(contextWindowDraft, resolveChatContextWindowOptions(DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG))
+  Object.assign(contextWindowDraft, resolveChatContextWindowOptions(globalContextWindowConfig.value))
 }
 
 async function applyContextWindowSettings() {
   try {
-    if (typeof updateChatConfig !== 'function') {
-      message.warning('当前环境不支持保存聊天上下文设置')
-      return
-    }
-
     const normalized = resolveChatContextWindowOptions(normalizeChatContextWindowConfig(contextWindowDraft))
-    await updateChatConfig({ contextWindow: normalized })
+    const globalNormalized = normalizeChatContextWindowConfig(chatConfig.value?.contextWindow)
+    sessionContextWindowOverride.value = JSON.stringify(normalized) === JSON.stringify(globalNormalized)
+      ? null
+      : deepCopyJson(normalized, null)
+    const activeRecord = getMemorySessionById(activeMemorySessionId.value)
+    if (activeRecord) {
+      activeRecord.state = buildCurrentChatState()
+      activeRecord.updatedAt = Date.now()
+    }
     syncContextWindowDraft(normalized)
     showContextWindowModal.value = false
-    message.success('已保存上下文窗口设置')
+    message.success('当前会话上下文策略已应用')
   } catch (err) {
     message.error('保存上下文窗口设置失败：' + (err?.message || String(err)))
   }
@@ -12822,7 +12907,7 @@ function resetChatSetupUiState() {
 
   // 其他开关回到初始值。
   webSearchEnabled.value = false
-  autoApproveTools.value = true
+  autoApproveTools.value = false
   autoActivateAgentSkills.value = true
   toolMode.value = 'auto'
   effectiveToolMode.value = 'expanded'
@@ -13078,7 +13163,7 @@ function getHistoryContextCharBudget(options = {}) {
       })
   const sourceMessages = Array.isArray(session.apiMessages) ? session.apiMessages : []
   const sourceChars = estimateMessagesSize(sourceMessages)
-  const budgetPlan = resolveChatContextWindowBudgetPlan(chatConfig.value?.contextWindow, {
+  const budgetPlan = resolveChatContextWindowBudgetPlan(effectiveContextWindowConfig.value, {
     reservedChars,
     sourceChars
   })
@@ -13440,7 +13525,7 @@ async function prepareChatRequestContext({
         attachmentRecallText
       }
     }
-    const contextCfg = chatConfig.value?.contextWindow
+    const contextCfg = effectiveContextWindowConfig.value
     const resolvedContext = resolveChatContextWindowOptions(contextCfg)
     const requestTools = []
     const combinedSystemContent = buildCombinedSystemContent(memorySystemContent, { sessionRecord: targetRecord })
@@ -13804,6 +13889,10 @@ function stableStringify(obj, spaces = 2) {
   } catch {
     return String(obj)
   }
+}
+
+function shouldAutoApproveToolExecution() {
+  return autoApproveTools.value === true
 }
 
 function closeMcpClientSafely(server, client, pooled = false) {
@@ -15360,11 +15449,11 @@ function getSkillMcpStatus(skill) {
 }
 
 function getWebOperationsApi() {
-  return window?.webOperations || globalThis?.webOperations || null
+  return globalThis?.aiToolsApi?.web || null
 }
 
 function getWebToolMissingText() {
-  return '内置联网服务不可用：preload 未注入 webOperations。请在 uTools 插件环境中运行，或重新构建插件。'
+  return '内置联网服务不可用：preload 未注入 aiToolsApi.web。请在 uTools 插件环境中运行，或重新构建插件。'
 }
 
 const WEB_TOOL_RESULT_GUIDANCE = '这些结果来自本次运行的联网工具。请优先基于工具结果回答，不要因为模型知识截止时间更早而反复搜索同一问题；资料不足时说明不足。'
@@ -15512,12 +15601,13 @@ async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, ab
   const targetSession = getRunSessionTarget(abortState)
   throwIfAborted(abortState)
   const context = normalizeToolCallExecutionContext(toolCall, toolMap)
+  const autoApproved = shouldAutoApproveToolExecution()
 
   const pendingToolMessage = createPendingToolExecutionMessage({
     serverName: context.serverName,
     toolName: context.toolName,
     argsText: context.argsText,
-    autoApproved: autoApproveTools.value,
+    autoApproved: autoApproved,
     argsObj: context.argsObj,
     toolCallId: context.toolCallId
   })
@@ -15538,7 +15628,7 @@ async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, ab
     }
   }
 
-  if (!autoApproveTools.value) {
+  if (!autoApproved) {
     const ok = await confirmToolCall({
       serverName: context.serverName,
       toolName: context.toolName,
@@ -15565,6 +15655,7 @@ async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, ab
 
   return {
     ...context,
+    autoApproved,
     pendingToolMessage,
     skipped: false
   }

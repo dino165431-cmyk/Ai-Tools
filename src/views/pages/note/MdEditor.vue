@@ -98,6 +98,7 @@ import { FileTrayFullOutline, CreateOutline } from '@vicons/ionicons5';
 import { NIcon, NCard, NButton } from 'naive-ui';
 import { copyTextToClipboard } from '@/utils/clipboard';
 import { createMarkdownDiagramDecorator } from '@/utils/markdownDiagramDecorator';
+import { getSafeExternalUrl, safeOpenExternal } from '@/utils/safeOpenExternal';
 import {
   toPosixPath as toPosixPathUtil,
   safeDecodeURIComponent as safeDecodeURIComponentUtil,
@@ -1347,32 +1348,14 @@ async function handlePreviewLinkClick(e) {
   const link = e.target?.closest?.('a');
   if (!link || !previewLinkRoot?.contains(link)) return;
 
-  const href = link.getAttribute('href');
+  const href = String(link.getAttribute('href') || '').trim();
   if (!href || href.startsWith('#')) return;
 
   e.preventDefault();
   e.stopPropagation();
 
-  if (/^https?:\/\//i.test(href)) {
-    try {
-      globalThis?.utools?.shellOpenExternal?.(href);
-    } catch {
-      // ignore
-    }
-    try {
-      if (!globalThis?.utools?.shellOpenExternal) window.open(href, '_blank', 'noopener');
-    } catch {
-      // ignore
-    }
-    return;
-  }
-
-  if (/^mailto:/i.test(href)) {
-    try {
-      globalThis?.utools?.shellOpenExternal?.(href);
-    } catch {
-      // ignore
-    }
+  if (getSafeExternalUrl(href)) {
+    safeOpenExternal(href);
     return;
   }
 
@@ -1385,19 +1368,19 @@ function handlePreviewLinkContextMenu(e) {
   const link = e.target?.closest?.('a');
   if (!link || !previewLinkRoot?.contains(link)) return;
 
-  const href = link.getAttribute('href');
+  const href = String(link.getAttribute('href') || '').trim();
   if (!href) return;
 
   e.preventDefault();
   e.stopPropagation();
 
-  if (/^mailto:/i.test(href)) {
-    const raw = String(href).replace(/^mailto:/i, '').split('?')[0];
-    copyToClipboard(safeDecodeURIComponent(raw));
+  const externalUrl = getSafeExternalUrl(href);
+  if (externalUrl?.protocol === 'mailto:') {
+    copyToClipboard(safeDecodeURIComponent(externalUrl.pathname));
     return;
   }
-  if (/^https?:\/\//i.test(href)) {
-    copyToClipboard(href);
+  if (externalUrl?.protocol === 'https:') {
+    copyToClipboard(externalUrl.toString());
     return;
   }
 

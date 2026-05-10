@@ -91,14 +91,27 @@ function handleMenuSelect(key) {
   router.push({ name: key })
 }
 
+function resolveEnterRoute(enterCode) {
+  const normalizedCode = typeof enterCode === 'string' ? enterCode.trim().toLowerCase() : ''
+  if (!normalizedCode) return ''
+
+  const enterRouteMap = {
+    ai: 'chat',
+    'ai tools': 'chat'
+  }
+
+  return enterRouteMap[normalizedCode] || ''
+}
+
 const ENTER_ROUTE_MAP = Object.freeze({
-  Ai: 'chat'
+  Ai: 'chat',
+  'Ai Tools': 'chat'
 })
 
 watch(
   utoolsEnterData,
   (val) => {
-    const target = ENTER_ROUTE_MAP[val?.code]
+    const target = ENTER_ROUTE_MAP[val?.code] || resolveEnterRoute(val?.code)
     if (!target || route.name === target) return
     router.replace({ name: target })
   },

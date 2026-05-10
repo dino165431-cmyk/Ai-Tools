@@ -17,6 +17,7 @@ const MANAGED_NOTEBOOK_VENV_PYTHON_RELATIVE_PATH = process.platform === 'win32'
 const PYTHON_MODULE_CACHE_TTL_MS = 60000;
 const PYTHON_LSP_HEALTH_CACHE_TTL_MS = 30000;
 const PROCESS_PARTIAL_FLUSH_MS = 90;
+const NOTEBOOK_SESSION_SHUTDOWN_TIMEOUT_MS = 1500;
 const PYTHON_MODULE_DISCOVERY_SCRIPT = [
   'import json, pkgutil, sys',
   'modules = set()',
@@ -1022,6 +1023,7 @@ class NotebookSession {
     this._rejectReady = null;
     this.pending.forEach(({ reject }) => reject(err));
     this.pending.clear();
+    this.stderrChunks = [];
     try {
       this.stdoutRl?.close?.();
     } catch {
@@ -1098,13 +1100,10 @@ class NotebookSession {
     this.stdoutRl = null;
 
     if (this.proc && !this.proc.killed) {
-      try {
-        this.proc.kill();
-      } catch {
-        // ignore
-      }
+      killProcessTree(this.proc);
     }
     this.proc = null;
+    this.stderrChunks = [];
   }
 
   async forceShutdown(reason = 'Notebook 会话已被强制终止') {
@@ -1115,7 +1114,11 @@ class NotebookSession {
   }
 
   async shutdown() {
-    if (this.closed) return { ok: true };
+    if (this.closed) {
+      this._destroyProcess();
+      return { ok: true };
+    }
+    const proc = this.proc;
     try {
       await this.sendCommand('shutdown');
     } catch {
@@ -1123,6 +1126,19 @@ class NotebookSession {
     }
 
     this.closed = true;
+    this.pending.clear();
+    this._resolveReady = null;
+    this._rejectReady = null;
+    await Promise.race([
+      new Promise((resolve) => {
+        if (!proc) {
+          resolve();
+          return;
+        }
+        proc.once('exit', () => resolve());
+      }),
+      delay(NOTEBOOK_SESSION_SHUTDOWN_TIMEOUT_MS)
+    ]).catch(() => {});
     this._destroyProcess();
     return { ok: true };
   }
@@ -1134,6 +1150,7 @@ class NotebookRuntime {
     this.magicExecutions = new Map();
     this.pythonModuleCache = new Map();
     this.pythonLspHealthCache = new Map();
+    this._disposed = false;
   }
 
   detectPython() {
@@ -1531,6 +1548,7 @@ class NotebookRuntime {
   }
 
   async createSession(options = {}) {
+    this._disposed = false;
     const sessionId = randomId('session');
     const session = new NotebookSession(sessionId, options);
     this.sessions.set(sessionId, session);
@@ -1603,6 +1621,35 @@ class NotebookRuntime {
     this.sessions.delete(id);
     return await session.shutdown();
   }
+
+  async dispose() {
+    if (this._disposed) return;
+    this._disposed = true;
+
+    const activeSessions = Array.from(this.sessions.values());
+    this.sessions.clear();
+
+    await Promise.allSettled(activeSessions.map((session) => session.forceShutdown('插件退出，Notebook 会话已关闭')));
+
+    for (const executionId of Array.from(this.magicExecutions.keys())) {
+      try {
+        this.interruptMagicExecution(executionId);
+      } catch {
+        // ignore
+      }
+    }
+
+    this.magicExecutions.clear();
+    this.pythonModuleCache.clear();
+    this.pythonLspHealthCache.clear();
+    cachedDetectedPythonPath = '';
+    cachedResolvedHelperScriptPath = '';
+    await pythonLsp.shutdownAll?.().catch(() => {});
+  }
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 module.exports = Object.assign(new NotebookRuntime(), {

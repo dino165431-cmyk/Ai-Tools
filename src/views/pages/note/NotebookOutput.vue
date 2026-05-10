@@ -75,6 +75,7 @@
 <script setup>
 import { computed } from 'vue'
 import LazyMarkdownPreview from '@/components/LazyMarkdownPreview.vue'
+import { sanitizeHtml } from '@/utils/sanitizeHtml'
 
 const props = defineProps({
   outputs: {
@@ -109,8 +110,8 @@ function resolveMarkdownOutput(output) {
 
 function resolveHtmlOutput(output) {
   const data = output?.data && typeof output.data === 'object' ? output.data : {}
-  if (typeof data['text/html'] === 'string') return data['text/html']
-  if (Array.isArray(data['text/html'])) return data['text/html'].join('')
+  if (typeof data['text/html'] === 'string') return sanitizeHtml(data['text/html'])
+  if (Array.isArray(data['text/html'])) return sanitizeHtml(data['text/html'].join(''))
   return ''
 }
 

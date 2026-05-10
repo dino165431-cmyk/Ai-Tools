@@ -10,6 +10,7 @@ const timedTasks = getTimedTasks()
 let hasInit = false
 const scheduleMap = new Map() // taskId -> { timeoutId, nextRunAt }
 const runningTaskIds = new Set()
+let stopWatch = null
 
 function nowMs() {
   return Date.now()
@@ -24,6 +25,12 @@ function clearSchedule(taskId) {
     // ignore
   }
   scheduleMap.delete(taskId)
+}
+
+function clearAllSchedules() {
+  for (const taskId of [...scheduleMap.keys()]) {
+    clearSchedule(taskId)
+  }
 }
 
 function safeNumber(n) {
@@ -216,6 +223,11 @@ async function runTask(taskId) {
 }
 
 function scheduleOne(taskId) {
+  if (!hasInit) {
+    clearSchedule(taskId)
+    return
+  }
+
   const task = getTaskById(taskId)
   if (!task || !task.enabled) {
     clearSchedule(taskId)
@@ -240,6 +252,8 @@ function scheduleOne(taskId) {
 }
 
 function rescheduleAll() {
+  if (!hasInit) return
+
   const list = Array.isArray(timedTasks.value) ? timedTasks.value : []
   const idSet = new Set(list.filter((t) => t && t._id).map((t) => t._id))
 
@@ -286,11 +300,26 @@ export function initTimedTaskRunner() {
   if (hasInit) return
   hasInit = true
 
-  watch(
+  stopWatch = watch(
     buildScheduleSignature,
     () => {
       rescheduleAll()
     },
     { immediate: true }
   )
+
+  return disposeTimedTaskRunner
+}
+
+export function disposeTimedTaskRunner() {
+  hasInit = false
+
+  try {
+    stopWatch?.()
+  } catch {
+    // ignore
+  }
+  stopWatch = null
+  clearAllSchedules()
+  runningTaskIds.clear()
 }

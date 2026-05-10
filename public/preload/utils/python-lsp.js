@@ -1,7 +1,9 @@
 const fs = require('fs');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const fileOperations = require('./file-operations');
+
+const LSP_SHUTDOWN_TIMEOUT_MS = 1200;
 
 function clampNonNegativeInteger(value, fallback = 0) {
   const num = Number(value);
@@ -23,6 +25,31 @@ function resolveWorkspacePath(workspacePath = '') {
     return fileOperations.resolvePath(raw);
   } catch {
     return path.resolve(raw);
+  }
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function killProcessTree(proc) {
+  if (!proc || proc.killed) return;
+  try {
+    if (process.platform === 'win32' && Number.isFinite(Number(proc.pid))) {
+      spawnSync('taskkill', ['/PID', String(proc.pid), '/T', '/F'], {
+        windowsHide: true,
+        stdio: 'ignore'
+      });
+      return;
+    }
+  } catch {
+    // ignore and fall back to kill()
+  }
+
+  try {
+    proc.kill();
+  } catch {
+    // ignore
   }
 }
 
@@ -347,7 +374,11 @@ class JsonRpcProcess {
     ) {
       return new Error(`当前 Python 环境缺少 jedi-language-server：${this.pythonPath}${detail}`);
     }
-    if (stderr.includes('cannot be directly executed') || stderr.includes('No module named jedi_language_server.__main__')) {
+    if (
+      stderr.includes('cannot be directly executed')
+      || stderr.includes('No module named jedi_language_server.__main__')
+      || stderr.includes('No module named jedi_language_server.cli')
+    ) {
       return new Error(`当前 jedi-language-server 启动方式不正确。${detail}`);
     }
     if (signal) {
@@ -361,6 +392,9 @@ class JsonRpcProcess {
     this.closed = true;
     this.pending.forEach(({ reject }) => reject(err));
     this.pending.clear();
+    this.documents.clear();
+    this.buffer = '';
+    this.contentLength = null;
   }
 
   _handleStdout(chunk) {
@@ -400,82 +434,6 @@ class JsonRpcProcess {
         }
       }
     }
-  }
-
-  _writePayload(payload) {
-    if (!this.proc?.stdin || this.proc.killed) {
-      throw new Error('Python 补全服务不可用');
-    }
-    const body = JSON.stringify(payload);
-    const header = `Content-Length: ${Buffer.byteLength(body, 'utf8')}\r\n\r\n`;
-    this.proc.stdin.write(header + body, 'utf8');
-  }
-
-  _normalizeProcessError(err) {
-    if (String(err?.message || '').includes('ENOENT')) {
-      return new Error(`找不到 Jedi Language Server 启动命令：${this.launch.command}`);
-    }
-    return err instanceof Error ? err : new Error(String(err || 'Python 补全服务启动失败'));
-  }
-
-  _buildExitError(code, signal) {
-    const stderr = this.stderrChunks.join('').trim();
-    const detail = stderr ? `\n${stderr}` : '';
-    if (
-      stderr.includes("No module named 'jedi_language_server'")
-      || stderr.includes('No module named jedi_language_server')
-    ) {
-      return new Error(`当前 Python 环境缺少 jedi-language-server：${this.pythonPath}${detail}`);
-    }
-    if (
-      stderr.includes('cannot be directly executed')
-      || stderr.includes('No module named jedi_language_server.__main__')
-      || stderr.includes('No module named jedi_language_server.cli')
-    ) {
-      return new Error(`当前 jedi-language-server 启动方式不正确。${detail}`);
-    }
-    if (signal) {
-      return new Error(`Python 补全服务已退出（signal: ${signal}）。${detail}`);
-    }
-    return new Error(`Python 补全服务已退出（code: ${code}）。${detail}`);
-  }
-
-  _writePayload(payload) {
-    if (!this.proc?.stdin || this.proc.killed) {
-      throw new Error('Python 补全服务不可用');
-    }
-    const body = JSON.stringify(payload);
-    const header = `Content-Length: ${Buffer.byteLength(body, 'utf8')}\r\n\r\n`;
-    this.proc.stdin.write(header + body, 'utf8');
-  }
-
-  _normalizeProcessError(err) {
-    if (String(err?.message || '').includes('ENOENT')) {
-      return new Error(`找不到 Jedi Language Server 启动命令：${this.launch.command}`);
-    }
-    return err instanceof Error ? err : new Error(String(err || 'Python 补全服务启动失败'));
-  }
-
-  _buildExitError(code, signal) {
-    const stderr = this.stderrChunks.join('').trim();
-    const detail = stderr ? `\n${stderr}` : '';
-    if (
-      stderr.includes("No module named 'jedi_language_server'")
-      || stderr.includes('No module named jedi_language_server')
-    ) {
-      return new Error(`当前 Python 环境缺少 jedi-language-server：${this.pythonPath}${detail}`);
-    }
-    if (
-      stderr.includes('cannot be directly executed')
-      || stderr.includes('No module named jedi_language_server.__main__')
-      || stderr.includes('No module named jedi_language_server.cli')
-    ) {
-      return new Error(`当前 jedi-language-server 启动方式不正确。${detail}`);
-    }
-    if (signal) {
-      return new Error(`Python 补全服务已退出（signal: ${signal}）。${detail}`);
-    }
-    return new Error(`Python 补全服务已退出（code: ${code}）。${detail}`);
   }
 
   _writePayload(payload) {
@@ -666,8 +624,17 @@ class JsonRpcProcess {
   }
 
   async shutdown() {
-    if (this.closed) return;
+    if (this.closed) {
+      killProcessTree(this.proc);
+      this.proc = null;
+      this.documents.clear();
+      this.buffer = '';
+      this.contentLength = null;
+      return;
+    }
     this.closed = true;
+    const proc = this.proc;
+
     try {
       await this._sendRequestInternal('shutdown', {});
     } catch {
@@ -678,11 +645,22 @@ class JsonRpcProcess {
     } catch {
       // ignore
     }
-    try {
-      this.proc?.kill?.();
-    } catch {
-      // ignore
-    }
+    await Promise.race([
+      new Promise((resolve) => {
+        if (!proc) {
+          resolve();
+          return;
+        }
+        proc.once('exit', () => resolve());
+      }),
+      delay(LSP_SHUTDOWN_TIMEOUT_MS)
+    ]).catch(() => {});
+
+    killProcessTree(proc);
+    this.proc = null;
+    this.documents.clear();
+    this.buffer = '';
+    this.contentLength = null;
   }
 }
 
@@ -807,83 +785,6 @@ class PythonLspManager {
     this.instances.clear();
   }
 }
-
-JsonRpcProcess.prototype._normalizeProcessError = function _normalizeProcessError(err) {
-  if (String(err?.message || '').includes('ENOENT')) {
-    return new Error(`找不到 Jedi Language Server 启动命令：${this.launch.command}`);
-  }
-  return err instanceof Error ? err : new Error(String(err || 'Python 补全服务启动失败'));
-};
-
-JsonRpcProcess.prototype._buildExitError = function _buildExitError(code, signal) {
-  const stderr = this.stderrChunks.join('').trim();
-  const detail = stderr ? `\n${stderr}` : '';
-  if (
-    stderr.includes("No module named 'jedi_language_server'")
-    || stderr.includes('No module named jedi_language_server')
-  ) {
-    return new Error(`当前 Python 环境缺少 jedi-language-server：${this.pythonPath}${detail}`);
-  }
-  if (
-    stderr.includes('cannot be directly executed')
-    || stderr.includes('No module named jedi_language_server.__main__')
-    || stderr.includes('No module named jedi_language_server.cli')
-  ) {
-    return new Error(`当前 jedi-language-server 启动方式不正确。${detail}`);
-  }
-  if (signal) {
-    return new Error(`Python 补全服务已退出（signal: ${signal}）。${detail}`);
-  }
-  return new Error(`Python 补全服务已退出（code: ${code}）。${detail}`);
-};
-
-JsonRpcProcess.prototype._handleStdout = function _handleStdout(chunk) {
-  this.buffer += chunk;
-
-  while (true) {
-    if (this.contentLength == null) {
-      const headerEnd = this.buffer.indexOf('\r\n\r\n');
-      if (headerEnd === -1) return;
-      const headerText = this.buffer.slice(0, headerEnd);
-      this.buffer = this.buffer.slice(headerEnd + 4);
-      const match = headerText.match(/Content-Length:\s*(\d+)/i);
-      if (!match) continue;
-      this.contentLength = Number(match[1]);
-    }
-
-    if (this.buffer.length < this.contentLength) return;
-    const body = this.buffer.slice(0, this.contentLength);
-    this.buffer = this.buffer.slice(this.contentLength);
-    this.contentLength = null;
-
-    let message = null;
-    try {
-      message = JSON.parse(body);
-    } catch {
-      continue;
-    }
-
-    if (message && Object.prototype.hasOwnProperty.call(message, 'id')) {
-      const pending = this.pending.get(message.id);
-      if (!pending) continue;
-      this.pending.delete(message.id);
-      if (message.error) {
-        pending.reject(new Error(String(message.error?.message || 'Python 补全请求失败')));
-      } else {
-        pending.resolve(message.result);
-      }
-    }
-  }
-};
-
-JsonRpcProcess.prototype._writePayload = function _writePayload(payload) {
-  if (!this.proc?.stdin || this.proc.killed) {
-    throw new Error('Python 补全服务不可用');
-  }
-  const body = JSON.stringify(payload);
-  const header = `Content-Length: ${Buffer.byteLength(body, 'utf8')}\r\n\r\n`;
-  this.proc.stdin.write(header + body, 'utf8');
-};
 
 const manager = new PythonLspManager();
 

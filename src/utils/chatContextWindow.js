@@ -91,7 +91,19 @@ const ATTACHMENT_SUMMARY_MARKERS = Object.freeze([
 ])
 
 const COMPACT_ATTACHMENT_TEXT_LIMIT = 1800
+const COMPACT_USER_TEXT_LIMIT = 1800
+const COMPACT_ASSISTANT_TEXT_LIMIT = 1400
+const COMPACT_ASSISTANT_REASONING_LIMIT = 600
+const MIN_COMPACT_USER_TEXT_LIMIT = 240
+const MIN_COMPACT_ASSISTANT_TEXT_LIMIT = 180
+const MIN_COMPACT_ASSISTANT_REASONING_LIMIT = 80
+const COMPACT_USER_TEXT_TIGHT_LIMIT = 900
+const COMPACT_ASSISTANT_TEXT_TIGHT_LIMIT = 700
+const COMPACT_ASSISTANT_REASONING_TIGHT_LIMIT = 240
+const COMPACT_TEXT_TRUNCATION_MARKER = '\n\n[Earlier content truncated for compact history]\n\n'
+const COMPACT_REASONING_TRUNCATION_MARKER = '\n\n[Earlier reasoning truncated for compact history]\n\n'
 const ESTIMATED_IMAGE_URL_CHARS = 256
+const REASONING_FIELD_KEYS = Object.freeze(['reasoning_content', 'reasoning', 'thinking', 'thought'])
 
 function isFinitePositiveNumber(value) {
   return Number.isFinite(value) && value > 0
@@ -372,6 +384,18 @@ function extractMessageTextContent(content) {
   return ''
 }
 
+function normalizeTextValue(value) {
+  if (value == null) return ''
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
+}
+
 function countMessageImageParts(content) {
   if (!Array.isArray(content)) return 0
   return content.reduce((total, part) => total + (part?.type === 'image_url' ? 1 : 0), 0)
@@ -458,6 +482,7 @@ function buildInspectionEntry({
   kind = 'turn',
   index = null,
   mode = 'full',
+  variant = 'full',
   hasAttachment = false,
   mustKeep = false,
   messages = [],
@@ -480,6 +505,7 @@ function buildInspectionEntry({
     kind,
     index,
     mode,
+    variant,
     hasAttachment,
     mustKeep,
     omitted,
@@ -524,6 +550,7 @@ function buildInspectionPayload({
         kind: 'prelude',
         index: null,
         mode: 'prelude',
+        variant: 'prelude',
         hasAttachment: false,
         mustKeep: false,
         messages: acceptedPrelude,
@@ -541,6 +568,7 @@ function buildInspectionPayload({
         kind: 'pinned_attachment_summary',
         index: item.index,
         mode: item.selectionMode,
+        variant: item.selectionVariant || item.selectionMode,
         hasAttachment: true,
         mustKeep: false,
         messages: item.messages,
@@ -555,6 +583,7 @@ function buildInspectionPayload({
         kind: 'turn',
         index: item.index,
         mode: item.selectionMode,
+        variant: item.selectionVariant || item.selectionMode,
         hasAttachment: item.hasAttachment,
         mustKeep: item.mustKeep,
         messages: item.messages,
@@ -594,6 +623,38 @@ export function countChatContextAttachmentSummaryMessages(messages) {
   )
 }
 
+function truncatePlainText(text, limit = COMPACT_USER_TEXT_LIMIT, options = {}) {
+  const normalized = normalizeTextValue(text).trim()
+  if (!normalized) return ''
+  if (!Number.isFinite(limit) || limit <= 0 || normalized.length <= limit) return normalized
+
+  const safeLimit = Math.max(48, Math.floor(limit))
+  const marker =
+    typeof options?.marker === 'string' && options.marker
+      ? options.marker
+      : COMPACT_TEXT_TRUNCATION_MARKER
+  const keepTail = options?.keepTail !== false
+
+  if (!keepTail || safeLimit <= marker.length + 180) {
+    const head = Math.max(24, safeLimit - 3)
+    return `${normalized.slice(0, head).trimEnd()}...`
+  }
+
+  const available = safeLimit - marker.length
+  let tail = Math.min(Math.max(120, Math.floor(available * 0.28)), Math.max(0, available - 72))
+  let head = available - tail
+
+  if (head < 72) {
+    head = Math.max(48, available)
+    tail = Math.max(0, available - head)
+  }
+
+  const headText = normalized.slice(0, head).trimEnd()
+  const tailText = tail > 0 ? normalized.slice(normalized.length - tail).trimStart() : ''
+  if (!tailText) return `${headText}...`
+  return `${headText}${marker}${tailText}`
+}
+
 function truncateAttachmentText(text, limit = COMPACT_ATTACHMENT_TEXT_LIMIT) {
   const normalized = String(text || '').trim()
   if (!normalized) return ''
@@ -630,6 +691,80 @@ function compactAttachmentUserMessage(message) {
 
   cloned.content = summary || (imageCount > 0 ? '（历史图片已省略，仅保留文字摘要）' : '（历史附件摘要为空）')
   return cloned
+}
+
+function compactPlainTextMessage(message, limit = COMPACT_USER_TEXT_LIMIT) {
+  const cloned = cloneMessage(message)
+  const summary = truncatePlainText(extractMessageTextContent(message.content), limit, {
+    marker: COMPACT_TEXT_TRUNCATION_MARKER,
+    keepTail: true
+  })
+  if (summary) cloned.content = summary
+  return cloned
+}
+
+function compactAssistantReasoning(message, limit = COMPACT_ASSISTANT_REASONING_LIMIT) {
+  const reasoning = normalizeTextValue(
+    message.reasoning_content ?? message.reasoning ?? message.thinking ?? message.thought
+  ).trim()
+
+  REASONING_FIELD_KEYS.forEach((key) => {
+    delete message[key]
+  })
+
+  if (!reasoning) return
+  message.reasoning_content = truncatePlainText(reasoning, limit, {
+    marker: COMPACT_REASONING_TRUNCATION_MARKER,
+    keepTail: false
+  })
+}
+
+function compactAssistantMessage(message, options = {}) {
+  const cloned = cloneMessage(message)
+  delete cloned.tool_calls
+  const textLimit = Number.isFinite(options?.textLimit) ? options.textLimit : COMPACT_ASSISTANT_TEXT_LIMIT
+  const reasoningLimit = Number.isFinite(options?.reasoningLimit)
+    ? options.reasoningLimit
+    : COMPACT_ASSISTANT_REASONING_LIMIT
+
+  if (options?.truncatePlainText === true) {
+    const text = extractMessageTextContent(message.content)
+    if (text) {
+      cloned.content = truncatePlainText(text, textLimit, {
+        marker: COMPACT_TEXT_TRUNCATION_MARKER,
+        keepTail: true
+      })
+    }
+    compactAssistantReasoning(cloned, reasoningLimit)
+  }
+
+  if (!assistantHasVisiblePayload(cloned)) return null
+  return cloned
+}
+
+function compactHistoryMessage(message, options = {}) {
+  if (!isMessageLike(message)) return null
+  if (message.role === 'tool') return null
+
+  const truncatePlainTextEnabled = options?.truncatePlainText === true
+
+  if (message.role === 'assistant') {
+    return compactAssistantMessage(message, {
+      truncatePlainText: truncatePlainTextEnabled,
+      textLimit: options?.assistantTextLimit,
+      reasoningLimit: options?.assistantReasoningLimit
+    })
+  }
+
+  if (message.role === 'user') {
+    if (messageHasAttachmentPayload(message)) return compactAttachmentUserMessage(message)
+    if (truncatePlainTextEnabled) {
+      const userLimit = Number.isFinite(options?.userTextLimit) ? options.userTextLimit : COMPACT_USER_TEXT_LIMIT
+      return compactPlainTextMessage(message, userLimit)
+    }
+  }
+
+  return cloneMessage(message)
 }
 
 function stripToolState(message) {
@@ -672,32 +807,22 @@ function compactTurnMessages(turn, options = {}) {
   if (!Array.isArray(turn) || !turn.length) return []
   const toolPolicy = options?.toolPolicy === 'strip' ? 'strip' : 'full'
   const preserveToolResultTurns = options?.preserveToolResultTurns !== false
+  const truncatePlainTextEnabled = options?.truncatePlainText === true
 
   if (toolPolicy !== 'strip' && preserveToolResultTurns && turnHasToolPayload(turn)) {
     return cloneTurnMessages(turn, toolPolicy)
   }
 
   const out = []
-  const first = turn[0]
-  if (isMessageLike(first)) {
-    out.push(messageHasAttachmentPayload(first) ? compactAttachmentUserMessage(first) : cloneMessage(first))
-  }
-
-  for (let i = 1; i < turn.length; i += 1) {
-    const message = turn[i]
-    if (!isMessageLike(message)) continue
-
-    if (message.role === 'tool') continue
-
-    if (message.role === 'assistant') {
-      const cloned = cloneMessage(message)
-      delete cloned.tool_calls
-      if (!assistantHasVisiblePayload(cloned)) continue
-      out.push(cloned)
-      continue
-    }
-
-    out.push(messageHasAttachmentPayload(message) ? compactAttachmentUserMessage(message) : cloneMessage(message))
+  for (let i = 0; i < turn.length; i += 1) {
+    const compacted = compactHistoryMessage(turn[i], {
+      truncatePlainText: truncatePlainTextEnabled,
+      userTextLimit: options?.userTextLimit,
+      assistantTextLimit: options?.assistantTextLimit,
+      assistantReasoningLimit: options?.assistantReasoningLimit
+    })
+    if (!compacted) continue
+    out.push(compacted)
   }
 
   return out
@@ -710,10 +835,10 @@ function buildPinnedAttachmentMessages(turn) {
   return firstUser ? [firstUser] : []
 }
 
-function selectTurnMessages(turn, { toolPolicy, compact }) {
+function selectTurnMessages(turn, { toolPolicy, compact, truncatePlainText = false, preserveToolResultTurns = true } = {}) {
   if (!Array.isArray(turn) || !turn.length) return []
 
-  if (compact) return compactTurnMessages(turn, { toolPolicy, preserveToolResultTurns: true })
+  if (compact) return compactTurnMessages(turn, { toolPolicy, truncatePlainText, preserveToolResultTurns })
 
   return cloneTurnMessages(turn, toolPolicy)
 }
@@ -826,9 +951,26 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
       compact: true,
       preserveToolResultTurns
     })
+    const compactTextTurn = selectTurnMessages(turn, {
+      toolPolicy,
+      compact: true,
+      truncatePlainText: true,
+      preserveToolResultTurns
+    })
+    const compactTightTurn = selectTurnMessages(turn, {
+      toolPolicy,
+      compact: true,
+      truncatePlainText: true,
+      preserveToolResultTurns,
+      userTextLimit: COMPACT_USER_TEXT_TIGHT_LIMIT,
+      assistantTextLimit: COMPACT_ASSISTANT_TEXT_TIGHT_LIMIT,
+      assistantReasoningLimit: COMPACT_ASSISTANT_REASONING_TIGHT_LIMIT
+    })
 
-    const fullTurnMessages = fullTurn.length ? fullTurn : compactTurn
+    const fullTurnMessages = fullTurn.length ? fullTurn : compactTurn.length ? compactTurn : compactTextTurn
     const compactTurnMessagesSafe = compactTurn.length ? compactTurn : fullTurnMessages
+    const compactTextTurnMessagesSafe = compactTextTurn.length ? compactTextTurn : compactTurnMessagesSafe
+    const compactTightTurnMessagesSafe = compactTightTurn.length ? compactTightTurn : compactTextTurnMessagesSafe
 
     const fullTurnStats = {
       count: fullTurnMessages.length,
@@ -837,6 +979,14 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
     const compactTurnStats = {
       count: compactTurnMessagesSafe.length,
       chars: estimateMessagesSize(compactTurnMessagesSafe)
+    }
+    const compactTextTurnStats = {
+      count: compactTextTurnMessagesSafe.length,
+      chars: estimateMessagesSize(compactTextTurnMessagesSafe)
+    }
+    const compactTightTurnStats = {
+      count: compactTightTurnMessagesSafe.length,
+      chars: estimateMessagesSize(compactTightTurnMessagesSafe)
     }
     const attachmentSummaryStats = {
       count: attachmentSummaryMessages.length,
@@ -849,17 +999,20 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
     let messages = compactTurnMessagesSafe
     let stats = compactTurnStats
     let selectionMode = 'compact'
+    let selectionVariant = 'compact'
 
     if (toolPolicy !== 'strip' && preserveToolResultTurns && hasToolPayload) {
       messages = fullTurnMessages
       stats = fullTurnStats
       selectionMode = 'full'
+      selectionVariant = 'full'
     }
 
     if (preferFull && (mustKeep || !fullTurnOversized)) {
       messages = fullTurnMessages
       stats = fullTurnStats
       selectionMode = 'full'
+      selectionVariant = 'full'
     }
 
     return {
@@ -871,11 +1024,16 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
       attachmentSummaryStats,
       fullTurnMessages,
       compactTurnMessagesSafe,
+      compactTextTurnMessagesSafe,
+      compactTightTurnMessagesSafe,
       fullTurnStats,
       compactTurnStats,
+      compactTextTurnStats,
+      compactTightTurnStats,
       messages,
       stats,
-      selectionMode
+      selectionMode,
+      selectionVariant
     }
   })
 
@@ -917,6 +1075,7 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
     kind = 'turn',
     index = null,
     mode = 'compact',
+    variant = mode,
     hasAttachment = false,
     messages = [],
     stats = null,
@@ -934,6 +1093,7 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
       kind,
       index,
       mode,
+      variant,
       hasAttachment,
       mustKeep: false,
       messages,
@@ -952,11 +1112,123 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
       kind: 'turn',
       index: turnIndex,
       mode: overrides.mode ?? candidate.selectionMode,
+      variant: overrides.variant ?? candidate.selectionVariant ?? candidate.selectionMode,
       hasAttachment: overrides.hasAttachment ?? candidate.hasAttachment,
       messages: overrides.messages ?? candidate.messages,
       stats: overrides.stats ?? candidate.stats,
       reasons
     })
+  }
+
+  const variantImproves = (nextStats, currentStats) =>
+    Number(nextStats?.count || 0) < Number(currentStats?.count || 0) ||
+    Number(nextStats?.chars || 0) < Number(currentStats?.chars || 0)
+
+  const applyTurnVariant = (candidate, variant = 'full') => {
+    if (variant === 'full') {
+      return {
+        messages: candidate.fullTurnMessages,
+        stats: candidate.fullTurnStats,
+        mode: 'full',
+        variant: 'full'
+      }
+    }
+
+    if (variant === 'compact_text') {
+      return {
+        messages: candidate.compactTextTurnMessagesSafe,
+        stats: candidate.compactTextTurnStats,
+        mode: 'compact',
+        variant: 'compact_text'
+      }
+    }
+
+    if (variant === 'compact_tight') {
+      return {
+        messages: candidate.compactTightTurnMessagesSafe,
+        stats: candidate.compactTightTurnStats,
+        mode: 'compact',
+        variant: 'compact_tight'
+      }
+    }
+
+    return {
+      messages: candidate.compactTurnMessagesSafe,
+      stats: candidate.compactTurnStats,
+      mode: 'compact',
+      variant: 'compact'
+    }
+  }
+
+  const getNextMoreCompactVariant = (candidate, currentVariant) => {
+    if (currentVariant === 'full') {
+      if (variantImproves(candidate.compactTurnStats, candidate.fullTurnStats)) return 'compact'
+      if (variantImproves(candidate.compactTextTurnStats, candidate.fullTurnStats)) return 'compact_text'
+      if (variantImproves(candidate.compactTightTurnStats, candidate.fullTurnStats)) return 'compact_tight'
+      return null
+    }
+
+    if (currentVariant === 'compact') {
+      if (variantImproves(candidate.compactTextTurnStats, candidate.compactTurnStats)) return 'compact_text'
+      if (variantImproves(candidate.compactTightTurnStats, candidate.compactTurnStats)) return 'compact_tight'
+      return null
+    }
+
+    if (currentVariant === 'compact_text') {
+      if (variantImproves(candidate.compactTightTurnStats, candidate.compactTextTurnStats)) return 'compact_tight'
+      return null
+    }
+
+    return null
+  }
+
+  const buildAdaptiveCompactVariant = (candidate, targetChars) => {
+    if (!candidate || candidate.hasAttachment || candidate.hasToolPayload) return null
+    const safeTargetChars = Math.max(0, Math.floor(Number(targetChars) || 0))
+    if (!safeTargetChars) return null
+    if (candidate.compactTightTurnStats.chars <= safeTargetChars) {
+      return {
+        messages: candidate.compactTightTurnMessagesSafe,
+        stats: candidate.compactTightTurnStats,
+        mode: 'compact',
+        variant: 'compact_tight'
+      }
+    }
+
+    const baseChars = Math.max(1, Number(candidate.compactTightTurnStats.chars || 1))
+    const ratio = Math.min(1, safeTargetChars / baseChars)
+    const userTextLimit = Math.max(MIN_COMPACT_USER_TEXT_LIMIT, Math.floor(COMPACT_USER_TEXT_TIGHT_LIMIT * ratio))
+    const assistantTextLimit = Math.max(
+      MIN_COMPACT_ASSISTANT_TEXT_LIMIT,
+      Math.floor(COMPACT_ASSISTANT_TEXT_TIGHT_LIMIT * ratio)
+    )
+    const assistantReasoningLimit = Math.max(
+      MIN_COMPACT_ASSISTANT_REASONING_LIMIT,
+      Math.floor(COMPACT_ASSISTANT_REASONING_TIGHT_LIMIT * ratio)
+    )
+
+    const messages = compactTurnMessages(turns[candidate.index], {
+      toolPolicy,
+      truncatePlainText: true,
+      preserveToolResultTurns,
+      userTextLimit,
+      assistantTextLimit,
+      assistantReasoningLimit
+    })
+    if (!messages.length) return null
+
+    const stats = {
+      count: messages.length,
+      chars: estimateMessagesSize(messages)
+    }
+    if (!variantImproves(stats, candidate.compactTightTurnStats)) return null
+
+    return {
+      messages,
+      stats,
+      mode: 'compact',
+      variant: 'compact_adaptive'
+    }
   }
 
   for (let turnIndex = turns.length - 1; turnIndex >= 0; turnIndex -= 1) {
@@ -969,42 +1241,58 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
     let chosenMessages = candidate.messages
     let chosenStats = candidate.stats
     let chosenMode = candidate.selectionMode
+    let chosenVariant = candidate.selectionVariant
+    let chosenFitReasons = collectBudgetReasons({
+      extraTurns: 1,
+      extraMessages: chosenStats.count,
+      extraChars: chosenStats.chars
+    })
+    let chosenFits = chosenFitReasons.length === 0
 
-    const fullFits =
-      selectedTurnCount < maxTurns &&
-      selectedMessageCount + candidate.fullTurnStats.count <= maxMessages &&
-      selectedChars + candidate.fullTurnStats.chars <= maxChars
-
-    const compactFits =
-      canFitAdditionalPayload({
-        extraTurns: 1,
-        extraMessages: candidate.compactTurnStats.count,
-        extraChars: candidate.compactTurnStats.chars
-      })
-
-    if (!mustKeep) {
-      if (
-        chosenMessages === candidate.fullTurnMessages &&
-        !fullFits &&
-        (compactFits ||
-          (hasAttachment &&
-            allowAttachmentTurnDisplacement &&
-            (
-              candidate.compactTurnStats.count < candidate.fullTurnStats.count ||
-              candidate.compactTurnStats.chars < candidate.fullTurnStats.chars
-            )))
-      ) {
-        chosenMessages = candidate.compactTurnMessagesSafe
-        chosenStats = candidate.compactTurnStats
-        chosenMode = 'compact'
-      }
-
-      let chosenFitReasons = collectBudgetReasons({
+    while (!chosenFits) {
+      const nextVariant = getNextMoreCompactVariant(candidate, chosenVariant)
+      if (!nextVariant) break
+      const reduced = applyTurnVariant(candidate, nextVariant)
+      chosenMessages = reduced.messages
+      chosenStats = reduced.stats
+      chosenMode = reduced.mode
+      chosenVariant = reduced.variant
+      chosenFitReasons = collectBudgetReasons({
         extraTurns: 1,
         extraMessages: chosenStats.count,
         extraChars: chosenStats.chars
       })
-      let chosenFits = chosenFitReasons.length === 0
+      chosenFits = chosenFitReasons.length === 0
+    }
+
+    if (!chosenFits && !hasAttachment && !hasToolPayload) {
+      const availableChars = Math.max(0, maxChars - selectedChars)
+      const adaptive = buildAdaptiveCompactVariant(candidate, availableChars)
+      if (adaptive && variantImproves(adaptive.stats, chosenStats)) {
+        chosenMessages = adaptive.messages
+        chosenStats = adaptive.stats
+        chosenMode = adaptive.mode
+        chosenVariant = adaptive.variant
+        chosenFitReasons = collectBudgetReasons({
+          extraTurns: 1,
+          extraMessages: chosenStats.count,
+          extraChars: chosenStats.chars
+        })
+        chosenFits = chosenFitReasons.length === 0
+      }
+    }
+
+    if (!mustKeep) {
+      while (!chosenFits) {
+        const compactableIndex = findFurtherCompactableSelectedTurnIndex()
+        if (compactableIndex === -1 || !shrinkSelectedTurnFurther(compactableIndex)) break
+        chosenFitReasons = collectBudgetReasons({
+          extraTurns: 1,
+          extraMessages: chosenStats.count,
+          extraChars: chosenStats.chars
+        })
+        chosenFits = chosenFitReasons.length === 0
+      }
 
       if (!chosenFits && hasAttachment && allowAttachmentTurnDisplacement) {
         while (true) {
@@ -1023,6 +1311,7 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
                 kind: 'turn',
                 index: removed.index,
                 mode: removed.selectionMode,
+                variant: removed.selectionVariant || removed.selectionMode,
                 hasAttachment: removed.hasAttachment,
                 messages: removed.messages,
                 stats: removed.stats,
@@ -1031,6 +1320,9 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
             }
             continue
           }
+
+          const compactableIndex = findFurtherCompactableSelectedTurnIndex()
+          if (compactableIndex !== -1 && shrinkSelectedTurnFurther(compactableIndex)) continue
 
           if (!allowSelectedAttachmentShrink) break
           const shrinkableIndex = findShrinkableAttachmentTurnIndex()
@@ -1048,7 +1340,12 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
       if (!chosenFits) {
         selectionStopIndex = turnIndex
         selectionStopReasons = chosenFitReasons.length ? chosenFitReasons : ['char_limit']
-        recordOmittedTurnCandidate(turnIndex, selectionStopReasons)
+        recordOmittedTurnCandidate(turnIndex, selectionStopReasons, {
+          mode: chosenMode,
+          variant: chosenVariant,
+          messages: chosenMessages,
+          stats: chosenStats
+        })
         break
       }
     }
@@ -1061,6 +1358,7 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
       attachmentSummaryMessages,
       attachmentSummaryStats,
       selectionMode: chosenMode,
+      selectionVariant: chosenVariant,
       messages: chosenMessages,
       stats: chosenStats
     })
@@ -1073,6 +1371,21 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
     for (let i = 0; i < selectedTurns.length; i += 1) {
       const item = selectedTurns[i]
       if (!item?.mustKeep && !item?.hasAttachment && !item?.hasToolPayload) return i
+    }
+    return -1
+  }
+
+  function findFurtherCompactableSelectedTurnIndex() {
+    for (let i = 0; i < selectedTurns.length; i += 1) {
+      const item = selectedTurns[i]
+      if (!item || item.mustKeep || item.hasAttachment || item.hasToolPayload) continue
+      const candidate = turnCandidates[item.index]
+      if (!candidate) continue
+      const nextVariant = getNextMoreCompactVariant(candidate, item.selectionVariant || item.selectionMode || 'compact')
+      if (!nextVariant) continue
+      const next = applyTurnVariant(candidate, nextVariant)
+      if (!variantImproves(next.stats, item.stats)) continue
+      return i
     }
     return -1
   }
@@ -1109,6 +1422,34 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
     item.messages = item.attachmentSummaryMessages.map(cloneMessage)
     item.stats = { count: nextCount, chars: nextChars }
     item.selectionMode = 'attachment_summary'
+    item.selectionVariant = 'attachment_summary'
+    selectedMessageCount = Math.max(0, selectedMessageCount - currentCount + nextCount)
+    selectedChars = Math.max(0, selectedChars - currentChars + nextChars)
+    return true
+  }
+
+  function shrinkSelectedTurnFurther(index) {
+    const item = selectedTurns[index]
+    if (!item) return false
+    const candidate = turnCandidates[item.index]
+    if (!candidate) return false
+
+    const currentVariant = item.selectionVariant || item.selectionMode || 'compact'
+    const nextVariant = getNextMoreCompactVariant(candidate, currentVariant)
+    if (!nextVariant) return false
+
+    const next = applyTurnVariant(candidate, nextVariant)
+    if (!variantImproves(next.stats, item.stats)) return false
+
+    const currentCount = Number(item?.stats?.count || 0)
+    const currentChars = Number(item?.stats?.chars || 0)
+    const nextCount = Number(next?.stats?.count || 0)
+    const nextChars = Number(next?.stats?.chars || 0)
+
+    item.messages = (Array.isArray(next.messages) ? next.messages : []).map(cloneMessage)
+    item.stats = { count: nextCount, chars: nextChars }
+    item.selectionMode = next.mode
+    item.selectionVariant = next.variant
     selectedMessageCount = Math.max(0, selectedMessageCount - currentCount + nextCount)
     selectedChars = Math.max(0, selectedChars - currentChars + nextChars)
     return true
@@ -1137,6 +1478,7 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
     skippedCandidates.forEach((candidate) => {
       recordOmittedTurnCandidate(candidate.index, ['attachment_policy_disabled'], {
         mode: 'pinned_attachment_summary',
+        variant: 'pinned_attachment_summary',
         hasAttachment: true,
         messages: candidate.messages,
         stats: candidate.stats
@@ -1163,6 +1505,7 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
               kind: 'turn',
               index: removed.index,
               mode: removed.selectionMode,
+              variant: removed.selectionVariant || removed.selectionMode,
               hasAttachment: removed.hasAttachment,
               messages: removed.messages,
               stats: removed.stats,
@@ -1171,6 +1514,9 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
           }
           continue
         }
+
+        const compactableIndex = findFurtherCompactableSelectedTurnIndex()
+        if (compactableIndex !== -1 && shrinkSelectedTurnFurther(compactableIndex)) continue
 
         if (!allowSelectedAttachmentShrink) break
         const shrinkableIndex = findShrinkableAttachmentTurnIndex()
@@ -1185,6 +1531,7 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
       if (candidateFitReasons.length) {
         recordOmittedTurnCandidate(candidate.index, candidateFitReasons, {
           mode: 'pinned_attachment_summary',
+          variant: 'pinned_attachment_summary',
           hasAttachment: true,
           messages: candidate.messages,
           stats: candidate.stats
@@ -1198,6 +1545,7 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
         messages: candidate.messages.map(cloneMessage),
         stats: { ...candidate.stats },
         selectionMode: 'pinned_attachment_summary',
+        selectionVariant: 'pinned_attachment_summary',
         hasAttachment: true,
         mustKeep: false
       })
@@ -1239,6 +1587,7 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
       kind: 'prelude',
       index: null,
       mode: 'prelude',
+      variant: 'prelude',
       hasAttachment: false,
       messages: omittedPreludeMessages,
       stats: {
