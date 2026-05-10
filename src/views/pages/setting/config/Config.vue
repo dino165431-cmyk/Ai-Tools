@@ -363,6 +363,9 @@
           <n-form-item label="压缩字符预算">
             <n-input-number v-model:value="contextWindowDraft.maxCharsCompact" :min="6000" :max="4200000" :step="10000" style="width: 220px;" />
           </n-form-item>
+          <n-form-item label="自动压缩阈值">
+            <n-input-number v-model:value="contextWindowDraft.autoCompactTriggerPercent" :min="55" :max="95" :step="1" style="width: 220px;" />
+          </n-form-item>
         </template>
       </n-form>
       <template #footer>
@@ -994,7 +997,7 @@ const contextWindowSummary = computed(() => {
   const normalized = normalizeChatContextWindowConfig(chatConfig.value?.contextWindow)
   const presetLabel = getContextPresetLabel(normalized.preset)
   const focusLabel = getHistoryFocusLabel(normalized.historyFocus)
-  return `${presetLabel} / ${focusLabel} / 最大 ${normalized.maxTurns} 轮，${normalized.maxMessages} 条消息，展开 ${normalized.maxCharsExpanded} 字符，压缩 ${normalized.maxCharsCompact} 字符`
+  return `${presetLabel} / ${focusLabel} / 最大 ${normalized.maxTurns} 轮，${normalized.maxMessages} 条消息，常规 ${normalized.maxCharsExpanded} 字符，自动压缩 ${normalized.maxCharsCompact} 字符，阈值 ${normalized.autoCompactTriggerPercent}%`
 })
 
 const memoryProviderOptions = computed(() => {

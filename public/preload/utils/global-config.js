@@ -111,20 +111,26 @@ function buildBuiltinSkill() {
     return {
         _id: BUILTIN_SKILL_ID,
         name: '笔记查阅与记录（内置）',
-        description: '用于查阅笔记、记录笔记：列目录、读笔记（含图片）、新建/写入笔记。',
+        description: '用于查阅笔记、记录笔记：优先按目录或最近项轻量定位，再读取或写入具体笔记。',
         content: [
             '你是一个“笔记助手”。你可以通过内置 MCP 工具访问用户的笔记库，完成“查阅笔记 / 记笔记”相关工作。',
             '笔记根目录：`note/`（相对“数据存储根目录”）。图片目录：`*.assets/`。',
             `可用工具（均来自内置 MCP：\`${BUILTIN_MCP_SERVER_ID}\`）：`,
-            '- `notes_list_tree`：列出笔记树形结构（每篇笔记含 `path`，相对 note 根目录，例如 `project/todo.md`）。',
+            '- `notes_list_directory`：列出某个目录下的直接子目录和笔记，不递归，适合大目录快速定位。',
+            '- `notes_list_recent`：按最近修改时间列出笔记，适合先看最近活跃内容。',
+            '- `notes_search`：按笔记名、标题、摘要或相对路径搜索笔记，适合大笔记库中的模糊定位。',
+            '- `notes_list_tree`：列出笔记树形结构；默认只展开较浅层级，确实需要全局概览时再提高 `maxDepth`。',
             '- `notes_read`：读取指定 `path` 的笔记，返回 `content` 和 `images`（图片会尽量以 base64 返回，过大可能被跳过）。',
             '- `notes_create`：新建笔记并写入内容（可传 `path`，或传 `dirPath` + `noteName`；`noteName` 可不带 `.md`）。',
             '- `notes_write`：写入笔记内容（可传 `path`，或传 `dirPath` + `noteName`；默认追加 `mode=append`，覆盖用 `mode=overwrite`）。',
             '使用原则：',
-            '1. 用户要“查找 / 浏览”笔记：先 `notes_list_tree`，再 `notes_read`。',
-            '2. 用户要“记录 / 新增 / 整理”笔记：优先确认写入的目录与笔记名；不明确时先问 1 个澄清问题。',
-            '3. 默认不要覆盖已有内容；仅在用户明确要求或你已确认时才使用覆盖模式。',
-            '4. 写入完成后，向用户回报最终写入的相对路径，例如 `project/todo.md`。'
+            '1. 如果用户已经给出了明确路径，或路径已经能唯一确定目标，直接 `notes_read` / `notes_write` / `notes_create`，不要先列目录。',
+            '2. 用户只给了关键词、文件名片段、路径片段时，优先先 `notes_search` 缩小范围，再 `notes_read`；它会同时匹配标题和摘要。',
+            '3. 用户只给了目录、主题、最近修改、最近记录等线索时，优先先 `notes_list_directory` 或 `notes_list_recent` 缩小范围，再 `notes_read`。',
+            '4. 只有用户明确要“看结构 / 看层级 / 看整库分布”，或者前几步无法定位时，才使用 `notes_list_tree`；默认不要从 note 根目录做大深度遍历。',
+            '5. 用户要“记录 / 新增 / 整理”笔记：优先确认写入的目录与笔记名；不明确时先问 1 个澄清问题。',
+            '6. 默认不要覆盖已有内容；仅在用户明确要求或你已确认时才使用覆盖模式。',
+            '7. 写入完成后，向用户回报最终写入的相对路径，例如 `project/todo.md`。'
         ].join('\n'),
         triggers: {
             keywords: ['笔记', '记笔记', '记录', '查阅', '查看笔记', '笔记库', 'note']
@@ -178,15 +184,23 @@ function buildBuiltinSessionsSkill() {
     return {
         _id: BUILTIN_SESSIONS_SKILL_ID,
         name: '会话历史 / 定时任务日志（内置）',
-        description: '用于查询历史会话与定时任务执行记录：获取会话树结构，读取单个或批量会话 JSON 进行分析。',
+        description: '用于查询历史会话与定时任务执行记录：优先按目录或最近项轻量定位，再读取会话 JSON 分析。',
         content: [
             '你是一个“会话历史查询助手”。你可以通过内置 MCP 工具读取历史会话和定时任务执行日志。',
             '存储位置相对数据根目录：普通会话在 `session/`；定时任务通常在 `session/定时任务/...`。',
             `可用工具（来自内置 MCP：\`${BUILTIN_SESSIONS_MCP_SERVER_ID}\`）：`,
-            '- `sessions_list_tree`：列出会话树形结构。',
+            '- `sessions_list_directory`：列出某个目录下的直接子目录和会话文件，不递归，适合大目录快速定位。',
+            '- `sessions_list_recent`：按最近修改时间列出会话文件，适合先看最近记录。',
+            '- `sessions_search`：按会话文件名、标题、摘要或相对路径搜索会话，适合大量历史记录中的模糊定位。',
+            '- `sessions_list_tree`：列出会话树形结构；默认只展开较浅层级，确实需要全局概览时再提高 `maxDepth`。',
             '- `sessions_read`：读取单个会话文件并解析 JSON。',
             '- `sessions_read_many`：批量读取多个会话文件并解析 JSON。',
-            '推荐流程：先 `sessions_list_tree` 定位，再 `sessions_read` 或 `sessions_read_many` 分析具体内容。'
+            '使用原则：',
+            '1. 如果用户已经给出了明确路径，或路径已经能唯一确定目标，直接 `sessions_read` 或 `sessions_read_many`，不要先列目录。',
+            '2. 用户只给了关键词、文件名片段、路径片段时，优先先 `sessions_search` 缩小范围，再 `sessions_read` 或 `sessions_read_many`；它会同时匹配标题和摘要。',
+            '3. 用户只给了目录、任务名、最近记录、最近失败等线索时，优先先 `sessions_list_directory` 或 `sessions_list_recent` 定位，再 `sessions_read` 或 `sessions_read_many`。',
+            '4. 只有用户明确要“看结构 / 看层级 / 看整库分布”，或者前几步无法定位时，才使用 `sessions_list_tree`；默认不要从 session 根目录做大深度遍历。',
+            '5. 批量分析时，先用轻量工具筛出小批量目标，再 `sessions_read_many`，避免把大量无关会话一次读入。'
         ].join('\n'),
         triggers: {
             keywords: ['历史会话', '会话历史', '会话树', '会话记录', '读取会话', '会话文件', '定时任务日志', '任务执行日志', '定时任务', 'cron']
@@ -238,9 +252,11 @@ function buildBuiltinPrompt() {
             '- 写入前先确认路径、id、名称和模式；不明确时先问 1 个澄清问题。',
             '- 敏感信息如 API Key、env、headers 不要回显。',
             '- 内置 MCP / Skill / Prompt 不可删除或修改；内置 Agent 不可删除，且只允许部分字段更新。',
+            '- 对笔记和会话这类大目录数据，默认优先轻量定位，不要一上来就整库递归遍历。',
             '',
             '内置 MCP：',
-            `- 笔记 MCP（\`${BUILTIN_MCP_SERVER_ID}\`）：\`notes_list_tree\` / \`notes_read\` / \`notes_create\` / \`notes_write\``,
+            `- 笔记 MCP（\`${BUILTIN_MCP_SERVER_ID}\`）：\`notes_list_directory\` / \`notes_list_recent\` / \`notes_search\` / \`notes_list_tree\` / \`notes_read\` / \`notes_create\` / \`notes_write\``,
+            `- 会话 MCP（\`${BUILTIN_SESSIONS_MCP_SERVER_ID}\`）：\`sessions_list_directory\` / \`sessions_list_recent\` / \`sessions_search\` / \`sessions_list_tree\` / \`sessions_read\` / \`sessions_read_many\``,
             `- 配置 MCP（\`${BUILTIN_CONFIG_MCP_SERVER_ID}\`）：\`config_*\` 系列工具，包含 \`config_import_skill_directory\` / \`config_import_skill_file\` / \`config_get_system_time\``,
             `- 编排 MCP（\`${BUILTIN_AGENTS_MCP_SERVER_ID}\`）：\`agents_list\` / \`agent_run\``,
             '',
@@ -251,7 +267,12 @@ function buildBuiltinPrompt() {
             '- 涉及相对时间时，先调用 `config_get_system_time` 再回答具体日期或时间。',
             '',
             '笔记规范：',
-            '- 查阅笔记：先 `notes_list_tree`，再 `notes_read`。',
+            '- 已知明确路径时，直接 `notes_read`；不要为了读单篇笔记先列树。',
+            '- 已知关键词或路径片段时，优先 `notes_search`；它会同时匹配标题和摘要。已知目录或最近线索时，再用 `notes_list_directory` / `notes_list_recent`。',
+            '- 查阅笔记：优先先 `notes_search` / `notes_list_directory` / `notes_list_recent`，只在确实需要整体结构时再用 `notes_list_tree`，然后再 `notes_read`。',
+            '- 不要默认从 note 根目录做大深度 `notes_list_tree`。',
+            '- 查历史会话：优先先 `sessions_search` / `sessions_list_directory` / `sessions_list_recent`，只在确实需要整体结构时再用 `sessions_list_tree`，然后再 `sessions_read` / `sessions_read_many`。',
+            '- 已知明确路径时，直接 `sessions_read`；批量分析前先用轻量工具筛小范围，再 `sessions_read_many`。',
             '- 写入笔记默认追加；除非用户明确要求，否则不要覆盖已有内容。'
         ].join('\n'),
         builtin: true
@@ -304,13 +325,16 @@ function normalizeStringList(val) {
 }
 
 const CHAT_CONTEXT_WINDOW_PRESET_OPTIONS = new Set(['aggressive', 'balanced', 'wide', 'custom'])
+const CHAT_CONTEXT_WINDOW_HISTORY_FOCUS_OPTIONS = new Set(['recent', 'balanced', 'attachments'])
 const DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG = Object.freeze({
     preset: 'balanced',
+    historyFocus: 'balanced',
     maxTurns: 48,
     keepRecentTurnsFull: 16,
     maxMessages: 320,
-    maxCharsExpanded: 2000000,
-    maxCharsCompact: 4000000
+    maxCharsExpanded: 400000,
+    maxCharsCompact: 320000,
+    autoCompactTriggerPercent: 80
 })
 
 const DEFAULT_NOTE_SECURITY_CONFIG = Object.freeze({
@@ -465,33 +489,45 @@ function normalizeStartupTimeoutMs(value, fallback = 0) {
     return Math.min(120000, Math.max(3000, rounded))
 }
 
+function normalizeBudgetTriggerPercent(value, fallback) {
+    return normalizeIntegerInRange(value, fallback, 55, 95)
+}
+
 function normalizeChatContextWindowConfig(raw) {
     const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
     const preset = CHAT_CONTEXT_WINDOW_PRESET_OPTIONS.has(String(src.preset || '').trim())
         ? String(src.preset || '').trim()
         : DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.preset
+    const historyFocus = CHAT_CONTEXT_WINDOW_HISTORY_FOCUS_OPTIONS.has(String(src.historyFocus || '').trim())
+        ? String(src.historyFocus || '').trim()
+        : DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.historyFocus
 
     if (preset !== 'custom') {
         return {
             preset,
+            historyFocus,
             maxTurns: preset === 'aggressive' ? 18 : preset === 'wide' ? 96 : DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.maxTurns,
             keepRecentTurnsFull: preset === 'aggressive' ? 6 : preset === 'wide' ? 32 : DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.keepRecentTurnsFull,
             maxMessages: preset === 'aggressive' ? 120 : preset === 'wide' ? 800 : DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.maxMessages,
-            maxCharsExpanded: preset === 'aggressive' ? 500000 : preset === 'wide' ? 3200000 : DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.maxCharsExpanded,
-            maxCharsCompact: preset === 'aggressive' ? 1000000 : preset === 'wide' ? 4200000 : DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.maxCharsCompact
+            maxCharsExpanded: preset === 'aggressive' ? 128000 : preset === 'wide' ? 1000000 : DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.maxCharsExpanded,
+            maxCharsCompact: preset === 'aggressive' ? 96000 : preset === 'wide' ? 800000 : DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.maxCharsCompact,
+            autoCompactTriggerPercent: preset === 'aggressive' ? 75 : preset === 'wide' ? 85 : DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.autoCompactTriggerPercent
         }
     }
 
     const next = {
         preset,
+        historyFocus,
         maxTurns: normalizeIntegerInRange(src.maxTurns, DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.maxTurns, 2, 200),
         keepRecentTurnsFull: normalizeIntegerInRange(src.keepRecentTurnsFull, DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.keepRecentTurnsFull, 1, 64),
         maxMessages: normalizeIntegerInRange(src.maxMessages, DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.maxMessages, 8, 1000),
         maxCharsExpanded: normalizeIntegerInRange(src.maxCharsExpanded, DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.maxCharsExpanded, 4000, 4200000),
-        maxCharsCompact: normalizeIntegerInRange(src.maxCharsCompact, DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.maxCharsCompact, 6000, 4200000)
+        maxCharsCompact: normalizeIntegerInRange(src.maxCharsCompact, DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.maxCharsCompact, 4000, 4200000),
+        autoCompactTriggerPercent: normalizeBudgetTriggerPercent(src.autoCompactTriggerPercent, DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.autoCompactTriggerPercent)
     }
 
     next.keepRecentTurnsFull = Math.min(next.keepRecentTurnsFull, next.maxTurns)
+    next.maxCharsCompact = Math.min(next.maxCharsCompact, next.maxCharsExpanded)
     return next
 }
 

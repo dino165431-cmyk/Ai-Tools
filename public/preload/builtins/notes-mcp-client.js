@@ -2,9 +2,37 @@ const path = require('path')
 const fs = require('fs').promises
 
 const fileOperations = require('../utils/file-operations')
+const contentIndex = require('../utils/content-index')
+
+const DEFAULT_LIST_LIMIT = 200
+const MAX_LIST_LIMIT = 1000
+const DEFAULT_RECENT_LIMIT = 20
+const MAX_RECENT_LIMIT = 200
+const DEFAULT_TREE_MAX_DEPTH = 2
+const MAX_TREE_MAX_DEPTH = 12
 
 function toPosixPath(p) {
   return String(p || '').replace(/\\/g, '/')
+}
+
+function compareByName(a, b) {
+  return String(a || '').localeCompare(String(b || ''))
+}
+
+function normalizeLimit(limitRaw, fallback, max = MAX_LIST_LIMIT) {
+  const value = Number(limitRaw)
+  if (!Number.isFinite(value)) return fallback
+  const normalized = Math.floor(value)
+  if (normalized <= 0) return fallback
+  return Math.min(normalized, max)
+}
+
+function normalizeTreeDepth(depthRaw, fallback = DEFAULT_TREE_MAX_DEPTH) {
+  const value = Number(depthRaw)
+  if (!Number.isFinite(value)) return fallback
+  const normalized = Math.floor(value)
+  if (normalized <= 0) return fallback
+  return Math.min(normalized, MAX_TREE_MAX_DEPTH)
 }
 
 function normalizeDirPath(dirPath) {
@@ -86,7 +114,6 @@ function extractMarkdownImageUrls(markdown) {
     if (url) urls.push(url)
   }
 
-  // Dedupe while preserving order
   const seen = new Set()
   const out = []
   for (const u of urls) {
@@ -101,8 +128,6 @@ function extractMarkdownImageUrls(markdown) {
 function resolveLocalImageRelPath({ notesRoot, noteRelInRoot, urlRaw }) {
   const url = String(urlRaw || '').trim()
   if (!url) return null
-
-  // External / unsupported schemes
   if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(url)) return null
 
   const decoded = safeDecodeURIComponent(stripUrlHashAndQuery(url))
@@ -122,7 +147,6 @@ function resolveLocalImageRelPath({ notesRoot, noteRelInRoot, urlRaw }) {
     return { ref: urlRaw, path: pathInNotesRoot }
   }
 
-  // If user already wrote an absolute-relative path under notesRoot
   if (src.startsWith(`${notesRoot}/`)) {
     const normalized = path.posix.normalize(src)
     if (!normalized || normalized === '.' || normalized === '..') return null
@@ -152,6 +176,15 @@ function guessMimeByExt(extRaw) {
   return 'application/octet-stream'
 }
 
+function isNoteAssetDirectoryName(name) {
+  const value = String(name || '').trim()
+  return value === 'assets' || value.endsWith('.assets')
+}
+
+function buildRelativePath(base, name) {
+  return base ? `${base}/${name}` : name
+}
+
 async function ensureDir(relPath) {
   try {
     await fileOperations.createDirectory(relPath)
@@ -160,19 +193,107 @@ async function ensureDir(relPath) {
   }
 }
 
-async function readNoteTree({ notesRoot }) {
+async function readDirEntriesSafe(absDir) {
+  try {
+    return await fs.readdir(absDir, { withFileTypes: true })
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return []
+    throw e
+  }
+}
+
+function buildDirectoryNode(name, relPath, children, options = {}) {
+  const hasMore = options.hasMore === true
+  return {
+    type: 'dir',
+    name,
+    path: relPath,
+    children,
+    ...(hasMore ? { hasMore: true } : {})
+  }
+}
+
+function buildNoteNode(fileName, relPath, options = {}) {
+  const statInfo = options.statInfo || null
+  return {
+    type: 'note',
+    name: fileName.slice(0, -3),
+    filename: fileName,
+    path: relPath,
+    ...(statInfo ? { size: Number(statInfo.size) || 0, mtimeMs: Number(statInfo.mtimeMs) || 0 } : {})
+  }
+}
+
+async function listDirectoryEntries({ notesRoot, dirPath = '', limit = DEFAULT_LIST_LIMIT }) {
   await ensureDir(notesRoot)
   const rootAbs = fileOperations._resolvePath(notesRoot)
+  const relDir = normalizeDirPath(dirPath)
+  const absDir = relDir ? path.join(rootAbs, ...relDir.split('/')) : rootAbs
+  const maxItems = normalizeLimit(limit, DEFAULT_LIST_LIMIT)
+  const entries = await readDirEntriesSafe(absDir)
 
-  async function walk(absDir, relInRoot) {
-    let entries = []
-    try {
-      entries = await fs.readdir(absDir, { withFileTypes: true })
-    } catch (e) {
-      if (e && e.code === 'ENOENT') return []
-      throw e
+  const dirs = []
+  const notes = []
+
+  for (const entry of entries) {
+    const name = entry?.name ? String(entry.name) : ''
+    if (!name || name.startsWith('.')) continue
+    if (entry.isDirectory()) {
+      if (isNoteAssetDirectoryName(name)) continue
+      dirs.push({
+        type: 'dir',
+        name,
+        path: buildRelativePath(relDir, name)
+      })
+      continue
     }
+    if (entry.isFile() && name.toLowerCase().endsWith('.md')) {
+      notes.push({
+        type: 'note',
+        name: name.slice(0, -3),
+        filename: name,
+        path: buildRelativePath(relDir, name)
+      })
+    }
+  }
 
+  dirs.sort((a, b) => compareByName(a.name, b.name))
+  notes.sort((a, b) => compareByName(a.name, b.name))
+  const items = [...dirs, ...notes]
+
+  return {
+    root: notesRoot,
+    dirPath: relDir,
+    returned: Math.min(items.length, maxItems),
+    total: items.length,
+    hasMore: items.length > maxItems,
+    items: items.slice(0, maxItems)
+  }
+}
+
+async function listRecentNotes({ notesRoot, dirPath = '', limit = DEFAULT_RECENT_LIMIT }) {
+  if (String(notesRoot || '').trim() !== 'note') {
+    throw new Error('notes_list_recent 当前仅支持默认 note 根目录')
+  }
+  return contentIndex.listRecent('note', { dirPath, limit })
+}
+
+async function searchNotes({ notesRoot, dirPath = '', query = '', limit = DEFAULT_RECENT_LIMIT }) {
+  if (String(notesRoot || '').trim() !== 'note') {
+    throw new Error('notes_search 当前仅支持默认 note 根目录')
+  }
+  return contentIndex.searchIndex('note', { dirPath, query, limit })
+}
+
+async function readNoteTree({ notesRoot, dirPath = '', maxDepth = DEFAULT_TREE_MAX_DEPTH }) {
+  await ensureDir(notesRoot)
+  const rootAbs = fileOperations._resolvePath(notesRoot)
+  const startRel = normalizeDirPath(dirPath)
+  const startAbs = startRel ? path.join(rootAbs, ...startRel.split('/')) : rootAbs
+  const maxD = normalizeTreeDepth(maxDepth)
+
+  async function walk(absDir, relInRoot, depth) {
+    const entries = await readDirEntriesSafe(absDir)
     const dirs = []
     const notes = []
 
@@ -181,7 +302,7 @@ async function readNoteTree({ notesRoot }) {
       if (!name || name.startsWith('.')) continue
 
       if (entry.isDirectory()) {
-        if (name === 'assets' || name.endsWith('.assets')) continue
+        if (isNoteAssetDirectoryName(name)) continue
         dirs.push(name)
         continue
       }
@@ -191,40 +312,35 @@ async function readNoteTree({ notesRoot }) {
       }
     }
 
-    dirs.sort((a, b) => a.localeCompare(b))
-    notes.sort((a, b) => a.localeCompare(b))
+    dirs.sort(compareByName)
+    notes.sort(compareByName)
 
     const children = []
     for (const dirName of dirs) {
-      const childRel = relInRoot ? `${relInRoot}/${dirName}` : dirName
+      const childRel = buildRelativePath(relInRoot, dirName)
       const childAbs = path.join(absDir, dirName)
-      children.push({
-        type: 'dir',
-        name: dirName,
-        path: childRel,
-        children: await walk(childAbs, childRel)
-      })
+      if (depth >= maxD) {
+        children.push(buildDirectoryNode(dirName, childRel, [], { hasMore: true }))
+        continue
+      }
+      children.push(buildDirectoryNode(dirName, childRel, await walk(childAbs, childRel, depth + 1)))
     }
     for (const fileName of notes) {
-      const rel = relInRoot ? `${relInRoot}/${fileName}` : fileName
-      children.push({
-        type: 'note',
-        name: fileName.slice(0, -3),
-        filename: fileName,
-        path: rel
-      })
+      const rel = buildRelativePath(relInRoot, fileName)
+      children.push(buildNoteNode(fileName, rel))
     }
     return children
   }
 
   return {
     root: notesRoot,
-    tree: {
-      type: 'dir',
-      name: notesRoot,
-      path: '',
-      children: await walk(rootAbs, '')
-    }
+    base: startRel,
+    maxDepth: maxD,
+    tree: buildDirectoryNode(
+      startRel ? path.posix.basename(startRel) : notesRoot,
+      startRel,
+      await walk(startAbs, startRel, 1)
+    )
   }
 }
 
@@ -251,6 +367,7 @@ async function readNoteWithImages({ notesRoot, notePath, includeImages = true })
     seenPaths.add(r.path)
     resolved.push(r)
   }
+
   const maxImages = 10
   const maxPerImageBytes = 2 * 1024 * 1024
   const maxTotalBytes = 8 * 1024 * 1024
@@ -261,13 +378,13 @@ async function readNoteWithImages({ notesRoot, notePath, includeImages = true })
     const imageRel = item.path
     try {
       const abs = fileOperations._resolvePath(imageRel)
-      const stat = await fs.stat(abs)
-      if (!stat.isFile()) {
+      const statInfo = await fs.stat(abs)
+      if (!statInfo.isFile()) {
         result.images.push({ ref: refRaw, path: imageRel, ok: false, error: 'not a file' })
         continue
       }
 
-      const size = Number(stat.size) || 0
+      const size = Number(statInfo.size) || 0
       if (size > maxPerImageBytes) {
         result.images.push({ ref: refRaw, path: imageRel, ok: false, skipped: true, size, error: 'image too large' })
         continue
@@ -326,12 +443,15 @@ async function writeNote({ notesRoot, notePath, dirPath, noteName, content, mode
 
   if (finalMode === 'overwrite' || !exists) {
     await fileOperations.writeFile(noteRel, text)
-    return { ok: true, path: noteRel.replace(new RegExp(`^${notesRoot}/?`, 'i'), ''), mode: exists ? 'overwrite' : 'create' }
+    return {
+      ok: true,
+      path: noteRel.replace(new RegExp(`^${notesRoot}/?`, 'i'), ''),
+      mode: exists ? 'overwrite' : 'create'
+    }
   }
 
   const abs = fileOperations._resolvePath(noteRel)
   await fs.mkdir(path.dirname(abs), { recursive: true })
-
   const payload = text && !text.startsWith('\n') ? `\n${text}` : text
   await fs.appendFile(abs, payload, 'utf-8')
   return { ok: true, path: noteRel.replace(new RegExp(`^${notesRoot}/?`, 'i'), ''), mode: 'append' }
@@ -339,18 +459,63 @@ async function writeNote({ notesRoot, notePath, dirPath, noteName, content, mode
 
 const TOOLS = [
   {
-    name: 'notes_list_tree',
-    description: '列出所有笔记的树形结构（仅 .md），返回 JSON。',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false }
-  },
-  {
-    name: 'notes_read',
-    description: '读取指定路径的笔记（相对 note 根目录），并尽量一并读取笔记引用的图片（支持本地相对路径 assets）。',
+    name: 'notes_list_directory',
+    description: '列出指定目录下的直接子目录和笔记，不递归，适合大目录场景下快速定位。',
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: '相对 note 根目录的路径，例如 project/todo.md（可省略 .md）' },
-        includeImages: { type: 'boolean', description: '是否读取图片（默认 true）' }
+        dirPath: { type: 'string', description: '相对 note 根目录的目录路径；为空表示根目录。' },
+        limit: { type: 'integer', description: `最多返回多少项，默认 ${DEFAULT_LIST_LIMIT}。` }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'notes_list_recent',
+    description: '按最近修改时间列出笔记，适合先定位最近活跃内容，再按 path 读取具体笔记。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        dirPath: { type: 'string', description: '相对 note 根目录的目录路径；为空表示整个 note 根目录。' },
+        limit: { type: 'integer', description: `最多返回多少项，默认 ${DEFAULT_RECENT_LIMIT}。` }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'notes_search',
+    description: '按笔记名或相对路径搜索笔记，适合在大笔记库中快速定位目标。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '搜索关键词，可输入文件名片段、目录名片段或相对路径片段。' },
+        dirPath: { type: 'string', description: '相对 note 根目录的目录路径；为空表示整个 note 根目录。' },
+        limit: { type: 'integer', description: `最多返回多少项，默认 ${DEFAULT_RECENT_LIMIT}。` }
+      },
+      required: ['query'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'notes_list_tree',
+    description: '列出笔记树结构。默认只展开较浅层级；确实需要全局概览时再提高 maxDepth。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        dirPath: { type: 'string', description: '只列出指定子目录（相对 note 根目录）。' },
+        maxDepth: { type: 'integer', description: `递归深度，默认 ${DEFAULT_TREE_MAX_DEPTH}，最大 ${MAX_TREE_MAX_DEPTH}。` }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'notes_read',
+    description: '读取指定路径的笔记（相对 note 根目录），并尽量一并读取它引用的本地图片。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '相对 note 根目录的路径，例如 project/todo.md（可省略 .md）。' },
+        includeImages: { type: 'boolean', description: '是否读取图片，默认 true。' }
       },
       required: ['path'],
       additionalProperties: false
@@ -363,31 +528,27 @@ const TOOLS = [
       type: 'object',
       properties: {
         path: { type: 'string', description: '相对 note 根目录的路径，例如 project/todo.md（可省略 .md）。传 path 时会忽略 dirPath/noteName。' },
-        dirPath: { type: 'string', description: '相对 note 根目录的目录路径，例如 project（可为空）' },
-        noteName: { type: 'string', description: '笔记名，例如 todo 或 todo.md' },
-        content: { type: 'string', description: '要写入的内容' }
+        dirPath: { type: 'string', description: '相对 note 根目录的目录路径，例如 project（可为空）。' },
+        noteName: { type: 'string', description: '笔记名，例如 todo 或 todo.md。' },
+        content: { type: 'string', description: '要写入的内容。' }
       },
       required: ['content'],
-      // 兼容：部分模型/服务商不接受顶层 anyOf/oneOf/allOf。
-      // 约束由服务端兜底校验：需要传 path 或 noteName（二选一；noteName 可配 dirPath）。
       additionalProperties: false
     }
   },
   {
     name: 'notes_write',
-    description: '写入笔记内容（默认追加），支持覆盖。支持传 path 或 dirPath+noteName。',
+    description: '写入笔记内容，默认追加，也支持覆盖。支持传 path 或 dirPath+noteName。',
     inputSchema: {
       type: 'object',
       properties: {
         path: { type: 'string', description: '相对 note 根目录的路径，例如 project/todo.md（可省略 .md）。传 path 时会忽略 dirPath/noteName。' },
-        dirPath: { type: 'string', description: '相对 note 根目录的目录路径，例如 project（可为空）' },
-        noteName: { type: 'string', description: '笔记名，例如 todo 或 todo.md' },
-        content: { type: 'string', description: '要写入的内容' },
-        mode: { type: 'string', enum: ['append', 'overwrite'], description: '写入模式：append（默认）或 overwrite（覆盖）' }
+        dirPath: { type: 'string', description: '相对 note 根目录的目录路径，例如 project（可为空）。' },
+        noteName: { type: 'string', description: '笔记名，例如 todo 或 todo.md。' },
+        content: { type: 'string', description: '要写入的内容。' },
+        mode: { type: 'string', enum: ['append', 'overwrite'], description: '写入模式：append（默认）或 overwrite（覆盖）。' }
       },
       required: ['content'],
-      // 兼容：部分模型/服务商不接受顶层 anyOf/oneOf/allOf。
-      // 约束由服务端兜底校验：需要传 path 或 noteName（二选一；noteName 可配 dirPath）。
       additionalProperties: false
     }
   }
@@ -405,10 +566,41 @@ class BuiltinNotesMcpClient {
 
   async callTool(toolName, args) {
     const name = String(toolName || '').trim()
-    const params = (args && typeof args === 'object') ? args : {}
-    if (name === 'notes_list_tree') {
-      return await readNoteTree({ notesRoot: this.notesRoot })
+    const params = args && typeof args === 'object' ? args : {}
+
+    if (name === 'notes_list_directory') {
+      return await listDirectoryEntries({
+        notesRoot: this.notesRoot,
+        dirPath: params.dirPath,
+        limit: params.limit
+      })
     }
+
+    if (name === 'notes_list_recent') {
+      return await listRecentNotes({
+        notesRoot: this.notesRoot,
+        dirPath: params.dirPath,
+        limit: params.limit
+      })
+    }
+
+    if (name === 'notes_search') {
+      return await searchNotes({
+        notesRoot: this.notesRoot,
+        dirPath: params.dirPath,
+        query: params.query,
+        limit: params.limit
+      })
+    }
+
+    if (name === 'notes_list_tree') {
+      return await readNoteTree({
+        notesRoot: this.notesRoot,
+        dirPath: params.dirPath,
+        maxDepth: params.maxDepth
+      })
+    }
+
     if (name === 'notes_read') {
       return await readNoteWithImages({
         notesRoot: this.notesRoot,
@@ -416,6 +608,7 @@ class BuiltinNotesMcpClient {
         includeImages: params.includeImages !== false
       })
     }
+
     if (name === 'notes_create') {
       if (typeof params.content !== 'string') throw new Error('content 必填')
       const hasPath = typeof params.path === 'string' && params.path.trim()
@@ -429,6 +622,7 @@ class BuiltinNotesMcpClient {
         content: params.content
       })
     }
+
     if (name === 'notes_write') {
       if (typeof params.content !== 'string') throw new Error('content 必填')
       const hasPath = typeof params.path === 'string' && params.path.trim()
@@ -443,6 +637,7 @@ class BuiltinNotesMcpClient {
         mode: params.mode
       })
     }
+
     throw new Error(`Unknown tool: ${name}`)
   }
 

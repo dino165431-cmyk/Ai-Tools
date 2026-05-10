@@ -2,9 +2,37 @@ const path = require('path')
 const fs = require('fs').promises
 
 const fileOperations = require('../utils/file-operations')
+const contentIndex = require('../utils/content-index')
+
+const DEFAULT_LIST_LIMIT = 200
+const MAX_LIST_LIMIT = 1000
+const DEFAULT_RECENT_LIMIT = 20
+const MAX_RECENT_LIMIT = 200
+const DEFAULT_TREE_MAX_DEPTH = 2
+const MAX_TREE_MAX_DEPTH = 12
 
 function toPosixPath(p) {
   return String(p || '').replace(/\\/g, '/')
+}
+
+function compareByName(a, b) {
+  return String(a || '').localeCompare(String(b || ''))
+}
+
+function normalizeLimit(limitRaw, fallback, max = MAX_LIST_LIMIT) {
+  const value = Number(limitRaw)
+  if (!Number.isFinite(value)) return fallback
+  const normalized = Math.floor(value)
+  if (normalized <= 0) return fallback
+  return Math.min(normalized, max)
+}
+
+function normalizeTreeDepth(depthRaw, fallback = DEFAULT_TREE_MAX_DEPTH) {
+  const value = Number(depthRaw)
+  if (!Number.isFinite(value)) return fallback
+  const normalized = Math.floor(value)
+  if (normalized <= 0) return fallback
+  return Math.min(normalized, MAX_TREE_MAX_DEPTH)
 }
 
 function normalizeRootDir(rootRaw, fallback) {
@@ -51,6 +79,32 @@ function isChatSessionAssetDirectoryName(name) {
   return String(name || '').trim().toLowerCase().endsWith('.json.assets')
 }
 
+function buildRelativePath(base, name) {
+  return base ? `${base}/${name}` : name
+}
+
+function buildDirectoryNode(name, relPath, children, options = {}) {
+  const hasMore = options.hasMore === true
+  return {
+    type: 'dir',
+    name,
+    path: relPath,
+    children,
+    ...(hasMore ? { hasMore: true } : {})
+  }
+}
+
+function buildSessionNode(fileName, relPath, options = {}) {
+  const statInfo = options.statInfo || null
+  return {
+    type: 'session',
+    name: fileName.slice(0, -5),
+    filename: fileName,
+    path: relPath,
+    ...(statInfo ? { size: Number(statInfo.size) || 0, mtimeMs: Number(statInfo.mtimeMs) || 0 } : {})
+  }
+}
+
 async function ensureDir(relPath) {
   try {
     await fileOperations.createDirectory(relPath)
@@ -59,24 +113,87 @@ async function ensureDir(relPath) {
   }
 }
 
-async function listSessionTree({ sessionsRoot, dirPath = '', maxDepth = 12 }) {
+async function readDirEntriesSafe(absDir) {
+  try {
+    return await fs.readdir(absDir, { withFileTypes: true })
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return []
+    throw e
+  }
+}
+
+async function listSessionDirectory({ sessionsRoot, dirPath = '', limit = DEFAULT_LIST_LIMIT }) {
+  await ensureDir(sessionsRoot)
+  const rootAbs = fileOperations._resolvePath(sessionsRoot)
+  const relDir = normalizeDirPath(dirPath)
+  const absDir = relDir ? path.join(rootAbs, ...relDir.split('/')) : rootAbs
+  const maxItems = normalizeLimit(limit, DEFAULT_LIST_LIMIT)
+  const entries = await readDirEntriesSafe(absDir)
+
+  const dirs = []
+  const sessions = []
+
+  for (const entry of entries) {
+    const name = entry?.name ? String(entry.name) : ''
+    if (!name || name.startsWith('.')) continue
+
+    if (entry.isDirectory()) {
+      if (isChatSessionAssetDirectoryName(name)) continue
+      dirs.push({
+        type: 'dir',
+        name,
+        path: buildRelativePath(relDir, name)
+      })
+      continue
+    }
+
+    if (entry.isFile() && name.toLowerCase().endsWith('.json')) {
+      sessions.push({
+        type: 'session',
+        name: name.slice(0, -5),
+        filename: name,
+        path: buildRelativePath(relDir, name)
+      })
+    }
+  }
+
+  dirs.sort((a, b) => compareByName(a.name, b.name))
+  sessions.sort((a, b) => compareByName(a.name, b.name))
+  const items = [...dirs, ...sessions]
+
+  return {
+    root: sessionsRoot,
+    dirPath: relDir,
+    returned: Math.min(items.length, maxItems),
+    total: items.length,
+    hasMore: items.length > maxItems,
+    items: items.slice(0, maxItems)
+  }
+}
+
+async function listRecentSessions({ sessionsRoot, dirPath = '', limit = DEFAULT_RECENT_LIMIT }) {
+  if (String(sessionsRoot || '').trim() !== 'session') {
+    throw new Error('sessions_list_recent 当前仅支持默认 session 根目录')
+  }
+  return contentIndex.listRecent('session', { dirPath, limit })
+}
+
+async function searchSessions({ sessionsRoot, dirPath = '', query = '', limit = DEFAULT_RECENT_LIMIT }) {
+  if (String(sessionsRoot || '').trim() !== 'session') {
+    throw new Error('sessions_search 当前仅支持默认 session 根目录')
+  }
+  return contentIndex.searchIndex('session', { dirPath, query, limit })
+}
+
+async function listSessionTree({ sessionsRoot, dirPath = '', maxDepth = DEFAULT_TREE_MAX_DEPTH }) {
   await ensureDir(sessionsRoot)
   const rootAbs = fileOperations._resolvePath(sessionsRoot)
   const startRel = normalizeDirPath(dirPath)
   const startAbs = startRel ? path.join(rootAbs, ...startRel.split('/')) : rootAbs
-  const maxD = Number.isFinite(Number(maxDepth)) ? Math.max(1, Math.min(50, Math.floor(Number(maxDepth)))) : 12
+  const maxD = normalizeTreeDepth(maxDepth)
 
   async function walk(absDir, relInRoot, depth) {
-    if (depth > maxD) return []
-
-    let entries = []
-    try {
-      entries = await fs.readdir(absDir, { withFileTypes: true })
-    } catch (e) {
-      if (e && e.code === 'ENOENT') return []
-      throw e
-    }
-
+    const entries = await readDirEntriesSafe(absDir)
     const dirs = []
     const sessions = []
 
@@ -95,43 +212,35 @@ async function listSessionTree({ sessionsRoot, dirPath = '', maxDepth = 12 }) {
       }
     }
 
-    dirs.sort((a, b) => a.localeCompare(b))
-    sessions.sort((a, b) => a.localeCompare(b))
+    dirs.sort(compareByName)
+    sessions.sort(compareByName)
 
     const children = []
     for (const dirName of dirs) {
-      const childRel = relInRoot ? `${relInRoot}/${dirName}` : dirName
+      const childRel = buildRelativePath(relInRoot, dirName)
       const childAbs = path.join(absDir, dirName)
-      children.push({
-        type: 'dir',
-        name: dirName,
-        path: childRel,
-        children: await walk(childAbs, childRel, depth + 1)
-      })
+      if (depth >= maxD) {
+        children.push(buildDirectoryNode(dirName, childRel, [], { hasMore: true }))
+        continue
+      }
+      children.push(buildDirectoryNode(dirName, childRel, await walk(childAbs, childRel, depth + 1)))
     }
     for (const fileName of sessions) {
-      const rel = relInRoot ? `${relInRoot}/${fileName}` : fileName
-      children.push({
-        type: 'session',
-        name: fileName.slice(0, -5),
-        filename: fileName,
-        path: rel
-      })
+      const rel = buildRelativePath(relInRoot, fileName)
+      children.push(buildSessionNode(fileName, rel))
     }
     return children
   }
 
-  const children = await walk(startAbs, startRel, 1)
-
   return {
     root: sessionsRoot,
     base: startRel,
-    tree: {
-      type: 'dir',
-      name: startRel ? path.posix.basename(startRel) : sessionsRoot,
-      path: startRel,
-      children
-    }
+    maxDepth: maxD,
+    tree: buildDirectoryNode(
+      startRel ? path.posix.basename(startRel) : sessionsRoot,
+      startRel,
+      await walk(startAbs, startRel, 1)
+    )
   }
 }
 
@@ -151,14 +260,13 @@ async function readOneSession({ sessionsRoot, sessionPath, parse = true }) {
       ok: false,
       path: relInRoot,
       size,
-      error: `会话文件过大（> ${maxBytes} bytes）`
+      error: `会话文件过大：超过 ${maxBytes} bytes`
     }
   }
 
   const content = await fileOperations.readFile(sessionRel, 'utf-8')
   const meta = { ok: true, path: relInRoot, size, mtimeMs: Number(st.mtimeMs) || null }
-  const shouldParse = parse !== false
-  if (!shouldParse) return { ...meta, content: String(content || '') }
+  if (parse === false) return { ...meta, content: String(content || '') }
 
   try {
     const data = JSON.parse(String(content || ''))
@@ -170,25 +278,63 @@ async function readOneSession({ sessionsRoot, sessionPath, parse = true }) {
 
 const TOOLS = [
   {
-    name: 'sessions_list_tree',
-    description: '列出历史会话的树形结构（仅 .json）。默认根目录为 sessionsRoot（通常是 session/），定时任务会话在 session/定时任务/ 下。',
+    name: 'sessions_list_directory',
+    description: '列出指定目录下的直接子目录和会话文件，不递归，适合大目录场景下快速定位。',
     inputSchema: {
       type: 'object',
       properties: {
-        dirPath: { type: 'string', description: '只列出指定子目录（相对 sessionsRoot），例如 定时任务 或 定时任务/某任务名' },
-        maxDepth: { type: 'integer', description: '最大递归深度（默认 12，范围 1~50）' }
+        dirPath: { type: 'string', description: '相对 sessionsRoot 的目录路径；为空表示根目录。' },
+        limit: { type: 'integer', description: `最多返回多少项，默认 ${DEFAULT_LIST_LIMIT}。` }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'sessions_list_recent',
+    description: '按最近修改时间列出会话文件，适合先定位最近会话，再按 path 读取具体 JSON。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        dirPath: { type: 'string', description: '相对 sessionsRoot 的目录路径；为空表示整个根目录。' },
+        limit: { type: 'integer', description: `最多返回多少项，默认 ${DEFAULT_RECENT_LIMIT}。` }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'sessions_search',
+    description: '按会话文件名或相对路径搜索会话，适合在大量历史记录中快速定位目标。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '搜索关键词，可输入文件名片段、目录名片段或相对路径片段。' },
+        dirPath: { type: 'string', description: '相对 sessionsRoot 的目录路径；为空表示整个根目录。' },
+        limit: { type: 'integer', description: `最多返回多少项，默认 ${DEFAULT_RECENT_LIMIT}。` }
+      },
+      required: ['query'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'sessions_list_tree',
+    description: '列出会话树结构。默认只展开较浅层级；确实需要全局概览时再提高 maxDepth。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        dirPath: { type: 'string', description: '只列出指定子目录（相对 sessionsRoot）。' },
+        maxDepth: { type: 'integer', description: `递归深度，默认 ${DEFAULT_TREE_MAX_DEPTH}，最大 ${MAX_TREE_MAX_DEPTH}。` }
       },
       additionalProperties: false
     }
   },
   {
     name: 'sessions_read',
-    description: '读取单个历史会话（相对 sessionsRoot 的路径）。默认会解析 JSON 并返回 data；如需原始文本可传 parse=false。',
+    description: '读取单个会话文件（相对 sessionsRoot 的路径）。默认会解析 JSON，传 parse=false 可读原始文本。',
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: '相对 sessionsRoot 的路径，例如 xxx.json 或 定时任务/任务名/任务名.json（可省略 .json）' },
-        parse: { type: 'boolean', description: '是否解析为 JSON（默认 true）' }
+        path: { type: 'string', description: '相对 sessionsRoot 的路径，例如 xxx.json 或 定时任务/任务名/记录.json（可省略 .json）。' },
+        parse: { type: 'boolean', description: '是否解析为 JSON，默认 true。' }
       },
       required: ['path'],
       additionalProperties: false
@@ -196,12 +342,12 @@ const TOOLS = [
   },
   {
     name: 'sessions_read_many',
-    description: '批量读取多个历史会话（相对 sessionsRoot 的路径数组）。默认解析 JSON。',
+    description: '批量读取多个会话文件（相对 sessionsRoot 的路径数组）。默认解析 JSON。',
     inputSchema: {
       type: 'object',
       properties: {
-        paths: { type: 'array', items: { type: 'string' }, description: '路径数组；每项可省略 .json' },
-        parse: { type: 'boolean', description: '是否解析为 JSON（默认 true）' }
+        paths: { type: 'array', items: { type: 'string' }, description: '路径数组；每项可省略 .json。' },
+        parse: { type: 'boolean', description: '是否解析为 JSON，默认 true。' }
       },
       required: ['paths'],
       additionalProperties: false
@@ -222,6 +368,31 @@ class BuiltinSessionsMcpClient {
   async callTool(toolName, args) {
     const name = String(toolName || '').trim()
     const params = args && typeof args === 'object' ? args : {}
+
+    if (name === 'sessions_list_directory') {
+      return await listSessionDirectory({
+        sessionsRoot: this.sessionsRoot,
+        dirPath: params.dirPath,
+        limit: params.limit
+      })
+    }
+
+    if (name === 'sessions_list_recent') {
+      return await listRecentSessions({
+        sessionsRoot: this.sessionsRoot,
+        dirPath: params.dirPath,
+        limit: params.limit
+      })
+    }
+
+    if (name === 'sessions_search') {
+      return await searchSessions({
+        sessionsRoot: this.sessionsRoot,
+        dirPath: params.dirPath,
+        query: params.query,
+        limit: params.limit
+      })
+    }
 
     if (name === 'sessions_list_tree') {
       return await listSessionTree({

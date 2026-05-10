@@ -5,8 +5,9 @@ export const CHAT_CONTEXT_WINDOW_PRESETS = Object.freeze({
     maxTurns: 18,
     keepRecentTurnsFull: 6,
     maxMessages: 120,
-    maxCharsExpanded: 500000,
-    maxCharsCompact: 1000000
+    maxCharsExpanded: 128000,
+    maxCharsCompact: 96000,
+    autoCompactTriggerPercent: 75
   }),
   balanced: Object.freeze({
     label: '平衡',
@@ -14,8 +15,9 @@ export const CHAT_CONTEXT_WINDOW_PRESETS = Object.freeze({
     maxTurns: 48,
     keepRecentTurnsFull: 16,
     maxMessages: 320,
-    maxCharsExpanded: 2000000,
-    maxCharsCompact: 4000000
+    maxCharsExpanded: 400000,
+    maxCharsCompact: 320000,
+    autoCompactTriggerPercent: 80
   }),
   wide: Object.freeze({
     label: '宽松',
@@ -23,8 +25,9 @@ export const CHAT_CONTEXT_WINDOW_PRESETS = Object.freeze({
     maxTurns: 96,
     keepRecentTurnsFull: 32,
     maxMessages: 800,
-    maxCharsExpanded: 3200000,
-    maxCharsCompact: 4200000
+    maxCharsExpanded: 1000000,
+    maxCharsCompact: 800000,
+    autoCompactTriggerPercent: 85
   })
 })
 
@@ -53,7 +56,8 @@ export const DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG = Object.freeze({
   keepRecentTurnsFull: CHAT_CONTEXT_WINDOW_PRESETS[DEFAULT_CHAT_CONTEXT_WINDOW_PRESET].keepRecentTurnsFull,
   maxMessages: CHAT_CONTEXT_WINDOW_PRESETS[DEFAULT_CHAT_CONTEXT_WINDOW_PRESET].maxMessages,
   maxCharsExpanded: CHAT_CONTEXT_WINDOW_PRESETS[DEFAULT_CHAT_CONTEXT_WINDOW_PRESET].maxCharsExpanded,
-  maxCharsCompact: CHAT_CONTEXT_WINDOW_PRESETS[DEFAULT_CHAT_CONTEXT_WINDOW_PRESET].maxCharsCompact
+  maxCharsCompact: CHAT_CONTEXT_WINDOW_PRESETS[DEFAULT_CHAT_CONTEXT_WINDOW_PRESET].maxCharsCompact,
+  autoCompactTriggerPercent: CHAT_CONTEXT_WINDOW_PRESETS[DEFAULT_CHAT_CONTEXT_WINDOW_PRESET].autoCompactTriggerPercent
 })
 
 export const DEFAULT_CHAT_CONTEXT_WINDOW_OPTIONS = Object.freeze({
@@ -62,6 +66,7 @@ export const DEFAULT_CHAT_CONTEXT_WINDOW_OPTIONS = Object.freeze({
   maxTurns: DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.maxTurns,
   keepRecentTurnsFull: DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.keepRecentTurnsFull,
   historyFocus: DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.historyFocus,
+  autoCompactTriggerPercent: DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.autoCompactTriggerPercent,
   maxPreludeMessages: 2,
   maxPinnedAttachmentTurns: 4,
   toolPolicy: 'full',
@@ -109,6 +114,10 @@ function clampInteger(value, fallback, min, max) {
 function normalizeOptionalLimit(value, fallback, min, max) {
   if (value === null || value === undefined || value === '') return null
   return clampInteger(value, fallback, min, max)
+}
+
+function normalizeBudgetTriggerPercent(value, fallback) {
+  return clampInteger(value, fallback, 55, 95)
 }
 
 function pickPresetConfig(preset) {
@@ -169,7 +178,8 @@ export function normalizeChatContextWindowConfig(raw) {
       keepRecentTurnsFull: presetConfig.keepRecentTurnsFull,
       maxMessages: presetConfig.maxMessages,
       maxCharsExpanded: presetConfig.maxCharsExpanded,
-      maxCharsCompact: presetConfig.maxCharsCompact
+      maxCharsCompact: presetConfig.maxCharsCompact,
+      autoCompactTriggerPercent: presetConfig.autoCompactTriggerPercent
     }
   }
 
@@ -180,11 +190,18 @@ export function normalizeChatContextWindowConfig(raw) {
     keepRecentTurnsFull: normalizeOptionalLimit(src.keepRecentTurnsFull, presetConfig.keepRecentTurnsFull, 1, 64),
     maxMessages: normalizeOptionalLimit(src.maxMessages, presetConfig.maxMessages, 8, 1000),
     maxCharsExpanded: normalizeOptionalLimit(src.maxCharsExpanded, presetConfig.maxCharsExpanded, 4000, 4200000),
-    maxCharsCompact: normalizeOptionalLimit(src.maxCharsCompact, presetConfig.maxCharsCompact, 6000, 4200000)
+    maxCharsCompact: normalizeOptionalLimit(src.maxCharsCompact, presetConfig.maxCharsCompact, 4000, 4200000),
+    autoCompactTriggerPercent: normalizeBudgetTriggerPercent(
+      src.autoCompactTriggerPercent,
+      presetConfig.autoCompactTriggerPercent
+    )
   }
 
   if (Number.isFinite(next.maxTurns) && Number.isFinite(next.keepRecentTurnsFull)) {
     next.keepRecentTurnsFull = Math.min(next.keepRecentTurnsFull, next.maxTurns)
+  }
+  if (Number.isFinite(next.maxCharsExpanded) && Number.isFinite(next.maxCharsCompact)) {
+    next.maxCharsCompact = Math.min(next.maxCharsCompact, next.maxCharsExpanded)
   }
   return next
 }
@@ -195,6 +212,72 @@ export function resolveChatContextWindowOptions(raw) {
     ...normalized,
     ...resolveHistoryFocusOptions(normalized)
   }
+}
+
+export function resolveChatContextWindowBudgetPlan(raw, runtime = {}) {
+  const resolved = resolveChatContextWindowOptions(raw)
+  const expandedChars = isFinitePositiveNumber(resolved.maxCharsExpanded)
+    ? Math.floor(resolved.maxCharsExpanded)
+    : Number.MAX_SAFE_INTEGER
+  const compactChars = isFinitePositiveNumber(resolved.maxCharsCompact)
+    ? Math.floor(resolved.maxCharsCompact)
+    : expandedChars
+  const reservedChars = Math.max(0, Math.floor(Number(runtime?.reservedChars) || 0))
+  const sourceChars = Math.max(0, Math.floor(Number(runtime?.sourceChars) || 0))
+  const autoCompactTriggerPercent = normalizeBudgetTriggerPercent(
+    runtime?.autoCompactTriggerPercent,
+    resolved.autoCompactTriggerPercent
+  )
+  const triggerRatio = autoCompactTriggerPercent / 100
+  const totalEstimatedChars = reservedChars + sourceChars
+  const expandedPressure = expandedChars > 0 ? totalEstimatedChars / expandedChars : 0
+  const modeHint =
+    runtime?.modeHint === 'compact' || runtime?.modeHint === 'expanded'
+      ? runtime.modeHint
+      : 'auto'
+
+  let mode = 'expanded'
+  let reason = 'default'
+  if (modeHint === 'compact') {
+    mode = 'compact'
+    reason = 'forced_compact'
+  } else if (modeHint === 'expanded') {
+    mode = 'expanded'
+    reason = 'forced_expanded'
+  } else if (expandedPressure >= triggerRatio) {
+    mode = 'compact'
+    reason = 'auto_threshold'
+  }
+
+  const baseChars = mode === 'compact' ? compactChars : expandedChars
+  const historyCharsBudget = Math.max(0, baseChars - reservedChars)
+  const effectivePressure = baseChars > 0 ? totalEstimatedChars / baseChars : 0
+
+  return {
+    mode,
+    reason,
+    autoCompactActive: mode === 'compact' && reason === 'auto_threshold',
+    autoCompactTriggerPercent,
+    triggerRatio,
+    expandedChars,
+    compactChars,
+    baseChars,
+    reservedChars,
+    sourceChars,
+    totalEstimatedChars,
+    expandedPressure,
+    effectivePressure,
+    historyCharsBudget
+  }
+}
+
+export function calculateContextSummaryTriggerChars({ historyCharsBudget = 0, minChars = 12000, ratio = 0.72 } = {}) {
+  const budget = Math.max(0, Math.floor(Number(historyCharsBudget) || 0))
+  if (!budget) return 0
+
+  const normalizedRatio = Number.isFinite(Number(ratio)) ? Math.min(0.95, Math.max(0.35, Number(ratio))) : 0.72
+  const minimum = Math.max(4000, Math.floor(Number(minChars) || 12000))
+  return Math.min(budget, Math.max(minimum, Math.floor(budget * normalizedRatio)))
 }
 
 export function buildChatContextWindowRuntimeOptions(raw, runtime = {}) {
@@ -1211,4 +1294,22 @@ export function inspectChatContextWindow(apiMessages, options = {}) {
 
 export function buildChatContextWindow(apiMessages, options = {}) {
   return inspectChatContextWindowInternal(apiMessages, options).messages
+}
+
+export function hasChatContextWindowReduction(result) {
+  const inspection = result?.inspection
+  if (!inspection || typeof inspection !== 'object') return false
+
+  const entries = Array.isArray(inspection.entries) ? inspection.entries : []
+  if (
+    entries.some((entry) => {
+      const mode = String(entry?.mode || '')
+      return mode === 'compact' || mode === 'attachment_summary' || mode === 'pinned_attachment_summary'
+    })
+  ) {
+    return true
+  }
+
+  const omittedEntries = Array.isArray(inspection.omittedEntries) ? inspection.omittedEntries : []
+  return omittedEntries.some((entry) => entry?.kind === 'turn')
 }

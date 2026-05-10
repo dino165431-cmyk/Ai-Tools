@@ -1143,6 +1143,7 @@ import {
 import {
   buildChatContextWindow,
   buildChatContextWindowRuntimeOptions,
+  calculateContextSummaryTriggerChars,
   CHAT_CONTEXT_WINDOW_HISTORY_FOCUS_PRESETS,
   CHAT_CONTEXT_WINDOW_PRESETS,
   countChatContextAttachmentMessages,
@@ -1150,8 +1151,10 @@ import {
   DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG,
   estimateMessageSize,
   estimateMessagesSize,
+  hasChatContextWindowReduction,
   inspectChatContextWindow,
   normalizeChatContextWindowConfig,
+  resolveChatContextWindowBudgetPlan,
   resolveChatContextWindowOptions
 } from '@/utils/chatContextWindow'
 import {
@@ -4307,6 +4310,30 @@ const contextWindowHistoryFocusBehaviorText = computed(() => {
 const contextWindowConfig = computed(() => normalizeChatContextWindowConfig(chatConfig.value?.contextWindow))
 const contextWindowResolvedOptions = computed(() => resolveChatContextWindowOptions(chatConfig.value?.contextWindow))
 
+const contextWindowBudgetPlan = computed(() => {
+  const providerKind = isUtoolsBuiltinProvider(selectedProvider.value) ? 'utools-ai' : 'openai-compatible'
+  const currentToolsKey = getCurrentToolsKey()
+  const toolEstimateFresh =
+    !!lastBuiltRequestToolsStats.updatedAt && String(lastBuiltRequestToolsStats.key || '') === currentToolsKey
+  const toolSchemaChars = toolEstimateFresh ? Number(lastBuiltRequestToolsStats.chars || 0) : 0
+  const systemChars = String(systemContent.value || '').length
+  const reservedChars = systemChars + toolSchemaChars
+  const sourceChars = estimateMessagesSize(Array.isArray(session.apiMessages) ? session.apiMessages : [])
+  const basePlan = resolveChatContextWindowBudgetPlan(chatConfig.value?.contextWindow, {
+    reservedChars,
+    sourceChars
+  })
+  return {
+    ...basePlan,
+    providerKind,
+    toolSchemaChars,
+    toolEstimateFresh,
+    systemChars,
+    currentToolsKey,
+    effectiveToolMode: basePlan.mode
+  }
+})
+
 const contextWindowPreviewConfig = computed(() => {
   const raw = showContextWindowModal.value ? contextWindowDraft : chatConfig.value?.contextWindow
   return resolveChatContextWindowOptions(normalizeChatContextWindowConfig(raw))
@@ -4333,11 +4360,13 @@ function buildContextWindowStats({ includeRequestDetails = false } = {}) {
     !!lastBuiltRequestToolsStats.updatedAt && String(lastBuiltRequestToolsStats.key || '') === currentToolsKey
   const toolCount = toolEstimateFresh ? Number(lastBuiltRequestToolsStats.count || 0) : 0
   const toolSchemaChars = toolEstimateFresh ? Number(lastBuiltRequestToolsStats.chars || 0) : 0
-  const baseChars = effectiveToolMode.value === 'compact'
-    ? contextWindowResolvedOptions.value.maxCharsCompact
-    : contextWindowResolvedOptions.value.maxCharsExpanded
   const systemChars = String(systemContent.value || '').length
   const reservedChars = systemChars + toolSchemaChars
+  const sourceChars = estimateMessagesSize(rawMessages)
+  const budgetPlan = resolveChatContextWindowBudgetPlan(chatConfig.value?.contextWindow, {
+    reservedChars,
+    sourceChars
+  })
   const historyBudgetChars = getHistoryContextCharBudget({ reservedCharsOverride: reservedChars })
   const rawAttachmentCount = countChatContextAttachmentMessages(rawMessages)
   const lightRawTurns = countUserTurns(rawMessages)
@@ -4352,7 +4381,12 @@ function buildContextWindowStats({ includeRequestDetails = false } = {}) {
       requestTurns: lightRawTurns,
       requestAttachmentCount: rawAttachmentCount,
       attachmentSummaryCount: 0,
-      baseChars,
+      baseChars: budgetPlan.baseChars,
+      expandedChars: budgetPlan.expandedChars,
+      compactChars: budgetPlan.compactChars,
+      autoCompactTriggerPercent: budgetPlan.autoCompactTriggerPercent,
+      autoCompactActive: budgetPlan.autoCompactActive,
+      effectiveContextMode: budgetPlan.mode,
       systemChars,
       toolCount,
       toolSchemaChars,
@@ -4375,7 +4409,12 @@ function buildContextWindowStats({ includeRequestDetails = false } = {}) {
     requestTurns: countUserTurns(requestMessages),
     requestAttachmentCount,
     attachmentSummaryCount,
-    baseChars,
+    baseChars: budgetPlan.baseChars,
+    expandedChars: budgetPlan.expandedChars,
+    compactChars: budgetPlan.compactChars,
+    autoCompactTriggerPercent: budgetPlan.autoCompactTriggerPercent,
+    autoCompactActive: budgetPlan.autoCompactActive,
+    effectiveContextMode: budgetPlan.mode,
     systemChars,
     toolCount,
     toolSchemaChars,
@@ -4399,7 +4438,7 @@ function buildContextWindowPreviewSourceSignature() {
     String(selectedProviderId.value || ''),
     String(selectedModel.value || ''),
     String(systemContent.value || '').length,
-    String(effectiveToolMode.value || ''),
+    String(contextWindowBudgetPlan.value?.effectiveToolMode || effectiveToolMode.value || ''),
     JSON.stringify(contextWindowPreviewConfig.value || {}),
     getCurrentToolsKey()
   ].join('||')
@@ -4425,14 +4464,17 @@ watch(
     const toolEstimateFresh =
       !!lastBuiltRequestToolsStats.updatedAt && String(lastBuiltRequestToolsStats.key || '') === String(getCurrentToolsKey() || '')
     const toolSchemaChars = toolEstimateFresh ? Number(lastBuiltRequestToolsStats.chars || 0) : 0
-    const baseChars = effectiveToolMode.value === 'compact' ? previewConfig.maxCharsCompact : previewConfig.maxCharsExpanded
     const reservedChars = String(systemContent.value || '').length + toolSchemaChars
+    const budgetPlan = resolveChatContextWindowBudgetPlan(previewConfig, {
+      reservedChars,
+      sourceChars: estimateMessagesSize(rawMessages)
+    })
 
     contextWindowPreviewState.value = inspectChatContextWindow(
       rawMessages,
       buildChatContextWindowRuntimeOptions(previewConfig, {
         providerKind,
-        maxChars: calculateHistoryContextCharBudget({ baseChars, reservedChars })
+        maxChars: calculateHistoryContextCharBudget({ baseChars: budgetPlan.baseChars, reservedChars })
       })
     )
   },
@@ -13027,17 +13069,20 @@ const contextWindowHistoryFocusOptions = [
 
 function getHistoryContextCharBudget(options = {}) {
   const { tools = [], reservedCharsOverride = null } = options || {}
-  const baseChars = effectiveToolMode.value === 'compact'
-    ? contextWindowResolvedOptions.value.maxCharsCompact
-    : contextWindowResolvedOptions.value.maxCharsExpanded
   const reservedChars = Number.isFinite(Number(reservedCharsOverride))
     ? Math.max(0, Math.floor(Number(reservedCharsOverride)))
     : calculateReservedRequestChars({
         systemContent: systemContent.value,
         tools
       })
+  const sourceMessages = Array.isArray(session.apiMessages) ? session.apiMessages : []
+  const sourceChars = estimateMessagesSize(sourceMessages)
+  const budgetPlan = resolveChatContextWindowBudgetPlan(chatConfig.value?.contextWindow, {
+    reservedChars,
+    sourceChars
+  })
   return calculateHistoryContextCharBudget({
-    baseChars,
+    baseChars: budgetPlan.baseChars,
     reservedChars
   })
 }
@@ -13400,10 +13445,9 @@ async function prepareChatRequestContext({
     const combinedSystemContent = buildCombinedSystemContent(memorySystemContent, { sessionRecord: targetRecord })
     const reservedChars = calculateReservedRequestChars({ systemContent: combinedSystemContent, tools: requestTools })
     const historyBudget = getHistoryContextCharBudget({ reservedCharsOverride: reservedChars, tools: requestTools })
-    const summaryTriggerChars = Math.min(
-      resolvedContext.maxCharsExpanded || historyBudget,
-      Math.max(12000, Math.floor((historyBudget - reservedChars) * 0.72))
-    )
+    const summaryTriggerChars = calculateContextSummaryTriggerChars({
+      historyCharsBudget: historyBudget
+    })
     const sourceMessages = Array.isArray(targetRecord.apiMessages) ? targetRecord.apiMessages : []
     const sourceChars = estimateMessagesSize(sourceMessages)
     const coverage = resolveContextSummaryCoverage({
@@ -13420,7 +13464,15 @@ async function prepareChatRequestContext({
       apiMessages: sourceMessages,
       contextSummary: targetRecord?.contextSummary || null
     })
-    const contextWouldTrim = sourceBudgetMessages.length < sourceMessages.length
+    const contextInspection = inspectChatContextWindow(
+      sourceMessages,
+      buildChatContextWindowRuntimeOptions(resolvedContext, {
+        providerKind: cfg.providerKind || 'openai-compatible',
+        maxChars: historyBudget
+      })
+    )
+    const contextWouldTrim =
+      sourceBudgetMessages.length < sourceMessages.length || hasChatContextWindowReduction(contextInspection)
     const summaryMissing = !String(cachedSummary?.summaryText || '').trim()
     const summaryStale =
       coverage.coveredCount >= 4 &&
@@ -13429,6 +13481,7 @@ async function prepareChatRequestContext({
         coverage.coveredCount !== Math.max(0, Math.floor(Number(cachedSummary?.coveredMessageCount || 0)))
       )
     const shouldSummarize =
+      summaryTriggerChars > 0 &&
       sourceMessages.length >= 10 &&
       (
         sourceMessages.length > 28 ||

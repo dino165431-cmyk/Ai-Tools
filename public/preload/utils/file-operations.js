@@ -1,13 +1,17 @@
 const globalConfig = require('./global-config')
 const S3ClientWrapper = require('./s3-operations')
+const contentIndex = require('./content-index')
 const path = require('path')
 const fs = require('fs').promises
+const fsSync = require('fs')
 const { execFile } = require('child_process')
 
 const CLOUD_AUTO_BACKUP_DEBOUNCE_MS = 15000
 const CLOUD_AUTO_RESTORE_DEBOUNCE_MS = 15000
 const CLOUD_AUTO_BACKUP_MIN_INTERVAL_MS = 5 * 60 * 1000
 const CLOUD_AUTO_REQUIRED_KEYS = ['region', 'accessKeyId', 'secretAccessKey', 'bucket']
+const EXTERNAL_WATCH_DEBOUNCE_MS = 500
+const INTERNAL_MUTATION_SUPPRESS_MS = 1500
 
 let electronShell = null
 try {
@@ -53,6 +57,10 @@ class FileOperations {
         this._cloudAutoRestoreTimer = null
         this._cloudAutoRestoreRunning = false
         this._cloudAutoRestorePending = false
+        this._externalWatchers = new Map()
+        this._externalWatchDebounceTimers = new Map()
+        this._internalMutationSuppressUntil = new Map()
+        this._lastWatcherRootSignature = ''
     }
 
     _revokeCachedBlobUrl(cacheKey) {
@@ -133,15 +141,149 @@ class FileOperations {
         }
     }
 
+    _markInternalMutation(relativePath) {
+        const normalized = this._normalizeRelativePath(relativePath)
+        if (!normalized) return
+        const now = Date.now()
+        this._internalMutationSuppressUntil.set(normalized, now + INTERNAL_MUTATION_SUPPRESS_MS)
+        const parts = normalized.split('/').filter(Boolean)
+        while (parts.length > 1) {
+            parts.pop()
+            this._internalMutationSuppressUntil.set(parts.join('/'), now + INTERNAL_MUTATION_SUPPRESS_MS)
+        }
+    }
+
+    _isPathSuppressedByInternalMutation(relativePath) {
+        const normalized = this._normalizeRelativePath(relativePath)
+        if (!normalized) return false
+        const now = Date.now()
+        for (const [key, until] of [...this._internalMutationSuppressUntil.entries()]) {
+            if (!Number.isFinite(until) || until <= now) {
+                this._internalMutationSuppressUntil.delete(key)
+                continue
+            }
+            if (normalized === key || normalized.startsWith(`${key}/`) || key.startsWith(`${normalized}/`)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    _queueExternalTreeRefresh(rootRelPath, changedRelPath) {
+        const root = this._normalizeRelativePath(rootRelPath)
+        if (!root) return
+        if (this._isPathSuppressedByInternalMutation(changedRelPath || root)) return
+
+        const existingTimer = this._externalWatchDebounceTimers.get(root)
+        if (existingTimer) clearTimeout(existingTimer)
+
+        const timer = setTimeout(async () => {
+            this._externalWatchDebounceTimers.delete(root)
+            try {
+                await contentIndex.markDirtyByPath(root, 'external_watch')
+            } catch (err) {
+                console.warn?.('[Content index] external watch dirty mark failed:', err)
+            }
+
+            this._dispatchWindowEvent('storageFilesChanged', { paths: [root] })
+            if (root === 'note') {
+                this._dispatchWindowEvent('noteFilesChanged', { path: 'note', paths: ['note'] })
+            } else if (root === 'session') {
+                this._dispatchWindowEvent('sessionFilesChanged', { path: 'session', paths: ['session'] })
+            }
+        }, EXTERNAL_WATCH_DEBOUNCE_MS)
+
+        this._externalWatchDebounceTimers.set(root, timer)
+    }
+
+    _closeExternalWatchers() {
+        for (const watcher of this._externalWatchers.values()) {
+            try {
+                watcher?.close?.()
+            } catch {
+                // ignore close failures
+            }
+        }
+        this._externalWatchers.clear()
+    }
+
+    _ensureExternalWatchers() {
+        let rootAbs = ''
+        try {
+            rootAbs = this._getDataStorageRootAbs()
+        } catch {
+            this._closeExternalWatchers()
+            this._lastWatcherRootSignature = ''
+            return
+        }
+
+        const signature = rootAbs
+        if (signature === this._lastWatcherRootSignature && this._externalWatchers.size) return
+
+        this._closeExternalWatchers()
+        this._lastWatcherRootSignature = signature
+
+        const watchedRoots = ['note', 'session']
+        for (const rootRel of watchedRoots) {
+            const absPath = path.join(rootAbs, rootRel)
+            try {
+                fsSync.mkdirSync(absPath, { recursive: true })
+                const watcher = fsSync.watch(absPath, { recursive: true }, (_eventType, filename) => {
+                    const rawName = typeof filename === 'string' ? filename : ''
+                    const normalizedRel = rawName
+                        ? `${rootRel}/${String(rawName).replace(/\\/g, '/')}`.replace(/\/+/g, '/')
+                        : rootRel
+                    const relevant = rootRel === 'note'
+                        ? contentIndex._internal.isRelevantWatchedPath('note', normalizedRel)
+                        : contentIndex._internal.isRelevantWatchedPath('session', normalizedRel)
+                    if (!relevant && normalizedRel !== rootRel) return
+                    this._queueExternalTreeRefresh(rootRel, normalizedRel)
+                })
+                this._externalWatchers.set(rootRel, watcher)
+            } catch (err) {
+                console.warn?.(`[External watch] failed for ${rootRel}:`, err)
+            }
+        }
+    }
+
+    async _updateContentIndexAfterWrite(relativePath) {
+        try {
+            await contentIndex.upsertPath(relativePath)
+        } catch (err) {
+            console.warn?.('[Content index] write sync failed:', err)
+            await contentIndex.markDirtyByPath(relativePath, 'write_failed')
+        }
+    }
+
+    async _updateContentIndexAfterDelete(relativePath, options = {}) {
+        try {
+            await contentIndex.removePath(relativePath, { isDirectory: options.isDirectory === true })
+        } catch (err) {
+            console.warn?.('[Content index] delete sync failed:', err)
+            await contentIndex.markDirtyByPath(relativePath, 'delete_failed')
+        }
+    }
+
+    async _updateContentIndexAfterMove(fromRelativePath, toRelativePath, options = {}) {
+        try {
+            await contentIndex.movePath(fromRelativePath, toRelativePath, { isDirectory: options.isDirectory === true })
+        } catch (err) {
+            console.warn?.('[Content index] move sync failed:', err)
+            await contentIndex.markDirtyRoots([fromRelativePath, toRelativePath], 'move_failed')
+        }
+    }
+
     initCloudAutomation() {
         if (this._cloudAutomationInitialized) return
         this._cloudAutomationInitialized = true
 
         this._handleCloudAutomationConfigChange(this._getCloudConfigSafe())
+        this._ensureExternalWatchers()
 
         if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
             window.addEventListener('globalConfigChanged', (event) => {
                 this._handleCloudAutomationConfigChange(event?.detail?.cloudConfig)
+                this._ensureExternalWatchers()
             })
         }
     }
@@ -402,8 +544,10 @@ class FileOperations {
     async writeFile(relativePath, data) {
         const fullPath = this._resolvePath(relativePath)
         await fs.mkdir(path.dirname(fullPath), { recursive: true })
+        this._markInternalMutation(relativePath)
         await fs.writeFile(fullPath, data)
         this._clearBlobCacheForRelativePath(relativePath)
+        await this._updateContentIndexAfterWrite(relativePath)
         this._scheduleCloudAutoBackupAfterMutation()
         return true
     }
@@ -437,12 +581,14 @@ class FileOperations {
     async deleteItem(relativePath) {
         const fullPath = this._resolvePath(relativePath)
         const stat = await fs.stat(fullPath)
+        this._markInternalMutation(relativePath)
         if (stat.isDirectory()) {
             await this._runDeleteWithRetry(() => fs.rm(fullPath, { recursive: true, force: true }))
         } else {
             await this._runDeleteWithRetry(() => fs.unlink(fullPath))
         }
         this._clearBlobCacheForRelativePath(relativePath, { recursive: stat.isDirectory() })
+        await this._updateContentIndexAfterDelete(relativePath, { isDirectory: stat.isDirectory() })
         this._scheduleCloudAutoBackupAfterMutation()
         return true
     }
@@ -480,6 +626,8 @@ class FileOperations {
         if (fromAbs === toAbs) return true
         const fromStat = await fs.stat(fromAbs)
         const recursiveCacheClear = fromStat.isDirectory()
+        this._markInternalMutation(fromRel)
+        this._markInternalMutation(toRel)
 
         const overwrite = !!options?.overwrite
         const toExists = await this.exists(toRel)
@@ -502,6 +650,7 @@ class FileOperations {
 
         this._clearBlobCacheForRelativePath(fromRel, { recursive: recursiveCacheClear })
         this._clearBlobCacheForRelativePath(toRel, { recursive: recursiveCacheClear })
+        await this._updateContentIndexAfterMove(fromRel, toRel, { isDirectory: recursiveCacheClear })
         this._scheduleCloudAutoBackupAfterMutation()
         return true
     }
@@ -624,6 +773,7 @@ class FileOperations {
             if (progressCallback) progressCallback(completed, total)
         }
 
+        await contentIndex.markDirtyRoots([...changedRoots], 'cloud_restore')
         this._notifyRestoredRelativePathsChanged([...changedRoots])
 
         return { downloaded: total }
