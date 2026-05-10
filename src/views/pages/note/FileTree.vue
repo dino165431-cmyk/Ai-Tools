@@ -334,7 +334,7 @@ onMounted(async () => {
 function handleExternalNoteFilesChanged(e) {
   const changedPath = String(e?.detail?.path || '').trim();
   if (changedPath && changedPath !== 'note' && !changedPath.startsWith('note/')) return;
-  void refreshTree();
+  void refreshTree({ silent: true });
 }
 
 onMounted(() => {

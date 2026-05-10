@@ -21,6 +21,12 @@ function normalizeString(val) {
   return text
 }
 
+export function extractUtoolsAiReasoningText(payload) {
+  if (!payload || typeof payload !== 'object') return ''
+  const reasoning = payload.reasoning_content ?? payload.reasoning ?? payload.thinking ?? payload.thought
+  return normalizeString(reasoning)
+}
+
 function uniqueModelIds(items) {
   const out = []
   const seen = new Set()
@@ -189,10 +195,12 @@ export function buildUtoolsAiMessages({ systemContent, apiMessages }) {
     }
 
     if (role === 'assistant') {
-      const reasoning = normalizeString(
-        message.reasoning_content ?? message.reasoning ?? message.thinking ?? message.thought
+      const hasReasoningField = ['reasoning_content', 'reasoning', 'thinking', 'thought'].some((key) =>
+        Object.prototype.hasOwnProperty.call(message, key)
       )
-      if (reasoning) next.reasoning_content = reasoning
+      if (hasReasoningField) {
+        next.reasoning_content = extractUtoolsAiReasoningText(message)
+      }
     }
 
     messages.push(next)

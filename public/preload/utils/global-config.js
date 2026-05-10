@@ -3,6 +3,7 @@ const path = require('path');
 const { exec, execFile } = require('child_process');
 const { fileURLToPath } = require('url');
 const { buildExportableSkillPackage, normalizeSkillPackage, slugify } = require('./skill-package');
+const { DEFAULT_CONTENT_SEARCH_CONFIG, normalizeContentSearchConfig } = require('./contentSearchConfig');
 
 const DEFAULT_SYSTEM_PROMPT = [
     '你是一个 AI 助手（AI Assistant）。',
@@ -111,21 +112,21 @@ function buildBuiltinSkill() {
     return {
         _id: BUILTIN_SKILL_ID,
         name: '笔记查阅与记录（内置）',
-        description: '用于查阅笔记、记录笔记：优先按目录或最近项轻量定位，再读取或写入具体笔记。',
+        description: '用于查阅笔记、记录笔记：优先按目录或最近项轻量定位，再读取或写入具体笔记；索引会随笔记变更和配置切换自动维护，加密笔记不参与索引检索。',
         content: [
             '你是一个“笔记助手”。你可以通过内置 MCP 工具访问用户的笔记库，完成“查阅笔记 / 记笔记”相关工作。',
             '笔记根目录：`note/`（相对“数据存储根目录”）。图片目录：`*.assets/`。',
             `可用工具（均来自内置 MCP：\`${BUILTIN_MCP_SERVER_ID}\`）：`,
             '- `notes_list_directory`：列出某个目录下的直接子目录和笔记，不递归，适合大目录快速定位。',
             '- `notes_list_recent`：按最近修改时间列出笔记，适合先看最近活跃内容。',
-            '- `notes_search`：按笔记名、标题、摘要或相对路径搜索笔记，适合大笔记库中的模糊定位。',
+            '- `notes_search`：按笔记名、标题、摘要或相对路径搜索笔记，默认是关键词检索；如果全局检索配置启用了 embedding 的混合模式，排序会自动结合关键词和语义结果。索引会在笔记增删改、移动和配置切换后自动维护。加密笔记不会进入索引，因此不会出现在搜索或最近列表中。',
+            '- `notes_read`：读取指定 `path` 的笔记；加密笔记会直接报错，需要先在笔记页解锁。',
             '- `notes_list_tree`：列出笔记树形结构；默认只展开较浅层级，确实需要全局概览时再提高 `maxDepth`。',
-            '- `notes_read`：读取指定 `path` 的笔记，返回 `content` 和 `images`（图片会尽量以 base64 返回，过大可能被跳过）。',
             '- `notes_create`：新建笔记并写入内容（可传 `path`，或传 `dirPath` + `noteName`；`noteName` 可不带 `.md`）。',
             '- `notes_write`：写入笔记内容（可传 `path`，或传 `dirPath` + `noteName`；默认追加 `mode=append`，覆盖用 `mode=overwrite`）。',
             '使用原则：',
             '1. 如果用户已经给出了明确路径，或路径已经能唯一确定目标，直接 `notes_read` / `notes_write` / `notes_create`，不要先列目录。',
-            '2. 用户只给了关键词、文件名片段、路径片段时，优先先 `notes_search` 缩小范围，再 `notes_read`；它会同时匹配标题和摘要。',
+            '2. 用户只给了关键词、文件名片段、路径片段时，优先先 `notes_search` 缩小范围，再 `notes_read`；默认走关键词检索，启用 embedding 后会自动变成混合检索。加密笔记不会进入检索结果，且 `notes_read` 不能直接读取。',
             '3. 用户只给了目录、主题、最近修改、最近记录等线索时，优先先 `notes_list_directory` 或 `notes_list_recent` 缩小范围，再 `notes_read`。',
             '4. 只有用户明确要“看结构 / 看层级 / 看整库分布”，或者前几步无法定位时，才使用 `notes_list_tree`；默认不要从 note 根目录做大深度遍历。',
             '5. 用户要“记录 / 新增 / 整理”笔记：优先确认写入的目录与笔记名；不明确时先问 1 个澄清问题。',
@@ -184,20 +185,20 @@ function buildBuiltinSessionsSkill() {
     return {
         _id: BUILTIN_SESSIONS_SKILL_ID,
         name: '会话历史 / 定时任务日志（内置）',
-        description: '用于查询历史会话与定时任务执行记录：优先按目录或最近项轻量定位，再读取会话 JSON 分析。',
+        description: '用于查询历史会话与定时任务执行记录：优先按目录或最近项轻量定位，再读取会话 JSON 分析；索引会随会话变更和配置切换自动维护。',
         content: [
             '你是一个“会话历史查询助手”。你可以通过内置 MCP 工具读取历史会话和定时任务执行日志。',
             '存储位置相对数据根目录：普通会话在 `session/`；定时任务通常在 `session/定时任务/...`。',
             `可用工具（来自内置 MCP：\`${BUILTIN_SESSIONS_MCP_SERVER_ID}\`）：`,
             '- `sessions_list_directory`：列出某个目录下的直接子目录和会话文件，不递归，适合大目录快速定位。',
             '- `sessions_list_recent`：按最近修改时间列出会话文件，适合先看最近记录。',
-            '- `sessions_search`：按会话文件名、标题、摘要或相对路径搜索会话，适合大量历史记录中的模糊定位。',
+            '- `sessions_search`：按会话文件名、标题、摘要或相对路径搜索会话，默认是关键词检索；如果全局检索配置启用了 embedding 的混合模式，排序会自动结合关键词和语义结果。索引会在会话增删改、移动和配置切换后自动维护。',
             '- `sessions_list_tree`：列出会话树形结构；默认只展开较浅层级，确实需要全局概览时再提高 `maxDepth`。',
             '- `sessions_read`：读取单个会话文件并解析 JSON。',
             '- `sessions_read_many`：批量读取多个会话文件并解析 JSON。',
             '使用原则：',
             '1. 如果用户已经给出了明确路径，或路径已经能唯一确定目标，直接 `sessions_read` 或 `sessions_read_many`，不要先列目录。',
-            '2. 用户只给了关键词、文件名片段、路径片段时，优先先 `sessions_search` 缩小范围，再 `sessions_read` 或 `sessions_read_many`；它会同时匹配标题和摘要。',
+            '2. 用户只给了关键词、文件名片段、路径片段时，优先先 `sessions_search` 缩小范围，再 `sessions_read` 或 `sessions_read_many`；默认走关键词检索，启用 embedding 后会自动变成混合检索。',
             '3. 用户只给了目录、任务名、最近记录、最近失败等线索时，优先先 `sessions_list_directory` 或 `sessions_list_recent` 定位，再 `sessions_read` 或 `sessions_read_many`。',
             '4. 只有用户明确要“看结构 / 看层级 / 看整库分布”，或者前几步无法定位时，才使用 `sessions_list_tree`；默认不要从 session 根目录做大深度遍历。',
             '5. 批量分析时，先用轻量工具筛出小批量目标，再 `sessions_read_many`，避免把大量无关会话一次读入。'
@@ -253,6 +254,7 @@ function buildBuiltinPrompt() {
             '- 敏感信息如 API Key、env、headers 不要回显。',
             '- 内置 MCP / Skill / Prompt 不可删除或修改；内置 Agent 不可删除，且只允许部分字段更新。',
             '- 对笔记和会话这类大目录数据，默认优先轻量定位，不要一上来就整库递归遍历。',
+            '- `notes_search` / `sessions_search` 默认是关键词检索；如果全局检索配置启用了 embedding 的混合模式，工具会自动把关键词和语义结果一起用于排序，调用方式不变。索引会在笔记和会话的数据变更、移动、删除以及配置切换后自动维护。笔记侧的加密内容不参与索引或搜索，`notes_read` 也不会直接读取加密笔记。',
             '',
             '内置 MCP：',
             `- 笔记 MCP（\`${BUILTIN_MCP_SERVER_ID}\`）：\`notes_list_directory\` / \`notes_list_recent\` / \`notes_search\` / \`notes_list_tree\` / \`notes_read\` / \`notes_create\` / \`notes_write\``,
@@ -268,10 +270,10 @@ function buildBuiltinPrompt() {
             '',
             '笔记规范：',
             '- 已知明确路径时，直接 `notes_read`；不要为了读单篇笔记先列树。',
-            '- 已知关键词或路径片段时，优先 `notes_search`；它会同时匹配标题和摘要。已知目录或最近线索时，再用 `notes_list_directory` / `notes_list_recent`。',
+            '- 已知关键词或路径片段时，优先 `notes_search`；默认走关键词检索，配置了 embedding 后会自动用混合检索。索引会在笔记变更和配置切换后自动维护。加密笔记不会出现在搜索和最近列表中。已知目录或最近线索时，再用 `notes_list_directory` / `notes_list_recent`。',
             '- 查阅笔记：优先先 `notes_search` / `notes_list_directory` / `notes_list_recent`，只在确实需要整体结构时再用 `notes_list_tree`，然后再 `notes_read`。',
             '- 不要默认从 note 根目录做大深度 `notes_list_tree`。',
-            '- 查历史会话：优先先 `sessions_search` / `sessions_list_directory` / `sessions_list_recent`，只在确实需要整体结构时再用 `sessions_list_tree`，然后再 `sessions_read` / `sessions_read_many`。',
+            '- 查历史会话：优先先 `sessions_search` / `sessions_list_directory` / `sessions_list_recent`，默认走关键词检索，配置了 embedding 后会自动用混合检索。索引会在会话变更和配置切换后自动维护。只在确实需要整体结构时再用 `sessions_list_tree`，然后再 `sessions_read` / `sessions_read_many`。',
             '- 已知明确路径时，直接 `sessions_read`；批量分析前先用轻量工具筛小范围，再 `sessions_read_many`。',
             '- 写入笔记默认追加；除非用户明确要求，否则不要覆盖已有内容。'
         ].join('\n'),
@@ -772,6 +774,7 @@ function normalizePromptAndAgentBindingsInConfig(rawConfig) {
 function syncConfigStructure(rawConfig) {
     const config = normalizePromptAndAgentBindingsInConfig(rawConfig)
     const chatConfig = normalizeChatConfig(config.chatConfig)
+    const contentSearchConfig = normalizeContentSearchConfig(config.contentSearchConfig)
     const noteConfig = normalizeNoteConfig(config.noteConfig, config.chatConfig)
     const noteSecurity = noteConfig.noteSecurity
     const configSecurity = normalizeConfigSecurityConfig(
@@ -796,6 +799,7 @@ function syncConfigStructure(rawConfig) {
     return {
         ...config,
         chatConfig,
+        contentSearchConfig,
         noteConfig: {
             ...noteConfig,
             noteSecurity: {
@@ -873,6 +877,29 @@ function normalizeChatMemoryConfig(raw) {
         profileMaxItems: normalizeChatMemoryInteger(src.profileMaxItems, DEFAULT_CHAT_MEMORY_CONFIG.profileMaxItems, 1, 20),
         relevantMaxItems: normalizeChatMemoryInteger(src.relevantMaxItems, DEFAULT_CHAT_MEMORY_CONFIG.relevantMaxItems, 1, 20)
     }
+}
+
+function mergeContentSearchConfig(current, patch) {
+    const base = normalizeContentSearchConfig(current)
+    const src = patch && typeof patch === 'object' && !Array.isArray(patch) ? patch : {}
+    const next = {
+        ...base,
+        ...src
+    }
+
+    if (src.embedding !== undefined) {
+        next.embedding = normalizeContentSearchConfig({
+            ...base,
+            embedding: {
+                ...base.embedding,
+                ...(src.embedding && typeof src.embedding === 'object' && !Array.isArray(src.embedding)
+                    ? src.embedding
+                    : {})
+            }
+        }).embedding
+    }
+
+    return normalizeContentSearchConfig(next)
 }
 
 function mergeNoteEditorConfig(current, patch) {
@@ -1559,6 +1586,7 @@ class GlobalConfig {
                 contextWindow: this._clone(DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG),
                 memory: this._clone(DEFAULT_CHAT_MEMORY_CONFIG)
             },
+            contentSearchConfig: this._clone(DEFAULT_CONTENT_SEARCH_CONFIG),
             noteConfig: this._clone(DEFAULT_NOTE_CONFIG),
             configSecurity: this._clone(DEFAULT_CONFIG_SECURITY_CONFIG),
             agents: {
@@ -1860,6 +1888,7 @@ class GlobalConfig {
 
     _buildPublicConfig(raw) {
         const config = normalizePromptAndAgentBindingsInConfig(this._clone(this._isPlainObject(raw) ? raw : this._defaultConfig))
+        config.contentSearchConfig = normalizeContentSearchConfig(config.contentSearchConfig)
         const normalizedNoteConfig = normalizeNoteConfig(config.noteConfig, config.chatConfig)
         config.noteConfig = {
             ...normalizedNoteConfig,
@@ -3103,6 +3132,10 @@ class GlobalConfig {
         return this._clone(this._getRaw()).chatConfig;
     }
 
+    getContentSearchConfig() {
+        return this._clone(this.getConfig()).contentSearchConfig;
+    }
+
     getNoteConfig() {
         return this._clone(this.getConfig()).noteConfig;
     }
@@ -3142,6 +3175,13 @@ class GlobalConfig {
         return updated;
     }
 
+    updateContentSearchConfig(partial) {
+        if (!this._isPlainObject(partial)) {
+            throw new Error('partial must be a plain object');
+        }
+        return this.updateConfig({ contentSearchConfig: partial }).contentSearchConfig;
+    }
+
     // ---------- core config ----------
     updateConfig(partial) {
         const config = this._getRaw();
@@ -3156,6 +3196,9 @@ class GlobalConfig {
         }
         if (cleanPartial.noteConfig !== undefined && !this._isPlainObject(cleanPartial.noteConfig)) {
             throw new Error('noteConfig must be a plain object');
+        }
+        if (cleanPartial.contentSearchConfig !== undefined && !this._isPlainObject(cleanPartial.contentSearchConfig)) {
+            throw new Error('contentSearchConfig must be a plain object');
         }
         if (cleanPartial.configSecurity !== undefined && !this._isPlainObject(cleanPartial.configSecurity)) {
             throw new Error('configSecurity must be a plain object');
@@ -3183,6 +3226,9 @@ class GlobalConfig {
             chatConfig: cleanPartial.chatConfig !== undefined
                 ? mergeChatConfig(config.chatConfig, cleanPartial.chatConfig)
                 : config.chatConfig,
+            contentSearchConfig: cleanPartial.contentSearchConfig !== undefined
+                ? mergeContentSearchConfig(config.contentSearchConfig, cleanPartial.contentSearchConfig)
+                : normalizeContentSearchConfig(config.contentSearchConfig),
             noteConfig: cleanPartial.noteConfig !== undefined
                 ? mergeNoteConfig(config.noteConfig, cleanPartial.noteConfig)
                 : config.noteConfig,

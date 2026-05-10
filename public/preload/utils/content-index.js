@@ -2,6 +2,10 @@ const path = require('path')
 const fs = require('fs').promises
 
 const globalConfig = require('./global-config')
+const {
+  DEFAULT_CONTENT_SEARCH_CONFIG,
+  normalizeContentSearchConfig
+} = require('./contentSearchConfig')
 
 const INDEX_VERSION = 2
 const SYSTEM_DIR_NAME = '.ai-tools-settings'
@@ -10,6 +14,11 @@ const NOTE_CONTENT_SAMPLE_BYTES = 32 * 1024
 const SESSION_CONTENT_SAMPLE_BYTES = 64 * 1024
 const MAX_INDEX_PREVIEW_LENGTH = 320
 const MAX_INDEX_SEARCH_TEXT_LENGTH = 4096
+const HYBRID_SEARCH_KEYWORD_WEIGHT = 0.7
+const HYBRID_SEARCH_SEMANTIC_WEIGHT = 0.3
+const HYBRID_SEARCH_MIN_SEMANTIC_SIMILARITY = 0.38
+const HYBRID_SEARCH_SEMANTIC_BOOST = 120
+const ENCRYPTED_NOTE_PAYLOAD_RE = /^\s*\{\s*"kind"\s*:\s*"ai-tools-note"\s*,\s*"v"\s*:\s*1\s*,\s*"content"\s*:\s*\{\s*"alg"\s*:\s*"AES-GCM"\s*,/i
 
 const INDEX_KINDS = Object.freeze({
   note: Object.freeze({
@@ -36,6 +45,9 @@ const INDEX_FILE_NAMES = Object.freeze({
 })
 
 const rebuildPromises = new Map()
+const maintenanceTimers = new Map()
+const INDEX_MAINTENANCE_DEBOUNCE_MS = 1200
+let lastObservedContentSearchConfigSignature = ''
 
 function toPosixPath(value) {
   return String(value || '').replace(/\\/g, '/')
@@ -96,6 +108,10 @@ async function readTextSnippet(absPath, maxBytes) {
       // ignore close failures
     }
   }
+}
+
+function isEncryptedNoteContent(rawText) {
+  return ENCRYPTED_NOTE_PAYLOAD_RE.test(String(rawText || '').replace(/^\uFEFF/, ''))
 }
 
 function extractQuotedText(value) {
@@ -227,10 +243,120 @@ async function buildEntryMetadata(kind, absPath, entry) {
     throw err
   }
 
+  if (kind === 'note' && isEncryptedNoteContent(text)) {
+    return { encrypted: true, title: '', preview: '', searchText: '' }
+  }
+
   if (kind === 'session') {
     return extractSessionMetadata(text, entry)
   }
   return extractNoteMetadata(text, entry)
+}
+
+function getCurrentConfig() {
+  try {
+    return globalConfig.getConfig?.() || {}
+  } catch {
+    return {}
+  }
+}
+
+function getProviderInfo(providerId) {
+  const config = getCurrentConfig()
+  const providers = config && typeof config.providers === 'object' ? config.providers : {}
+  const target = String(providerId || '').trim()
+  if (!target) return null
+  return providers[target] || null
+}
+
+function getContentSearchConfig(options = {}) {
+  const raw = options?.searchConfig !== undefined
+    ? options.searchConfig
+    : getCurrentConfig().contentSearchConfig
+  return normalizeContentSearchConfig(raw || DEFAULT_CONTENT_SEARCH_CONFIG)
+}
+
+function getContentSearchConfigSignature(config = getContentSearchConfig()) {
+  const normalized = normalizeContentSearchConfig(config)
+  return [
+    normalized.searchMode,
+    String(normalized.embedding?.providerId || ''),
+    String(normalized.embedding?.model || '')
+  ].join('|')
+}
+
+function isHybridSearchEnabled(config = getContentSearchConfig()) {
+  const normalized = normalizeContentSearchConfig(config)
+  return normalized.searchMode === 'hybrid'
+    && !!String(normalized.embedding?.providerId || '').trim()
+    && !!String(normalized.embedding?.model || '').trim()
+}
+
+function buildEntryEmbeddingText(kind, metadata = {}, entry = {}) {
+  const body = [
+    metadata.title,
+    metadata.preview,
+    metadata.searchText,
+    entry?.name || '',
+    entry?.path || '',
+    kind === 'session' ? 'session' : 'note'
+  ]
+    .filter(Boolean)
+    .join('\n')
+
+  return normalizeSearchText(body, MAX_INDEX_SEARCH_TEXT_LENGTH).slice(0, 3000)
+}
+
+async function requestEmbeddingVector(text, selection) {
+  const provider = getProviderInfo(selection?.providerId)
+  const model = String(selection?.model || '').trim()
+  const baseUrl = String(provider?.baseurl || '').trim()
+  const apiKey = String(provider?.apikey || '').trim()
+  if (!baseUrl || !apiKey || !model) return []
+  if (provider?.builtin || String(provider?.providerType || '').trim() === 'utools-ai') return []
+
+  const candidates = [`${baseUrl.replace(/\/+$/, '')}/embeddings`]
+  if (!/\/v1$/i.test(baseUrl)) candidates.push(`${baseUrl.replace(/\/+$/, '')}/v1/embeddings`)
+
+  let lastError = null
+  for (const url of candidates) {
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model,
+          input: text
+        })
+      })
+
+      if (response.status === 404 && url !== candidates[candidates.length - 1]) {
+        continue
+      }
+
+      if (!response.ok) {
+        const message = await response.text()
+        throw new Error(message || `HTTP ${response.status}`)
+      }
+
+      const json = await response.json()
+      return Array.isArray(json?.data?.[0]?.embedding)
+        ? json.data[0].embedding.map((value) => Number(value) || 0)
+        : []
+    } catch (err) {
+      lastError = err
+      if (url !== candidates[candidates.length - 1]) continue
+      break
+    }
+  }
+
+  if (lastError) {
+    console.warn?.('[Content index] embedding request failed:', lastError)
+  }
+  return []
 }
 
 function compareByPath(a, b) {
@@ -241,6 +367,92 @@ function compareByRecent(a, b) {
   const diff = Number(b?.mtimeMs || 0) - Number(a?.mtimeMs || 0)
   if (diff !== 0) return diff
   return compareByPath(a, b)
+}
+
+function cosineSimilarity(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length === 0 || b.length === 0) return 0
+  const len = Math.min(a.length, b.length)
+  let dot = 0
+  let na = 0
+  let nb = 0
+  for (let i = 0; i < len; i += 1) {
+    const av = Number(a[i]) || 0
+    const bv = Number(b[i]) || 0
+    dot += av * bv
+    na += av * av
+    nb += bv * bv
+  }
+  if (!na || !nb) return 0
+  return dot / Math.sqrt(na * nb)
+}
+
+function cancelIndexMaintenance(kind) {
+  const key = String(kind || '').trim()
+  if (!key) return
+  const timer = maintenanceTimers.get(key)
+  if (timer) clearTimeout(timer)
+  maintenanceTimers.delete(key)
+}
+
+function scheduleIndexMaintenance(kind, options = {}) {
+  const key = String(kind || '').trim()
+  if (!key || !INDEX_KINDS[key]) return null
+
+  cancelIndexMaintenance(key)
+
+  const delay = Number.isFinite(Number(options?.delayMs))
+    ? Math.max(0, Math.floor(Number(options.delayMs)))
+    : INDEX_MAINTENANCE_DEBOUNCE_MS
+
+  const timer = setTimeout(() => {
+    maintenanceTimers.delete(key)
+    void ensureIndex(key, {
+      searchConfig: options?.searchConfig || getContentSearchConfig()
+    }).catch((err) => {
+      console.warn?.('[Content index] scheduled maintenance failed:', err)
+    })
+  }, delay)
+
+  maintenanceTimers.set(key, timer)
+  return timer
+}
+
+function scheduleMaintenanceForAllKinds(options = {}) {
+  for (const kind of Object.keys(INDEX_KINDS)) {
+    scheduleIndexMaintenance(kind, options)
+  }
+}
+
+function syncMaintenanceForConfigChange(config) {
+  const normalized = normalizeContentSearchConfig(config || DEFAULT_CONTENT_SEARCH_CONFIG)
+  const signature = getContentSearchConfigSignature(normalized)
+  if (signature === lastObservedContentSearchConfigSignature) return
+  lastObservedContentSearchConfigSignature = signature
+  if (!isHybridSearchEnabled(normalized)) return
+  scheduleMaintenanceForAllKinds({
+    reason: 'content_search_config_changed',
+    searchConfig: normalized
+  })
+}
+
+function attachGlobalConfigMaintenanceListener() {
+  try {
+    if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return
+    window.addEventListener('globalConfigChanged', (event) => {
+      const nextConfig = event?.detail
+      if (!nextConfig || typeof nextConfig !== 'object') return
+      syncMaintenanceForConfigChange(nextConfig.contentSearchConfig)
+    })
+    syncMaintenanceForConfigChange(getCurrentConfig().contentSearchConfig)
+  } catch (err) {
+    console.warn?.('[Content index] config maintenance listener failed:', err)
+  }
+}
+
+function stripEntryEmbedding(entry) {
+  if (!entry || typeof entry !== 'object') return entry
+  const { embedding, ...rest } = entry
+  return rest
 }
 
 function getKindConfig(kind) {
@@ -355,7 +567,7 @@ function isRelevantWatchedPath(kind, relativePath) {
   return true
 }
 
-function makeEntry(kind, relativePath, statInfo, metadata = {}) {
+function makeEntry(kind, relativePath, statInfo, metadata = {}, options = {}) {
   const kindConfig = getKindConfig(kind)
   const normalized = normalizeRelativePath(relativePath)
   const relInRoot = normalized.slice(kindConfig.root.length + 1)
@@ -371,13 +583,14 @@ function makeEntry(kind, relativePath, statInfo, metadata = {}) {
     mtimeMs: Number(statInfo?.mtimeMs) || 0,
     title: normalizePreviewText(metadata?.title || ''),
     preview: normalizePreviewText(metadata?.preview || ''),
-    searchText: normalizeSearchText(metadata?.searchText || '')
+    searchText: normalizeSearchText(metadata?.searchText || ''),
+    embedding: Array.isArray(options?.embedding) ? options.embedding.map((value) => Number(value) || 0) : []
   }
 }
 
 function createEmptyIndex(kind, overrides = {}) {
   const kindConfig = getKindConfig(kind)
-  return {
+  const base = {
     version: INDEX_VERSION,
     kind: kindConfig.kind,
     root: kindConfig.root,
@@ -389,6 +602,12 @@ function createEmptyIndex(kind, overrides = {}) {
     entries: [],
     ...overrides
   }
+  const searchConfig = normalizeContentSearchConfig(base.searchConfig || DEFAULT_CONTENT_SEARCH_CONFIG)
+  return {
+    ...base,
+    searchConfig,
+    searchConfigSignature: getContentSearchConfigSignature(searchConfig)
+  }
 }
 
 async function readIndex(kind) {
@@ -397,10 +616,16 @@ async function readIndex(kind) {
     const raw = await fs.readFile(absPath, 'utf-8')
     const parsed = JSON.parse(String(raw || ''))
     if (!parsed || parsed.version !== INDEX_VERSION || parsed.kind !== kind) return null
-    return {
+    const base = {
       ...createEmptyIndex(kind),
       ...parsed,
       entries: Array.isArray(parsed.entries) ? parsed.entries : []
+    }
+    const searchConfig = normalizeContentSearchConfig(base.searchConfig || DEFAULT_CONTENT_SEARCH_CONFIG)
+    return {
+      ...base,
+      searchConfig,
+      searchConfigSignature: String(base.searchConfigSignature || getContentSearchConfigSignature(searchConfig))
     }
   } catch (err) {
     if (err?.code === 'ENOENT') return null
@@ -412,9 +637,12 @@ async function writeIndex(kind, indexData) {
   const absPath = getIndexAbsPath(kind)
   const dirAbs = path.dirname(absPath)
   await fs.mkdir(dirAbs, { recursive: true })
+  const searchConfig = normalizeContentSearchConfig(indexData?.searchConfig || DEFAULT_CONTENT_SEARCH_CONFIG)
   const payload = JSON.stringify({
     ...createEmptyIndex(kind),
     ...indexData,
+    searchConfig,
+    searchConfigSignature: getContentSearchConfigSignature(searchConfig),
     entries: Array.isArray(indexData?.entries) ? indexData.entries : []
   }, null, 2)
   const tempPath = `${absPath}.tmp`
@@ -423,9 +651,11 @@ async function writeIndex(kind, indexData) {
   return absPath
 }
 
-async function scanEntries(kind) {
+async function scanEntries(kind, options = {}) {
   const kindConfig = getKindConfig(kind)
   const rootAbs = path.join(getDataStorageRootAbs(), ...kindConfig.root.split('/'))
+  const searchConfig = getContentSearchConfig(options)
+  const hybridEnabled = isHybridSearchEnabled(searchConfig)
   await fs.mkdir(rootAbs, { recursive: true })
   const entries = []
 
@@ -459,7 +689,19 @@ async function scanEntries(kind) {
           path: nextRelPath.slice(kindConfig.root.length + 1),
           name: path.posix.basename(nextRelPath).slice(0, -kindConfig.extension.length)
         })
-        entries.push(makeEntry(kindConfig.kind, nextRelPath, statInfo, metadata))
+        if (kindConfig.kind === 'note' && metadata?.encrypted) continue
+        const embedding = hybridEnabled
+          ? await requestEmbeddingVector(
+            buildEntryEmbeddingText(kindConfig.kind, metadata, {
+              path: nextRelPath.slice(kindConfig.root.length + 1),
+              name: path.posix.basename(nextRelPath).slice(0, -kindConfig.extension.length)
+            }),
+            searchConfig.embedding
+          )
+          : []
+        entries.push(makeEntry(kindConfig.kind, nextRelPath, statInfo, metadata, {
+          embedding
+        }))
       } catch (err) {
         if (err?.code !== 'ENOENT') throw err
       }
@@ -476,9 +718,11 @@ async function rebuildIndex(kind, options = {}) {
   if (rebuildPromises.has(cacheKey)) return rebuildPromises.get(cacheKey)
 
   const promise = (async () => {
-    const entries = await scanEntries(kind)
+    const searchConfig = getContentSearchConfig(options)
+    const entries = await scanEntries(kind, { searchConfig })
     const now = new Date().toISOString()
     const nextIndex = createEmptyIndex(kind, {
+      searchConfig,
       builtAt: now,
       updatedAt: now,
       dirty: false,
@@ -497,11 +741,31 @@ async function rebuildIndex(kind, options = {}) {
   }
 }
 
-async function ensureIndex(kind) {
+async function ensureIndex(kind, options = {}) {
+  const currentSearchConfig = getContentSearchConfig(options)
   const index = await readIndex(kind)
-  if (!index) return rebuildIndex(kind, { reason: 'missing' })
-  if (index.dirty) return rebuildIndex(kind, { reason: index.reason || 'dirty' })
+  if (!index) return rebuildIndex(kind, { reason: 'missing', searchConfig: currentSearchConfig })
+  if (isHybridSearchEnabled(currentSearchConfig)) {
+    const currentSignature = getContentSearchConfigSignature(currentSearchConfig)
+    const storedSignature = String(index.searchConfigSignature || '')
+    if (storedSignature !== currentSignature) {
+      return rebuildIndex(kind, {
+        reason: 'search_config_changed',
+        searchConfig: currentSearchConfig
+      })
+    }
+  }
+  if (index.dirty) return rebuildIndex(kind, { reason: index.reason || 'dirty', searchConfig: currentSearchConfig })
   return index
+}
+
+function shouldInvalidateForSearchConfig(index, searchConfig) {
+  if (!index) return false
+  const current = getContentSearchConfig(searchConfig ? { searchConfig } : {})
+  if (!isHybridSearchEnabled(current)) return false
+  const currentSignature = getContentSearchConfigSignature(current)
+  const storedSignature = String(index.searchConfigSignature || '')
+  return storedSignature !== currentSignature
 }
 
 function filterEntriesByDir(entries, dirPath) {
@@ -556,6 +820,22 @@ function computeSearchScore(entry, queryLower, tokens) {
   return score
 }
 
+function computeHybridSearchScore(entry, queryLower, tokens, queryEmbedding, options = {}) {
+  const keywordScore = computeSearchScore(entry, queryLower, tokens)
+  const embedding = Array.isArray(entry?.embedding) ? entry.embedding : []
+  const semanticScore = queryEmbedding.length && embedding.length ? cosineSimilarity(embedding, queryEmbedding) : 0
+  const hasKeywordSignal = keywordScore > 0
+  const hasSemanticSignal = queryEmbedding.length && embedding.length && semanticScore >= HYBRID_SEARCH_MIN_SEMANTIC_SIMILARITY
+  if (!hasKeywordSignal && !hasSemanticSignal) return -1
+
+  const minSemantic = Number.isFinite(Number(options?.minSemanticSimilarity))
+    ? Math.min(1, Math.max(0, Number(options.minSemanticSimilarity)))
+    : HYBRID_SEARCH_MIN_SEMANTIC_SIMILARITY
+  if (queryEmbedding.length && embedding.length && semanticScore < minSemantic && !hasKeywordSignal) return -1
+
+  return (keywordScore * HYBRID_SEARCH_KEYWORD_WEIGHT) + (semanticScore * HYBRID_SEARCH_SEMANTIC_BOOST * HYBRID_SEARCH_SEMANTIC_WEIGHT)
+}
+
 async function searchIndex(kind, options = {}) {
   const kindConfig = getKindConfig(kind)
   const query = String(options?.query || '').trim()
@@ -564,6 +844,8 @@ async function searchIndex(kind, options = {}) {
       root: kindConfig.root,
       dirPath: normalizeDirPath(options?.dirPath),
       query: '',
+      searchMode: 'keyword',
+      semanticUsed: false,
       returned: 0,
       total: 0,
       items: []
@@ -573,9 +855,20 @@ async function searchIndex(kind, options = {}) {
   const limit = normalizeLimit(options?.limit, kindConfig.defaultSearchLimit, 200)
   const queryLower = query.toLowerCase()
   const tokens = buildSearchTokens(query)
-  const index = await ensureIndex(kindConfig.kind)
+  const searchConfig = getContentSearchConfig(options)
+  const hybridEnabled = isHybridSearchEnabled(searchConfig)
+  const queryEmbedding = hybridEnabled
+    ? await requestEmbeddingVector(query, searchConfig.embedding)
+    : []
+  const semanticUsed = hybridEnabled && queryEmbedding.length > 0
+  const index = await ensureIndex(kindConfig.kind, { searchConfig })
   const filtered = filterEntriesByDir(index.entries, options?.dirPath)
-    .map((entry) => ({ ...entry, score: computeSearchScore(entry, queryLower, tokens) }))
+    .map((entry) => ({
+      ...entry,
+      score: hybridEnabled
+        ? computeHybridSearchScore(entry, queryLower, tokens, queryEmbedding, options)
+        : computeSearchScore(entry, queryLower, tokens)
+    }))
     .filter((entry) => entry.score > 0)
     .sort((a, b) => {
       const scoreDiff = Number(b.score || 0) - Number(a.score || 0)
@@ -589,10 +882,12 @@ async function searchIndex(kind, options = {}) {
     root: kindConfig.root,
     dirPath: normalizeDirPath(options?.dirPath),
     query,
+    searchMode: hybridEnabled ? 'hybrid' : 'keyword',
+    semanticUsed,
     returned: Math.min(filtered.length, limit),
     total: filtered.length,
     hasMore: filtered.length > limit,
-    items: filtered.slice(0, limit)
+    items: filtered.slice(0, limit).map(stripEntryEmbedding)
   }
 }
 
@@ -607,7 +902,7 @@ async function listRecent(kind, options = {}) {
     returned: Math.min(filtered.length, limit),
     total: filtered.length,
     hasMore: filtered.length > limit,
-    items: filtered.slice(0, limit)
+    items: filtered.slice(0, limit).map(stripEntryEmbedding)
   }
 }
 
@@ -619,6 +914,7 @@ async function markDirty(kind, reason = 'mutation') {
     updatedAt: new Date().toISOString()
   }
   await writeIndex(kind, nextIndex)
+  scheduleIndexMaintenance(kind, { reason })
   return nextIndex
 }
 
@@ -646,8 +942,13 @@ async function upsertPath(relativePath) {
   if (!kind || !shouldIndexFile(kind, relativePath)) return null
 
   const index = await readIndex(kind)
+  const searchConfig = getContentSearchConfig()
   if (!index || index.dirty) {
     await markDirty(kind, 'upsert_pending_rebuild')
+    return null
+  }
+  if (shouldInvalidateForSearchConfig(index, searchConfig)) {
+    await markDirty(kind, 'search_config_changed')
     return null
   }
 
@@ -662,7 +963,30 @@ async function upsertPath(relativePath) {
     path: normalizeRelativePath(relativePath).slice(getKindConfig(kind).root.length + 1),
     name: path.posix.basename(normalizeRelativePath(relativePath)).slice(0, -getKindConfig(kind).extension.length)
   })
-  const nextEntry = makeEntry(kind, relativePath, statInfo, metadata)
+  if (kind === 'note' && metadata?.encrypted) {
+    const relInRoot = normalizeRelativePath(relativePath).slice(getKindConfig(kind).root.length + 1)
+    const nextEntries = index.entries.filter((entry) => entry.path !== relInRoot)
+    if (nextEntries.length !== index.entries.length) {
+      await writeIndex(kind, {
+        ...index,
+        entries: nextEntries,
+        updatedAt: new Date().toISOString(),
+        reason: 'incremental_remove_encrypted'
+      })
+    }
+    return null
+  }
+  const hybridEnabled = isHybridSearchEnabled(searchConfig)
+  const embedding = hybridEnabled
+    ? await requestEmbeddingVector(
+      buildEntryEmbeddingText(kind, metadata, {
+        path: normalizeRelativePath(relativePath).slice(getKindConfig(kind).root.length + 1),
+        name: path.posix.basename(normalizeRelativePath(relativePath)).slice(0, -getKindConfig(kind).extension.length)
+      }),
+      searchConfig.embedding
+    )
+    : []
+  const nextEntry = makeEntry(kind, relativePath, statInfo, metadata, { embedding })
   const nextEntries = index.entries.filter((entry) => entry.path !== nextEntry.path)
   nextEntries.push(nextEntry)
   nextEntries.sort(compareByPath)
@@ -680,8 +1004,13 @@ async function removePath(relativePath, options = {}) {
   if (!kind) return null
 
   const index = await readIndex(kind)
+  const searchConfig = getContentSearchConfig()
   if (!index || index.dirty) {
     await markDirty(kind, 'remove_pending_rebuild')
+    return null
+  }
+  if (shouldInvalidateForSearchConfig(index, searchConfig)) {
+    await markDirty(kind, 'search_config_changed')
     return null
   }
 
@@ -743,8 +1072,13 @@ async function movePath(fromRelativePath, toRelativePath, options = {}) {
 
   const kind = fromKind
   const index = await readIndex(kind)
+  const searchConfig = getContentSearchConfig()
   if (!index || index.dirty) {
     await markDirty(kind, 'move_pending_rebuild')
+    return null
+  }
+  if (shouldInvalidateForSearchConfig(index, searchConfig)) {
+    await markDirty(kind, 'search_config_changed')
     return null
   }
 
@@ -754,6 +1088,11 @@ async function movePath(fromRelativePath, toRelativePath, options = {}) {
   const fromRelInRoot = fromNormalized === kindConfig.root ? '' : fromNormalized.slice(kindConfig.root.length + 1)
   const toRelInRoot = toNormalized === kindConfig.root ? '' : toNormalized.slice(kindConfig.root.length + 1)
   const isDirectory = options?.isDirectory === true || isIndexedDirectoryPath(kind, fromNormalized)
+
+  if (isDirectory && isHybridSearchEnabled(searchConfig)) {
+    await markDirty(kind, 'hybrid_directory_move_requires_rebuild')
+    return null
+  }
 
   let nextEntries = index.entries
 
@@ -772,7 +1111,18 @@ async function movePath(fromRelativePath, toRelativePath, options = {}) {
             path: toRelInRoot,
             name: path.posix.basename(toRelInRoot).slice(0, -getKindConfig(kind).extension.length)
           })
-          nextEntries.push(makeEntry(kind, toRelativePath, statInfo, metadata))
+          if (!(kind === 'note' && metadata?.encrypted)) {
+            const embedding = isHybridSearchEnabled(searchConfig)
+              ? await requestEmbeddingVector(
+                buildEntryEmbeddingText(kind, metadata, {
+                  path: toRelInRoot,
+                  name: path.posix.basename(toRelInRoot).slice(0, -getKindConfig(kind).extension.length)
+                }),
+                searchConfig.embedding
+              )
+              : []
+            nextEntries.push(makeEntry(kind, toRelativePath, statInfo, metadata, { embedding }))
+          }
         }
       } catch (err) {
         if (err?.code !== 'ENOENT') throw err
@@ -786,7 +1136,18 @@ async function movePath(fromRelativePath, toRelativePath, options = {}) {
             path: toRelInRoot,
             name: path.posix.basename(toRelInRoot).slice(0, -getKindConfig(kind).extension.length)
           })
-          nextEntries.push(makeEntry(kind, toRelativePath, statInfo, metadata))
+          if (!(kind === 'note' && metadata?.encrypted)) {
+            const embedding = isHybridSearchEnabled(searchConfig)
+              ? await requestEmbeddingVector(
+                buildEntryEmbeddingText(kind, metadata, {
+                  path: toRelInRoot,
+                  name: path.posix.basename(toRelInRoot).slice(0, -getKindConfig(kind).extension.length)
+                }),
+                searchConfig.embedding
+              )
+              : []
+            nextEntries.push(makeEntry(kind, toRelativePath, statInfo, metadata, { embedding }))
+          }
         }
       } catch (err) {
         if (err?.code !== 'ENOENT') throw err
@@ -821,10 +1182,16 @@ module.exports = {
   _internal: {
     INDEX_VERSION,
     INDEX_KINDS,
+    isEncryptedNoteContent,
     shouldIndexFile,
     isIndexedDirectoryPath,
     isRelevantWatchedPath,
     createEmptyIndex,
-    readIndex
+    readIndex,
+    scheduleIndexMaintenance,
+    cancelIndexMaintenance,
+    syncMaintenanceForConfigChange
   }
 }
+
+attachGlobalConfigMaintenanceListener()

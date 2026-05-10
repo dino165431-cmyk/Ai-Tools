@@ -20,6 +20,7 @@ import { buildSkillFileIndexLines, getSkillDescription, isDirectorySkill } from 
 import {
   buildUtoolsAiMessages,
   canUseUtoolsAi,
+  extractUtoolsAiReasoningText,
   isUtoolsBuiltinProvider,
   refreshUtoolsAiModels,
   registerUtoolsAiToolFunctions
@@ -685,12 +686,12 @@ async function runTimedTaskWithUtoolsAi({ profile, model, systemPrompt, displayM
 
     const result = await request
     const assistantContent = toText(result?.content)
-    const reasoningContent = toText(result?.reasoning_content)
+    const reasoningContent = extractUtoolsAiReasoningText(result)
 
     apiMessages.push({
       role: 'assistant',
       content: String(assistantContent || ''),
-      ...(reasoningContent ? { reasoning_content: reasoningContent } : {})
+      reasoning_content: String(reasoningContent || '')
     })
 
     if (assistantContent && assistantContent.trim()) {

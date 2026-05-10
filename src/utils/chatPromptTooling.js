@@ -120,19 +120,19 @@ export const AGENT_SKILL_LAZY_LOAD_GUIDANCE_LINES = Object.freeze([
 ])
 
 export const COMPACT_MCP_CATALOG_NOTE =
-  'tool_names 是可用工具名列表，tool_hints 只是常见 top-level 参数提示，不等于完整 schema。调用时优先使用精确的 server_id 与 tool；真实工具参数必须放在 args 字段里，但 args 本身不一定是对象，也可以是字符串、数组、数字、布尔值或 null，具体按目标工具 inputSchema 传。若 tool 名以 config_add_ 开头，args 里直接传完整对象，不要再包 patch；若以 config_update_ 开头，args 必须是 {"id":"...","patch":{...}}。若 schema 不确定、索引不完整、工具像 script/run/execute 这类可执行工具，或上次调用报错，请先用 mcp_discover({server_id, tool}) 获取 inputSchema，再用 mcp_call({server_id, tool, args}) 重试。'
+  'tool_names is the tool-name list. tool_names_truncated=true means the list is partial, not exhaustive. tool_hints and pinned_tool_hints are hints only, not full schemas. Prefer the exact server_id and tool. Put real tool arguments in args. args may be an object, string, array, number, boolean, or null. For config_add_* tools pass the full object directly; for config_update_* tools pass {"id":"...","patch":{...}}. If the schema is unclear, tool_names may be incomplete, the tool looks executable (script/run/execute/exec), or a call just failed, use mcp_discover({server_id, tool}) first, then retry with mcp_call({server_id, tool, args}).'
 
 export const COMPACT_MCP_TOOL_GUIDANCE_LINES = Object.freeze([
-  '## MCP 工具（精简模式）',
-  '- 系统提示词中已附带 MCP 工具索引（JSON），包含 server_id、tool_names 和常见参数提示。',
-  '- 调用时优先直接使用索引里的精确 `server_id` 和 `tool`，不要自行猜测服务名或工具名。',
-  '- 实际工具参数必须放在 `args` 字段里；`args` 可以是对象，也可以是字符串、数组、数字、布尔值或 null。无参工具通常传 `args:{}`。',
-  '- 标准调用写法：`mcp_call({"server_id":"...","tool":"...","args":{...}})`；若目标工具的 inputSchema 顶层不是 object，就把 `args` 改成对应的原始 JSON 值。',
-  '- 当用户明确要“执行脚本 / 运行任务 / 调用自动化动作”时，如果目录里存在名称或描述包含 `script`、`run`、`execute`、`exec` 的 MCP 工具，优先直接调用，不要只停留在口头说明。',
-  '- 对配置类工具（tool 以 `config_` 开头），未知 `_id` 先调用 `config_list_*`；`config_add_*` 直接传完整对象，`config_update_*` 必须传 `{"id":"...","patch":{...}}`。',
-  '- 如果列表接口里的敏感字段是 `***`，那只是脱敏占位值；不要把 `***` 原样写回 `apikey` / `env` / `headers`。',
-  '- 只有在你需要刷新工具列表、查漏，或需要某个工具的完整 `inputSchema` 时，才调用 `mcp_discover`。',
-  '- 查询单个工具 schema 时，优先写成：`mcp_discover({"server_id":"...","tool":"..."})`。'
+  '## MCP tools (compact mode)',
+  '- The system prompt already includes an MCP catalog JSON with `server_id`, `tool_names`, `tool_names_truncated`, `tool_hints`, and sometimes `pinned_tool_hints`.',
+  '- Prefer the exact `server_id` and `tool` from the catalog. Do not guess server names or tool names. If `tool_names_truncated=true`, do not treat the list as exhaustive. `pinned_tool_hints` and `tool_hints` are only hints, not full schemas.',
+  '- Put real tool arguments in `args`. `args` may be an object, string, array, number, boolean, or null. Tools without arguments usually use `args:{}`.',
+  '- Standard form: `mcp_call({"server_id":"...","tool":"...","args":{...}})`. If the target inputSchema root is not an object, set `args` to the raw JSON value instead.',
+  '- If the user explicitly wants to run a script/task/automation and the catalog contains a tool whose name or description includes `script`, `run`, `execute`, or `exec`, call it directly instead of only describing it.',
+  '- For config tools (`config_` prefix), call `config_list_*` first when the id is unknown; `config_add_*` should receive the full object directly, and `config_update_*` must receive {"id":"...","patch":{...}}.',
+  '- If sensitive fields in the listing are shown as `***`, that is a redaction placeholder. Do not write `***` back into `apikey`, `env`, or `headers`.',
+  '- Only call `mcp_discover` when you need to refresh the catalog, check for missing tools, or fetch the full inputSchema for one tool.',
+  '- When querying one tool schema, prefer `mcp_discover({"server_id":"...","tool":"..."})`.'
 ])
 
 export const INTERNAL_TOOL_SPECS = Object.freeze({
@@ -256,7 +256,7 @@ export const INTERNAL_TOOL_SPECS = Object.freeze({
   },
   mcpDiscover: {
     description:
-      '查看当前会话已挂载的 MCP 服务与工具。若要查询单个工具的 inputSchema，请同时传精确的 server_id 和 tool，例如 {"server_id":"browser","tool":"navigate"}。',
+      'Inspect the MCP servers and tools currently mounted in this chat. If you want the inputSchema for one tool, pass the exact server_id and tool, for example {"server_id":"browser","tool":"navigate"}. tool_names may be truncated, and tool_hints / pinned_tool_hints are only hints, not full schemas.',
     parameters: {
       type: 'object',
       properties: {
@@ -273,7 +273,7 @@ export const INTERNAL_TOOL_SPECS = Object.freeze({
   },
   mcpCall: {
     description:
-      '调用 MCP 工具。必须传精确的 server_id、tool，并把真实工具参数放进 args 字段里；args 可以是对象，也可以是字符串、数组、数字、布尔值或 null。标准示例：{"server_id":"browser","tool":"navigate","args":{"url":"https://example.com"}}。若目标工具 inputSchema 顶层不是 object，就把 args 直接写成对应原始 JSON 值。若 tool 名以 config_add_ 开头，args 直接传完整对象；若以 config_update_ 开头，args 必须传 {"id":"...","patch":{...}}。参数不确定时先调用 mcp_discover({server_id, tool}) 获取 inputSchema。',
+      'Call an MCP tool. Pass the exact server_id and tool, and put the real tool arguments in args. args may be an object, string, array, number, boolean, or null. If the target inputSchema root is not an object, pass args as the raw JSON value. For config_add_* tools pass the full object directly; for config_update_* tools pass {"id":"...","patch":{...}}. If the schema is unclear, call mcp_discover({server_id, tool}) first.',
     parameters: {
       type: 'object',
       properties: {

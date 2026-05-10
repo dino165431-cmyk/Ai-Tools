@@ -1,4 +1,4 @@
-const path = require('path')
+﻿const path = require('path')
 const fs = require('fs').promises
 
 const fileOperations = require('../utils/file-operations')
@@ -43,31 +43,31 @@ function normalizeDirPath(dirPath) {
   const normalized = path.posix.normalize(s)
   if (!normalized || normalized === '.') return ''
   if (normalized === '..' || normalized.startsWith('../') || path.posix.isAbsolute(normalized)) {
-    throw new Error('dirPath 不合法（不允许越界或绝对路径）')
+    throw new Error('dirPath invalid: must stay within note root')
   }
   return normalized
 }
 
 function normalizeNoteName(noteName) {
   const raw = String(noteName || '').trim()
-  if (!raw) throw new Error('noteName 不能为空')
-  if (raw.includes('\0')) throw new Error('noteName 包含非法字符')
-  if (raw.includes('/') || raw.includes('\\')) throw new Error('noteName 不能包含路径分隔符')
+  if (!raw) throw new Error('noteName cannot be empty')
+  if (raw.includes('\0')) throw new Error('noteName contains invalid characters')
+  if (raw.includes('/') || raw.includes('\\')) throw new Error('noteName cannot contain path separators')
   const name = raw.endsWith('.md') ? raw : `${raw}.md`
-  if (name === '.md' || name === '..md') throw new Error('noteName 不合法')
+  if (name === '.md' || name === '..md') throw new Error('noteName invalid')
   return name
 }
 
 function normalizeNotePathInRoot(notePath) {
   let s = toPosixPath(notePath).trim()
-  if (!s) throw new Error('path 不能为空')
+  if (!s) throw new Error('path cannot be empty')
   s = s.replace(/^\/+/, '')
   s = s.replace(/^note\//i, '')
   if (!s.toLowerCase().endsWith('.md')) s += '.md'
   const normalized = path.posix.normalize(s)
-  if (!normalized || normalized === '.' || normalized === '..') throw new Error('path 不合法')
+  if (!normalized || normalized === '.' || normalized === '..') throw new Error('path invalid')
   if (normalized.startsWith('../') || path.posix.isAbsolute(normalized)) {
-    throw new Error('path 不合法（不允许越界或绝对路径）')
+    throw new Error('path invalid: must stay within note root')
   }
   return normalized
 }
@@ -225,7 +225,6 @@ function buildNoteNode(fileName, relPath, options = {}) {
 }
 
 async function listDirectoryEntries({ notesRoot, dirPath = '', limit = DEFAULT_LIST_LIMIT }) {
-  await ensureDir(notesRoot)
   const rootAbs = fileOperations._resolvePath(notesRoot)
   const relDir = normalizeDirPath(dirPath)
   const absDir = relDir ? path.join(rootAbs, ...relDir.split('/')) : rootAbs
@@ -273,20 +272,19 @@ async function listDirectoryEntries({ notesRoot, dirPath = '', limit = DEFAULT_L
 
 async function listRecentNotes({ notesRoot, dirPath = '', limit = DEFAULT_RECENT_LIMIT }) {
   if (String(notesRoot || '').trim() !== 'note') {
-    throw new Error('notes_list_recent 当前仅支持默认 note 根目录')
+    throw new Error('notes_list_recent only supports the default note root')
   }
   return contentIndex.listRecent('note', { dirPath, limit })
 }
 
 async function searchNotes({ notesRoot, dirPath = '', query = '', limit = DEFAULT_RECENT_LIMIT }) {
   if (String(notesRoot || '').trim() !== 'note') {
-    throw new Error('notes_search 当前仅支持默认 note 根目录')
+    throw new Error('notes_search only supports the default note root')
   }
   return contentIndex.searchIndex('note', { dirPath, query, limit })
 }
 
 async function readNoteTree({ notesRoot, dirPath = '', maxDepth = DEFAULT_TREE_MAX_DEPTH }) {
-  await ensureDir(notesRoot)
   const rootAbs = fileOperations._resolvePath(notesRoot)
   const startRel = normalizeDirPath(dirPath)
   const startAbs = startRel ? path.join(rootAbs, ...startRel.split('/')) : rootAbs
@@ -348,6 +346,9 @@ async function readNoteWithImages({ notesRoot, notePath, includeImages = true })
   const relInRoot = normalizeNotePathInRoot(notePath)
   const noteRel = toPosixPath(path.posix.join(notesRoot, relInRoot))
   const content = await fileOperations.readFile(noteRel, 'utf-8')
+  if (contentIndex._internal?.isEncryptedNoteContent?.(content)) {
+    throw new Error('该笔记已加密，无法通过 MCP 直接读取。请先在笔记页解锁后再试。')
+  }
 
   const result = {
     path: relInRoot,
@@ -416,7 +417,7 @@ async function readNoteWithImages({ notesRoot, notePath, includeImages = true })
       path: null,
       ok: false,
       skipped: true,
-      error: `图片数量过多：已截断为前 ${maxImages} 张`
+      error: 'Too many images; truncated to ' + maxImages
     })
   }
 
@@ -427,70 +428,80 @@ async function createNote({ notesRoot, notePath, dirPath, noteName, content }) {
   await ensureDir(notesRoot)
   const noteRel = buildNoteRelPathFromArgs({ notesRoot, notePath, dirPath, noteName })
   const exists = await fileOperations.exists(noteRel)
-  if (exists) throw new Error(`笔记已存在：${noteRel}`)
+  if (exists) throw new Error('Note already exists: ' + noteRel)
   await fileOperations.writeFile(noteRel, String(content ?? ''))
-  return { ok: true, path: noteRel.replace(new RegExp(`^${notesRoot}/?`, 'i'), '') }
+  const createdPath = noteRel.startsWith(notesRoot + '/') ? noteRel.slice(notesRoot.length + 1) : noteRel
+  return {
+    ok: true,
+    path: createdPath
+  }
 }
 
 async function writeNote({ notesRoot, notePath, dirPath, noteName, content, mode }) {
   await ensureDir(notesRoot)
   const noteRel = buildNoteRelPathFromArgs({ notesRoot, notePath, dirPath, noteName })
   const m = String(mode || 'append').trim().toLowerCase()
-  const finalMode = (m === 'overwrite' || m === '覆盖') ? 'overwrite' : 'append'
+  const finalMode = (m === 'overwrite' || m === '瑕嗙洊') ? 'overwrite' : 'append'
 
   const exists = await fileOperations.exists(noteRel)
   const text = String(content ?? '')
 
   if (finalMode === 'overwrite' || !exists) {
     await fileOperations.writeFile(noteRel, text)
+    const createdPath = noteRel.startsWith(notesRoot + '/') ? noteRel.slice(notesRoot.length + 1) : noteRel
     return {
       ok: true,
-      path: noteRel.replace(new RegExp(`^${notesRoot}/?`, 'i'), ''),
+      path: createdPath,
       mode: exists ? 'overwrite' : 'create'
     }
   }
 
   const abs = fileOperations._resolvePath(noteRel)
   await fs.mkdir(path.dirname(abs), { recursive: true })
-  const payload = text && !text.startsWith('\n') ? `\n${text}` : text
+  const payload = text && !text.startsWith('\n') ? '\n' + text : text
   await fs.appendFile(abs, payload, 'utf-8')
-  return { ok: true, path: noteRel.replace(new RegExp(`^${notesRoot}/?`, 'i'), ''), mode: 'append' }
+  const appendedPath = noteRel.startsWith(notesRoot + '/') ? noteRel.slice(notesRoot.length + 1) : noteRel
+  return {
+    ok: true,
+    path: appendedPath,
+    mode: 'append'
+  }
 }
 
 const TOOLS = [
   {
     name: 'notes_list_directory',
-    description: '列出指定目录下的直接子目录和笔记，不递归，适合大目录场景下快速定位。',
+    description: 'List direct child directories and notes under a directory without recursion.',
     inputSchema: {
       type: 'object',
       properties: {
-        dirPath: { type: 'string', description: '相对 note 根目录的目录路径；为空表示根目录。' },
-        limit: { type: 'integer', description: `最多返回多少项，默认 ${DEFAULT_LIST_LIMIT}。` }
+        dirPath: { type: 'string', description: 'Directory path relative to the note root.' },
+        limit: { type: 'integer', description: 'Maximum items to return, default ' + DEFAULT_LIST_LIMIT }
       },
       additionalProperties: false
     }
   },
   {
     name: 'notes_list_recent',
-    description: '按最近修改时间列出笔记，适合先定位最近活跃内容，再按 path 读取具体笔记。',
+    description: 'List recently modified notes from the content index. Encrypted notes are excluded.',
     inputSchema: {
       type: 'object',
       properties: {
-        dirPath: { type: 'string', description: '相对 note 根目录的目录路径；为空表示整个 note 根目录。' },
-        limit: { type: 'integer', description: `最多返回多少项，默认 ${DEFAULT_RECENT_LIMIT}。` }
+        dirPath: { type: 'string', description: 'Directory path relative to the note root.' },
+        limit: { type: 'integer', description: 'Maximum items to return, default ' + DEFAULT_RECENT_LIMIT }
       },
       additionalProperties: false
     }
   },
   {
     name: 'notes_search',
-    description: '按笔记名或相对路径搜索笔记，适合在大笔记库中快速定位目标。',
+    description: 'Search notes by name, title, preview, or path. Keyword mode is default; hybrid mode uses embeddings when configured. The result includes searchMode and semanticUsed so callers can tell whether the run was keyword-only or hybrid. Encrypted notes are excluded from the index.',
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: '搜索关键词，可输入文件名片段、目录名片段或相对路径片段。' },
-        dirPath: { type: 'string', description: '相对 note 根目录的目录路径；为空表示整个 note 根目录。' },
-        limit: { type: 'integer', description: `最多返回多少项，默认 ${DEFAULT_RECENT_LIMIT}。` }
+        query: { type: 'string', description: 'Search keywords or path fragments.' },
+        dirPath: { type: 'string', description: 'Directory path relative to the note root.' },
+        limit: { type: 'integer', description: 'Maximum items to return, default ' + DEFAULT_RECENT_LIMIT }
       },
       required: ['query'],
       additionalProperties: false
@@ -498,24 +509,24 @@ const TOOLS = [
   },
   {
     name: 'notes_list_tree',
-    description: '列出笔记树结构。默认只展开较浅层级；确实需要全局概览时再提高 maxDepth。',
+    description: 'List the note tree structure with shallow default depth.',
     inputSchema: {
       type: 'object',
       properties: {
-        dirPath: { type: 'string', description: '只列出指定子目录（相对 note 根目录）。' },
-        maxDepth: { type: 'integer', description: `递归深度，默认 ${DEFAULT_TREE_MAX_DEPTH}，最大 ${MAX_TREE_MAX_DEPTH}。` }
+        dirPath: { type: 'string', description: 'Subdirectory relative to the note root.' },
+        maxDepth: { type: 'integer', description: 'Recursive depth, default ' + DEFAULT_TREE_MAX_DEPTH + ', max ' + MAX_TREE_MAX_DEPTH }
       },
       additionalProperties: false
     }
   },
   {
     name: 'notes_read',
-    description: '读取指定路径的笔记（相对 note 根目录），并尽量一并读取它引用的本地图片。',
+    description: 'Read a note by path and, when possible, include referenced local images. Encrypted notes are rejected.',
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: '相对 note 根目录的路径，例如 project/todo.md（可省略 .md）。' },
-        includeImages: { type: 'boolean', description: '是否读取图片，默认 true。' }
+        path: { type: 'string', description: 'Path relative to the note root, e.g. project/todo.md.' },
+        includeImages: { type: 'boolean', description: 'Whether to read images, default true.' }
       },
       required: ['path'],
       additionalProperties: false
@@ -523,14 +534,14 @@ const TOOLS = [
   },
   {
     name: 'notes_create',
-    description: '新增笔记并写入内容（若已存在则报错）。支持传 path 或 dirPath+noteName。',
+    description: 'Create a new note with content. Supports path or dirPath + noteName.',
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: '相对 note 根目录的路径，例如 project/todo.md（可省略 .md）。传 path 时会忽略 dirPath/noteName。' },
-        dirPath: { type: 'string', description: '相对 note 根目录的目录路径，例如 project（可为空）。' },
-        noteName: { type: 'string', description: '笔记名，例如 todo 或 todo.md。' },
-        content: { type: 'string', description: '要写入的内容。' }
+        path: { type: 'string', description: 'Path relative to the note root, e.g. project/todo.md.' },
+        dirPath: { type: 'string', description: 'Directory path relative to the note root.' },
+        noteName: { type: 'string', description: 'Note name, e.g. todo or todo.md.' },
+        content: { type: 'string', description: 'Content to write.' }
       },
       required: ['content'],
       additionalProperties: false
@@ -538,15 +549,15 @@ const TOOLS = [
   },
   {
     name: 'notes_write',
-    description: '写入笔记内容，默认追加，也支持覆盖。支持传 path 或 dirPath+noteName。',
+    description: 'Write note content. Append by default; overwrite is also supported.',
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: '相对 note 根目录的路径，例如 project/todo.md（可省略 .md）。传 path 时会忽略 dirPath/noteName。' },
-        dirPath: { type: 'string', description: '相对 note 根目录的目录路径，例如 project（可为空）。' },
-        noteName: { type: 'string', description: '笔记名，例如 todo 或 todo.md。' },
-        content: { type: 'string', description: '要写入的内容。' },
-        mode: { type: 'string', enum: ['append', 'overwrite'], description: '写入模式：append（默认）或 overwrite（覆盖）。' }
+        path: { type: 'string', description: 'Path relative to the note root, e.g. project/todo.md.' },
+        dirPath: { type: 'string', description: 'Directory path relative to the note root.' },
+        noteName: { type: 'string', description: 'Note name, e.g. todo or todo.md.' },
+        content: { type: 'string', description: 'Content to write.' },
+        mode: { type: 'string', enum: ['append', 'overwrite'], description: 'Write mode: append (default) or overwrite.' }
       },
       required: ['content'],
       additionalProperties: false
@@ -610,10 +621,10 @@ class BuiltinNotesMcpClient {
     }
 
     if (name === 'notes_create') {
-      if (typeof params.content !== 'string') throw new Error('content 必填')
+      if (typeof params.content !== 'string') throw new Error('content 蹇呭～')
       const hasPath = typeof params.path === 'string' && params.path.trim()
       const hasName = typeof params.noteName === 'string' && params.noteName.trim()
-      if (!hasPath && !hasName) throw new Error('notes_create 需要 path 或 noteName')
+      if (!hasPath && !hasName) throw new Error('notes_create 闇€瑕?path 鎴?noteName')
       return await createNote({
         notesRoot: this.notesRoot,
         notePath: params.path,
@@ -624,10 +635,10 @@ class BuiltinNotesMcpClient {
     }
 
     if (name === 'notes_write') {
-      if (typeof params.content !== 'string') throw new Error('content 必填')
+      if (typeof params.content !== 'string') throw new Error('content 蹇呭～')
       const hasPath = typeof params.path === 'string' && params.path.trim()
       const hasName = typeof params.noteName === 'string' && params.noteName.trim()
-      if (!hasPath && !hasName) throw new Error('notes_write 需要 path 或 noteName')
+      if (!hasPath && !hasName) throw new Error('notes_write 闇€瑕?path 鎴?noteName')
       return await writeNote({
         notesRoot: this.notesRoot,
         notePath: params.path,
@@ -638,7 +649,7 @@ class BuiltinNotesMcpClient {
       })
     }
 
-    throw new Error(`Unknown tool: ${name}`)
+    throw new Error('Unknown tool: ' + name)
   }
 
   async listPrompts() {
@@ -655,3 +666,4 @@ class BuiltinNotesMcpClient {
 module.exports = function createBuiltinNotesMcpClient(serverConfig) {
   return new BuiltinNotesMcpClient(serverConfig)
 }
+

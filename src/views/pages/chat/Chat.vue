@@ -1112,6 +1112,7 @@ import {
   buildUtoolsAiMessages,
   canUseUtoolsAi,
   getUtoolsAiModelsState,
+  extractUtoolsAiReasoningText,
   isUtoolsBuiltinProvider,
   openUtoolsAiModelsSetting,
   refreshUtoolsAiModels,
@@ -10280,7 +10281,7 @@ async function runUtoolsAiChatRound({ model, setCurrentAssistantDisplay, setAbor
           typewriterEnqueue(assistantDisplay, contentState.delta)
         }
 
-        const reasoningState = mergeUtoolsAiStreamText(streamedReasoning, chunk?.reasoning_content)
+        const reasoningState = mergeUtoolsAiStreamText(streamedReasoning, extractUtoolsAiReasoningText(chunk))
         streamedReasoning = reasoningState.total
         if (reasoningState.delta) {
           ensureStreamingAssistantDisplay()
@@ -10367,7 +10368,7 @@ async function runUtoolsAiChatRound({ model, setCurrentAssistantDisplay, setAbor
       typewriterEnqueue(assistantDisplay, finalContentState.delta)
     }
 
-    const finalReasoningState = mergeUtoolsAiStreamText(streamedReasoning, result?.reasoning_content)
+    const finalReasoningState = mergeUtoolsAiStreamText(streamedReasoning, extractUtoolsAiReasoningText(result))
     streamedReasoning = finalReasoningState.total
     if (finalReasoningState.delta) {
       ensureStreamingAssistantDisplay()
@@ -10379,7 +10380,7 @@ async function runUtoolsAiChatRound({ model, setCurrentAssistantDisplay, setAbor
     targetSession.apiMessages.push({
       role: 'assistant',
       content: String(streamedContent || ''),
-      ...(streamedReasoning ? { reasoning_content: streamedReasoning } : {})
+      reasoning_content: String(streamedReasoning || '')
     })
     const assistantApiIndex = targetSession.apiMessages.length - 1
     const visibleSegments = assistantSegments.filter((segment) => targetSession.messages.some((m) => m.id === segment.id))
@@ -13655,6 +13656,8 @@ function hasToolStateMessages(messages) {
 function shouldRetryToolContinuationAsPlainText(errorText) {
   const lower = String(errorText || '').toLowerCase()
   if (!lower) return false
+  if (lower.includes('reasoning_content') && lower.includes('thinking mode')) return true
+  if (lower.includes('reasoning_content') && lower.includes('passed back to the api')) return true
   if (lower.includes('request targeted an endpoint') && lower.includes('temporarily unavailable')) return true
   if (lower.includes('endpoint') && lower.includes('closed') && lower.includes('temporarily unavailable')) return true
   if (lower.includes('unsupported') && lower.includes('tool')) return true

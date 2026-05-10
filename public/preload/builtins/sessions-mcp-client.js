@@ -123,7 +123,6 @@ async function readDirEntriesSafe(absDir) {
 }
 
 async function listSessionDirectory({ sessionsRoot, dirPath = '', limit = DEFAULT_LIST_LIMIT }) {
-  await ensureDir(sessionsRoot)
   const rootAbs = fileOperations._resolvePath(sessionsRoot)
   const relDir = normalizeDirPath(dirPath)
   const absDir = relDir ? path.join(rootAbs, ...relDir.split('/')) : rootAbs
@@ -186,7 +185,6 @@ async function searchSessions({ sessionsRoot, dirPath = '', query = '', limit = 
 }
 
 async function listSessionTree({ sessionsRoot, dirPath = '', maxDepth = DEFAULT_TREE_MAX_DEPTH }) {
-  await ensureDir(sessionsRoot)
   const rootAbs = fileOperations._resolvePath(sessionsRoot)
   const startRel = normalizeDirPath(dirPath)
   const startAbs = startRel ? path.join(rootAbs, ...startRel.split('/')) : rootAbs
@@ -245,7 +243,6 @@ async function listSessionTree({ sessionsRoot, dirPath = '', maxDepth = DEFAULT_
 }
 
 async function readOneSession({ sessionsRoot, sessionPath, parse = true }) {
-  await ensureDir(sessionsRoot)
   const relInRoot = normalizeSessionPathInRoot(sessionPath)
   const sessionRel = toPosixPath(path.posix.join(sessionsRoot, relInRoot))
 
@@ -303,7 +300,7 @@ const TOOLS = [
   },
   {
     name: 'sessions_search',
-    description: '按会话文件名或相对路径搜索会话，适合在大量历史记录中快速定位目标。',
+    description: '按会话文件名、标题、摘要或相对路径搜索会话，默认是关键词检索；如果全局检索配置启用了 embedding 的混合模式，排序会自动结合关键词和语义结果。结果包含 searchMode 和 semanticUsed，便于判断本次检索是否实际用了向量侧。',
     inputSchema: {
       type: 'object',
       properties: {

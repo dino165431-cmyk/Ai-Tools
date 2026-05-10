@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "kind": "note",
+  "root": "note",
+  "systemDir": ".ai-tools-settings",
+  "builtAt": "2026-05-10T03:37:53.728Z",
+  "updatedAt": "2026-05-10T03:37:53.728Z",
+  "dirty": false,
+  "reason": "missing",
+  "entries": [],
+  "searchConfig": {
+    "searchMode": "hybrid",
+    "embedding": {
+      "providerId": "test-directory-embedding-provider",
+      "model": "test-embed"
+    }
+  },
+  "searchConfigSignature": "hybrid|test-directory-embedding-provider|test-embed"
+}

@@ -537,6 +537,7 @@ class FileOperations {
 
     async createDirectory(relativePath) {
         const fullPath = this._resolvePath(relativePath)
+        this._markInternalMutation(relativePath)
         await fs.mkdir(fullPath, { recursive: true })
         return true
     }

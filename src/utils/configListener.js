@@ -1,5 +1,6 @@
 import { computed, ref } from 'vue';
 import { initUtoolsAiProvider, mergeUtoolsBuiltinProvider } from '@/utils/utoolsAiProvider';
+import { DEFAULT_CONTENT_SEARCH_CONFIG, normalizeContentSearchConfig } from '@/utils/contentSearchConfig';
 import { DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG } from '@/utils/chatContextWindow';
 import { DEFAULT_CHAT_MEMORY_CONFIG, normalizeChatMemoryConfig } from '@/utils/chatMemoryConfig';
 import { getDefaultNoteSecurityConfig } from '@/utils/noteEncryption';
@@ -53,6 +54,10 @@ function getDefaultChatConfig() {
     };
 }
 
+function getDefaultContentSearchConfig() {
+    return normalizeContentSearchConfig(DEFAULT_CONTENT_SEARCH_CONFIG);
+}
+
 function getDefaultWebSearchConfig() {
     return {
         proxyUrl: '',
@@ -67,6 +72,7 @@ function getDefaultWebSearchConfig() {
 const globalConfig = ref({
     theme: 'light',
     chatConfig: getDefaultChatConfig(),
+    contentSearchConfig: getDefaultContentSearchConfig(),
     noteConfig: getDefaultNoteConfig(),
     configSecurity: getDefaultConfigSecurity(),
     agents: {},
@@ -316,6 +322,14 @@ export function getChatConfig() {
 
 export function updateChatConfig(partial) {
     return requireGlobalConfigApi().updateChatConfig(partial);
+}
+
+export function getContentSearchConfig() {
+    return computed(() => globalConfig.value.contentSearchConfig || getDefaultContentSearchConfig());
+}
+
+export function updateContentSearchConfig(partial) {
+    return requireGlobalConfigApi().updateContentSearchConfig(partial);
 }
 
 export function getNoteConfig() {

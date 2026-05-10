@@ -226,6 +226,23 @@
       <n-card hoverable>
         <n-flex vertical :size="12">
           <n-flex justify="space-between" align="center" wrap :size="12">
+            <n-flex vertical :size="6" style="min-width: 280px;">
+              <n-text strong>笔记 / 会话检索</n-text>
+              <n-text depth="3">{{ contentSearchSummary }}</n-text>
+              <n-text depth="3" style="font-size: 12px;">
+                默认仅做关键词检索；配置向量模型并切到混合模式后，会对笔记和会话索引同时生成 embedding，并在搜索时结合关键词与语义分数。索引会在笔记和会话的增删改、移动以及配置切换后自动维护。加密笔记不会进入笔记索引，也不会出现在搜索和最近列表中。
+              </n-text>
+            </n-flex>
+            <n-flex align="center" :size="10" wrap>
+              <n-button @click="openContentSearchConfigModal">编辑检索配置</n-button>
+            </n-flex>
+          </n-flex>
+        </n-flex>
+      </n-card>
+
+      <n-card hoverable>
+        <n-flex vertical :size="12">
+          <n-flex justify="space-between" align="center" wrap :size="12">
             <n-flex vertical :size="4">
               <n-text strong>云同步配置</n-text>
               <n-text depth="3">{{ cloudConfigSummary }}</n-text>
@@ -444,6 +461,46 @@
         <n-flex justify="flex-end" :size="12">
           <n-button @click="closeMemoryConfigModal">取消</n-button>
           <n-button type="primary" :loading="memoryConfigModal.loading" @click="saveMemoryConfig">保存</n-button>
+        </n-flex>
+      </template>
+    </n-modal>
+
+    <n-modal v-model:show="contentSearchConfigModal.show" preset="card" title="编辑笔记 / 会话检索配置" style="width: 760px; max-width: 95%;">
+      <n-flex vertical :size="12">
+        <n-alert type="info" :show-icon="false">
+          默认是关键词检索。你可以先配置向量服务商和模型，再把检索模式切到“混合”，这样笔记和会话搜索都会同时利用关键词与语义相似度。加密笔记不会进入笔记索引，也不会被检索出来。
+        </n-alert>
+        <n-form label-placement="left" label-width="120px">
+          <n-form-item label="检索模式">
+            <n-select
+              v-model:value="contentSearchDraft.searchMode"
+              :options="contentSearchModeOptions"
+              :disabled="contentSearchSaving"
+              clearable
+            />
+          </n-form-item>
+          <n-form-item label="向量服务商">
+            <n-select
+              v-model:value="contentSearchDraft.embedding.providerId"
+              :options="contentSearchEmbeddingProviderOptions"
+              :disabled="contentSearchSaving"
+              clearable
+            />
+          </n-form-item>
+          <n-form-item label="向量模型">
+            <n-select
+              v-model:value="contentSearchDraft.embedding.model"
+              :options="contentSearchEmbeddingModelOptions"
+              :disabled="contentSearchSaving || !contentSearchDraft.embedding.providerId"
+              clearable
+            />
+          </n-form-item>
+        </n-form>
+      </n-flex>
+      <template #footer>
+        <n-flex justify="flex-end" :size="12">
+          <n-button @click="closeContentSearchConfigModal">取消</n-button>
+          <n-button type="primary" :loading="contentSearchConfigModal.loading" @click="saveContentSearchConfig">保存</n-button>
         </n-flex>
       </template>
     </n-modal>
@@ -697,6 +754,7 @@ import {
   getChatConfig,
   getConfigSecurity,
   getCloudConfig,
+  getContentSearchConfig,
   getDataStorageRoot,
   getNoteConfig,
   getProviders,
@@ -705,6 +763,7 @@ import {
   importGlobalConfigFromFile,
   resetDataStorageRoot,
   setDataStorageRoot,
+  updateContentSearchConfig,
   updateChatConfig,
   updateGlobalConfig,
   updateNoteConfig,
@@ -733,6 +792,7 @@ import {
   DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG,
   normalizeChatContextWindowConfig
 } from '@/utils/chatContextWindow'
+import { DEFAULT_CONTENT_SEARCH_CONFIG, normalizeContentSearchConfig } from '@/utils/contentSearchConfig'
 import { DEFAULT_CHAT_MEMORY_CONFIG, normalizeChatMemoryConfig } from '@/utils/chatMemoryConfig'
 import { manageMemoryStore, rebuildMemoryEmbeddings, resetMemoryStoreCache } from '@/utils/chatMemory'
 import { checkNotebookPythonLsp, detectNotebookPython, listNotebookPythonModules } from '@/utils/notebookRuntime'
@@ -763,6 +823,11 @@ const contextWindowHistoryFocusOptions = [
   { label: '优先最近', value: 'recent' },
   { label: '平衡', value: 'balanced' },
   { label: '优先附件', value: 'attachments' }
+]
+
+const contentSearchModeOptions = [
+  { label: '关键词检索', value: 'keyword' },
+  { label: '混合检索', value: 'hybrid' }
 ]
 
 const webSearchApiProviderOptions = [
@@ -811,6 +876,10 @@ const memoryConfigModal = reactive({
   show: false,
   loading: false
 })
+const contentSearchConfigModal = reactive({
+  show: false,
+  loading: false
+})
 const cloudConfigModal = reactive({
   show: false,
   loading: false,
@@ -846,6 +915,7 @@ const webSearchConfigSaving = ref(false)
 const memorySaving = ref(false)
 const memoryRebuilding = ref(false)
 const memoryOpening = ref(false)
+const contentSearchSaving = ref(false)
 
 const cloudActionLoading = reactive({
   backup: false,
@@ -899,6 +969,7 @@ const actionPasswordModal = reactive({
 })
 const actionPayload = ref(null)
 const memoryDraft = reactive(normalizeChatMemoryConfig(DEFAULT_CHAT_MEMORY_CONFIG))
+const contentSearchDraft = reactive(normalizeContentSearchConfig(DEFAULT_CONTENT_SEARCH_CONFIG))
 
 const noteSecurity = computed(() => normalizeNoteSecurityConfig(noteConfig.value?.noteSecurity))
 const configSecurity = computed(() => normalizeConfigSecurityState(rawConfigSecurity.value))
@@ -1054,6 +1125,29 @@ const memoryConfigSummary = computed(() => {
   ].join(' / ')
 })
 
+const contentSearchConfig = getContentSearchConfig()
+
+const contentSearchEmbeddingProviderOptions = computed(() => {
+  return (providers.value || [])
+    .filter((provider) => !provider?.builtin && String(provider?.providerType || '').trim() !== 'utools-ai')
+    .map((provider) => ({
+      label: provider?.name || provider?._id || '未命名服务商',
+      value: String(provider?._id || '')
+    }))
+})
+
+const contentSearchEmbeddingModelOptions = computed(() => buildProviderModelOptions(contentSearchDraft.embedding.providerId))
+
+const contentSearchSummary = computed(() => {
+  const search = normalizeContentSearchConfig(contentSearchConfig.value)
+  const provider = findProviderById(search.embedding.providerId)
+  const embeddingText = search.embedding.model
+    ? `向量：${provider?.name || search.embedding.providerId} / ${search.embedding.model}`
+    : '向量模型未配置，仍保持关键词检索'
+  const modeText = search.searchMode === 'hybrid' ? '混合模式' : '关键词模式'
+  return [modeText, embeddingText].join(' / ')
+})
+
 const cloudConfigSummary = computed(() => {
   const cfg = cloudConfig.value || {}
   const endpoint = String(cfg.endpoint || '').trim()
@@ -1108,10 +1202,24 @@ function syncMemoryDraft(raw = chatConfig.value?.memory) {
   memoryDraft.embedding = { ...normalized.embedding }
 }
 
+function syncContentSearchDraft(raw = contentSearchConfig.value) {
+  const normalized = normalizeContentSearchConfig(raw)
+  Object.assign(contentSearchDraft, normalized)
+  contentSearchDraft.embedding = { ...normalized.embedding }
+}
+
 watch(
   () => chatConfig.value?.memory,
   (next) => {
     syncMemoryDraft(next)
+  },
+  { immediate: true, deep: true }
+)
+
+watch(
+  () => contentSearchConfig.value,
+  (next) => {
+    syncContentSearchDraft(next)
   },
   { immediate: true, deep: true }
 )
@@ -1132,6 +1240,16 @@ watch(
     const models = buildProviderModelOptions(next)
     if (!models.some((item) => item.value === memoryDraft.embedding.model)) {
       memoryDraft.embedding.model = models[0]?.value || ''
+    }
+  }
+)
+
+watch(
+  () => contentSearchDraft.embedding.providerId,
+  (next) => {
+    const models = buildProviderModelOptions(next)
+    if (!models.some((item) => item.value === contentSearchDraft.embedding.model)) {
+      contentSearchDraft.embedding.model = models[0]?.value || ''
     }
   }
 )
@@ -1803,6 +1921,38 @@ async function saveMemoryConfig() {
   } finally {
     memorySaving.value = false
     memoryConfigModal.loading = false
+  }
+}
+
+function openContentSearchConfigModal() {
+  syncContentSearchDraft(contentSearchConfig.value)
+  contentSearchConfigModal.show = true
+  contentSearchConfigModal.loading = false
+}
+
+function closeContentSearchConfigModal() {
+  contentSearchConfigModal.show = false
+  contentSearchConfigModal.loading = false
+}
+
+async function saveContentSearchConfig() {
+  contentSearchSaving.value = true
+  contentSearchConfigModal.loading = true
+  try {
+    const normalized = normalizeContentSearchConfig({
+      ...contentSearchDraft,
+      embedding: { ...contentSearchDraft.embedding }
+    })
+    await updateContentSearchConfig(normalized)
+    syncContentSearchDraft(normalized)
+    closeContentSearchConfigModal()
+    message.success('笔记 / 会话检索配置已保存')
+  } catch (err) {
+    syncContentSearchDraft(contentSearchConfig.value)
+    message.error(err?.message || String(err))
+  } finally {
+    contentSearchSaving.value = false
+    contentSearchConfigModal.loading = false
   }
 }
 
