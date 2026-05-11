@@ -16,6 +16,51 @@ function nowMs() {
   return Date.now()
 }
 
+export function buildTimedTaskRunPatch(task, startedAt, error = null) {
+  const patch = {
+    lastRunAt: startedAt instanceof Date ? startedAt.toISOString() : new Date().toISOString()
+  }
+  const triggerType = String(task?.trigger?.type || '').trim()
+
+  if (triggerType === 'once') {
+    patch.enabled = false
+  }
+
+  if (error) {
+    patch.lastError = error?.message || String(error)
+    patch.lastErrorAt = new Date().toISOString()
+    return patch
+  }
+
+  return patch
+}
+
+export async function executeTimedTaskRun(taskId, task, startedAt, options = {}) {
+  const runOnce = typeof options.runOnce === 'function' ? options.runOnce : runTimedTaskOnce
+  const updateTask = typeof options.updateTask === 'function' ? options.updateTask : updateTimedTask
+
+  let runError = null
+  try {
+    await runOnce(task, { startedAt })
+  } catch (err) {
+    runError = err
+  }
+
+  const patch = buildTimedTaskRunPatch(task, startedAt, runError)
+  let updateError = null
+  try {
+    await updateTask(taskId, patch)
+  } catch (err) {
+    updateError = err
+  }
+
+  return {
+    patch,
+    runError,
+    updateError
+  }
+}
+
 function clearSchedule(taskId) {
   const existing = scheduleMap.get(taskId)
   if (!existing) return
@@ -199,23 +244,13 @@ async function runTask(taskId) {
   const startedAt = new Date()
 
   try {
-    await runTimedTaskOnce(task, { startedAt })
-
-    const nextPatch = { lastRunAt: startedAt.toISOString() }
-    if (String(task?.trigger?.type || '').trim() === 'once') {
-      nextPatch.enabled = false
+    const { runError, updateError } = await executeTimedTaskRun(taskId, task, startedAt)
+    if (runError) {
+      console.warn('[timedTask] run failed', taskId, runError)
     }
-    await updateTimedTask(taskId, nextPatch)
-  } catch (err) {
-    try {
-      await updateTimedTask(taskId, {
-        lastError: err?.message || String(err),
-        lastErrorAt: new Date().toISOString()
-      })
-    } catch {
-      // ignore
+    if (updateError) {
+      console.warn('[timedTask] state update failed', taskId, updateError)
     }
-    console.warn('[timedTask] run failed', taskId, err)
   } finally {
     runningTaskIds.delete(taskId)
     scheduleOne(taskId)
