@@ -186,7 +186,7 @@ export function buildUtoolsAiMessages({ systemContent, apiMessages }) {
   ;(Array.isArray(apiMessages) ? apiMessages : []).forEach((message) => {
     if (!message || typeof message !== 'object') return
     const role = normalizeString(message.role)
-    if (role !== 'system' && role !== 'user' && role !== 'assistant') return
+    if (role !== 'system' && role !== 'user' && role !== 'assistant' && role !== 'tool' && role !== 'tool_call') return
 
     const content = coercePlainTextContent(message.content)
     const next = {
@@ -201,6 +201,31 @@ export function buildUtoolsAiMessages({ systemContent, apiMessages }) {
       if (hasReasoningField) {
         next.reasoning_content = extractUtoolsAiReasoningText(message)
       }
+      if (Array.isArray(message.tool_calls) && message.tool_calls.length) {
+        next.tool_calls = message.tool_calls
+          .map((toolCall, index) => {
+            if (!toolCall || typeof toolCall !== 'object') return null
+            const fn = toolCall.function && typeof toolCall.function === 'object' ? toolCall.function : {}
+            const name = normalizeString(fn.name)
+            if (!name) return null
+            return {
+              id: normalizeString(toolCall.id) || `call_${index}`,
+              type: normalizeString(toolCall.type) || 'function',
+              function: {
+                name,
+                arguments: typeof fn.arguments === 'string' ? fn.arguments : JSON.stringify(fn.arguments ?? {})
+              }
+            }
+          })
+          .filter(Boolean)
+      }
+    }
+
+    if (role === 'tool' || role === 'tool_call') {
+      const callId = normalizeString(message.tool_call_id || message.call_id || '')
+      if (callId) next.tool_call_id = callId
+      const toolName = normalizeString(message.name || message.toolName || '')
+      if (toolName) next.name = toolName
     }
 
     messages.push(next)
@@ -229,7 +254,6 @@ export function registerUtoolsAiToolFunctions({ tools, invokeTool }) {
 
     const hadOwn = Object.prototype.hasOwnProperty.call(target, name)
     const previous = target[name]
-
     target[name] = async (args = {}) => invokeTool(name, args)
 
     restorers.push(() => {

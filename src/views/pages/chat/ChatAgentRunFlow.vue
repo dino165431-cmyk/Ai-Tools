@@ -10,11 +10,6 @@
       </span>
     </div>
 
-    <div v-if="taskText" class="agent-run-flow__section">
-      <div class="agent-run-flow__section-title">编排任务</div>
-      <pre class="agent-run-flow__task">{{ taskText }}</pre>
-    </div>
-
     <div v-if="timelineItems.length" class="agent-run-flow__section">
       <div class="agent-run-flow__section-title">执行过程</div>
       <div class="agent-run-flow__timeline">
@@ -43,6 +38,28 @@
               />
             </button>
             <div v-if="step.metaText" class="agent-run-step__meta">{{ step.metaText }}</div>
+            <div v-if="isStepExpanded(step) && Array.isArray(step.children) && step.children.length" class="agent-run-step__children">
+              <div
+                v-for="child in step.children"
+                :key="child.id"
+                class="agent-run-step__child"
+              >
+                <div class="agent-run-step__child-marker">
+                  <n-icon :component="agentRunStepIcon(child)" size="12" />
+                </div>
+                <div class="agent-run-step__child-body">
+                  <div class="agent-run-step__child-header">
+                    <span class="agent-run-step__child-title">{{ child.title }}</span>
+                    <span v-if="child.timeLabel" class="agent-run-step__child-time">{{ child.timeLabel }}</span>
+                    <span v-if="stepSummary(child)" class="agent-run-step__child-summary">{{ stepSummary(child) }}</span>
+                    <span class="agent-run-step__child-status" :class="`is-${child.status}`">
+                      {{ agentRunStepStatusLabel(child) }}
+                    </span>
+                  </div>
+                  <div v-if="child.metaText" class="agent-run-step__child-meta">{{ child.metaText }}</div>
+                </div>
+              </div>
+            </div>
             <div v-if="isStepExpanded(step) && step.reasoningText" class="agent-run-step__section">
               <div class="agent-run-step__section-title">推理过程</div>
               <pre class="agent-run-step__thinking">{{ step.reasoningText }}</pre>
@@ -96,6 +113,7 @@ import {
   CloseOutline,
   HardwareChipOutline,
   PersonCircleOutline,
+  PauseCircleOutline,
   RefreshOutline,
   ShieldOutline,
   SparklesOutline,
@@ -106,8 +124,8 @@ import {
   agentRunStepSummary,
   buildAgentRunTimelineItems,
   getAgentRunFinalContent,
+  getAgentRunResultPayload,
   getAgentRunOverviewChips,
-  getAgentRunTaskText,
   isAgentRunToolMessage,
   isAgentRunStepExpanded,
   toggleAgentRunStepExpanded
@@ -131,15 +149,15 @@ const props = defineProps({
 const emit = defineEmits(['step-expand'])
 
 const overviewChips = computed(() => getAgentRunOverviewChips(props.msg))
-const taskText = computed(() => getAgentRunTaskText(props.msg))
 const finalContent = computed(() => getAgentRunFinalContent(props.msg))
 const timelineItems = computed(() => buildAgentRunTimelineItems(props.msg))
+const payloadStatus = computed(() => String(getAgentRunResultPayload(props.msg)?.status || '').trim())
 const visible = computed(() => {
   if (!isAgentRunToolMessage(props.msg)) return false
   return (
     timelineItems.value.length > 0 ||
-    !!taskText.value ||
-    !!finalContent.value
+    !!finalContent.value ||
+    payloadStatus.value === 'paused'
   )
 })
 
@@ -147,12 +165,19 @@ function agentRunStepIcon(step) {
   const kind = String(step?.kind || '').trim()
   const status = String(step?.status || '').trim()
   if (kind === 'task') return PersonCircleOutline
-  if (kind === 'assistant') return status === 'running' ? ChatbubbleEllipsesOutline : SparklesOutline
+  if (kind === 'assistant') {
+    if (status === 'running') return ChatbubbleEllipsesOutline
+    if (status === 'paused') return PauseCircleOutline
+    if (status === 'stopped') return CloseOutline
+    return SparklesOutline
+  }
   if (kind === 'tool') {
     if (status === 'pending') return ShieldOutline
     if (status === 'running') return RefreshOutline
+    if (status === 'paused') return PauseCircleOutline
     if (status === 'error') return CloseOutline
     if (status === 'rejected') return ShieldOutline
+    if (status === 'stopped') return CloseOutline
     return HardwareChipOutline
   }
   return SpeedometerOutline
@@ -223,7 +248,6 @@ function stepSummary(step) {
   margin-bottom: 6px;
 }
 
-.agent-run-flow__task,
 .agent-run-step__thinking,
 .agent-run-step__content,
 .agent-run-step__code,
@@ -239,7 +263,6 @@ function stepSummary(step) {
   border: 1px solid rgba(69, 105, 99, 0.14);
 }
 
-.agent-run-flow.is-dark .agent-run-flow__task,
 .agent-run-flow.is-dark .agent-run-step__thinking,
 .agent-run-flow.is-dark .agent-run-step__content,
 .agent-run-flow.is-dark .agent-run-step__code,
@@ -284,7 +307,8 @@ function stepSummary(step) {
 }
 
 .agent-run-step__marker.is-pending,
-.agent-run-step__marker.is-rejected {
+.agent-run-step__marker.is-rejected,
+.agent-run-step__marker.is-stopped {
   color: #8a651a;
   background: rgba(206, 161, 51, 0.14);
   border-color: rgba(206, 161, 51, 0.2);
@@ -296,10 +320,22 @@ function stepSummary(step) {
   border-color: rgba(76, 123, 214, 0.18);
 }
 
+.agent-run-step__marker.is-paused {
+  color: #a86a1a;
+  background: rgba(224, 168, 63, 0.14);
+  border-color: rgba(224, 168, 63, 0.2);
+}
+
 .agent-run-step__marker.is-error {
   color: #aa4045;
   background: rgba(209, 76, 83, 0.12);
   border-color: rgba(209, 76, 83, 0.18);
+}
+
+.agent-run-step__marker.is-stopped {
+  color: #a86a1a;
+  background: rgba(224, 168, 63, 0.14);
+  border-color: rgba(224, 168, 63, 0.2);
 }
 
 .agent-run-flow.is-dark .agent-run-step__marker {
@@ -314,9 +350,19 @@ function stepSummary(step) {
   color: #ffd78c;
 }
 
+.agent-run-flow.is-dark .agent-run-step__marker.is-stopped {
+  background: rgba(140, 111, 38, 0.34);
+  color: #ffd78c;
+}
+
 .agent-run-flow.is-dark .agent-run-step__marker.is-running {
   background: rgba(51, 78, 129, 0.4);
   color: #9abfff;
+}
+
+.agent-run-flow.is-dark .agent-run-step__marker.is-paused {
+  background: rgba(140, 111, 38, 0.34);
+  color: #ffd78c;
 }
 
 .agent-run-flow.is-dark .agent-run-step__marker.is-error {
@@ -346,12 +392,20 @@ function stepSummary(step) {
   border-color: rgba(206, 161, 51, 0.28);
 }
 
+.agent-run-step__card.is-paused {
+  border-color: rgba(224, 168, 63, 0.28);
+}
+
 .agent-run-step__card.is-error {
   border-color: rgba(209, 76, 83, 0.3);
 }
 
 .agent-run-step__card.is-rejected {
   border-color: rgba(170, 115, 40, 0.24);
+}
+
+.agent-run-step__card.is-stopped {
+  border-color: rgba(224, 168, 63, 0.28);
 }
 
 .agent-run-flow.is-dark .agent-run-step__card {
@@ -368,9 +422,17 @@ function stepSummary(step) {
   border-color: rgba(219, 177, 72, 0.26);
 }
 
+.agent-run-flow.is-dark .agent-run-step__card.is-paused {
+  border-color: rgba(219, 177, 72, 0.26);
+}
+
 .agent-run-flow.is-dark .agent-run-step__card.is-error,
 .agent-run-flow.is-dark .agent-run-step__card.is-rejected {
   border-color: rgba(208, 93, 99, 0.26);
+}
+
+.agent-run-flow.is-dark .agent-run-step__card.is-stopped {
+  border-color: rgba(219, 177, 72, 0.26);
 }
 
 .agent-run-step__header {
@@ -429,6 +491,11 @@ function stepSummary(step) {
   color: #3567b6;
 }
 
+.agent-run-step__status.is-paused {
+  background: rgba(224, 168, 63, 0.16);
+  color: #a86a1a;
+}
+
 .agent-run-step__status.is-pending,
 .agent-run-step__status.is-rejected {
   background: rgba(206, 161, 51, 0.16);
@@ -438,6 +505,11 @@ function stepSummary(step) {
 .agent-run-step__status.is-error {
   background: rgba(209, 76, 83, 0.14);
   color: #aa4045;
+}
+
+.agent-run-step__status.is-stopped {
+  background: rgba(224, 168, 63, 0.16);
+  color: #a86a1a;
 }
 
 .agent-run-step__status.is-success {
@@ -454,6 +526,131 @@ function stepSummary(step) {
 .agent-run-step__meta {
   margin-top: 6px;
   font-size: 12px;
+  color: #6f847f;
+}
+
+.agent-run-step__children {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  padding-left: 4px;
+}
+
+.agent-run-step__child {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.agent-run-step__child-marker {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(42, 148, 125, 0.1);
+  color: #1f7d67;
+  border: 1px solid rgba(45, 132, 109, 0.14);
+}
+
+.agent-run-flow.is-dark .agent-run-step__child-marker {
+  background: rgba(38, 80, 70, 0.32);
+  color: #8be5cb;
+  border-color: rgba(106, 201, 179, 0.18);
+}
+
+.agent-run-step__child-body {
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(69, 105, 99, 0.12);
+}
+
+.agent-run-flow.is-dark .agent-run-step__child-body {
+  background: rgba(18, 27, 30, 0.72);
+  border-color: rgba(116, 162, 176, 0.14);
+}
+
+.agent-run-step__child-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.agent-run-step__child-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #27423d;
+}
+
+.agent-run-flow.is-dark .agent-run-step__child-title {
+  color: #d7f5ee;
+}
+
+.agent-run-step__child-time,
+.agent-run-step__child-summary {
+  font-size: 12px;
+  color: #6f847f;
+}
+
+.agent-run-step__child-status {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(42, 148, 125, 0.1);
+  color: #1f7d67;
+}
+
+.agent-run-step__child-status.is-running {
+  background: rgba(76, 123, 214, 0.12);
+  color: #3567b6;
+}
+
+.agent-run-step__child-status.is-paused {
+  background: rgba(224, 168, 63, 0.12);
+  color: #a86a1a;
+}
+
+.agent-run-step__child-status.is-error,
+.agent-run-step__child-status.is-rejected {
+  background: rgba(209, 76, 83, 0.12);
+  color: #aa4045;
+}
+
+.agent-run-flow.is-dark .agent-run-step__child-status {
+  background: rgba(38, 80, 70, 0.34);
+  color: #8be5cb;
+}
+
+.agent-run-flow.is-dark .agent-run-step__child-status.is-running {
+  background: rgba(51, 78, 129, 0.34);
+  color: #9abfff;
+}
+
+.agent-run-flow.is-dark .agent-run-step__child-status.is-paused {
+  background: rgba(140, 111, 38, 0.34);
+  color: #ffd78c;
+}
+
+.agent-run-flow.is-dark .agent-run-step__child-status.is-error,
+.agent-run-flow.is-dark .agent-run-step__child-status.is-rejected {
+  background: rgba(117, 42, 53, 0.36);
+  color: #ffb0b6;
+}
+
+.agent-run-flow.is-dark .agent-run-step__child-status.is-stopped {
+  background: rgba(140, 111, 38, 0.34);
+  color: #ffd78c;
+}
+
+.agent-run-step__child-meta {
+  margin-top: 4px;
+  font-size: 11px;
   color: #6f847f;
 }
 

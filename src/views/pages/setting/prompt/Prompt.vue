@@ -104,6 +104,9 @@
             :options="promptTypeOptions"
             placeholder="请选择提示词类型"
           />
+          <n-text depth="3" style="font-size: 12px; margin-top: 6px;">
+            `system` 会作为系统提示词参与对话，也可以绑定到 Agent；`user` 主要用于填充输入框模板，不直接绑定到 Agent。
+          </n-text>
         </n-form-item>
 
         <n-form-item label="内容" path="content">

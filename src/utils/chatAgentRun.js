@@ -53,6 +53,15 @@ function findLatestOpenAgentRunStep(items, predicate) {
   return null
 }
 
+function findLatestAgentRunStep(items, predicate) {
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const item = items[i]
+    if (!item) continue
+    if (typeof predicate === 'function' && predicate(item)) return item
+  }
+  return null
+}
+
 function createAgentRunToolStep(entry, index) {
   const serverName = String(entry?.server_name || entry?.server_id || '').trim()
   const toolName = String(entry?.tool_name || '').trim()
@@ -74,6 +83,56 @@ function createAgentRunToolStep(entry, index) {
     approvalStatus: '',
     round: 0
   }
+}
+
+function createAgentRunMcpReadyStep(entry, index) {
+  const serverName = String(entry?.server_name || entry?.server_id || '').trim()
+  return {
+    id: `mcp-ready-${Number(entry?.idx) || index}`,
+    kind: 'system',
+    status: 'success',
+    completed: true,
+    timeLabel: formatAgentRunStepTime(entry?.at),
+    title: `MCP tools ready: ${serverName || String(entry?.title || 'MCP').trim()}`,
+    metaText: joinAgentRunMeta([
+      Number(entry?.tool_count) > 0 ? `工具 ${entry.tool_count}` : ''
+    ]),
+    contentText: '',
+    reasoningText: '',
+    argsText: '',
+    resultText: '',
+    errorText: ''
+  }
+}
+
+function finalizeOpenAgentRunSteps(items, status, errorText = '') {
+  const stoppedText = String(errorText || '').trim() || '已停止'
+  for (const item of Array.isArray(items) ? items : []) {
+    if (!item || item.completed) continue
+    if (item.kind !== 'assistant' && item.kind !== 'tool') continue
+    item.status = status
+    item.completed = true
+    if (stoppedText) item.errorText = stoppedText
+  }
+}
+
+function resolveAgentRunTraceText(trace, phases, fieldNames) {
+  const phaseSet = phases instanceof Set ? phases : new Set(Array.isArray(phases) ? phases : [])
+  const traceList = Array.isArray(trace) ? trace : []
+  const keys = Array.isArray(fieldNames) && fieldNames.length ? fieldNames : ['content_text', 'content_excerpt']
+
+  for (let i = traceList.length - 1; i >= 0; i -= 1) {
+    const entry = traceList[i]
+    if (!entry || typeof entry !== 'object') continue
+    const phase = String(entry?.phase || '').trim()
+    if (!phaseSet.has(phase)) continue
+    for (const key of keys) {
+      const text = String(entry?.[key] || '').trim()
+      if (text) return text
+    }
+  }
+
+  return ''
 }
 
 export function isAgentRunToolName(toolName) {
@@ -114,13 +173,29 @@ export function getAgentRunTaskText(msg) {
 }
 
 export function getAgentRunFinalContent(msg) {
+  const liveContent = String(msg?.toolLiveFinalContent || '').trim()
+  if (liveContent) return liveContent
   const payload = getAgentRunResultPayload(msg)
-  return String(payload?.final?.content || msg?.toolLiveFinalContent || payload?.summary || '').trim()
+  const explicitContent = String(payload?.final?.content || payload?.summary || payload?.content || '').trim()
+  if (explicitContent) return explicitContent
+  const status = String(payload?.status || '').trim()
+  if (status === 'running' || status === 'paused') return ''
+  return resolveAgentRunTraceText(getAgentRunTraceEntries(msg), new Set(['run.finished', 'model.response']))
 }
 
 export function getAgentRunFinalReasoning(msg) {
+  const liveReasoning = String(msg?.toolLiveFinalReasoning || '').trim()
+  if (liveReasoning) return liveReasoning
   const payload = getAgentRunResultPayload(msg)
-  return String(payload?.final?.reasoning || msg?.toolLiveFinalReasoning || '').trim()
+  const explicitReasoning = String(payload?.final?.reasoning || payload?.reasoning || '').trim()
+  if (explicitReasoning) return explicitReasoning
+  const status = String(payload?.status || '').trim()
+  if (status === 'running' || status === 'paused') return ''
+  return resolveAgentRunTraceText(
+    getAgentRunTraceEntries(msg),
+    new Set(['run.finished', 'model.response']),
+    ['reasoning_text', 'reasoning_excerpt']
+  )
 }
 
 export function buildAgentRunTimelineItems(msg) {
@@ -177,12 +252,25 @@ export function buildAgentRunTimelineItems(msg) {
           Number(entry?.skill_count) > 0 ? `技能 ${entry.skill_count}` : '',
           Number(entry?.mcp_count) > 0 ? `MCP ${entry.mcp_count}` : ''
         ]),
+        children: [],
         contentText: '',
         reasoningText: '',
         argsText: '',
         resultText: '',
         errorText: ''
       })
+      return
+    }
+
+    if (phase === 'mcp.tools_ready') {
+      const profileStep = findLatestAgentRunStep(items, (item) => item.kind === 'system' && item.title === '运行环境已就绪')
+      const childStep = createAgentRunMcpReadyStep(entry, index)
+      if (profileStep) {
+        if (!Array.isArray(profileStep.children)) profileStep.children = []
+        profileStep.children.push(childStep)
+      } else {
+        items.push(childStep)
+      }
       return
     }
 
@@ -233,16 +321,42 @@ export function buildAgentRunTimelineItems(msg) {
       next.status = 'success'
       next.completed = true
       next.timeLabel = timeLabel || next.timeLabel
-      next.title = Number(entry?.tool_call_count) > 0 ? `模型选择了 ${entry.tool_call_count} 次工具调用` : next.title
+      next.title = Number.isFinite(round) && round > 0 ? `模型响应 #${round}` : '模型响应'
+      next.toolCallCount = Number(entry?.tool_call_count) || 0
       next.metaText = joinAgentRunMeta([
         providerName,
         model,
-        Number(entry?.tool_call_count) > 0 ? `工具调用 ${entry.tool_call_count}` : ''
+        next.toolCallCount > 0 ? `工具调用 ${next.toolCallCount}` : ''
       ])
-      next.contentText = String(entry?.content_text || entry?.content_excerpt || '').trim()
+      const responseContent = String(entry?.content_text || entry?.content_excerpt || '').trim()
+      next.contentText = next.toolCallCount > 0
+        ? (responseContent || '本轮模型响应没有直接输出文本，而是发起了工具调用。')
+        : responseContent
       next.reasoningText = String(entry?.reasoning_text || entry?.reasoning_excerpt || '').trim()
       next.round = round
       if (!current) items.push(next)
+      return
+    }
+
+    if (phase === 'run.paused') {
+      items.push({
+        id: `run-paused-${Number(entry?.idx) || index}`,
+        kind: 'system',
+        status: 'paused',
+        completed: true,
+        timeLabel,
+        title: String(entry?.title || '执行已暂停').trim() || '执行已暂停',
+        metaText: joinAgentRunMeta([
+          providerName,
+          model,
+          Number.isFinite(durationMs) && durationMs > 0 ? `${durationMs} ms` : ''
+        ]),
+        contentText: String(entry?.content_text || entry?.content_excerpt || entry?.reason || entry?.reasoning_text || '').trim(),
+        reasoningText: String(entry?.reasoning_text || entry?.reasoning_excerpt || '').trim(),
+        argsText: '',
+        resultText: '',
+        errorText: String(entry?.error || '').trim()
+      })
       return
     }
 
@@ -274,6 +388,11 @@ export function buildAgentRunTimelineItems(msg) {
         current.status = 'running'
         current.approvalStatus = current.approvalStatus || 'approved'
         current.argsText = String(entry?.args_text || entry?.args_excerpt || current.argsText || '').trim()
+      } else if (phase === 'tool.paused') {
+        current.status = 'paused'
+        current.completed = false
+        current.reasoningText = String(entry?.reasoning_text || entry?.reasoning_excerpt || current.reasoningText || '').trim()
+        current.resultText = String(entry?.result_text || entry?.result_excerpt || current.resultText || '').trim()
       } else if (phase === 'tool.finished') {
         current.status = 'success'
         current.completed = true
@@ -295,7 +414,8 @@ export function buildAgentRunTimelineItems(msg) {
       current.metaText = joinAgentRunMeta([
         current.approvalStatus === 'pending' ? '等待批准' : '',
         current.approvalStatus === 'approved' ? '已批准' : '',
-        current.status === 'running' ? '运行中' : ''
+        current.status === 'running' ? '运行中' : '',
+        current.status === 'paused' ? '已暂停' : ''
       ])
 
       if (!items.includes(current)) items.push(current)
@@ -304,10 +424,14 @@ export function buildAgentRunTimelineItems(msg) {
 
     if (phase === 'run.finished') return
 
+    if (phase === 'run.aborted' || phase === 'run.failed') {
+      finalizeOpenAgentRunSteps(items, phase === 'run.aborted' ? 'stopped' : 'error', String(entry?.error || ''))
+    }
+
     items.push({
       id: `trace-${Number(entry?.idx) || index}`,
       kind: 'system',
-      status: phase === 'run.failed' ? 'error' : phase === 'run.aborted' ? 'rejected' : 'success',
+      status: phase === 'run.failed' ? 'error' : phase === 'run.aborted' ? 'stopped' : 'success',
       completed: true,
       timeLabel,
       title:
@@ -316,7 +440,7 @@ export function buildAgentRunTimelineItems(msg) {
           : phase === 'run.failed'
             ? '失败'
             : phase === 'run.aborted'
-              ? '已中止'
+              ? '已停止'
               : String(entry?.title || phase).trim(),
       metaText: joinAgentRunMeta([Number.isFinite(durationMs) && durationMs > 0 ? `${durationMs} ms` : '']),
       contentText: String(entry?.content_text || entry?.content_excerpt || entry?.task_text || entry?.task_excerpt || '').trim(),
@@ -334,7 +458,8 @@ export function buildAgentRunTimelineItems(msg) {
     if (currentAssistant) {
       if (liveReasoning) currentAssistant.reasoningText = liveReasoning
       const hasReasoning = !!String(currentAssistant.reasoningText || '').trim()
-      if (liveContent && (currentAssistant.completed || hasReasoning)) {
+      const hasToolCalls = Number(currentAssistant.toolCallCount) > 0
+      if (liveContent && (currentAssistant.completed || hasReasoning) && !hasToolCalls) {
         currentAssistant.contentText = liveContent
       }
     }
@@ -368,15 +493,16 @@ export function agentRunStepStatusLabel(step) {
   const status = String(step?.status || '').trim()
   if (status === 'pending') return '等待批准'
   if (status === 'running') return '运行中'
+  if (status === 'paused') return '已暂停'
   if (status === 'error') return '失败'
   if (status === 'rejected') return '已拒绝'
+  if (status === 'stopped') return '已停止'
   return '已完成'
 }
 
 export function shouldRenderAgentRunStructuredView(msg) {
   return isAgentRunToolMessage(msg) && (
     buildAgentRunTimelineItems(msg).length > 0 ||
-    !!getAgentRunTaskText(msg) ||
     !!getAgentRunFinalContent(msg)
   )
 }

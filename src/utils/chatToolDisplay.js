@@ -2,6 +2,45 @@ export function isAgentRunToolResult(result) {
   return !!result && typeof result === 'object' && !Array.isArray(result) && result.kind === 'agent_run_result'
 }
 
+function resolveAgentRunTraceText(trace, phases, fieldNames) {
+  const phaseSet = phases instanceof Set ? phases : new Set(Array.isArray(phases) ? phases : [])
+  const traceList = Array.isArray(trace) ? trace : []
+  const keys = Array.isArray(fieldNames) && fieldNames.length ? fieldNames : ['content_text', 'content_excerpt']
+
+  for (let i = traceList.length - 1; i >= 0; i -= 1) {
+    const entry = traceList[i]
+    if (!entry || typeof entry !== 'object') continue
+    const phase = String(entry?.phase || '').trim()
+    if (!phaseSet.has(phase)) continue
+    for (const key of keys) {
+      const text = String(entry?.[key] || '').trim()
+      if (text) return text
+    }
+  }
+
+  return ''
+}
+
+function resolveAgentRunFinalContent(payload, trace) {
+  const explicitContent = String(payload?.final?.content || payload?.summary || payload?.content || '').trim()
+  if (explicitContent) return explicitContent
+  const status = String(payload?.status || '').trim()
+  if (status === 'running' || status === 'paused') return ''
+  return resolveAgentRunTraceText(trace, new Set(['run.finished', 'model.response']))
+}
+
+function resolveAgentRunFinalReasoning(payload, trace) {
+  const explicitReasoning = String(payload?.final?.reasoning || payload?.reasoning || '').trim()
+  if (explicitReasoning) return explicitReasoning
+  const status = String(payload?.status || '').trim()
+  if (status === 'running' || status === 'paused') return ''
+  return resolveAgentRunTraceText(
+    trace,
+    new Set(['run.finished', 'model.response']),
+    ['reasoning_text', 'reasoning_excerpt']
+  )
+}
+
 export function formatAgentRunTraceEntry(entry, options = {}) {
   const truncateInlineText =
     typeof options.truncateInlineText === 'function'
@@ -59,6 +98,8 @@ export function formatAgentRunToolResultForDisplay(result, options = {}) {
   const statusText =
     statusRaw === 'completed'
       ? '已完成'
+      : statusRaw === 'paused'
+        ? '已暂停'
       : statusRaw === 'aborted'
         ? '已中止'
         : statusRaw === 'error'
@@ -70,10 +111,10 @@ export function formatAgentRunToolResultForDisplay(result, options = {}) {
   const durationMs = Number(payload?.metrics?.duration_ms)
   const rounds = Number(payload?.metrics?.rounds)
   const toolCalls = Number(payload?.metrics?.tool_calls)
-  const summary = String(payload?.summary || payload?.final?.content || '').trim()
-  const reasoning = String(payload?.final?.reasoning || '').trim()
   const errorText = String(payload?.error || '').trim()
   const trace = Array.isArray(payload?.trace) ? payload.trace : []
+  const summary = resolveAgentRunFinalContent(payload, trace)
+  const reasoning = resolveAgentRunFinalReasoning(payload, trace)
 
   const lines = [
     '### 子智能体执行结果',

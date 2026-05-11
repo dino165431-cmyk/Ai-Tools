@@ -1096,6 +1096,7 @@ import {
   CopyOutline,
   DownloadOutline,
   CloseOutline,
+  PauseCircleOutline,
   RefreshOutline,
   PencilOutline,
   CheckmarkOutline,
@@ -5635,17 +5636,51 @@ function isToolMessage(msgOrRole) {
   return role === 'tool' || role === 'tool_call'
 }
 
+const TOOL_MESSAGE_STATUS_LABELS = {
+  running: '运行中',
+  paused: '已暂停',
+  success: '已完成',
+  error: '失败',
+  rejected: '已拒绝'
+}
+
+function normalizeToolMessageStatus(raw) {
+  const status = String(raw || '').trim()
+  return Object.prototype.hasOwnProperty.call(TOOL_MESSAGE_STATUS_LABELS, status) ? status : ''
+}
+
+function isLiveToolMessageStatus(status) {
+  return status === 'running' || status === 'paused'
+}
+
+function toolMessageStatusText(status) {
+  const normalized = normalizeToolMessageStatus(status)
+  return TOOL_MESSAGE_STATUS_LABELS[normalized] || '已完成'
+}
+
+function toolMessageStatusDetailText(status) {
+  const normalized = normalizeToolMessageStatus(status)
+  if (normalized === 'running') return '等待工具结果...'
+  if (normalized === 'paused') return '执行已暂停，等待恢复...'
+  return ''
+}
+
 function getToolMessageStatus(msg) {
   if (!isToolMessage(msg)) return ''
-  const explicit = String(msg?.toolStatus || '').trim()
-  if (explicit === 'running' || explicit === 'success' || explicit === 'error' || explicit === 'rejected') return explicit
+  const explicit = normalizeToolMessageStatus(msg?.toolStatus)
   if (isAgentRunToolResult(msg?.toolResultPayload)) {
-    const payloadStatus = String(msg?.toolResultPayload?.status || '').trim()
-    if (payloadStatus === 'error') return 'error'
-    if (payloadStatus === 'aborted') return 'rejected'
+    const payloadStatusRaw = String(msg?.toolResultPayload?.status || '').trim()
+    const payloadStatus =
+      payloadStatusRaw === 'aborted'
+        ? 'rejected'
+        : payloadStatusRaw === 'completed'
+          ? 'success'
+          : normalizeToolMessageStatus(payloadStatusRaw)
+    if (payloadStatus && payloadStatus !== 'running') return payloadStatus
+    if (explicit && explicit !== 'running') return explicit
     if (payloadStatus === 'running') return 'running'
-    if (payloadStatus === 'completed') return 'success'
   }
+  if (explicit) return explicit
   const text = String(msg?.content || '').trim()
   if (/rejected|拒绝/i.test(text)) return 'rejected'
   if (/failed|error[:?]?|错误|失败/i.test(text)) return 'error'
@@ -5653,11 +5688,7 @@ function getToolMessageStatus(msg) {
 }
 
 function toolMessageStatusLabel(msg) {
-  const status = getToolMessageStatus(msg)
-  if (status === 'running') return '运行中'
-  if (status === 'error') return '失败'
-  if (status === 'rejected') return '已拒绝'
-  return '已完成'
+  return toolMessageStatusText(getToolMessageStatus(msg))
 }
 
 function toolMessageLabel(msg) {
@@ -5672,6 +5703,7 @@ function chatItemStateClasses(msg) {
   return {
     'is-streaming': msg?.role === 'assistant' && !!msg?.streaming,
     'is-tool-running': status === 'running',
+    'is-tool-paused': status === 'paused',
     'is-tool-success': status === 'success',
     'is-tool-error': status === 'error',
     'is-tool-rejected': status === 'rejected',
@@ -5684,6 +5716,7 @@ function chatAvatarStateClasses(msg) {
   return {
     'is-streaming': msg?.role === 'assistant' && !!msg?.streaming,
     'is-running': status === 'running',
+    'is-paused': status === 'paused',
     'is-success': status === 'success',
     'is-error': status === 'error',
     'is-rejected': status === 'rejected'
@@ -5718,15 +5751,20 @@ function extractFirstJsonFenceText(content = '') {
 }
 
 function inferToolResultStatus(messageLike) {
-  const explicit = String(messageLike?.toolStatus || '').trim()
-  if (explicit === 'running' || explicit === 'success' || explicit === 'error' || explicit === 'rejected') return explicit
+  const explicit = normalizeToolMessageStatus(messageLike?.toolStatus)
   if (isAgentRunToolResult(messageLike?.toolResultPayload)) {
-    const payloadStatus = String(messageLike?.toolResultPayload?.status || '').trim()
-    if (payloadStatus === 'error') return 'error'
-    if (payloadStatus === 'aborted') return 'rejected'
+    const payloadStatusRaw = String(messageLike?.toolResultPayload?.status || '').trim()
+    const payloadStatus =
+      payloadStatusRaw === 'aborted'
+        ? 'rejected'
+        : payloadStatusRaw === 'completed'
+          ? 'success'
+          : normalizeToolMessageStatus(payloadStatusRaw)
+    if (payloadStatus && payloadStatus !== 'running') return payloadStatus
+    if (explicit && explicit !== 'running') return explicit
     if (payloadStatus === 'running') return 'running'
-    if (payloadStatus === 'completed') return 'success'
   }
+  if (explicit) return explicit
   const role = String(messageLike?.role || '').trim()
   if (role === 'tool_call') return 'running'
   const text = String(messageLike?.content || '').trim()
@@ -5742,21 +5780,23 @@ function buildToolExecutionMessageContent(options = {}) {
   const resultContent = String(options.resultContent || '').trim()
   const errorText = String(options.errorText || '').trim()
   const status = options.status || 'running'
+  const statusText = toolMessageStatusText(status)
+  const statusDetailText = toolMessageStatusDetailText(status)
   const autoApproved = options.autoApproved
   const traceItems = Array.isArray(options.traceItems) ? options.traceItems : []
   const lines = [
     '### 工具调用',
     `- 服务：**${serverName}**`,
     `- 工具：\`${toolName}\``,
-    `- 状态：**${status === 'running' ? '运行中' : status === 'error' ? '失败' : status === 'rejected' ? '已拒绝' : '已完成'}**`
+    `- 状态：**${statusText}**`
   ]
 
   if (typeof autoApproved === 'boolean') lines.push(`- 自动批准：**${autoApproved ? '是' : '否'}**`)
 
   lines.push('', '#### 参数', '', '```json', argsText, '```')
 
-  if (status === 'running') lines.push('', '> 等待工具结果...')
-  if (traceItems.length && status === 'running') {
+  if (statusDetailText) lines.push('', `> ${statusDetailText}`)
+  if (traceItems.length && isLiveToolMessageStatus(status)) {
     lines.push('', '#### 实时轨迹', '')
     traceItems.slice(-40).forEach((item) => {
       lines.push(formatAgentRunTraceEntry(item))
@@ -5768,11 +5808,22 @@ function buildToolExecutionMessageContent(options = {}) {
   return lines.join('\n').trim()
 }
 
-function createPendingToolExecutionMessage({ serverName = '', toolName = '', argsText = '{}', autoApproved = false, traceStreamId = '', argsObj = null, toolCallId = '' } = {}) {
+function createPendingToolExecutionMessage({
+  serverName = '',
+  toolName = '',
+  argsText = '{}',
+  autoApproved = false,
+  traceStreamId = '',
+  argsObj = null,
+  toolCallId = '',
+  toolExecutionId = ''
+} = {}) {
   const targetAgentLabel = isAgentRunToolName(toolName)
     ? String(argsObj?.agent_name || argsObj?.agent_id || argsObj?.name || argsObj?.id || '').trim()
     : ''
   const expandByDefault = isAgentRunToolName(toolName)
+  const normalizedToolExecutionId = String(toolExecutionId || '').trim()
+  const normalizedTraceStreamId = String(traceStreamId || '').trim() || (expandByDefault ? normalizedToolExecutionId : '')
   return createDisplayMessage(
     'tool_call',
     buildToolExecutionMessageContent({
@@ -5791,17 +5842,21 @@ function createPendingToolExecutionMessage({ serverName = '', toolName = '', arg
       toolArgsText: String(argsText || '').trim() || '{}',
       toolAutoApproved: !!autoApproved,
       toolCallId: String(toolCallId || '').trim(),
+      toolExecutionId: normalizedToolExecutionId,
       toolSubMeta: targetAgentLabel ? `智能体：${targetAgentLabel}` : '',
-      toolTraceStreamId: String(traceStreamId || '').trim(),
+      toolTraceStreamId: normalizedTraceStreamId,
       toolLiveTrace: []
     }
   )
 }
 
-function createToolExecutionResultMessage(content = '', extra = {}, toolCallId = '') {
+function createToolExecutionResultMessage(content = '', extra = {}, toolCallId = '', toolExecutionId = '') {
   const normalizedExtra = extra && typeof extra === 'object' ? { ...extra } : {}
   if (!String(normalizedExtra.toolCallId || '').trim() && toolCallId) {
     normalizedExtra.toolCallId = String(toolCallId || '').trim()
+  }
+  if (!String(normalizedExtra.toolExecutionId || '').trim() && toolExecutionId) {
+    normalizedExtra.toolExecutionId = String(toolExecutionId || '').trim()
   }
   return createDisplayMessage('tool', content, normalizedExtra)
 }
@@ -5846,8 +5901,12 @@ function mergeToolExecutionDisplayMessage(toolDisplay, resultMessage, options = 
     toolDisplay.toolResultPayload = { ...nextPayload, trace: mergedTrace }
     const payloadAgentName = String(nextPayload?.agent?.name || nextPayload?.agent?.id || '').trim()
     if (payloadAgentName) toolDisplay.toolAgentName = payloadAgentName
-    toolDisplay.toolLiveFinalContent = String(nextPayload?.final?.content || nextPayload?.summary || '').trim()
-    toolDisplay.toolLiveFinalReasoning = String(nextPayload?.final?.reasoning || '').trim()
+    const payloadFinalContent = String(nextPayload?.final?.content || nextPayload?.summary || '').trim()
+    const payloadFinalReasoning = String(nextPayload?.final?.reasoning || '').trim()
+    if (payloadFinalContent) toolDisplay.toolLiveFinalContent = payloadFinalContent
+    else toolDisplay.toolLiveFinalContent = String(toolDisplay.toolLiveFinalContent || '').trim()
+    if (payloadFinalReasoning) toolDisplay.toolLiveFinalReasoning = payloadFinalReasoning
+    else toolDisplay.toolLiveFinalReasoning = String(toolDisplay.toolLiveFinalReasoning || '').trim()
     toolDisplay.toolLiveRound = Number(nextPayload?.metrics?.rounds) || toolDisplay.toolLiveRound || 0
   } else {
     toolDisplay.toolResultPayload = nextPayload && typeof nextPayload === 'object' ? nextPayload : null
@@ -5862,7 +5921,7 @@ function mergeToolExecutionDisplayMessage(toolDisplay, resultMessage, options = 
     traceItems: Array.isArray(toolDisplay.toolLiveTrace) ? toolDisplay.toolLiveTrace : [],
     errorText: options.errorText || ''
   })
-  if (status !== 'running' && toolDisplay.toolTraceStreamId) {
+  if (!isLiveToolMessageStatus(status) && toolDisplay.toolTraceStreamId) {
     activeAgentRunToolMessageByStreamId.delete(toolDisplay.toolTraceStreamId)
   }
   scheduleRefreshUserAnchorMeta()
@@ -5889,21 +5948,21 @@ function maybeCoalesceLatestToolMessages() {
 function canCoalesceToolResultIntoPending(pending, result) {
   if (!pending || !result) return false
   if (!isToolMessage(pending) || String(result.role || '').trim() !== 'tool') return false
-  if (getToolMessageStatus(pending) !== 'running') return false
+  if (!isLiveToolMessageStatus(getToolMessageStatus(pending))) return false
+
+  const pendingExecutionId = String(pending.toolExecutionId || '').trim()
+  const resultExecutionId = String(result.toolExecutionId || '').trim()
+  if (pendingExecutionId || resultExecutionId) return !!pendingExecutionId && pendingExecutionId === resultExecutionId
+
+  const pendingTraceStreamId = String(pending.toolTraceStreamId || '').trim()
+  const resultTraceStreamId = String(result.toolTraceStreamId || '').trim()
+  if (pendingTraceStreamId || resultTraceStreamId) return !!pendingTraceStreamId && pendingTraceStreamId === resultTraceStreamId
 
   const pendingCallId = String(pending.toolCallId || '').trim()
   const resultCallId = String(result.toolCallId || '').trim()
   if (pendingCallId || resultCallId) return pendingCallId && resultCallId && pendingCallId === resultCallId
 
-  const pendingMeta = String(pending.toolMeta || '').trim()
-  const resultMeta = String(result.toolMeta || '').trim()
-  if (pendingMeta && resultMeta && pendingMeta !== resultMeta) return false
-
-  const pendingToolName = String(pending.toolName || '').trim()
-  const resultToolName = String(result.toolName || '').trim()
-  if (pendingToolName && resultToolName && pendingToolName !== resultToolName) return false
-
-  return true
+  return false
 }
 
 function coalesceToolExecutionDisplayMessages(messages = []) {
@@ -5930,6 +5989,7 @@ function coalesceToolExecutionDisplayMessages(messages = []) {
 const activeAgentRunToolMessageByStreamId = new Map()
 const pendingBuiltinAgentsEventsByStreamId = new Map()
 const BUILTIN_AGENTS_EVENT_FLUSH_INTERVAL_MS = 80
+const MAX_PENDING_BUILTIN_AGENTS_EVENT_RETRIES = 100
 let pendingBuiltinAgentsEventsFlushTimer = null
 
 function resolveActiveAgentRunToolMessage(streamId) {
@@ -5972,12 +6032,13 @@ function updateAgentRunToolMessageTraceBatch(streamId, entries) {
   ].filter(Boolean).join(' · ')
   messageRef.toolSubMeta = subMeta
   const traceItemsForDisplay = isAgentRun && !isExpanded ? [] : mergedTrace
+  const currentStatus = normalizeToolMessageStatus(getToolMessageStatus(messageRef)) || 'running'
   messageRef.content = buildToolExecutionMessageContent({
     serverName: messageRef.toolServerName || extractServerNameFromToolMeta(messageRef.toolMeta),
     toolName: messageRef.toolName,
     argsText: messageRef.toolArgsText || '{}',
     autoApproved: messageRef.toolAutoApproved,
-    status: 'running',
+    status: currentStatus,
     traceItems: traceItemsForDisplay
   })
   if (isExpanded) scheduleRefreshUserAnchorMeta()
@@ -6010,7 +6071,10 @@ function updateAgentRunToolMessageLiveUpdate(streamId, live) {
     isAgentRunToolResult(messageRef.toolResultPayload)
       ? { ...messageRef.toolResultPayload }
       : { kind: 'agent_run_result', status: 'running', trace: [] }
-  nextPayload.status = String(nextPayload.status || 'running').trim() || 'running'
+  const liveStatus = normalizeToolMessageStatus(live.status)
+  const payloadStatus = normalizeToolMessageStatus(nextPayload.status)
+  const nextStatus = liveStatus || (live.reset === true ? 'running' : payloadStatus || 'running')
+  nextPayload.status = nextStatus
   nextPayload.final = {
     content: String(messageRef.toolLiveFinalContent || ''),
     reasoning: String(messageRef.toolLiveFinalReasoning || '')
@@ -6018,6 +6082,7 @@ function updateAgentRunToolMessageLiveUpdate(streamId, live) {
   nextPayload.summary = nextPayload.final.content
   nextPayload.trace = Array.isArray(messageRef.toolLiveTrace) ? messageRef.toolLiveTrace : []
   messageRef.toolResultPayload = nextPayload
+  messageRef.toolStatus = nextStatus
 
   if (messageRef.toolExpanded === true) scheduleRefreshUserAnchorMeta()
   maybeScheduleStreamingScroll()
@@ -6026,11 +6091,33 @@ function updateAgentRunToolMessageLiveUpdate(streamId, live) {
 function mergeAgentRunLivePayload(base, incoming) {
   const merged = base && typeof base === 'object' ? { ...base } : {}
   const next = incoming && typeof incoming === 'object' ? incoming : {}
-  if (next.reset === true) merged.reset = true
+  if (next.reset === true) {
+    merged.reset = true
+    merged.status = Object.prototype.hasOwnProperty.call(next, 'status') ? next.status : 'running'
+  } else if (Object.prototype.hasOwnProperty.call(next, 'status')) {
+    merged.status = next.status
+  }
   if (Object.prototype.hasOwnProperty.call(next, 'content')) merged.content = next.content
   if (Object.prototype.hasOwnProperty.call(next, 'reasoning')) merged.reasoning = next.reasoning
   if (Object.prototype.hasOwnProperty.call(next, 'round')) merged.round = next.round
   return merged
+}
+
+function applyPendingBuiltinAgentsEventBucket(streamId, bucket) {
+  const id = String(streamId || '').trim()
+  if (!id || !bucket) return false
+
+  const messageRef = resolveActiveAgentRunToolMessage(id)
+  if (!messageRef || !isToolMessage(messageRef)) return false
+
+  if (Array.isArray(bucket.entries) && bucket.entries.length) {
+    updateAgentRunToolMessageTraceBatch(id, bucket.entries)
+  }
+  if (bucket.live && typeof bucket.live === 'object') {
+    updateAgentRunToolMessageLiveUpdate(id, bucket.live)
+  }
+  if (bucket.done === true) activeAgentRunToolMessageByStreamId.delete(id)
+  return true
 }
 
 function flushPendingBuiltinAgentsEvents() {
@@ -6041,14 +6128,21 @@ function flushPendingBuiltinAgentsEvents() {
   pendingBuiltinAgentsEventsByStreamId.clear()
   pending.forEach(([streamId, bucket]) => {
     if (!streamId || !bucket) return
-    if (Array.isArray(bucket.entries) && bucket.entries.length) {
-      updateAgentRunToolMessageTraceBatch(streamId, bucket.entries)
+    if (!applyPendingBuiltinAgentsEventBucket(streamId, bucket)) {
+      const retries = Number(bucket?.retries) || 0
+      if (retries < MAX_PENDING_BUILTIN_AGENTS_EVENT_RETRIES) {
+        pendingBuiltinAgentsEventsByStreamId.set(streamId, {
+          entries: Array.isArray(bucket.entries) ? bucket.entries.slice() : [],
+          live: bucket.live && typeof bucket.live === 'object' ? { ...bucket.live } : null,
+          done: bucket.done === true,
+          retries: retries + 1
+        })
+      }
     }
-    if (bucket.live && typeof bucket.live === 'object') {
-      updateAgentRunToolMessageLiveUpdate(streamId, bucket.live)
-    }
-    if (bucket.done === true) activeAgentRunToolMessageByStreamId.delete(streamId)
   })
+  if (pendingBuiltinAgentsEventsByStreamId.size) {
+    schedulePendingBuiltinAgentsEventsFlush()
+  }
 }
 
 function schedulePendingBuiltinAgentsEventsFlush() {
@@ -6065,16 +6159,21 @@ function handleBuiltinAgentsTraceEvent(event) {
   const entry = detail.entry && typeof detail.entry === 'object' ? detail.entry : null
   const live = detail.live && typeof detail.live === 'object' ? detail.live : null
   if (!streamId) return
-  const prev = pendingBuiltinAgentsEventsByStreamId.get(streamId) || { entries: [], live: null, done: false }
+  const prev = pendingBuiltinAgentsEventsByStreamId.get(streamId) || { entries: [], live: null, done: false, retries: 0 }
   const next = {
     entries: Array.isArray(prev.entries) ? prev.entries.slice() : [],
     live: prev.live && typeof prev.live === 'object' ? { ...prev.live } : null,
-    done: prev.done === true
+    done: prev.done === true,
+    retries: Number(prev.retries) || 0
   }
   if (entry) next.entries.push(entry)
   if (live) next.live = mergeAgentRunLivePayload(next.live, live)
   if (detail.done === true) next.done = true
   pendingBuiltinAgentsEventsByStreamId.set(streamId, next)
+  if (applyPendingBuiltinAgentsEventBucket(streamId, next)) {
+    pendingBuiltinAgentsEventsByStreamId.delete(streamId)
+    return
+  }
   schedulePendingBuiltinAgentsEventsFlush()
 }
 
@@ -6098,6 +6197,9 @@ function prepareBuiltinAgentToolCallArgs(server, toolName, argsObj, pendingMessa
     pendingMessage.toolTraceStreamId = streamId
     pendingMessage.toolApprovalMode = approvalMode
     if (streamId) activeAgentRunToolMessageByStreamId.set(streamId, pendingMessage)
+    if (streamId && pendingBuiltinAgentsEventsByStreamId.has(streamId)) {
+      flushPendingBuiltinAgentsEvents()
+    }
   }
 
   return nextArgs
@@ -6455,6 +6557,7 @@ function roleIcon(messageOrRole) {
   if (role === 'tool_call' || role === 'tool') {
     const status = getToolMessageStatus(msg || { role })
     if (status === 'running') return RefreshOutline
+    if (status === 'paused') return PauseCircleOutline
     if (status === 'error') return CloseOutline
     if (status === 'rejected') return ShieldOutline
     return HardwareChipOutline
@@ -6600,7 +6703,7 @@ function estimateCollapsedToolMessageHeight(msg) {
   ].filter(Boolean).join(' · ')
   const charsPerLine = isCompactChatLayout.value ? 26 : isDenseChatLayout.value ? 34 : 48
   const lineCount = Math.max(1, Math.min(4, Math.ceil(summary.length / charsPerLine)))
-  const runningExtra = getToolMessageStatus(msg) === 'running' ? 4 : 0
+  const runningExtra = isLiveToolMessageStatus(getToolMessageStatus(msg)) ? 4 : 0
   // 折叠态工具消息只展示一行摘要和时间，不应该按隐藏正文长度估高。
   return 52 + ((lineCount - 1) * 18) + runningExtra
 }
@@ -6852,7 +6955,8 @@ const forcedRenderedChatMessageIdSet = computed(() => {
   for (const msg of session.messages || []) {
     const id = String(msg?.id || '').trim()
     if (!id) continue
-    if (msg.streaming || msg.editing || msg.thinkingExpanded || msg.toolExpanded || msg.attachmentsExpanded) ids.add(id)
+    const isLiveTool = isToolMessage(msg) && isLiveToolMessageStatus(getToolMessageStatus(msg))
+    if (msg.streaming || msg.editing || msg.thinkingExpanded || msg.toolExpanded || msg.attachmentsExpanded || isLiveTool) ids.add(id)
   }
   return ids
 })
@@ -7472,7 +7576,7 @@ function shouldRenderCompactToolMessage(msg) {
   if (!id) return false
   if (msg.toolExpanded || msg.streaming || msg.editing || msg.attachmentsExpanded || msg.thinkingExpanded) return false
   if (recentHeavyChatMessageIds.value.has(id)) return false
-  if (getToolMessageStatus(msg) === 'running') return false
+  if (isLiveToolMessageStatus(getToolMessageStatus(msg))) return false
   return true
 }
 
@@ -9216,6 +9320,7 @@ function normalizeLoadedDisplayMessage(msg) {
     if (typeof raw.toolArgsText !== 'string') raw.toolArgsText = String(raw.toolArgsText || '')
     if (typeof raw.toolAutoApproved !== 'boolean') raw.toolAutoApproved = false
     if (typeof raw.toolSubMeta !== 'string') raw.toolSubMeta = String(raw.toolSubMeta || '')
+    if (typeof raw.toolExecutionId !== 'string') raw.toolExecutionId = String(raw.toolExecutionId || '')
     if (typeof raw.toolTraceStreamId !== 'string') raw.toolTraceStreamId = String(raw.toolTraceStreamId || '')
     if (!Array.isArray(raw.toolLiveTrace)) raw.toolLiveTrace = []
     if (typeof raw.toolAgentName !== 'string') raw.toolAgentName = String(raw.toolAgentName || '')
@@ -15577,6 +15682,7 @@ function normalizeToolCallExecutionContext(toolCall, toolMap) {
   const fn = toolCall?.function?.name
   const argsRaw = toolCall?.function?.arguments || ''
   const toolCallId = String(toolCall?.id || '').trim()
+  const toolExecutionId = `tool_exec_${newId()}`
   const mapping = toolMap.get(fn)
   const serverName = mapping?.serverName || '未知'
   const toolName = mapping?.toolName || fn
@@ -15587,6 +15693,7 @@ function normalizeToolCallExecutionContext(toolCall, toolMap) {
   return {
     toolCall,
     toolCallId,
+    toolExecutionId,
     fn,
     mapping,
     serverName,
@@ -15609,17 +15716,18 @@ async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, ab
     argsText: context.argsText,
     autoApproved: autoApproved,
     argsObj: context.argsObj,
-    toolCallId: context.toolCallId
+    toolCallId: context.toolCallId,
+    toolExecutionId: context.toolExecutionId
   })
   targetSession.messages.push(pendingToolMessage)
   await maybeScrollToBottomForRun(abortState)
 
   if (!context.mapping) {
-    targetSession.messages.push(
-      createToolExecutionResultMessage(`### 工具结果\n- 错误：未在工具注册表中找到：${context.fn}`, {
-        toolMeta: `${context.serverName} / ${context.toolName}`
-      }, context.toolCallId)
-    )
+      targetSession.messages.push(
+        createToolExecutionResultMessage(`### 工具结果\n- 错误：未在工具注册表中找到：${context.fn}`, {
+          toolMeta: `${context.serverName} / ${context.toolName}`
+        }, context.toolCallId, context.toolExecutionId)
+      )
     return {
       ...context,
       pendingToolMessage,
@@ -15642,7 +15750,7 @@ async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, ab
       targetSession.messages.push(
         createToolExecutionResultMessage(`### 工具结果\n- 工具：\`${context.toolName}\`\n- 状态：**已拒绝**`, {
           toolMeta: `${context.serverName} / ${context.toolName}`
-        }, context.toolCallId)
+        }, context.toolCallId, context.toolExecutionId)
       )
       return {
         ...context,
@@ -15689,11 +15797,12 @@ async function executePreparedToolCall(prepared, abortState = null) {
     serverName,
     toolName,
     toolCallId,
+    toolExecutionId,
     argsObj,
     pendingToolMessage
   } = prepared || {}
   const createCurrentToolResultMessage = (content = '', extra = {}) =>
-    createToolExecutionResultMessage(content, extra, toolCallId)
+    createToolExecutionResultMessage(content, extra, toolCallId, toolExecutionId)
 
   if (mapping?.type === 'internal' && (mapping.internal === 'web_search' || mapping.internal === 'web_read')) {
     try {
@@ -17624,6 +17733,14 @@ watch(
   color: rgb(245, 166, 35);
 }
 
+.chat-item.tool.is-tool-paused .chat-item__avatar,
+.chat-item.tool_call.is-tool-paused .chat-item__avatar,
+.chat-item__avatar.is-paused {
+  border-color: rgba(224, 168, 63, 0.34);
+  background: rgba(224, 168, 63, 0.16);
+  color: rgb(180, 83, 9);
+}
+
 .chat-item.tool.is-tool-success .chat-item__avatar,
 .chat-item__avatar.is-success {
   border-color: rgba(14, 165, 233, 0.3);
@@ -17736,6 +17853,12 @@ watch(
   box-shadow: 0 10px 26px rgba(245, 166, 35, 0.08);
 }
 
+.chat-item.tool.is-tool-paused .chat-item__bubble,
+.chat-item.tool_call.is-tool-paused .chat-item__bubble {
+  border-color: rgba(224, 168, 63, 0.28);
+  box-shadow: 0 10px 26px rgba(224, 168, 63, 0.08);
+}
+
 .chat-item.tool.is-tool-success .chat-item__bubble {
   border-color: rgba(14, 165, 233, 0.22);
 }
@@ -17767,6 +17890,12 @@ watch(
 .chat-page.dark .chat-item.tool_call.is-tool-running .chat-item__bubble {
   border-color: rgba(245, 166, 35, 0.34);
   box-shadow: 0 10px 28px rgba(146, 64, 14, 0.22);
+}
+
+.chat-page.dark .chat-item.tool.is-tool-paused .chat-item__bubble,
+.chat-page.dark .chat-item.tool_call.is-tool-paused .chat-item__bubble {
+  border-color: rgba(224, 168, 63, 0.34);
+  box-shadow: 0 10px 28px rgba(146, 90, 14, 0.22);
 }
 
 .chat-page.dark .chat-item.tool.is-tool-success .chat-item__bubble {
@@ -17855,6 +17984,11 @@ watch(
 .chat-tool-compact__status.is-running {
   color: rgb(180, 83, 9);
   background: rgba(245, 166, 35, 0.14);
+}
+
+.chat-tool-compact__status.is-paused {
+  color: rgb(180, 83, 9);
+  background: rgba(224, 168, 63, 0.14);
 }
 
 .chat-tool-compact__status.is-success {

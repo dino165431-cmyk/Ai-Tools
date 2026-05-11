@@ -21,11 +21,21 @@ const HYBRID_SEARCH_SEMANTIC_BOOST = 120
 const ENCRYPTED_NOTE_PAYLOAD_RE = /^\s*\{\s*"kind"\s*:\s*"ai-tools-note"\s*,\s*"v"\s*:\s*1\s*,\s*"content"\s*:\s*\{\s*"alg"\s*:\s*"AES-GCM"\s*,/i
 
 const INDEX_KINDS = Object.freeze({
+  agent: Object.freeze({
+    kind: 'agent',
+    root: 'agent',
+    entryType: 'agent',
+    extension: '',
+    source: 'config',
+    defaultSearchLimit: 20,
+    defaultRecentLimit: 20
+  }),
   note: Object.freeze({
     kind: 'note',
     root: 'note',
     entryType: 'note',
     extension: '.md',
+    source: 'filesystem',
     defaultSearchLimit: 20,
     defaultRecentLimit: 20
   }),
@@ -34,12 +44,14 @@ const INDEX_KINDS = Object.freeze({
     root: 'session',
     entryType: 'session',
     extension: '.json',
+    source: 'filesystem',
     defaultSearchLimit: 20,
     defaultRecentLimit: 20
   })
 })
 
 const INDEX_FILE_NAMES = Object.freeze({
+  agent: `agents-index-v${INDEX_VERSION}.json`,
   note: `notes-index-v${INDEX_VERSION}.json`,
   session: `sessions-index-v${INDEX_VERSION}.json`
 })
@@ -48,6 +60,7 @@ const rebuildPromises = new Map()
 const maintenanceTimers = new Map()
 const INDEX_MAINTENANCE_DEBOUNCE_MS = 1200
 let lastObservedContentSearchConfigSignature = ''
+let lastObservedAgentConfigSignature = ''
 let globalConfigMaintenanceListener = null
 let contentIndexInitialized = false
 
@@ -57,6 +70,28 @@ function toPosixPath(value) {
 
 function normalizeRelativePath(relativePath) {
   return toPosixPath(relativePath).trim().replace(/^\/+/, '').replace(/\/+$/, '')
+}
+
+function cleanString(value) {
+  if (typeof value === 'string') return value.trim()
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value).trim()
+  return ''
+}
+
+function isPlainObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function normalizeStringList(values) {
+  const out = []
+  const seen = new Set()
+  ;(Array.isArray(values) ? values : []).forEach((item) => {
+    const value = cleanString(item)
+    if (!value || seen.has(value)) return
+    seen.add(value)
+    out.push(value)
+  })
+  return out
 }
 
 function normalizeDirPath(dirPathRaw) {
@@ -355,6 +390,99 @@ function getCurrentConfig() {
   }
 }
 
+function sortById(left, right) {
+  return cleanString(left?._id).localeCompare(cleanString(right?._id))
+}
+
+function collectAgentEffectiveMcpIds(agent, skillsMap = {}) {
+  const directMcpIds = normalizeStringList(agent?.mcp)
+  const skillIds = normalizeStringList(agent?.skills)
+  const derivedMcpIds = skillIds.flatMap((skillId) => normalizeStringList(skillsMap?.[skillId]?.mcp))
+  return normalizeStringList([...directMcpIds, ...derivedMcpIds])
+}
+
+function getAgentIndexConfigPayload(rawConfig = getCurrentConfig()) {
+  const config = isPlainObject(rawConfig) ? rawConfig : {}
+  const skills = Object.values(isPlainObject(config.skills) ? config.skills : {})
+    .filter(Boolean)
+    .map((skill) => ({
+      _id: cleanString(skill?._id),
+      name: cleanString(skill?.name),
+      description: cleanString(skill?.description),
+      content: typeof skill?.content === 'string' ? skill.content : '',
+      sourceType: cleanString(skill?.sourceType),
+      sourcePath: cleanString(skill?.sourcePath),
+      entryFile: cleanString(skill?.entryFile),
+      mcp: normalizeStringList(skill?.mcp),
+      builtin: skill?.builtin === true
+    }))
+    .sort(sortById)
+  const skillsById = Object.fromEntries(skills.map((skill) => [skill._id, skill]))
+
+  const agents = Object.values(isPlainObject(config.agents) ? config.agents : {})
+    .filter(Boolean)
+    .map((agent) => ({
+      _id: cleanString(agent?._id),
+      name: cleanString(agent?.name),
+      provider: cleanString(agent?.provider),
+      model: cleanString(agent?.model),
+      skills: normalizeStringList(agent?.skills),
+      mcp: collectAgentEffectiveMcpIds(agent, skillsById),
+      prompt: cleanString(agent?.prompt),
+      builtin: agent?.builtin === true
+    }))
+    .sort(sortById)
+
+  const providers = Object.values(isPlainObject(config.providers) ? config.providers : {})
+    .filter(Boolean)
+    .map((provider) => ({
+      _id: cleanString(provider?._id),
+      name: cleanString(provider?.name),
+      providerType: cleanString(provider?.providerType),
+      builtin: provider?.builtin === true
+    }))
+    .sort(sortById)
+
+  const prompts = Object.values(isPlainObject(config.prompts) ? config.prompts : {})
+    .filter(Boolean)
+    .map((prompt) => ({
+      _id: cleanString(prompt?._id),
+      name: cleanString(prompt?.name),
+      description: cleanString(prompt?.description),
+      type: cleanString(prompt?.type),
+      content: typeof prompt?.content === 'string' ? prompt.content : '',
+      builtin: prompt?.builtin === true
+    }))
+    .sort(sortById)
+
+  const mcpServers = Object.values(isPlainObject(config.mcpServers) ? config.mcpServers : {})
+    .filter(Boolean)
+    .map((server) => ({
+      _id: cleanString(server?._id),
+      name: cleanString(server?.name),
+      transportType: cleanString(server?.transportType),
+      disabled: server?.disabled === true,
+      builtin: server?.builtin === true
+    }))
+    .sort(sortById)
+
+  return {
+    agents,
+    providers,
+    prompts,
+    skills,
+    mcpServers
+  }
+}
+
+function getAgentConfigSignature(rawConfig = getCurrentConfig()) {
+  return JSON.stringify(getAgentIndexConfigPayload(rawConfig))
+}
+
+function getIndexSourceSignature(kind, rawConfig = getCurrentConfig()) {
+  return kind === 'agent' ? getAgentConfigSignature(rawConfig) : ''
+}
+
 function getProviderInfo(providerId) {
   const config = getCurrentConfig()
   const providers = config && typeof config.providers === 'object' ? config.providers : {}
@@ -393,7 +521,7 @@ function buildEntryEmbeddingText(kind, metadata = {}, entry = {}) {
     metadata.searchText,
     entry?.name || '',
     entry?.path || '',
-    kind === 'session' ? 'session' : 'note'
+    kind === 'session' ? 'session' : kind === 'agent' ? 'agent' : 'note'
   ]
     .filter(Boolean)
     .join('\n')
@@ -535,6 +663,16 @@ function syncMaintenanceForConfigChange(config) {
   })
 }
 
+function syncMaintenanceForAgentConfigChange(config = getCurrentConfig()) {
+  const signature = getAgentConfigSignature(config)
+  if (signature === lastObservedAgentConfigSignature) return
+  lastObservedAgentConfigSignature = signature
+  scheduleIndexMaintenance('agent', {
+    reason: 'agent_config_changed',
+    searchConfig: normalizeContentSearchConfig(config?.contentSearchConfig || DEFAULT_CONTENT_SEARCH_CONFIG)
+  })
+}
+
 function init() {
   if (contentIndexInitialized) return dispose
   contentIndexInitialized = true
@@ -544,9 +682,11 @@ function init() {
       const nextConfig = event?.detail
       if (!nextConfig || typeof nextConfig !== 'object') return
       syncMaintenanceForConfigChange(nextConfig.contentSearchConfig)
+      syncMaintenanceForAgentConfigChange(nextConfig)
     }
     window.addEventListener('globalConfigChanged', globalConfigMaintenanceListener)
     syncMaintenanceForConfigChange(getCurrentConfig().contentSearchConfig)
+    syncMaintenanceForAgentConfigChange(getCurrentConfig())
   } catch (err) {
     console.warn?.('[Content index] config maintenance listener failed:', err)
   }
@@ -557,6 +697,7 @@ function dispose() {
   contentIndexInitialized = false
   clearAllMaintenanceTimers()
   lastObservedContentSearchConfigSignature = ''
+  lastObservedAgentConfigSignature = ''
   try {
     if (globalConfigMaintenanceListener && typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
       window.removeEventListener('globalConfigChanged', globalConfigMaintenanceListener)
@@ -631,6 +772,7 @@ function shouldIgnoreSegment(kindConfig, segment, isLastDirectory = false) {
 
 function shouldIndexFile(kind, relativePath) {
   const kindConfig = getKindConfig(kind)
+  if (kindConfig.source !== 'filesystem') return false
   const normalized = normalizeRelativePath(relativePath)
   if (!normalized) return false
   if (!normalized.startsWith(`${kindConfig.root}/`) && normalized !== kindConfig.root) return false
@@ -653,6 +795,7 @@ function shouldIndexFile(kind, relativePath) {
 
 function isIndexedDirectoryPath(kind, relativePath) {
   const kindConfig = getKindConfig(kind)
+  if (kindConfig.source !== 'filesystem') return normalizeRelativePath(relativePath) === kindConfig.root
   const normalized = normalizeRelativePath(relativePath)
   if (!normalized) return false
   if (normalized === kindConfig.root) return true
@@ -666,6 +809,7 @@ function isIndexedDirectoryPath(kind, relativePath) {
 
 function isRelevantWatchedPath(kind, relativePath) {
   const kindConfig = getKindConfig(kind)
+  if (kindConfig.source !== 'filesystem') return normalizeRelativePath(relativePath) === kindConfig.root
   const normalized = normalizeRelativePath(relativePath)
   if (!normalized) return false
   if (normalized === kindConfig.root) return true
@@ -703,7 +847,12 @@ function makeEntry(kind, relativePath, statInfo, metadata = {}, options = {}) {
     title: normalizePreviewText(metadata?.title || ''),
     preview: normalizePreviewText(metadata?.preview || ''),
     searchText: normalizeSearchText(metadata?.searchText || ''),
-    embedding: Array.isArray(options?.embedding) ? options.embedding.map((value) => Number(value) || 0) : []
+    embedding: Array.isArray(options?.embedding) ? options.embedding.map((value) => Number(value) || 0) : [],
+    ...(
+      isPlainObject(options?.extraFields)
+        ? options.extraFields
+        : {}
+    )
   }
 }
 
@@ -719,6 +868,7 @@ function createEmptyIndex(kind, overrides = {}) {
     dirty: true,
     reason: 'not_built',
     entries: [],
+    sourceSignature: '',
     ...overrides
   }
   const searchConfig = normalizeContentSearchConfig(base.searchConfig || DEFAULT_CONTENT_SEARCH_CONFIG)
@@ -818,9 +968,112 @@ async function writeIndex(kind, indexData) {
 
 async function scanEntries(kind, options = {}) {
   const kindConfig = getKindConfig(kind)
-  const rootAbs = path.join(getDataStorageRootAbs(), ...kindConfig.root.split('/'))
   const searchConfig = getContentSearchConfig(options)
   const hybridEnabled = isHybridSearchEnabled(searchConfig)
+  if (kindConfig.source === 'config') {
+    const config = getCurrentConfig()
+    const providers = isPlainObject(config.providers) ? config.providers : {}
+    const prompts = isPlainObject(config.prompts) ? config.prompts : {}
+    const skills = isPlainObject(config.skills) ? config.skills : {}
+    const mcpServers = isPlainObject(config.mcpServers) ? config.mcpServers : {}
+    const agents = Object.values(isPlainObject(config.agents) ? config.agents : {}).filter(Boolean)
+    const entries = []
+
+    for (const agent of agents) {
+      const agentId = cleanString(agent?._id)
+      if (!agentId) continue
+
+      const provider = agent?.provider ? providers[agent.provider] : null
+      const prompt = agent?.prompt ? prompts[agent.prompt] : null
+      const skillIds = normalizeStringList(agent?.skills)
+      const skillObjects = skillIds.map((id) => skills[id]).filter(Boolean)
+      const mcpIds = collectAgentEffectiveMcpIds(agent, skills)
+      const mcpObjects = mcpIds.map((id) => mcpServers[id]).filter(Boolean)
+      const displayName = cleanString(agent?.name) || agentId
+      const preview = normalizePreviewText([
+        cleanString(provider?.name || agent?.provider)
+          ? `Provider ${cleanString(provider?.name || agent?.provider)}`
+          : '',
+        cleanString(agent?.model) ? `Model ${cleanString(agent.model)}` : '',
+        cleanString(prompt?.name || agent?.prompt) ? `Prompt ${cleanString(prompt?.name || agent?.prompt)}` : '',
+        skillObjects.length ? `Skills ${skillObjects.map((item) => cleanString(item?.name || item?._id)).filter(Boolean).join(', ')}` : '',
+        mcpObjects.length ? `MCP ${mcpObjects.map((item) => cleanString(item?.name || item?._id)).filter(Boolean).join(', ')}` : '',
+        agent?.builtin === true ? 'Builtin' : 'Custom'
+      ].filter(Boolean).join(' / '))
+      const searchText = normalizeSearchText([
+        agentId,
+        displayName,
+        cleanString(agent?.provider),
+        cleanString(provider?.name),
+        cleanString(agent?.model),
+        cleanString(agent?.prompt),
+        cleanString(prompt?.name),
+        cleanString(prompt?.description),
+        typeof prompt?.content === 'string' ? prompt.content : '',
+        ...skillIds,
+        ...skillObjects.flatMap((item) => [
+          cleanString(item?._id),
+          cleanString(item?.name),
+          cleanString(item?.description),
+          typeof item?.content === 'string' ? item.content : '',
+          cleanString(item?.sourcePath),
+          cleanString(item?.entryFile)
+        ]),
+        ...mcpIds,
+        ...mcpObjects.flatMap((item) => [
+          cleanString(item?._id),
+          cleanString(item?.name),
+          cleanString(item?.transportType)
+        ]),
+        agent?.builtin === true ? 'builtin built-in 内置 agent 智能体 orchestration 编排' : 'custom 自定义 agent 智能体',
+        preview
+      ].filter(Boolean).join('\n'))
+      const metadata = {
+        title: displayName,
+        preview,
+        searchText
+      }
+      const embedding = hybridEnabled
+        ? await requestEmbeddingVector(
+          buildEntryEmbeddingText(kindConfig.kind, metadata, {
+            path: agentId,
+            name: displayName
+          }),
+          searchConfig.embedding
+        )
+        : []
+
+      entries.push({
+        type: kindConfig.entryType,
+        path: agentId,
+        name: displayName,
+        filename: agentId,
+        dirPath: '',
+        size: 0,
+        mtimeMs: 0,
+        title: metadata.title,
+        preview: metadata.preview,
+        searchText: metadata.searchText,
+        embedding,
+        agentId,
+        providerId: cleanString(agent?.provider),
+        providerName: cleanString(provider?.name),
+        model: cleanString(agent?.model),
+        promptId: cleanString(agent?.prompt),
+        promptName: cleanString(prompt?.name),
+        skillIds,
+        skillNames: skillObjects.map((item) => cleanString(item?.name || item?._id)).filter(Boolean),
+        mcpIds,
+        mcpNames: mcpObjects.map((item) => cleanString(item?.name || item?._id)).filter(Boolean),
+        builtin: agent?.builtin === true
+      })
+    }
+
+    entries.sort(compareByPath)
+    return entries
+  }
+
+  const rootAbs = path.join(getDataStorageRootAbs(), ...kindConfig.root.split('/'))
   await fs.mkdir(rootAbs, { recursive: true })
   const entries = []
 
@@ -888,6 +1141,7 @@ async function rebuildIndex(kind, options = {}) {
     const now = new Date().toISOString()
     const nextIndex = createEmptyIndex(kind, {
       searchConfig,
+      sourceSignature: getIndexSourceSignature(kind),
       builtAt: now,
       updatedAt: now,
       dirty: false,
@@ -910,6 +1164,13 @@ async function ensureIndex(kind, options = {}) {
   const currentSearchConfig = getContentSearchConfig(options)
   const index = await readIndex(kind)
   if (!index) return rebuildIndex(kind, { reason: 'missing', searchConfig: currentSearchConfig })
+  const currentSourceSignature = getIndexSourceSignature(kind)
+  if (currentSourceSignature && String(index.sourceSignature || '') !== currentSourceSignature) {
+    return rebuildIndex(kind, {
+      reason: 'source_config_changed',
+      searchConfig: currentSearchConfig
+    })
+  }
   if (isHybridSearchEnabled(currentSearchConfig)) {
     const currentSignature = getContentSearchConfigSignature(currentSearchConfig)
     const storedSignature = String(index.searchConfigSignature || '')
@@ -922,6 +1183,48 @@ async function ensureIndex(kind, options = {}) {
   }
   if (index.dirty) return rebuildIndex(kind, { reason: index.reason || 'dirty', searchConfig: currentSearchConfig })
   return index
+}
+
+async function readIndexForQuery(kind, options = {}) {
+  const searchConfig = getContentSearchConfig(options)
+  const index = await readIndex(kind)
+  if (!index) {
+    return {
+      index: await ensureIndex(kind, { searchConfig }),
+      searchConfig,
+      stale: false
+    }
+  }
+
+  const currentSourceSignature = getIndexSourceSignature(kind)
+  if (currentSourceSignature && String(index.sourceSignature || '') !== currentSourceSignature) {
+    scheduleIndexMaintenance(kind, {
+      reason: 'source_config_changed',
+      searchConfig,
+      delayMs: 0
+    })
+    return { index, searchConfig, stale: true }
+  }
+
+  if (shouldInvalidateForSearchConfig(index, searchConfig)) {
+    scheduleIndexMaintenance(kind, {
+      reason: 'search_config_changed',
+      searchConfig,
+      delayMs: 0
+    })
+    return { index, searchConfig, stale: true }
+  }
+
+  if (index.dirty) {
+    scheduleIndexMaintenance(kind, {
+      reason: index.reason || 'dirty',
+      searchConfig,
+      delayMs: 0
+    })
+    return { index, searchConfig, stale: true }
+  }
+
+  return { index, searchConfig, stale: false }
 }
 
 function shouldInvalidateForSearchConfig(index, searchConfig) {
@@ -1020,17 +1323,17 @@ async function searchIndex(kind, options = {}) {
   const limit = normalizeLimit(options?.limit, kindConfig.defaultSearchLimit, 200)
   const queryLower = query.toLowerCase()
   const tokens = buildSearchTokens(query)
-  const searchConfig = getContentSearchConfig(options)
+  const { index, searchConfig } = await readIndexForQuery(kindConfig.kind, options)
   const hybridEnabled = isHybridSearchEnabled(searchConfig)
   const queryEmbedding = hybridEnabled
     ? await requestEmbeddingVector(query, searchConfig.embedding)
     : []
-  const semanticUsed = hybridEnabled && queryEmbedding.length > 0
-  const index = await ensureIndex(kindConfig.kind, { searchConfig })
+  const hasEntryEmbeddings = Array.isArray(index?.entries) && index.entries.some((entry) => Array.isArray(entry?.embedding) && entry.embedding.length > 0)
+  const semanticUsed = hybridEnabled && queryEmbedding.length > 0 && hasEntryEmbeddings
   const filtered = filterEntriesByDir(index.entries, options?.dirPath)
     .map((entry) => ({
       ...entry,
-      score: hybridEnabled
+      score: semanticUsed
         ? computeHybridSearchScore(entry, queryLower, tokens, queryEmbedding, options)
         : computeSearchScore(entry, queryLower, tokens)
     }))
@@ -1047,7 +1350,7 @@ async function searchIndex(kind, options = {}) {
     root: kindConfig.root,
     dirPath: normalizeDirPath(options?.dirPath),
     query,
-    searchMode: hybridEnabled ? 'hybrid' : 'keyword',
+    searchMode: semanticUsed ? 'hybrid' : 'keyword',
     semanticUsed,
     returned: Math.min(filtered.length, limit),
     total: filtered.length,
@@ -1059,7 +1362,7 @@ async function searchIndex(kind, options = {}) {
 async function listRecent(kind, options = {}) {
   const kindConfig = getKindConfig(kind)
   const limit = normalizeLimit(options?.limit, kindConfig.defaultRecentLimit, 200)
-  const index = await ensureIndex(kindConfig.kind)
+  const { index } = await readIndexForQuery(kindConfig.kind, options)
   const filtered = filterEntriesByDir(index.entries, options?.dirPath).sort(compareByRecent)
   return {
     root: kindConfig.root,

@@ -144,6 +144,7 @@ let pendingRefreshRequested = false
 let pendingRefreshSilent = true
 let refreshPromise = null
 let externalRefreshTimer = null
+const pendingExternalChangePaths = new Set()
 
 const showContextMenu = ref(false)
 const menuX = ref(0)
@@ -247,15 +248,92 @@ async function moveSessionAssetDirectoryForRename(oldPath, newPath) {
 }
 
 function handleExternalSessionFilesChanged(e) {
-  const changedPath = String(e?.detail?.path || '').trim()
-  if (changedPath && !changedPath.startsWith(String(props.root || ''))) return
+  const rawPaths = Array.isArray(e?.detail?.paths) ? e.detail.paths : [e?.detail?.path]
+  rawPaths
+    .map((item) => normalizeTreePath(item))
+    .filter((item) => item && item.startsWith(String(props.root || '')))
+    .forEach((item) => pendingExternalChangePaths.add(item))
+  if (!pendingExternalChangePaths.size) return
   if (externalRefreshTimer) {
     clearTimeout(externalRefreshTimer)
   }
   externalRefreshTimer = window.setTimeout(() => {
     externalRefreshTimer = null
-    void refreshTree({ silent: true })
+    void flushExternalSessionChanges()
   }, 180)
+}
+
+function removeTreeNodeByPath(targetPath) {
+  const normalized = normalizeTreePath(targetPath)
+  if (!normalized) return false
+  const parentPath = normalized.includes('/') ? normalized.slice(0, normalized.lastIndexOf('/')) : props.root
+  if (parentPath === props.root) {
+    const next = (Array.isArray(treeData.value) ? treeData.value : []).filter((node) => node?.key !== normalized)
+    if (next.length === treeData.value.length) return false
+    treeData.value = next
+  } else {
+    const parentNode = findNodeByKey(treeData.value, parentPath)
+    if (!parentNode || !Array.isArray(parentNode.children)) return false
+    const next = parentNode.children.filter((node) => node?.key !== normalized)
+    if (next.length === parentNode.children.length) return false
+    parentNode.children = next
+  }
+  selectedKeys.value = selectedKeys.value.filter((key) => key !== normalized)
+  selectedFolderKeys.value = selectedFolderKeys.value.filter((key) => key !== normalized)
+  expandedKeys.value = expandedKeys.value.filter((key) => key !== normalized && !String(key || '').startsWith(`${normalized}/`))
+  folderExpandedKeys.value = folderExpandedKeys.value.filter((key) => key !== normalized && !String(key || '').startsWith(`${normalized}/`))
+  loadedPaths.delete(normalized)
+  return true
+}
+
+async function syncExternalSessionFileChange(sessionPath) {
+  const normalized = normalizeTreePath(sessionPath)
+  if (!normalized || !isJsonSessionPath(normalized) || isChatSessionAssetsDirectoryPath(normalized)) return
+  const parentPath = normalized.includes('/') ? normalized.slice(0, normalized.lastIndexOf('/')) : props.root
+  const parentLoaded = parentPath === props.root || loadedPaths.has(parentPath)
+  if (!parentLoaded) return
+
+  const fileExists = await exists(normalized).catch(() => false)
+  if (!fileExists) {
+    removeTreeNodeByPath(normalized)
+    return
+  }
+
+  const statInfo = await stat(normalized)
+  if (statInfo?.isDirectory?.()) {
+    await refreshTree({ silent: true })
+    return
+  }
+
+  const fileMeta = await readSessionFileMeta(normalized, statInfo)
+  upsertTreeNode(parentPath || props.root, {
+    key: normalized,
+    label: fileMeta.label,
+    metaLabel: fileMeta.metaLabel || '',
+    sortTimeMs: fileMeta.sortTimeMs || statTimeMs(statInfo),
+    sessionKind: fileMeta.sessionKind || '',
+    isLeaf: true
+  })
+}
+
+async function flushExternalSessionChanges() {
+  const changedPaths = Array.from(pendingExternalChangePaths)
+  pendingExternalChangePaths.clear()
+  if (!changedPaths.length) return
+
+  const needsFullRefresh = changedPaths.some((item) => {
+    if (!item || item === props.root) return true
+    if (isChatSessionAssetsDirectoryPath(item)) return false
+    return !isJsonSessionPath(item)
+  })
+  if (needsFullRefresh) {
+    await refreshTree({ silent: true })
+    return
+  }
+
+  for (const item of changedPaths) {
+    await syncExternalSessionFileChange(item)
+  }
 }
 
 function getPathDepth(p) {
@@ -314,6 +392,7 @@ onBeforeUnmount(() => {
     clearTimeout(externalRefreshTimer)
     externalRefreshTimer = null
   }
+  pendingExternalChangePaths.clear()
 })
 
 async function refreshTree(options = {}) {

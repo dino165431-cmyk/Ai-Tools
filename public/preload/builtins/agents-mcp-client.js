@@ -1,4 +1,5 @@
 const globalConfig = require('../utils/global-config')
+const contentIndex = require('../utils/content-index')
 const { consumeJsonEventStream } = require('../utils/stream-json-events')
 
 const BUILTIN_AGENTS_MCP_SERVER_ID = 'builtin_agents_mcp'
@@ -107,6 +108,20 @@ function getSystemPromptById(promptsMap, promptId) {
 function resolveTraceStreamIdFromAgentRunParams(params) {
   if (!isPlainObject(params)) return ''
   return cleanString(params.__trace_stream_id || params.trace_stream_id)
+}
+
+function injectTraceStreamIdIntoAgentRunParams(params, traceStreamId) {
+  const id = cleanString(traceStreamId)
+  if (!id || !isPlainObject(params)) return params
+
+  const existingId = cleanString(params.__trace_stream_id || params.trace_stream_id)
+  if (existingId) return params
+
+  return {
+    ...params,
+    __trace_stream_id: id,
+    trace_stream_id: id
+  }
 }
 
 function resolveToolApprovalModeFromAgentRunParams(params) {
@@ -520,6 +535,7 @@ function dispatchBuiltinAgentsLiveUpdate(streamId, payload = {}) {
   if (Object.prototype.hasOwnProperty.call(payload, 'content')) live.content = toText(payload.content)
   if (Object.prototype.hasOwnProperty.call(payload, 'reasoning')) live.reasoning = toText(payload.reasoning)
   if (Object.prototype.hasOwnProperty.call(payload, 'round')) live.round = Number(payload.round) || 0
+  if (Object.prototype.hasOwnProperty.call(payload, 'status')) live.status = cleanString(payload.status)
   if (payload.reset === true) live.reset = true
   pendingBuiltinAgentsLiveByStreamId.set(id, live)
   schedulePendingBuiltinAgentsLiveFlush()
@@ -646,6 +662,16 @@ function coercePlainTextContent(content) {
   return String(content)
 }
 
+function extractReasoningText(payload) {
+  if (!payload || typeof payload !== 'object') return ''
+  const reasoning = payload.reasoning_content ?? payload.reasoning ?? payload.thinking ?? payload.thought
+  if (reasoning == null) return ''
+  if (typeof reasoning === 'string') return reasoning
+  if (typeof reasoning === 'number' || typeof reasoning === 'boolean') return String(reasoning).trim()
+  if (Array.isArray(reasoning) || typeof reasoning === 'object') return stableStringify(reasoning)
+  return String(reasoning).trim()
+}
+
 function buildUtoolsAiMessages({ systemContent, apiMessages }) {
   const messages = []
   const systemText = cleanString(systemContent)
@@ -654,17 +680,80 @@ function buildUtoolsAiMessages({ systemContent, apiMessages }) {
   ;(Array.isArray(apiMessages) ? apiMessages : []).forEach((message) => {
     if (!message || typeof message !== 'object') return
     const role = cleanString(message.role)
-    if (role !== 'system' && role !== 'user' && role !== 'assistant') return
+    if (role !== 'system' && role !== 'user' && role !== 'assistant' && role !== 'tool' && role !== 'tool_call') return
     const content = coercePlainTextContent(message.content)
     const next = { role, content }
-    const reasoning = cleanString(
-      message.reasoning_content ?? message.reasoning ?? message.thinking ?? message.thought
-    )
-    if (role === 'assistant' && reasoning) next.reasoning_content = reasoning
+    if (role === 'assistant') {
+      const hasReasoningField = ['reasoning_content', 'reasoning', 'thinking', 'thought'].some((key) =>
+        Object.prototype.hasOwnProperty.call(message, key)
+      )
+      if (hasReasoningField) {
+        next.reasoning_content = cleanString(
+          message.reasoning_content ?? message.reasoning ?? message.thinking ?? message.thought
+        )
+      }
+      if (Array.isArray(message.tool_calls) && message.tool_calls.length) {
+        next.tool_calls = message.tool_calls
+          .map((toolCall, index) => {
+            if (!toolCall || typeof toolCall !== 'object') return null
+            const fn = toolCall.function && typeof toolCall.function === 'object' ? toolCall.function : {}
+            const name = cleanString(fn.name)
+            if (!name) return null
+            return {
+              id: cleanString(toolCall.id) || `call_${index}`,
+              type: cleanString(toolCall.type) || 'function',
+              function: {
+                name,
+                arguments: typeof fn.arguments === 'string' ? fn.arguments : stableStringify(fn.arguments || {})
+              }
+            }
+          })
+          .filter(Boolean)
+      }
+    }
+    if (role === 'tool' || role === 'tool_call') {
+      const callId = cleanString(message.tool_call_id || message.call_id || '')
+      if (callId) next.tool_call_id = callId
+      const toolName = cleanString(message.name || message.toolName || '')
+      if (toolName) next.name = toolName
+    }
     messages.push(next)
   })
 
   return messages
+}
+
+function shouldRetryUtoolsToolContinuationAsPlainText(errorText = '') {
+  const lower = cleanString(errorText).toLowerCase()
+  if (!lower) return false
+  if (lower.includes('reasoning_content') && lower.includes('thinking mode')) return true
+  if (lower.includes('reasoning_content') && lower.includes('passed back to the api')) return true
+  return false
+}
+
+function buildUtoolsToolFallbackPrompt(records = []) {
+  const blocks = (Array.isArray(records) ? records : [])
+    .map((record, index) => {
+      const serverName = cleanString(record?.serverName)
+      const toolName = cleanString(record?.toolName || record?.name)
+      const argsText = truncateText(cleanString(record?.argsText || '{}'), 1200)
+      const content = truncateText(cleanString(record?.content || ''), MAX_TOOL_RESULT_CHARS)
+      return [
+        `### Tool Result ${index + 1}`,
+        [serverName, toolName].filter(Boolean).length ? `Tool: ${[serverName, toolName].filter(Boolean).join(' / ')}` : '',
+        `Args: ${argsText || '{}'}`,
+        'Result:',
+        content || '(empty result)'
+      ].filter(Boolean).join('\n')
+    })
+    .filter(Boolean)
+    .join('\n\n')
+
+  return [
+    'System note: tool calls were just completed, but the current uTools AI tool continuation endpoint is temporarily unavailable.',
+    'Please answer the user\'s original question directly using the tool results below. If the information is insufficient, say what is missing.',
+    blocks
+  ].filter(Boolean).join('\n\n')
 }
 
 function registerUtoolsAiToolFunctions({ tools, invokeTool }) {
@@ -871,8 +960,13 @@ function closeNestedClientSafely(server, client, pooled = false) {
 function buildAgentBrief(agent, config) {
   const provider = agent?.provider ? config?.providers?.[agent.provider] : null
   const prompt = getSystemPromptById(config?.prompts, agent?.prompt)
-  const skillNames = normalizeStringList(agent?.skills).map((id) => config?.skills?.[id]?.name || id)
-  const mcpNames = normalizeStringList(agent?.mcp).map((id) => config?.mcpServers?.[id]?.name || id)
+  const skillObjects = normalizeStringList(agent?.skills).map((id) => config?.skills?.[id]).filter(Boolean)
+  const skillNames = skillObjects.map((item) => cleanString(item?.name || item?._id) || cleanString(item?._id))
+  const effectiveMcpIds = normalizeStringList([
+    ...normalizeStringList(agent?.mcp),
+    ...skillObjects.flatMap((item) => normalizeStringList(item?.mcp))
+  ])
+  const mcpNames = effectiveMcpIds.map((id) => config?.mcpServers?.[id]?.name || id)
   return {
     id: cleanString(agent?._id),
     name: cleanString(agent?.name) || cleanString(agent?._id),
@@ -885,7 +979,22 @@ function buildAgentBrief(agent, config) {
   }
 }
 
-function resolveAgentTarget(config, params) {
+function buildAgentListItemFromSearchEntry(config, entry) {
+  const agentId = cleanString(entry?.agentId || entry?.path)
+  const agent = agentId ? config?.agents?.[agentId] : null
+  const base = buildAgentBrief(agent, config)
+  return {
+    ...base,
+    title: cleanString(entry?.title || base.name || base.id),
+    preview: cleanString(entry?.preview || ''),
+    provider_id: cleanString(entry?.providerId || agent?.provider),
+    prompt_id: cleanString(entry?.promptId || agent?.prompt),
+    skill_ids: normalizeStringList(entry?.skillIds || agent?.skills),
+    mcp_ids: normalizeStringList(entry?.mcpIds || agent?.mcp)
+  }
+}
+
+async function resolveAgentTarget(config, params) {
   const agentId = cleanString(params?.agent_id ?? params?.id ?? params?.agentId)
   const agentName = cleanString(params?.agent_name ?? params?.name ?? params?.agentName)
   const list = Object.values(isPlainObject(config?.agents) ? config.agents : {}).filter(Boolean)
@@ -903,24 +1012,50 @@ function resolveAgentTarget(config, params) {
   const exactCaseFold = list.find((item) => cleanString(item?.name).toLowerCase() === lower)
   if (exactCaseFold) return exactCaseFold
 
-  return list.find((item) => cleanString(item?.name).toLowerCase().includes(lower)) || null
+  const includeMatch = list.find((item) => cleanString(item?.name).toLowerCase().includes(lower))
+  if (includeMatch) return includeMatch
+
+  try {
+    await contentIndex.ensureIndex('agent')
+    const result = await contentIndex.searchIndex('agent', {
+      query: agentName,
+      limit: 5
+    })
+    const targetId = cleanString(result?.items?.[0]?.agentId || result?.items?.[0]?.path)
+    return targetId ? list.find((item) => cleanString(item?._id) === targetId) || null : null
+  } catch {
+    return null
+  }
 }
 
-function listAgentItems(config, query = '') {
-  const lower = cleanString(query).toLowerCase()
-  return Object.values(isPlainObject(config?.agents) ? config.agents : {})
+async function listAgentItems(config, query = '') {
+  const normalizedQuery = cleanString(query)
+  const list = Object.values(isPlainObject(config?.agents) ? config.agents : {})
     .filter(Boolean)
     .map((agent) => buildAgentBrief(agent, config))
-    .filter((item) => {
-      if (!lower) return true
-      return (
-        item.id.toLowerCase().includes(lower) ||
-        item.name.toLowerCase().includes(lower) ||
-        item.provider.toLowerCase().includes(lower) ||
-        item.model.toLowerCase().includes(lower)
-      )
-    })
     .sort((a, b) => a.name.localeCompare(b.name))
+
+  if (!normalizedQuery) {
+    return {
+      query: '',
+      searchMode: 'keyword',
+      semanticUsed: false,
+      returned: list.length,
+      total: list.length,
+      hasMore: false,
+      items: list
+    }
+  }
+
+  await contentIndex.ensureIndex('agent')
+  const result = await contentIndex.searchIndex('agent', {
+    query: normalizedQuery,
+    limit: 200
+  })
+  return {
+    ...result,
+    items: (Array.isArray(result?.items) ? result.items : []).map((entry) => buildAgentListItemFromSearchEntry(config, entry))
+  }
 }
 
 function buildSkillsPromptText(skillObjects, config, trace) {
@@ -1296,7 +1431,11 @@ async function executeMcpToolCall({ mapping, argsObj, trace, runState }) {
     if (!client?.callTool) throw new Error('MCP client not available')
     unregister = runState.registerClient(server, client, pooled)
     const callTimeoutMs = Number(server?.timeout) || 60000
-    const callArgs = typeof mapping?.unwrapArgs === 'function' ? mapping.unwrapArgs(argsObj) : argsObj
+    const runtimeArgsObj =
+      cleanString(mapping?.toolName) === 'agent_run'
+        ? injectTraceStreamIdIntoAgentRunParams(argsObj, runState?.traceStreamId)
+        : argsObj
+    const callArgs = typeof mapping?.unwrapArgs === 'function' ? mapping.unwrapArgs(runtimeArgsObj) : runtimeArgsObj
     if (mapping?.requiresWrappedInput && callArgs === undefined) {
       const errorText = `Tool input missing. This tool requires {"input": ...}.`
       appendTrace(trace, 'tool.failed', {
@@ -1371,99 +1510,178 @@ async function invokeUtoolsAiTool({ name, argsObj, map, trace, runState }) {
   return parsed.ok ? parsed.value : resultText
 }
 
-async function runAgentWithUtoolsAi({ profile, task, trace, runState }) {
+async function runAgentWithUtoolsAi({ profile, task, trace, runState, maxRounds = 12 }) {
   if (!canUseUtoolsAi()) throw new Error('Current environment does not support uTools AI')
   const api = getUtoolsApi()
   const { tools, map } = await buildMcpToolsBundle(profile.activeMcpServers, trace, runState)
   const unregisterToolFns = registerUtoolsAiToolFunctions({
     tools,
-    invokeTool: (name, argsObj) => invokeUtoolsAiTool({ name, argsObj, map, trace, runState })
+    invokeTool: (name, argsObj) => invokeUtoolsAiTool({
+      name,
+      argsObj: isPlainObject(argsObj) ? argsObj : {},
+      map,
+      trace,
+      runState
+    })
   })
-
   const apiMessages = [{ role: 'user', content: String(task || '') }]
-  let request = null
+  const utoolsToolFallbackRecords = []
+  let totalToolCalls = 0
+  let finalContent = ''
+  let finalReasoning = ''
   let timedOut = false
+  let currentRequest = null
   const requestTimeoutMs = 10 * 60_000
   const timeoutTimer = setTimeout(() => {
     timedOut = true
     try {
-      request?.abort?.()
+      currentRequest?.abort?.()
     } catch {
       // ignore
     }
   }, requestTimeoutMs)
 
-  appendTrace(trace, 'model.request', {
-    title: `Model request: ${profile.provider?.name || profile.providerId} / ${profile.model}`,
-    provider_id: profile.providerId,
-    model: profile.model,
-    tool_count: tools.length
-  })
-  dispatchBuiltinAgentsLiveUpdate(runState?.traceStreamId, { content: '', reasoning: '', round: 1, reset: true })
-
   try {
-    let streamedContent = ''
-    let streamedReasoning = ''
-    request = api.ai({
-      model: profile.model,
-      messages: buildUtoolsAiMessages({
-        systemContent: profile.systemPrompt,
-        apiMessages
-      }),
-      ...(tools.length ? { tools } : {})
-    }, (chunk) => {
-      if (runState?.aborted) return
-      const contentState = mergeStreamingText(streamedContent, chunk?.content)
-      streamedContent = contentState.total
-      const reasoningState = mergeStreamingText(streamedReasoning, chunk?.reasoning_content)
-      streamedReasoning = reasoningState.total
-      if (contentState.delta || reasoningState.delta) {
-        dispatchBuiltinAgentsLiveUpdate(runState?.traceStreamId, {
-          content: streamedContent,
-          reasoning: streamedReasoning,
-          round: 1
+    for (let round = 0; round < maxRounds; round += 1) {
+      throwIfAborted(runState)
+      let streamedContent = ''
+      let streamedReasoning = ''
+      const requestUtoolsAi = (requestApiMessages, requestTools = tools) => api.ai({
+        model: profile.model,
+        messages: buildUtoolsAiMessages({
+          systemContent: profile.systemPrompt,
+          apiMessages: requestApiMessages
+        }),
+        ...(requestTools.length ? { tools: requestTools } : {})
+      }, (chunk) => {
+        if (runState?.aborted) return
+        const contentState = mergeStreamingText(streamedContent, chunk?.content)
+        streamedContent = contentState.total
+        const reasoningState = mergeStreamingText(streamedReasoning, extractReasoningText(chunk))
+        streamedReasoning = reasoningState.total
+        if (contentState.delta || reasoningState.delta) {
+          dispatchBuiltinAgentsLiveUpdate(runState?.traceStreamId, {
+            content: streamedContent,
+            reasoning: streamedReasoning,
+            round: round + 1
+          })
+        }
+      })
+
+      appendTrace(trace, 'model.request', {
+        title: `Model request: ${profile.provider?.name || profile.providerId} / ${profile.model}`,
+        provider_id: profile.providerId,
+        model: profile.model,
+        round: round + 1,
+        tool_count: tools.length
+      })
+      dispatchBuiltinAgentsLiveUpdate(runState?.traceStreamId, { content: '', reasoning: '', round: round + 1, reset: true })
+
+      const request = requestUtoolsAi(apiMessages, tools)
+      currentRequest = request
+      runState.setRequest(request)
+      let result = null
+      try {
+        result = await request
+      } catch (err) {
+        const errText = err?.message || String(err)
+        if (!totalToolCalls || !shouldRetryUtoolsToolContinuationAsPlainText(errText)) throw err
+
+        dispatchBuiltinAgentsLiveUpdate(runState?.traceStreamId, { content: '', reasoning: '', round: round + 1, reset: true })
+        const fallbackRequest = requestUtoolsAi([
+          ...apiMessages,
+          {
+            role: 'user',
+            content: buildUtoolsToolFallbackPrompt(utoolsToolFallbackRecords)
+          }
+        ], [])
+        currentRequest = fallbackRequest
+        runState.setRequest(fallbackRequest)
+        result = await fallbackRequest
+      } finally {
+        runState.setRequest(null)
+        currentRequest = null
+      }
+
+      throwIfAborted(runState)
+      const assistantContent = toText(result?.content)
+      const reasoningContent = extractReasoningText(result)
+      const toolCalls = Array.isArray(result?.toolCalls) ? result.toolCalls : []
+
+      appendTrace(trace, 'model.response', {
+        title: `Model response: round ${round + 1}`,
+        provider_id: profile.providerId,
+        model: profile.model,
+        round: round + 1,
+        tool_call_count: toolCalls.length,
+        content_excerpt: truncateText(assistantContent, MAX_EXCERPT_CHARS),
+        content_text: truncateText(assistantContent, MAX_TOOL_RESULT_CHARS),
+        reasoning_excerpt: reasoningContent ? truncateText(reasoningContent, 1200) : '',
+        reasoning_text: reasoningContent ? truncateText(reasoningContent, MAX_TOOL_RESULT_CHARS) : ''
+      })
+
+      apiMessages.push({
+        role: 'assistant',
+        content: String(assistantContent || ''),
+        reasoning_content: String(reasoningContent || ''),
+        ...(toolCalls.length ? { tool_calls: toolCalls } : {})
+      })
+
+      if (!toolCalls.length) {
+        finalContent = assistantContent
+        finalReasoning = reasoningContent
+        finalRounds = round + 1
+        return {
+          content: assistantContent,
+          reasoning: reasoningContent,
+          rounds: round + 1,
+          toolCalls: totalToolCalls
+        }
+      }
+
+      if (round === maxRounds - 1) {
+        return {
+          content: assistantContent || finalContent,
+          reasoning: reasoningContent || finalReasoning,
+          rounds: round + 1,
+          toolCalls: totalToolCalls
+        }
+      }
+
+      for (const toolCall of toolCalls) {
+        throwIfAborted(runState)
+        totalToolCalls += 1
+        const mapping = map.get(toolCall?.function?.name)
+        const argsParsed = safeJsonParse(toolCall?.function?.arguments || '')
+        const argsObj = argsParsed.ok && isPlainObject(argsParsed.value) ? argsParsed.value : {}
+        const exec = await executeMcpToolCall({ mapping, argsObj, trace, runState })
+        utoolsToolFallbackRecords.push({
+          name: toolCall?.function?.name || '',
+          serverName: exec?.serverName || mapping?.serverName || '',
+          toolName: exec?.toolName || mapping?.toolName || toolCall?.function?.name || '',
+          argsText: stableStringify(argsObj || {}),
+          content: String(exec?.content || '')
+        })
+        apiMessages.push({
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          content: String(exec?.content || '')
         })
       }
-    })
-    runState.setRequest(request)
+    }
 
-    const result = await request
-    throwIfAborted(runState)
-    const finalContentState = mergeStreamingText(streamedContent, result?.content)
-    streamedContent = finalContentState.total
-    const finalReasoningState = mergeStreamingText(streamedReasoning, result?.reasoning_content)
-    streamedReasoning = finalReasoningState.total
-    if (finalContentState.delta || finalReasoningState.delta) {
-      dispatchBuiltinAgentsLiveUpdate(runState?.traceStreamId, {
-        content: streamedContent,
-        reasoning: streamedReasoning,
-        round: 1
-      })
-    }
-    const assistantContent = toText(streamedContent)
-    const reasoningContent = toText(streamedReasoning)
-    appendTrace(trace, 'model.response', {
-      title: 'Model response ready',
-      provider_id: profile.providerId,
-      model: profile.model,
-      content_excerpt: truncateText(assistantContent, MAX_EXCERPT_CHARS),
-      content_text: truncateText(assistantContent, MAX_TOOL_RESULT_CHARS),
-      reasoning_excerpt: reasoningContent ? truncateText(reasoningContent, 1200) : '',
-      reasoning_text: reasoningContent ? truncateText(reasoningContent, MAX_TOOL_RESULT_CHARS) : ''
-    })
-    return {
-      content: assistantContent,
-      reasoning: reasoningContent,
-      rounds: 1,
-      toolCalls: 0
-    }
+    throw new Error('Agent run stopped: tool round limit reached')
   } catch (err) {
     if (timedOut) throw new Error(`Request timeout (${requestTimeoutMs}ms)`)
     throw err
   } finally {
     clearTimeout(timeoutTimer)
     runState.setRequest(null)
-    unregisterToolFns()
+    try {
+      unregisterToolFns()
+    } catch {
+      // ignore
+    }
   }
 }
 
@@ -1478,6 +1696,8 @@ async function runAgentWithOpenAICompatible({ profile, task, trace, runState, ma
 
   let compatFcToolCallId = false
   let totalToolCalls = 0
+  let finalContent = ''
+  let finalReasoning = ''
 
   for (let round = 0; round < maxRounds; round += 1) {
     throwIfAborted(runState)
@@ -1540,7 +1760,7 @@ async function runAgentWithOpenAICompatible({ profile, task, trace, runState, ma
 
     throwIfAborted(runState)
     const assistantContent = toText(json?.content)
-    const reasoningContent = toText(json?.reasoning)
+    const reasoningContent = extractReasoningText(json)
     const toolCalls = Array.isArray(json?.toolCalls) ? json.toolCalls : []
 
     appendTrace(trace, 'model.response', {
@@ -1558,11 +1778,13 @@ async function runAgentWithOpenAICompatible({ profile, task, trace, runState, ma
     apiMessages.push({
       role: 'assistant',
       content: String(assistantContent || ''),
-      ...(reasoningContent ? { reasoning_content: String(reasoningContent || '') } : {}),
+      reasoning_content: String(reasoningContent || ''),
       ...(toolCalls.length ? { tool_calls: toolCalls } : {})
     })
 
     if (!toolCalls.length) {
+      finalContent = assistantContent
+      finalReasoning = reasoningContent
       return {
         content: assistantContent,
         reasoning: reasoningContent,
@@ -1573,8 +1795,8 @@ async function runAgentWithOpenAICompatible({ profile, task, trace, runState, ma
 
     if (round === maxRounds - 1) {
       return {
-        content: assistantContent,
-        reasoning: reasoningContent,
+        content: assistantContent || finalContent,
+        reasoning: reasoningContent || finalReasoning,
         rounds: round + 1,
         toolCalls: totalToolCalls
       }
@@ -1703,11 +1925,11 @@ function clampInteger(value, options = {}) {
 const TOOLS = [
   {
     name: 'agents_list',
-    description: 'List available Agents configured in the app. Use this before running a sub-agent when you are not sure which Agent id/name to use.',
+    description: 'List available Agents configured in the app. With query, it searches Agent id/name/provider/model/prompt/skills/MCP; default is keyword search and it automatically becomes hybrid semantic search when the global Agent/Notes/Sessions search config enables embeddings. The result includes searchMode and semanticUsed.',
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Optional fuzzy query for id/name/provider/model.' }
+        query: { type: 'string', description: 'Optional Agent query. Supports id/name/provider/model/prompt/skill/MCP keywords; when embeddings are configured it can also match semantically.' }
       },
       additionalProperties: false
     }
@@ -1719,7 +1941,7 @@ const TOOLS = [
       type: 'object',
       properties: {
         agent_id: { type: 'string', description: 'Preferred. Agent id from agents_list.' },
-        agent_name: { type: 'string', description: 'Fallback when id is unknown. Exact or fuzzy name match.' },
+        agent_name: { type: 'string', description: 'Fallback when id is unknown. Supports exact name, keyword match, and the same semantic search path as agents_list.' },
         task: { type: 'string', description: 'The task/instruction for the sub-agent.' },
         include_trace: { type: 'boolean', description: 'Whether to include execution trace in the result. Default true.' },
         max_rounds: { type: 'integer', description: `Maximum model/tool rounds for OpenAI-compatible providers. Default 12, max ${MAX_MODEL_ROUNDS}.` },
@@ -1755,10 +1977,11 @@ class BuiltinAgentsMcpClient {
     const config = globalConfig.getConfig()
 
     if (name === 'agents_list') {
+      const result = await listAgentItems(config, params.query)
       return {
         ok: true,
         kind: 'agents_list',
-        items: listAgentItems(config, params.query)
+        ...result
       }
     }
 
@@ -1785,7 +2008,7 @@ class BuiltinAgentsMcpClient {
       const runState = createRunState(this, { toolApprovalMode, traceStreamId })
 
       try {
-        agent = resolveAgentTarget(config, params)
+        agent = await resolveAgentTarget(config, params)
         if (!agent) {
           const errorText = 'Agent not found. Call agents_list first to inspect available Agents.'
           appendTrace(trace, 'run.failed', {
@@ -1823,7 +2046,7 @@ class BuiltinAgentsMcpClient {
 
         const maxRounds = clampInteger(params.max_rounds, { min: 1, max: MAX_MODEL_ROUNDS, defaultValue: 12 })
         const result = isUtoolsBuiltinProvider(profile.provider)
-          ? await runAgentWithUtoolsAi({ profile, task, trace, runState })
+          ? await runAgentWithUtoolsAi({ profile, task, trace, runState, maxRounds })
           : await runAgentWithOpenAICompatible({ profile, task, trace, runState, maxRounds })
 
         const durationMs = Date.now() - startedAt

@@ -177,6 +177,9 @@
           <n-text depth="3" style="font-size: 12px; margin-top: 6px;">
             不选择提示词时，会自动回退到全局默认系统提示词，不会再落成空白系统提示词。
           </n-text>
+          <n-text depth="3" style="font-size: 12px; margin-top: 6px;">
+            关系说明：`Prompt` 负责系统指令，`Skill` 提供可复用规则/知识入口，`MCP` 提供工具能力，`Agent` 负责把它们和 provider/model 组合起来运行。
+          </n-text>
         </n-form-item>
 
         <div class="agent-advanced-panel">

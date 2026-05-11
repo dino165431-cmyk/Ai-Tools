@@ -177,8 +177,9 @@ class FileOperations {
 
     _queueExternalTreeRefresh(rootRelPath, changedRelPath) {
         const root = this._normalizeRelativePath(rootRelPath)
+        const changed = this._normalizeRelativePath(changedRelPath) || root
         if (!root) return
-        if (this._isPathSuppressedByInternalMutation(changedRelPath || root)) return
+        if (this._isPathSuppressedByInternalMutation(changed || root)) return
 
         const existingTimer = this._externalWatchDebounceTimers.get(root)
         if (existingTimer) clearTimeout(existingTimer)
@@ -191,11 +192,11 @@ class FileOperations {
                 console.warn?.('[Content index] external watch dirty mark failed:', err)
             }
 
-            this._dispatchWindowEvent('storageFilesChanged', { paths: [root] })
+            this._dispatchWindowEvent('storageFilesChanged', { path: changed, rootPath: root, paths: [changed] })
             if (root === 'note') {
-                this._dispatchWindowEvent('noteFilesChanged', { path: 'note', paths: ['note'] })
+                this._dispatchWindowEvent('noteFilesChanged', { path: changed, rootPath: 'note', paths: [changed] })
             } else if (root === 'session') {
-                this._dispatchWindowEvent('sessionFilesChanged', { path: 'session', paths: ['session'] })
+                this._dispatchWindowEvent('sessionFilesChanged', { path: changed, rootPath: 'session', paths: [changed] })
             }
         }, EXTERNAL_WATCH_DEBOUNCE_MS)
 

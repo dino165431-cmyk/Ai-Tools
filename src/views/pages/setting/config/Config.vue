@@ -230,10 +230,10 @@
         <n-flex vertical :size="12">
           <n-flex justify="space-between" align="center" wrap :size="12">
             <n-flex vertical :size="6" style="min-width: 280px;">
-              <n-text strong>笔记 / 会话检索</n-text>
+              <n-text strong>Agent / 笔记 / 会话检索</n-text>
               <n-text depth="3">{{ contentSearchSummary }}</n-text>
               <n-text depth="3" style="font-size: 12px;">
-                默认仅做关键词检索；配置向量模型并切到混合模式后，会对笔记和会话索引同时生成 embedding，并在搜索时结合关键词与语义分数。索引会在笔记和会话的增删改、移动以及配置切换后自动维护。加密笔记不会进入笔记索引，也不会出现在搜索和最近列表中。
+                默认仅做关键词检索；配置向量模型并切到混合模式后，会对 Agent、笔记和会话索引同时生成 embedding，并在搜索时结合关键词与语义分数。Agent 索引会随智能体、提示词、技能、MCP 和服务商配置变更自动维护；笔记与会话索引会随各自内容的增删改、移动以及配置切换自动维护。加密笔记不会进入笔记索引，也不会出现在搜索和最近列表中。
               </n-text>
             </n-flex>
             <n-flex align="center" :size="10" wrap>
@@ -468,10 +468,10 @@
       </template>
     </n-modal>
 
-    <n-modal v-model:show="contentSearchConfigModal.show" preset="card" title="编辑笔记 / 会话检索配置" style="width: 760px; max-width: 95%;">
+    <n-modal v-model:show="contentSearchConfigModal.show" preset="card" title="编辑 Agent / 笔记 / 会话检索配置" style="width: 760px; max-width: 95%;">
       <n-flex vertical :size="12">
         <n-alert type="info" :show-icon="false">
-          默认是关键词检索。你可以先配置向量服务商和模型，再把检索模式切到“混合”，这样笔记和会话搜索都会同时利用关键词与语义相似度。加密笔记不会进入笔记索引，也不会被检索出来。
+          默认是关键词检索。你可以先配置向量服务商和模型，再把检索模式切到“混合”，这样 Agent、笔记和会话搜索都会同时利用关键词与语义相似度。加密笔记不会进入笔记索引，也不会被检索出来。
         </n-alert>
         <n-form label-placement="left" label-width="120px">
           <n-form-item label="检索模式">
@@ -1951,7 +1951,7 @@ async function saveContentSearchConfig() {
     await updateContentSearchConfig(normalized)
     syncContentSearchDraft(normalized)
     closeContentSearchConfigModal()
-    message.success('笔记 / 会话检索配置已保存')
+    message.success('Agent / 笔记 / 会话检索配置已保存')
   } catch (err) {
     syncContentSearchDraft(contentSearchConfig.value)
     message.error(err?.message || String(err))

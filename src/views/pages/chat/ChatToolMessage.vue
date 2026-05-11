@@ -258,6 +258,11 @@ function toolImageTitle(img, index) {
   background: rgba(245, 166, 35, 0.14);
 }
 
+.tool-message__status.is-paused {
+  color: rgb(180, 83, 9);
+  background: rgba(224, 168, 63, 0.14);
+}
+
 .tool-message__status.is-success {
   color: rgb(8, 145, 178);
   background: rgba(14, 165, 233, 0.12);

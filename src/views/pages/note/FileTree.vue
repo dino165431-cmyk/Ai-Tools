@@ -200,6 +200,8 @@ const loadedPaths = new Set();
 const treeNodeIndex = new Map();
 const refreshing = ref(false);
 const runtimeIssue = ref('');
+const pendingExternalChangePaths = new Set();
+let externalRefreshTimer = null;
 
 // 右键菜单状态
 const showContextMenu = ref(false);
@@ -333,9 +335,19 @@ onMounted(async () => {
 });
 
 function handleExternalNoteFilesChanged(e) {
-  const changedPath = String(e?.detail?.path || '').trim();
-  if (changedPath && changedPath !== 'note' && !changedPath.startsWith('note/')) return;
-  void refreshTree({ silent: true });
+  const rawPaths = Array.isArray(e?.detail?.paths) ? e.detail.paths : [e?.detail?.path];
+  rawPaths
+    .map((item) => toPosixPath(String(item || '').trim()))
+    .filter((item) => item && (item === 'note' || item.startsWith('note/')))
+    .forEach((item) => pendingExternalChangePaths.add(item));
+  if (!pendingExternalChangePaths.size) return;
+  if (externalRefreshTimer) {
+    clearTimeout(externalRefreshTimer);
+  }
+  externalRefreshTimer = window.setTimeout(() => {
+    externalRefreshTimer = null;
+    void flushExternalNoteChanges();
+  }, 180);
 }
 
 onMounted(() => {
@@ -352,7 +364,113 @@ onBeforeUnmount(() => {
   } catch {
     // ignore
   }
+  if (externalRefreshTimer) {
+    clearTimeout(externalRefreshTimer);
+    externalRefreshTimer = null;
+  }
+  pendingExternalChangePaths.clear();
 });
+
+function removeTreeNodeByPath(targetPath) {
+  const normalized = toPosixPath(String(targetPath || '').trim());
+  if (!normalized) return false;
+  const parentPath = normalized.includes('/') ? normalized.substring(0, normalized.lastIndexOf('/')) : 'note';
+  if (parentPath === 'note') {
+    const next = (Array.isArray(treeData.value) ? treeData.value : []).filter((node) => node?.key !== normalized);
+    if (next.length === treeData.value.length) return false;
+    treeData.value = next;
+  } else {
+    const parentNode = findNodeByKey(parentPath);
+    if (!parentNode || !Array.isArray(parentNode.children)) return false;
+    const next = parentNode.children.filter((node) => node?.key !== normalized);
+    if (next.length === parentNode.children.length) return false;
+    parentNode.children = next;
+  }
+  rebuildTreeNodeIndex();
+  selectedKeys.value = selectedKeys.value.filter((key) => key !== normalized);
+  selectedFolderKeys.value = selectedFolderKeys.value.filter((key) => key !== normalized);
+  expandedKeys.value = expandedKeys.value.filter((key) => key !== normalized && !String(key || '').startsWith(`${normalized}/`));
+  folderExpandedKeys.value = folderExpandedKeys.value.filter((key) => key !== normalized && !String(key || '').startsWith(`${normalized}/`));
+  loadedPaths.delete(normalized);
+  return true;
+}
+
+function upsertFileLeafNode(filePath) {
+  const normalized = toPosixPath(String(filePath || '').trim());
+  if (!normalized) return false;
+  const parentPath = normalized.includes('/') ? normalized.substring(0, normalized.lastIndexOf('/')) : 'note';
+  const parentLoaded = parentPath === 'note' || loadedPaths.has(parentPath);
+  if (!parentLoaded) return false;
+
+  const fileName = normalized.split('/').pop();
+  const nextNode = {
+    key: normalized,
+    label: stripNoteExtension(fileName),
+    isLeaf: true,
+    noteType: getNoteTypeByPath(normalized)
+  };
+
+  if (parentPath === 'note') {
+    const withoutCurrent = (Array.isArray(treeData.value) ? treeData.value : []).filter((node) => node?.key !== normalized);
+    treeData.value = [...withoutCurrent, nextNode].sort((a, b) => {
+      if (a.isLeaf === b.isLeaf) return a.label.localeCompare(b.label);
+      return a.isLeaf ? 1 : -1;
+    });
+  } else {
+    const parentNode = findNodeByKey(parentPath);
+    if (!parentNode || !Array.isArray(parentNode.children)) return false;
+    const withoutCurrent = parentNode.children.filter((node) => node?.key !== normalized);
+    parentNode.children = [...withoutCurrent, nextNode].sort((a, b) => {
+      if (a.isLeaf === b.isLeaf) return a.label.localeCompare(b.label);
+      return a.isLeaf ? 1 : -1;
+    });
+  }
+  rebuildTreeNodeIndex();
+  return true;
+}
+
+async function syncExternalNoteFileChange(notePath) {
+  const normalized = toPosixPath(String(notePath || '').trim());
+  if (!normalized || !isSupportedNotePath(normalized)) return;
+  const parentPath = normalized.includes('/') ? normalized.substring(0, normalized.lastIndexOf('/')) : 'note';
+  const parentLoaded = parentPath === 'note' || loadedPaths.has(parentPath);
+  if (!parentLoaded) return;
+
+  const fileExists = await exists(normalized).catch(() => false);
+  if (!fileExists) {
+    removeTreeNodeByPath(normalized);
+    return;
+  }
+
+  const statInfo = await stat(normalized);
+  if (statInfo?.isDirectory?.()) {
+    await refreshTree({ silent: true });
+    return;
+  }
+
+  upsertFileLeafNode(normalized);
+}
+
+async function flushExternalNoteChanges() {
+  const changedPaths = Array.from(pendingExternalChangePaths);
+  pendingExternalChangePaths.clear();
+  if (!changedPaths.length) return;
+
+  const needsFullRefresh = changedPaths.some((item) => {
+    const name = String(item || '').split('/').pop() || '';
+    if (!item || item === 'note') return true;
+    if (name === 'assets' || name.endsWith('.assets')) return true;
+    return !isSupportedNotePath(item);
+  });
+  if (needsFullRefresh) {
+    await refreshTree({ silent: true });
+    return;
+  }
+
+  for (const item of changedPaths) {
+    await syncExternalNoteFileChange(item);
+  }
+}
 
 async function refreshTree(options = {}) {
   const silent = options?.silent === true;
