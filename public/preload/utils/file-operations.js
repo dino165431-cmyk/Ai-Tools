@@ -194,9 +194,9 @@ class FileOperations {
 
             this._dispatchWindowEvent('storageFilesChanged', { path: changed, rootPath: root, paths: [changed] })
             if (root === 'note') {
-                this._dispatchWindowEvent('noteFilesChanged', { path: changed, rootPath: 'note', paths: [changed] })
+                this._dispatchWindowEvent('noteFilesChanged', { path: 'note', paths: ['note'] })
             } else if (root === 'session') {
-                this._dispatchWindowEvent('sessionFilesChanged', { path: changed, rootPath: 'session', paths: [changed] })
+                this._dispatchWindowEvent('sessionFilesChanged', { path: 'session', paths: ['session'] })
             }
         }, EXTERNAL_WATCH_DEBOUNCE_MS)
 

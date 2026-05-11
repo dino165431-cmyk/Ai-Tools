@@ -18,6 +18,8 @@ const HYBRID_SEARCH_KEYWORD_WEIGHT = 0.7
 const HYBRID_SEARCH_SEMANTIC_WEIGHT = 0.3
 const HYBRID_SEARCH_MIN_SEMANTIC_SIMILARITY = 0.38
 const HYBRID_SEARCH_SEMANTIC_BOOST = 120
+const EMBEDDING_FAILURE_LOG_WINDOW_MS = 60 * 1000
+const MAX_EMBEDDING_FAILURE_LOG_CACHE_SIZE = 100
 const ENCRYPTED_NOTE_PAYLOAD_RE = /^\s*\{\s*"kind"\s*:\s*"ai-tools-note"\s*,\s*"v"\s*:\s*1\s*,\s*"content"\s*:\s*\{\s*"alg"\s*:\s*"AES-GCM"\s*,/i
 
 const INDEX_KINDS = Object.freeze({
@@ -63,6 +65,7 @@ let lastObservedContentSearchConfigSignature = ''
 let lastObservedAgentConfigSignature = ''
 let globalConfigMaintenanceListener = null
 let contentIndexInitialized = false
+const embeddingFailureLogTimes = new Map()
 
 function toPosixPath(value) {
   return String(value || '').replace(/\\/g, '/')
@@ -118,6 +121,97 @@ function normalizePreviewText(value, maxLength = MAX_INDEX_PREVIEW_LENGTH) {
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, maxLength)
+}
+
+function normalizeInlineText(value, maxLength = 240) {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLength)
+}
+
+function looksLikeHtmlResponseBody(value) {
+  const text = String(value || '').trim()
+  return /^<!doctype html\b/i.test(text)
+    || /^<html\b/i.test(text)
+    || (/^</.test(text) && /<\/?[a-z][\s\S]*>/i.test(text))
+}
+
+function formatEmbeddingEndpoint(url) {
+  const raw = cleanString(url)
+  if (!raw) return 'embedding endpoint'
+
+  try {
+    const parsed = new URL(raw)
+    return `${parsed.origin}${parsed.pathname}`
+  } catch {
+    return raw
+  }
+}
+
+function classifyEmbeddingErrorBody(body) {
+  const text = normalizeInlineText(body, 320)
+  if (!text) return ''
+  if (looksLikeHtmlResponseBody(text)) return 'HTML error response'
+  if (
+    (text.startsWith('{') && text.endsWith('}'))
+    || (text.startsWith('[') && text.endsWith(']'))
+  ) {
+    return 'JSON error response'
+  }
+  return 'non-JSON error response'
+}
+
+function buildEmbeddingHttpErrorSummary(response, body) {
+  const status = Number(response?.status)
+  const statusText = normalizeInlineText(response?.statusText, 80)
+  const statusLabel = Number.isFinite(status) && status > 0 ? `HTTP ${status}` : 'HTTP error'
+  const responseKind = classifyEmbeddingErrorBody(body)
+  const prefix = statusText ? `${statusLabel} ${statusText}` : statusLabel
+  return responseKind ? `${prefix} (${responseKind})` : prefix
+}
+
+function summarizeEmbeddingRequestError(error) {
+  const message = normalizeInlineText(error?.message, 240)
+  if (!message) return 'Request failed'
+  if (looksLikeHtmlResponseBody(message)) return 'Request failed (HTML error response)'
+  return message
+}
+
+function shouldLogEmbeddingFailure(fingerprint) {
+  const now = Date.now()
+
+  for (const [key, loggedAt] of embeddingFailureLogTimes.entries()) {
+    if (now - loggedAt >= EMBEDDING_FAILURE_LOG_WINDOW_MS) {
+      embeddingFailureLogTimes.delete(key)
+    }
+  }
+
+  const lastLoggedAt = embeddingFailureLogTimes.get(fingerprint)
+  if (typeof lastLoggedAt === 'number' && now - lastLoggedAt < EMBEDDING_FAILURE_LOG_WINDOW_MS) {
+    return false
+  }
+
+  if (embeddingFailureLogTimes.size >= MAX_EMBEDDING_FAILURE_LOG_CACHE_SIZE) {
+    const oldestKey = embeddingFailureLogTimes.keys().next().value
+    if (oldestKey) embeddingFailureLogTimes.delete(oldestKey)
+  }
+
+  embeddingFailureLogTimes.set(fingerprint, now)
+  return true
+}
+
+function logEmbeddingRequestFailure({ provider, model, url, error }) {
+  const providerLabel = cleanString(provider?.name) || cleanString(provider?._id) || 'unknown provider'
+  const modelLabel = cleanString(model) || 'unknown model'
+  const endpoint = formatEmbeddingEndpoint(url || provider?.baseurl)
+  const summary = summarizeEmbeddingRequestError(error)
+  const fingerprint = [providerLabel, modelLabel, endpoint, summary].join('|')
+  if (!shouldLogEmbeddingFailure(fingerprint)) return
+
+  console.warn?.(
+    `[Content index] embedding request failed for "${providerLabel}" (${modelLabel}) at ${endpoint}: ${summary}`
+  )
 }
 
 function normalizeSearchText(value, maxLength = MAX_INDEX_SEARCH_TEXT_LENGTH) {
@@ -541,6 +635,7 @@ async function requestEmbeddingVector(text, selection) {
   if (!/\/v1$/i.test(baseUrl)) candidates.push(`${baseUrl.replace(/\/+$/, '')}/v1/embeddings`)
 
   let lastError = null
+  let lastFailedUrl = candidates[candidates.length - 1] || baseUrl
   for (const url of candidates) {
     try {
       const response = await fetch(url, {
@@ -560,23 +655,35 @@ async function requestEmbeddingVector(text, selection) {
       }
 
       if (!response.ok) {
-        const message = await response.text()
-        throw new Error(message || `HTTP ${response.status}`)
+        const body = await response.text().catch(() => '')
+        throw new Error(buildEmbeddingHttpErrorSummary(response, body))
       }
 
-      const json = await response.json()
+      let json = null
+      try {
+        json = await response.json()
+      } catch {
+        throw new Error('Invalid JSON response')
+      }
+
       return Array.isArray(json?.data?.[0]?.embedding)
         ? json.data[0].embedding.map((value) => Number(value) || 0)
         : []
     } catch (err) {
       lastError = err
+      lastFailedUrl = url
       if (url !== candidates[candidates.length - 1]) continue
       break
     }
   }
 
   if (lastError) {
-    console.warn?.('[Content index] embedding request failed:', lastError)
+    logEmbeddingRequestFailure({
+      provider,
+      model,
+      url: lastFailedUrl,
+      error: lastError
+    })
   }
   return []
 }

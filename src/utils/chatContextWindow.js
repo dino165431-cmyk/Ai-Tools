@@ -1001,7 +1001,12 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
     let selectionMode = 'compact'
     let selectionVariant = 'compact'
 
-    if (toolPolicy !== 'strip' && preserveToolResultTurns && hasToolPayload) {
+    if (mustKeep) {
+      messages = fullTurnMessages
+      stats = fullTurnStats
+      selectionMode = 'full'
+      selectionVariant = 'full'
+    } else if (toolPolicy !== 'strip' && preserveToolResultTurns && hasToolPayload) {
       messages = fullTurnMessages
       stats = fullTurnStats
       selectionMode = 'full'
@@ -1249,7 +1254,7 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
     })
     let chosenFits = chosenFitReasons.length === 0
 
-    while (!chosenFits) {
+    while (!mustKeep && !chosenFits) {
       const nextVariant = getNextMoreCompactVariant(candidate, chosenVariant)
       if (!nextVariant) break
       const reduced = applyTurnVariant(candidate, nextVariant)
@@ -1265,7 +1270,7 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
       chosenFits = chosenFitReasons.length === 0
     }
 
-    if (!chosenFits && !hasAttachment && !hasToolPayload) {
+    if (!mustKeep && !chosenFits && !hasAttachment && !hasToolPayload) {
       const availableChars = Math.max(0, maxChars - selectedChars)
       const adaptive = buildAdaptiveCompactVariant(candidate, availableChars)
       if (adaptive && variantImproves(adaptive.stats, chosenStats)) {

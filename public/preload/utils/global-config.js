@@ -259,7 +259,7 @@ function buildBuiltinPrompt() {
             '- 写入前先确认路径、id、名称和模式；不明确时先问 1 个澄清问题。',
             '- 敏感信息如 API Key、env、headers 不要回显。',
             '- 内置 MCP / Skill / Prompt 不可删除或修改；内置 Agent 不可删除，且只允许部分字段更新。',
-            '- 对 Agent、笔记和会话这类可能很多的对象，默认优先轻量检索定位，不要一上来就做整库递归遍历。',
+            '- 对 Agent、笔记和会话这类可能很多的对象，默认优先轻量定位，优先用检索/最近/目录工具缩小范围，不要一上来就做整库递归遍历。',
             '- `agents_list` / `notes_search` / `sessions_search` 默认是关键词检索；如果全局检索配置启用了 embedding 的混合模式，工具会自动把关键词和语义结果一起用于排序，调用方式不变。Agent 索引会随智能体、提示词、技能、MCP、服务商配置变更自动维护；笔记和会话索引会随数据变更、移动、删除以及配置切换自动维护。笔记侧的加密内容不参与索引或搜索，`notes_read` 也不会直接读取加密笔记。',
             '',
             '内置 MCP：',
@@ -1793,6 +1793,37 @@ class GlobalConfig {
         }
     }
 
+    _readExistingLocalNotebookRuntimeConfig() {
+        const filePath = this._getLocalNotebookRuntimeConfigPath()
+        if (!filePath) return null
+
+        try {
+            if (!fs.existsSync(filePath)) return null
+            const text = String(fs.readFileSync(filePath, 'utf-8') || '').replace(/^\uFEFF/, '')
+            return normalizeNotebookRuntimeConfig(this._parseJsonText(text, 'Notebook Runtime 配置'))
+        } catch {
+            return null
+        }
+    }
+
+    _hasReadableLocalNotebookRuntimeConfig() {
+        return !!this._readExistingLocalNotebookRuntimeConfig()
+    }
+
+    _canStripLegacyNotebookRuntimeConfig(rawLegacy) {
+        const normalizedLegacyRuntime = normalizeNotebookRuntimeConfig(rawLegacy)
+        if (safeJsonEquals(normalizedLegacyRuntime, DEFAULT_NOTEBOOK_RUNTIME_CONFIG)) {
+            return true
+        }
+
+        const localRuntime = this._readExistingLocalNotebookRuntimeConfig()
+        if (!localRuntime) {
+            return false
+        }
+
+        return !safeJsonEquals(localRuntime, DEFAULT_NOTEBOOK_RUNTIME_CONFIG)
+    }
+
     _readLocalNotebookRuntimeConfig(fallback = DEFAULT_NOTEBOOK_RUNTIME_CONFIG) {
         const filePath = this._getLocalNotebookRuntimeConfigPath()
         const normalizedFallback = normalizeNotebookRuntimeConfig(fallback)
@@ -1871,18 +1902,14 @@ class GlobalConfig {
         }
 
         const normalizedLegacyRuntime = normalizeNotebookRuntimeConfig(legacyRuntime)
-        let canStrip = safeJsonEquals(normalizedLegacyRuntime, DEFAULT_NOTEBOOK_RUNTIME_CONFIG)
+        let canStrip = this._canStripLegacyNotebookRuntimeConfig(normalizedLegacyRuntime)
 
         if (!canStrip) {
-            if (this._hasLocalNotebookRuntimeConfig()) {
+            try {
+                this._writeLocalNotebookRuntimeConfig(normalizedLegacyRuntime)
                 canStrip = true
-            } else {
-                try {
-                    this._writeLocalNotebookRuntimeConfig(normalizedLegacyRuntime)
-                    canStrip = true
-                } catch (err) {
-                    console.warn('迁移 Notebook Runtime 本地配置失败。', err)
-                }
+            } catch (err) {
+                console.warn('迁移 Notebook Runtime 本地配置失败。', err)
             }
         }
 
@@ -1917,6 +1944,9 @@ class GlobalConfig {
 
     _buildStorageRepairConfig(raw, repaired) {
         const base = this._isPlainObject(raw) ? this._clone(raw) : {}
+        const shouldPreserveLegacyNotebookRuntime = this._isPlainObject(base.noteConfig)
+            && Object.prototype.hasOwnProperty.call(base.noteConfig, 'notebookRuntime')
+            && !this._canStripLegacyNotebookRuntimeConfig(base.noteConfig.notebookRuntime)
         const sanitized = this._stripNotebookRuntimeFromStorageConfig(
             this._clone(this._isPlainObject(repaired) ? repaired : this._defaultConfig)
         )
@@ -1941,6 +1971,11 @@ class GlobalConfig {
             healed.webSearchConfig = this._clone(sanitized.webSearchConfig)
         } else if (Object.prototype.hasOwnProperty.call(healed, 'webSearchConfig')) {
             delete healed.webSearchConfig
+        }
+
+        if (shouldPreserveLegacyNotebookRuntime) {
+            healed.noteConfig = this._isPlainObject(healed.noteConfig) ? healed.noteConfig : {}
+            healed.noteConfig.notebookRuntime = normalizeNotebookRuntimeConfig(base.noteConfig.notebookRuntime)
         }
 
         return healed
