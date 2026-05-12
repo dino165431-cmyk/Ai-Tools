@@ -12327,7 +12327,8 @@ async function regenerateAssistant(msg) {
       cfg,
       text: userText,
       attachments,
-      requestRecord
+      requestRecord,
+      excludeLatestUserTurnFromMemoryRecall: true
     })
     await runChatSession({
       ...cfg,
@@ -12420,7 +12421,8 @@ async function submitUserEdit(msg) {
       cfg,
       text: draft,
       attachments,
-      requestRecord
+      requestRecord,
+      excludeLatestUserTurnFromMemoryRecall: true
     })
     await runChatSession({
       ...cfg,

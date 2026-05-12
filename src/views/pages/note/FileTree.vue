@@ -1432,7 +1432,7 @@ function openFolderPicker(noteType = 'markdown') {
 
 // 模态框内新建笔记
 async function createNoteInSelectedFolder() {
-  const folderPath = selectedFolderKeys.value[0];
+  const folderPath = selectedFolderKeys.value[0] || 'note';
   const name = newNoteName.value.trim();
   const noteType = pendingCreateNoteType.value;
   if (!name) {
@@ -1523,14 +1523,7 @@ async function createFolderInPath(parentPath, folderName) {
 
 // 右键新建文件夹
 async function createFolder(parentNode) {
-  let parentPath = 'note';
-  if (parentNode) {
-    parentPath = parentNode.key;
-    if (!parentNode.children) {
-      message.warning('只能在文件夹内创建文件夹');
-      return;
-    }
-  }
+  const parentPath = parentNode ? getDirectoryPathForNode(parentNode) : 'note';
   const inputValue = ref('');
   dialog.create({
     title: '新建文件夹',

@@ -360,6 +360,9 @@ const activeNote = computed(() => {
   if (!activeId) return null
   return openNotes.value.find((note) => note.id === activeId) || null
 })
+const openNoteTabSignature = computed(() => {
+  return openNotes.value.map((note) => `${note.id}:${note.path}`).join('|')
+})
 const activeEditorComponent = computed(() => {
   return activeNote.value?.type === 'notebook' ? NotebookEditor : MdEditor
 })
@@ -660,9 +663,10 @@ async function submitUnlockNote() {
   }
 
   const protectedMeta = getProtectedNoteMeta(notePath)
+  const syncTree = unlockModal.value.syncTree
   if (!protectedMeta) {
     closeUnlockModal()
-    openNoteInTab(notePath, { syncTree: unlockModal.value.syncTree })
+    openNoteInTab(notePath, { syncTree, password })
     return
   }
 
@@ -677,7 +681,6 @@ async function submitUnlockNote() {
     await ensureNoteCanOpen(notePath, password)
     setUnlockedPassword(notePath, password)
     setOpenNoteAccess(notePath, { protected: true, password })
-    const syncTree = unlockModal.value.syncTree
     closeUnlockModal()
     openNoteInTab(notePath, { syncTree, password })
   } catch (err) {
@@ -1155,7 +1158,7 @@ watch(
 )
 
 watch(
-  () => [openNotes.value.length, activeNoteId.value],
+  () => [openNotes.value.length, activeNoteId.value, openNoteTabSignature.value],
   () => {
     syncTabsHeight()
   },

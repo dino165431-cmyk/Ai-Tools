@@ -99,6 +99,7 @@ import { NIcon, NCard, NButton } from 'naive-ui';
 import { copyTextToClipboard } from '@/utils/clipboard';
 import { createMarkdownDiagramDecorator } from '@/utils/markdownDiagramDecorator';
 import { getSafeExternalUrl, safeOpenExternal } from '@/utils/safeOpenExternal';
+import { shouldPersistMarkdownDraftOnPathChange } from '@/utils/mdEditorSaveState';
 import {
   toPosixPath as toPosixPathUtil,
   safeDecodeURIComponent as safeDecodeURIComponentUtil,
@@ -736,7 +737,13 @@ watch(() => props.filePath, async (newPath, oldPath) => {
     clearTimeout(cleanupTimeout);
     cleanupTimeout = null;
   }
-  if (oldPath && content.value) {
+  const currentContent = String(content.value ?? '');
+  if (shouldPersistMarkdownDraftOnPathChange({
+    oldPath,
+    currentContent,
+    lastSavedFilePath,
+    lastSavedContent
+  })) {
     try {
       const renameInfo = props.renameContext;
       const isRenameSave =
@@ -749,7 +756,7 @@ watch(() => props.filePath, async (newPath, oldPath) => {
       if (isRenameSave) {
         const oldDocName = path.basename(renameInfo.from, path.extname(renameInfo.from));
         const newDocName = path.basename(renameInfo.to, path.extname(renameInfo.to));
-        const rewritten = rewriteNoteAssetsLinksInMarkdown(content.value, oldDocName, newDocName);
+        const rewritten = rewriteNoteAssetsLinksInMarkdown(currentContent, oldDocName, newDocName);
         const rewrittenContent = String(rewritten || '');
         setEditorContent(rewrittenContent);
         await persistNoteText(renameInfo.to, rewrittenContent);
@@ -758,7 +765,7 @@ watch(() => props.filePath, async (newPath, oldPath) => {
         scheduleCleanupAttachments(renameInfo.to, rewrittenContent);
         lastHandledRenameToken = renameInfo.token;
       } else {
-        await queuePersistContent(oldPath, content.value);
+        await queuePersistContent(oldPath, currentContent);
       }
     } catch (err) {
       message.error('保存上一份文件失败：' + (err?.message || String(err)));
