@@ -161,7 +161,7 @@
       </div>
 
       <div v-if="hasOutputArea" ref="outputRef" class="notebook-cell__outputs">
-        <NotebookOutput :outputs="cell.outputs || []" :preview-id-base="`notebook-output-${cell.id}`" :theme="theme" />
+        <NotebookOutput ref="notebookOutputRef" :outputs="cell.outputs || []" :preview-id-base="`notebook-output-${cell.id}`" :theme="theme" />
         <div v-if="showRunningPlaceholder" class="notebook-cell__runtime-status">Cell 正在继续执行...</div>
         <div v-if="hasRuntimeInputRequest" class="notebook-cell__stdin">
           <div class="notebook-cell__stdin-meta">
@@ -288,6 +288,7 @@ const outputRef = ref(null)
 const outputTailRef = ref(null)
 const contentRef = ref(null)
 const runtimeInputRef = ref(null)
+const notebookOutputRef = ref(null)
 const contentHeight = ref(148)
 const hasOutputs = computed(() => Array.isArray(props.cell?.outputs) && props.cell.outputs.length > 0)
 const hasRuntimeInputRequest = computed(() => !!String(props.runtimeInputRequest?.requestId || '').trim())
@@ -382,6 +383,7 @@ watch(() => String(props.runtimeInputRequest?.requestId || ''), (requestId, prev
   nextTick(() => {
     setAutoFollowOutput(true)
     scrollOutputRegionIntoView({ align: 'end' })
+    notebookOutputRef.value?.forceScrollAllTerminalBodiesToBottom?.()
     focusRuntimeInput()
     measureContentHeight()
   })
@@ -390,7 +392,10 @@ watch(() => String(props.runtimeInputRequest?.requestId || ''), (requestId, prev
 watch(() => props.running, (running, wasRunning) => {
   if (running && running !== wasRunning) setAutoFollowOutput(true)
   if (!running || running === wasRunning || !hasOutputArea.value || props.collapsed) return
-  nextTick(() => scrollOutputRegionIntoView({ align: 'end' }))
+  nextTick(() => {
+    scrollOutputRegionIntoView({ align: 'end' })
+    notebookOutputRef.value?.forceScrollAllTerminalBodiesToBottom?.()
+  })
 })
 
 watch(() => props.collapsed, (collapsed) => {
