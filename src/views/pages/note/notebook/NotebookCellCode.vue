@@ -11,7 +11,16 @@
   >
     <header ref="headerRef" class="notebook-cell__header">
       <div class="notebook-cell__title">
-        <n-tag size="small" :bordered="false" type="warning">Code</n-tag>
+        <n-dropdown :options="runtimeDropdownOptions" trigger="click" :disabled="running" @select="handleRuntimeSelect">
+          <n-tag
+            size="small"
+            :bordered="false"
+            :type="runtimeDescriptor.tagType"
+            :class="['notebook-cell__runtime-tag', { 'is-disabled': running }]"
+          >
+            {{ runtimeDescriptor.label }}
+          </n-tag>
+        </n-dropdown>
         <span>Cell {{ index + 1 }}</span>
         <span class="notebook-cell__exec">In [{{ executionCountLabel }}]</span>
       </div>
@@ -132,18 +141,18 @@
       <div ref="bodyRef" class="notebook-cell__body">
         <InlineCodeEditor
           ref="editorRef"
-          mode="python"
+          :mode="runtimeMode"
           :model-value="cell.source || ''"
           :theme="theme"
           :min-height="44"
-          :python-modules="pythonModules"
-          :python-path="pythonPath"
+          :python-modules="pythonModulesForEditor"
+          :python-path="pythonPathForEditor"
           :workspace-path="workspacePath"
           :document-id="`cell-${cell.id}`"
-          :completion-context="completionContext"
-          :python-context-cells="pythonContextCells"
-          :notebook-magic-options="notebookMagicOptions"
-          placeholder="输入可执行代码，支持 %runtime help、%pip install 和上下文补全"
+          :completion-context="completionContextForEditor"
+          :python-context-cells="pythonContextCellsForEditor"
+          :notebook-magic-options="notebookMagicOptionsForEditor"
+          :placeholder="runtimePlaceholder"
           @focus="emitFocus"
           @update:model-value="$emit('update-source', $event)"
           @python-completion-error="handlePythonCompletionError"
@@ -189,7 +198,7 @@
 <script setup>
 import path from 'path-browserify'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { NButton, NIcon, NInput, NTag, NTooltip } from 'naive-ui'
+import { NButton, NDropdown, NIcon, NInput, NTag, NTooltip } from 'naive-ui'
 import {
   ArrowDownOutline,
   ArrowUpOutline,
@@ -202,6 +211,7 @@ import {
   TrashOutline
 } from '@vicons/ionicons5'
 import InlineCodeEditor from '@/components/InlineCodeEditor.vue'
+import { NOTEBOOK_CELL_RUNTIME_OPTIONS, getNotebookCellRuntime, getNotebookCellRuntimeDescriptor } from '@/utils/notebookModel'
 import NotebookOutput from '../NotebookOutput.vue'
 import { CollapseCellIcon, ExpandCellIcon, LayersClearIcon } from './notebookCellIcons'
 
@@ -268,7 +278,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['update-source', 'delete', 'move-up', 'move-down', 'add-after', 'run', 'stop', 'clear-outputs', 'focus', 'runtime-error', 'go-to-definition', 'submit-runtime-input', 'abort-runtime-input', 'toggle-collapse'])
+const emit = defineEmits(['update-source', 'update-runtime', 'delete', 'move-up', 'move-down', 'add-after', 'run', 'stop', 'clear-outputs', 'focus', 'runtime-error', 'go-to-definition', 'submit-runtime-input', 'abort-runtime-input', 'toggle-collapse'])
 
 const rootRef = ref(null)
 const headerRef = ref(null)
@@ -303,6 +313,21 @@ const runtimeInputPromptText = computed(() => {
     : '当前代码正在等待标准输入。'
 })
 const runtimeInputPlaceholder = computed(() => props.runtimeInputRequest?.password ? '请输入密码、令牌或密钥' : '请输入内容后按回车继续')
+const runtimeMode = computed(() => getNotebookCellRuntime(props.cell))
+const runtimeDescriptor = computed(() => getNotebookCellRuntimeDescriptor(runtimeMode.value))
+const runtimePlaceholder = computed(() => runtimeDescriptor.value.placeholder || '')
+const runtimeDropdownOptions = computed(() => NOTEBOOK_CELL_RUNTIME_OPTIONS.map((item) => ({
+  label: item.label,
+  key: item.value,
+  props: {
+    title: item.description
+  }
+})))
+const pythonModulesForEditor = computed(() => runtimeMode.value === 'python' ? props.pythonModules : [])
+const pythonPathForEditor = computed(() => runtimeMode.value === 'python' ? props.pythonPath : '')
+const pythonContextCellsForEditor = computed(() => runtimeMode.value === 'python' ? props.pythonContextCells : [])
+const notebookMagicOptionsForEditor = computed(() => runtimeMode.value === 'python' || runtimeMode.value === 'sql' ? props.notebookMagicOptions : [])
+const completionContextForEditor = computed(() => runtimeMode.value === 'python' ? props.completionContext : '')
 let ignoreViewportScrollUntil = 0
 let lastViewportScrollTop = 0
 
@@ -383,6 +408,13 @@ watch(() => props.collapsed, (collapsed) => {
 
 function emitFocus() {
   emit('focus')
+}
+
+function handleRuntimeSelect(runtime) {
+  const nextRuntime = String(runtime || '').trim()
+  if (!nextRuntime || nextRuntime === runtimeMode.value) return
+  emitFocus()
+  emit('update-runtime', nextRuntime)
 }
 
 function handleRunOrStop() {
@@ -624,6 +656,12 @@ defineExpose({
   box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.18);
 }
 
+.notebook-cell.is-selected,
+.notebook-cell:focus-within,
+.notebook-cell:hover {
+  z-index: 24;
+}
+
 .notebook-cell__header {
   display: flex;
   align-items: center;
@@ -643,6 +681,14 @@ defineExpose({
   min-width: 0;
   font-size: 12px;
   color: rgba(51, 65, 85, 0.92);
+}
+
+.notebook-cell__runtime-tag {
+  cursor: pointer;
+}
+
+.notebook-cell__runtime-tag.is-disabled {
+  cursor: default;
 }
 
 .notebook-cell.is-dark .notebook-cell__title {

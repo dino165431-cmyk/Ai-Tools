@@ -1,6 +1,7 @@
 ﻿const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const readline = require('readline');
 const fileOperations = require('./file-operations');
 const globalConfig = require('./global-config');
@@ -65,9 +66,15 @@ function normalizeStartupTimeoutMs(value, fallback = 0) {
   return Math.min(120000, Math.max(3000, rounded));
 }
 
-function buildInstallCommand(pythonPath) {
+function normalizeInstallPackageList(packages = []) {
+  return Array.from(new Set((Array.isArray(packages) ? packages : []).map((item) => String(item || '').trim()).filter(Boolean)));
+}
+
+function buildInstallCommand(pythonPath, packages = PYTHON_DEPENDENCY_PACKAGES) {
   const executable = String(pythonPath || 'python').trim() || 'python';
-  return `"${executable}" -m pip install ${PYTHON_DEPENDENCY_PACKAGES.join(' ')}`;
+  const normalizedPackages = normalizeInstallPackageList(packages);
+  const finalPackages = normalizedPackages.length ? normalizedPackages : PYTHON_DEPENDENCY_PACKAGES;
+  return `"${executable}" -m pip install ${finalPackages.join(' ')}`;
 }
 
 function buildPythonChildEnv(extraEnv = {}) {
@@ -152,6 +159,90 @@ function killProcessTree(proc) {
   } catch {
     // ignore
   }
+}
+
+function createNotebookTempScript(contents, extension = '.txt') {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-notebook-'))
+  const safeExtension = String(extension || '.txt').startsWith('.') ? String(extension || '.txt') : `.${String(extension || 'txt').replace(/^\.+/, '')}`
+  const filePath = path.join(tempRoot, `cell${safeExtension}`)
+  fs.writeFileSync(filePath, String(contents || ''), 'utf-8')
+  return {
+    tempRoot,
+    filePath
+  }
+}
+
+function cleanupNotebookTempScript(tempRoot) {
+  const root = String(tempRoot || '').trim()
+  if (!root) return
+  try {
+    fs.rmSync(root, { recursive: true, force: true })
+  } catch {
+    // ignore cleanup failures
+  }
+}
+
+function buildNotebookProcessOutputs(stdoutText = '', stderrText = '', status = 'ok', errorText = '') {
+  const outputs = []
+  const normalizedStdout = normalizeProcessOutputText(stdoutText)
+  const normalizedStderr = normalizeProcessOutputText(stderrText)
+  const finalStatus = String(status || 'ok').toLowerCase() === 'error' ? 'error' : 'ok'
+
+  if (normalizedStdout) {
+    outputs.push({
+      output_type: 'stream',
+      name: 'stdout',
+      text: normalizedStdout
+    })
+  }
+
+  if (finalStatus === 'ok') {
+    if (normalizedStderr) {
+      outputs.push({
+        output_type: 'stream',
+        name: 'stderr',
+        text: normalizedStderr
+      })
+    }
+    return outputs
+  }
+
+  const traceback = normalizedStderr
+    ? normalizedStderr.split('\n').map((line) => String(line || '')).filter(Boolean)
+    : []
+  const message = String(errorText || normalizedStderr || normalizedStdout || '脚本执行失败').trim()
+
+  outputs.push({
+    output_type: 'error',
+    ename: 'NotebookScriptError',
+    evalue: message,
+    traceback
+  })
+
+  return outputs
+}
+
+function createProcessExecutionState(executionId) {
+  return {
+    id: String(executionId || '').trim(),
+    proc: null,
+    cancelled: false,
+    abort: null
+  }
+}
+
+function buildJavaScriptCellPrelude(sourceCode = '') {
+  const body = String(sourceCode || '')
+  return [
+    "import { createRequire } from 'node:module'",
+    "import { fileURLToPath } from 'node:url'",
+    "import path from 'node:path'",
+    "const require = createRequire(import.meta.url)",
+    "const __filename = fileURLToPath(import.meta.url)",
+    "const __dirname = path.dirname(__filename)",
+    '',
+    body
+  ].join('\n')
 }
 
 function parseNotebookMagicSpec(line = '') {
@@ -293,6 +384,8 @@ function runProcessWithProgress(command, args = [], options = {}) {
     return Promise.reject(new Error(`找不到工作目录：${cwd}`));
   }
   const onProgress = typeof options?.onProgress === 'function' ? options.onProgress : null;
+  const hasStdinText = Object.prototype.hasOwnProperty.call(options, 'stdinText');
+  const stdinText = hasStdinText ? String(options?.stdinText ?? '') : '';
   const displayCommand = String(options?.displayCommand || [executable, ...spawnArgs].join(' ')).trim();
   const startMessage = String(options?.startMessage || '').trim();
   const successMessage = String(options?.successMessage || '').trim();
@@ -313,14 +406,14 @@ function runProcessWithProgress(command, args = [], options = {}) {
           cwd,
           env: buildPythonChildEnv(options?.env),
           windowsHide: true,
-          stdio: ['ignore', 'pipe', 'pipe'],
+          stdio: hasStdinText ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
           shell: true
         })
       : spawn(executable, spawnArgs, {
           cwd,
           env: buildPythonChildEnv(options?.env),
           windowsHide: true,
-          stdio: ['ignore', 'pipe', 'pipe']
+          stdio: hasStdinText ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe']
         });
 
     let stdout = '';
@@ -426,6 +519,24 @@ function runProcessWithProgress(command, args = [], options = {}) {
         }
         rejectOnce(createUserAbortError());
       });
+    }
+
+    if (hasStdinText) {
+      try {
+        proc.stdin?.end?.(stdinText, 'utf-8');
+      } catch {
+        try {
+          proc.stdin?.end?.();
+        } catch {
+          // ignore stdin close failures
+        }
+      }
+    } else {
+      try {
+        proc.stdin?.end?.();
+      } catch {
+        // ignore stdin close failures
+      }
     }
 
     proc.stdout?.on('data', (chunk) => {
@@ -1391,9 +1502,11 @@ class NotebookRuntime {
 
   installDependencies(options = {}) {
     const pythonPath = pickPythonPath(options?.pythonPath || '');
-    const args = ['-m', 'pip', 'install', ...PYTHON_DEPENDENCY_PACKAGES];
+    const requestedPackages = normalizeInstallPackageList(options?.packages);
+    const packages = requestedPackages.length ? requestedPackages : PYTHON_DEPENDENCY_PACKAGES;
+    const args = ['-m', 'pip', 'install', ...packages];
     const onProgress = typeof options?.onProgress === 'function' ? options.onProgress : null;
-    const installCommand = buildInstallCommand(pythonPath);
+    const installCommand = buildInstallCommand(pythonPath, packages);
     const executionId = String(options?.executionId || '').trim();
     const executionState = executionId
       ? { id: executionId, proc: null, cancelled: false, abort: null }
@@ -1525,6 +1638,206 @@ class NotebookRuntime {
     } finally {
       this.magicExecutions.delete(executionId);
     }
+  }
+
+  async _executeStandaloneProcessCell(options = {}) {
+    const runtimeName = String(options?.runtimeName || 'process').trim() || 'process'
+    const executionId = String(options?.executionId || '').trim() || randomId(runtimeName)
+    const executable = String(options?.executable || '').trim()
+    if (!executable) {
+      throw new Error('缺少可执行命令')
+    }
+
+    const args = Array.isArray(options?.args)
+      ? options.args.map((item) => String(item ?? ''))
+      : []
+    const cwd = resolveRuntimeFsPath(options?.cwd, undefined)
+    const timeoutMs = normalizeExecutionTimeoutMs(options?.timeoutMs, 0)
+    const onProgress = typeof options?.onProgress === 'function' ? options.onProgress : null
+    const displayCommand = String(options?.displayCommand || [executable, ...args].join(' ')).trim() || executable
+    const startMessage = String(options?.startMessage || '').trim()
+    const successMessage = String(options?.successMessage || '').trim()
+    const errorMessage = String(options?.errorMessage || '').trim() || '脚本执行失败。'
+    const extraEnv = options?.env && typeof options.env === 'object' && !Array.isArray(options.env) ? options.env : {}
+    const runtimeEnv = {
+      ...extraEnv
+    }
+    if (options?.electronRunAsNode) {
+      runtimeEnv.ELECTRON_RUN_AS_NODE = '1'
+    }
+
+    const executionState = createProcessExecutionState(executionId)
+    this.magicExecutions.set(executionId, executionState)
+
+    let stdoutText = ''
+    let stderrText = ''
+    let timeoutTimer = null
+    let timedOut = false
+    let tempRoot = ''
+
+    const emitProgress = (status = 'running', extra = {}) => {
+      if (!onProgress) return
+      safeInvoke(onProgress, {
+        executionId,
+        status,
+        outputs: buildNotebookProcessOutputs(stdoutText, stderrText, status, extra?.error || ''),
+        ...extra
+      })
+    }
+
+    try {
+      if (Object.prototype.hasOwnProperty.call(options, 'scriptContents')) {
+        const tempScript = createNotebookTempScript(options.scriptContents, options?.scriptExtension || '.txt')
+        tempRoot = tempScript.tempRoot
+        args.push(tempScript.filePath)
+      }
+
+      if (timeoutMs > 0) {
+        timeoutTimer = setTimeout(() => {
+          timedOut = true
+          executionState.timeout = true
+          executionState.cancelled = true
+          try {
+            executionState.abort?.()
+          } catch {
+            killProcessTree(executionState.proc)
+          }
+        }, timeoutMs)
+      }
+
+      if (startMessage) {
+        emitProgress('start', {
+          message: startMessage,
+          command: displayCommand
+        })
+      }
+
+      const result = await runProcessWithProgress(executable, args, {
+        cwd,
+        env: runtimeEnv,
+        displayCommand,
+        startMessage: '',
+        successMessage,
+        errorMessage,
+        registerProcess: (proc) => {
+          executionState.proc = proc
+        },
+        registerAbort: (abort) => {
+          executionState.abort = abort
+        },
+        isCancelled: () => !!executionState.cancelled,
+        onProgress: (payload) => {
+          const phase = String(payload?.phase || '')
+          const text = String(payload?.text || '')
+          if (phase === 'stdout') {
+            stdoutText += text
+            emitProgress('running', {
+              phase,
+              text,
+              message: String(payload?.message || '').trim()
+            })
+            return
+          }
+          if (phase === 'stderr') {
+            stderrText += text
+            emitProgress('running', {
+              phase,
+              text,
+              message: String(payload?.message || '').trim()
+            })
+            return
+          }
+        }
+      })
+
+      const successOutputs = buildNotebookProcessOutputs(
+        result?.stdout || stdoutText,
+        result?.stderr || stderrText,
+        'ok'
+      )
+      emitProgress('ok', {
+        message: successMessage || '脚本执行完成。',
+        outputs: successOutputs
+      })
+      return {
+        ok: true,
+        executionId,
+        status: 'ok',
+        stdout: String(result?.stdout || stdoutText || '').trim(),
+        stderr: String(result?.stderr || stderrText || '').trim(),
+        outputs: successOutputs
+      }
+    } catch (err) {
+      if (timedOut || executionState.timeout) {
+        const timeoutLabel = timeoutMs > 0 ? `${timeoutMs}ms` : '未知时长'
+        const timeoutMessage = `Notebook Cell execution timed out (${timeoutLabel})`
+        const errorOutputs = buildNotebookProcessOutputs(stdoutText, stderrText, 'error', timeoutMessage)
+        emitProgress('error', {
+          message: timeoutMessage,
+          error: timeoutMessage,
+          outputs: errorOutputs
+        })
+        return {
+          ok: false,
+          executionId,
+          status: 'error',
+          error: timeoutMessage,
+          stdout: String(stdoutText || '').trim(),
+          stderr: String(stderrText || '').trim(),
+          outputs: errorOutputs
+        }
+      }
+
+      if (err?.userAborted || String(err?.code || '') === 'USER_ABORT') {
+        throw err
+      }
+
+      const failureText = String(err?.message || errorMessage || '脚本执行失败。').trim()
+      const errorOutputs = buildNotebookProcessOutputs(stdoutText, stderrText, 'error', failureText)
+      emitProgress('error', {
+        message: failureText,
+        error: failureText,
+        outputs: errorOutputs
+      })
+      return {
+        ok: false,
+        executionId,
+        status: 'error',
+        error: failureText,
+        stdout: String(stdoutText || '').trim(),
+        stderr: String(stderrText || '').trim(),
+        outputs: errorOutputs
+      }
+    } finally {
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer)
+      }
+      cleanupNotebookTempScript(tempRoot)
+      this.magicExecutions.delete(executionId)
+    }
+  }
+
+  async executeJavaScriptCell(options = {}) {
+    const payload = options && typeof options === 'object' && !Array.isArray(options) ? options : {}
+    const executionId = String(payload?.executionId || '').trim() || randomId('javascript')
+    const cwd = resolveWorkspacePath(payload)
+    const source = buildJavaScriptCellPrelude(String(payload?.code || ''))
+
+    return await this._executeStandaloneProcessCell({
+      runtimeName: 'javascript',
+      executionId,
+      executable: process.execPath,
+      args: [],
+      cwd,
+      timeoutMs: payload?.timeoutMs,
+      scriptContents: source,
+      scriptExtension: '.mjs',
+      electronRunAsNode: true,
+      startMessage: '开始执行 JavaScript Cell...',
+      successMessage: 'JavaScript Cell 执行完成。',
+      errorMessage: 'JavaScript Cell 执行失败。',
+      onProgress: payload?.onProgress
+    })
   }
 
   interruptMagicExecution(executionId) {

@@ -202,6 +202,44 @@ function formatTraceback(output) {
 
 .notebook-output__html {
   color: rgba(15, 23, 42, 0.92);
+  overflow-x: auto;
+}
+
+.notebook-output__html :deep(table) {
+  width: 100%;
+  min-width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+}
+
+.notebook-output__html :deep(thead th) {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: rgba(248, 250, 252, 0.98);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  font-weight: 700;
+}
+
+.notebook-output__html :deep(th),
+.notebook-output__html :deep(td) {
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  text-align: left;
+  vertical-align: top;
+}
+
+.notebook-output__html :deep(tbody tr:nth-child(even)) {
+  background: rgba(248, 250, 252, 0.72);
+}
+
+.notebook-output__html :deep(tbody tr:hover) {
+  background: rgba(224, 231, 255, 0.72);
 }
 
 .notebook-output__image {
@@ -232,5 +270,29 @@ function formatTraceback(output) {
 .notebook-output.is-dark pre,
 .notebook-output.is-dark .notebook-output__html {
   color: rgba(226, 232, 240, 0.94);
+}
+
+.notebook-output.is-dark .notebook-output__html :deep(table) {
+  border-color: rgba(71, 85, 105, 0.72);
+  background: rgba(15, 23, 42, 0.92);
+  box-shadow: 0 10px 24px rgba(2, 6, 23, 0.34);
+}
+
+.notebook-output.is-dark .notebook-output__html :deep(thead th) {
+  background: rgba(30, 41, 59, 0.96);
+  border-bottom-color: rgba(71, 85, 105, 0.56);
+}
+
+.notebook-output.is-dark .notebook-output__html :deep(th),
+.notebook-output.is-dark .notebook-output__html :deep(td) {
+  border-bottom-color: rgba(71, 85, 105, 0.34);
+}
+
+.notebook-output.is-dark .notebook-output__html :deep(tbody tr:nth-child(even)) {
+  background: rgba(30, 41, 59, 0.58);
+}
+
+.notebook-output.is-dark .notebook-output__html :deep(tbody tr:hover) {
+  background: rgba(15, 118, 110, 0.24);
 }
 </style>

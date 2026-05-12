@@ -1,6 +1,7 @@
 const DANGEROUS_NOTEBOOK_METHODS = new Set([
   'createSession',
   'executeCell',
+  'executeJavaScriptCell',
   'provideInputReply',
   'executeMagicSpecs',
   'interruptMagicExecution',
@@ -52,6 +53,10 @@ export function createNotebookSession(options) {
 
 export function executeNotebookCell(sessionId, options) {
   return callNotebookRuntime('executeCell', sessionId, options)
+}
+
+export function executeNotebookJavaScriptCell(options) {
+  return callNotebookRuntime('executeJavaScriptCell', options)
 }
 
 export function provideNotebookCellInput(sessionId, options) {

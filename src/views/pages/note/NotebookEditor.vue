@@ -41,9 +41,17 @@
       <div v-if="!loading && stickyCellVisible && stickyCell" class="notebook-editor__sticky-layer">
         <div class="notebook-editor__sticky-header">
           <div class="notebook-editor__sticky-title">
-            <n-tag size="small" :bordered="false" :type="stickyCell.cell_type === 'code' ? 'warning' : 'success'">
-              {{ stickyCell.cell_type === 'code' ? 'Code' : 'Markdown' }}
-            </n-tag>
+            <n-dropdown v-if="stickyCell.cell_type === 'code'" :options="buildRuntimeDropdownOptions()" trigger="click" :disabled="stickyCellRunning" @select="handleStickyRuntimeSelect">
+              <n-tag
+                size="small"
+                :bordered="false"
+                :type="getCellRuntimeDescriptor(stickyCell).tagType"
+                class="notebook-editor__sticky-runtime-tag"
+              >
+                {{ getCellRuntimeDescriptor(stickyCell).label }}
+              </n-tag>
+            </n-dropdown>
+            <n-tag v-else size="small" :bordered="false" type="success">Markdown</n-tag>
             <span>Cell {{ stickyCellIndex + 1 }}</span>
             <span v-if="stickyCell.cell_type === 'code'" class="notebook-editor__sticky-exec">In [{{ stickyCellExecutionCountLabel }}]</span>
           </div>
@@ -78,7 +86,7 @@
       </div>
       <div v-if="loading" class="notebook-editor__empty"><n-spin size="small" /><span>正在加载超级笔记...</span></div>
       <div v-else-if="notebook.cells.length" class="notebook-editor__cells">
-        <component :is="cell.cell_type === 'markdown' ? NotebookCellMarkdown : NotebookCellCode" v-for="(cell, index) in notebook.cells" :ref="setCellRef(cell.id)" :key="cell.id" :cell="cell" :index="index" :cell-count="notebook.cells.length" :selected="selectedCellId === cell.id" :previewing="isMarkdownPreviewing(cell.id)" :collapsed="isCellCollapsed(cell.id)" :running="runningCellId === cell.id" :theme="theme" :file-path="filePath" :content-active="shouldRenderCellContent(cell.id, index)" :runtime-input-request="getRuntimePromptRequestForCell(cell.id)" :python-modules="availablePythonModules" :python-path="activePythonPath" :notebook-magic-options="notebookMagicOptions" :completion-context="selectedCellId === cell.id ? getPythonCompletionContext(index) : ''" :python-context-cells="selectedCellId === cell.id ? getPythonContextCells(index) : []" @focus="setSelectedCell(cell.id)" @toggle-preview="toggleMarkdownPreview(cell.id)" @toggle-collapse="toggleCellCollapsed(cell.id)" @update-source="updateCellSource(cell.id, $event)" @delete="deleteCell(cell.id)" @move-up="moveCell(cell.id, -1)" @move-down="moveCell(cell.id, 1)" @add-after="insertCellAfter(cell.id, $event)" @run="runCellById(cell.id)" @stop="stopCellRun(cell.id)" @clear-outputs="clearCodeCellOutputs(cell.id)" @submit-runtime-input="submitRuntimePromptInput($event)" @abort-runtime-input="abortRuntimePromptInput()" @runtime-error="handlePythonCompletionFailure($event)" @go-to-definition="handlePythonDefinitionNavigation" />
+        <component :is="cell.cell_type === 'markdown' ? NotebookCellMarkdown : NotebookCellCode" v-for="(cell, index) in notebook.cells" :ref="setCellRef(cell.id)" :key="cell.id" :cell="cell" :index="index" :cell-count="notebook.cells.length" :selected="selectedCellId === cell.id" :previewing="isMarkdownPreviewing(cell.id)" :collapsed="isCellCollapsed(cell.id)" :running="runningCellId === cell.id" :theme="theme" :file-path="filePath" :content-active="shouldRenderCellContent(cell.id, index)" :runtime-input-request="getRuntimePromptRequestForCell(cell.id)" :python-modules="getCellRuntime(cell) === 'python' ? availablePythonModules : []" :python-path="getCellRuntime(cell) === 'python' ? activePythonPath : ''" :notebook-magic-options="getCellRuntime(cell) === 'python' ? notebookMagicOptions : []" :completion-context="selectedCellId === cell.id && getCellRuntime(cell) === 'python' ? getPythonCompletionContext(index) : ''" :python-context-cells="selectedCellId === cell.id && getCellRuntime(cell) === 'python' ? getPythonContextCells(index) : []" @focus="setSelectedCell(cell.id)" @toggle-preview="toggleMarkdownPreview(cell.id)" @toggle-collapse="toggleCellCollapsed(cell.id)" @update-source="updateCellSource(cell.id, $event)" @update-runtime="updateCellRuntime(cell.id, $event)" @delete="deleteCell(cell.id)" @move-up="moveCell(cell.id, -1)" @move-down="moveCell(cell.id, 1)" @add-after="insertCellAfter(cell.id, $event)" @run="runCellById(cell.id)" @stop="stopCellRun(cell.id)" @clear-outputs="clearCodeCellOutputs(cell.id)" @submit-runtime-input="submitRuntimePromptInput($event)" @abort-runtime-input="abortRuntimePromptInput()" @runtime-error="handlePythonCompletionFailure($event)" @go-to-definition="handlePythonDefinitionNavigation" />
       </div>
       <div v-else class="notebook-editor__empty notebook-editor__empty--blank">
         <n-empty description="当前超级笔记还是空的"><template #extra><div class="notebook-editor__empty-actions"><n-tooltip trigger="hover"><template #trigger><n-button quaternary circle size="large" @click="insertCellRelativeToSelection('markdown')"><template #icon><n-icon><DocumentTextOutline /></n-icon></template></n-button></template>添加 Markdown（Ctrl+Alt+M）</n-tooltip><n-tooltip trigger="hover"><template #trigger><n-button type="primary" ghost circle size="large" @click="insertCellRelativeToSelection('code')"><template #icon><n-icon><CodeSlashOutline /></n-icon></template></n-button></template>添加代码 Cell（Ctrl+Alt+C）</n-tooltip></div></template></n-empty>
@@ -105,10 +113,10 @@ import { NAlert, NButton, NCard, NEmpty, NForm, NFormItem, NIcon, NInput, NModal
 import { AddOutline, ArrowDownOutline, ArrowUpOutline, ChevronDownOutline, ChevronUpOutline, CodeSlashOutline, CreateOutline, DocumentTextOutline, EyeOutline, PauseOutline, PlayOutline, RefreshOutline, SaveOutline, StopCircleOutline, TrashOutline } from '@vicons/ionicons5'
 import { getNoteConfig, updateNoteConfig } from '@/utils/configListener'
 import { exists, readFile, writeFile } from '@/utils/fileOperations'
-import { createEmptyNotebook, createNotebookCell, getNotebookRuntimeConfig, normalizeNotebook, parseNotebookTextForEditor, serializeNormalizedNotebook, serializeNotebook } from '@/utils/notebookModel'
-import { buildNotebookMagicCompletionOptions, buildNotebookRuntimeMagicExecutionPlan, parseNotebookDirectExecutionSpecs } from '@/utils/notebookMagicCommands'
+import { createEmptyNotebook, createNotebookCell, getNotebookCellRuntime, getNotebookCellRuntimeDescriptor, getNotebookRuntimeConfig, normalizeNotebook, NOTEBOOK_CELL_RUNTIME_OPTIONS, parseNotebookTextForEditor, serializeNormalizedNotebook, serializeNotebook, setNotebookCellRuntime } from '@/utils/notebookModel'
+import { buildNotebookMagicCompletionOptions, buildNotebookRuntimeMagicExecutionPlan, buildNotebookSqlDependencyHintText, buildNotebookSqlDependencyPlan, buildNotebookSqlExecutionCode, buildNotebookSqlMagicCompletionOptions, parseNotebookDirectExecutionSpecs } from '@/utils/notebookMagicCommands'
 import { buildRuntimeDisplayOutputs as buildRuntimeDisplayOutputsForCell, buildRuntimeMagicPreludeOutputs } from '@/utils/notebookRuntimeDisplay'
-import { checkNotebookPythonLsp, createManagedNotebookVenv, createNotebookSession, detectNotebookPython, executeNotebookCell, executeNotebookMagicSpecs, forceRestartNotebookSession, installNotebookDependencies, interruptNotebookMagicExecution, interruptNotebookSession, invalidateNotebookRuntimeCaches, listManagedNotebookVenvs, listNotebookPythonModules, provideNotebookCellInput, restartNotebookSession, shutdownNotebookSession } from '@/utils/notebookRuntime'
+import { checkNotebookPythonLsp, createManagedNotebookVenv, createNotebookSession, detectNotebookPython, executeNotebookCell, executeNotebookJavaScriptCell, executeNotebookMagicSpecs, forceRestartNotebookSession, installNotebookDependencies, interruptNotebookMagicExecution, interruptNotebookSession, invalidateNotebookRuntimeCaches, listManagedNotebookVenvs, listNotebookPythonModules, provideNotebookCellInput, restartNotebookSession, shutdownNotebookSession } from '@/utils/notebookRuntime'
 import { decryptNoteContent, encryptNoteContent, isEncryptedNoteContent, replaceEncryptedNoteContent } from '@/utils/noteEncryption'
 import { getNotebookRuntimeBoundEnvName, normalizeNotebookRuntimeConfig, rewriteNotebookRuntimeBoundEnvName, setNotebookRuntimeBoundEnvName } from '@/utils/notebookRuntimeConfig'
 import { cleanupUnusedNotebookAttachments } from '@/utils/noteAttachmentCleanup'
@@ -151,7 +159,7 @@ const activeDirectExecutionId = ref('')
 const editorRootRef = ref(null)
 const markdownPreviewingCellIds = ref(new Set())
 const collapsedCellIds = ref(new Set())
-const runtimeInstallModal = reactive({ show: false, loading: false, detecting: false, pythonPath: '', message: '', baseMessage: '', progressMessage: '', installLogs: '' })
+const runtimeInstallModal = reactive({ show: false, loading: false, detecting: false, pythonPath: '', message: '', baseMessage: '', progressMessage: '', installLogs: '', installPackages: [] })
 const runtimePromptModal = reactive({ prompt: '', password: false, submitting: false, requestId: '', cellId: '', outputCount: 0 })
 const cellComponentRefs = new Map()
 const cellRefHandlers = new Map()
@@ -163,6 +171,7 @@ const runtimeInputEchoesByCellId = new Map()
 const runtimePreludeLinesByCellId = new Map()
 let suppressNotebookWatcher = false, saveTimeout = null, cleanupTimeout = null, saveQueue = Promise.resolve(), lastSavedFilePath = '', lastSavedSerialized = '', latestLoadToken = 0, sessionEnsuringPromise = null, sessionPrewarmTimer = null, runtimePatchTimer = null, cellVisibilityObserver = null, pendingCellObserverRefresh = false, lastHandledRenameToken = '', pythonRuntimeInspectionToken = 0, stickyHeaderSyncFrame = 0, stickyHeaderScrollRoot = null, managedVenvRefreshTimer = null, pythonEnvironmentWarmupTimer = null, pythonEnvironmentWarmupIdleHandle = null
 const REQUIRED_NOTEBOOK_MODULES = ['jupyter_client', 'ipykernel']
+const NOTEBOOK_BASE_INSTALL_PACKAGES = ['jupyter_client', 'ipykernel', 'jedi-language-server']
 const noteTitle = computed(() => !props.filePath ? '未命名超级笔记' : path.basename(props.filePath, path.extname(props.filePath)) || '未命名超级笔记')
 const runtimeConfig = computed(() => getNotebookRuntimeConfig(noteConfig.value))
 const notebookRuntimeEnvName = computed(() => getNotebookRuntimeBoundEnvName(runtimeConfig.value, props.filePath))
@@ -176,10 +185,13 @@ const runtimeEnvTagLabel = computed(() => {
   return '环境: 默认'
 })
 const runtimeEnvTagType = computed(() => missingManagedVenv.value ? 'warning' : activeManagedVenv.value?.name ? 'success' : 'default')
-const notebookMagicOptions = computed(() => buildNotebookMagicCompletionOptions(managedVenvs.value.map((item) => item?.name).filter(Boolean)))
+const notebookMagicOptions = computed(() => [
+  ...buildNotebookMagicCompletionOptions(managedVenvs.value.map((item) => item?.name).filter(Boolean)),
+  ...buildNotebookSqlMagicCompletionOptions()
+])
 const saveStatusLabel = computed(() => saveState.value === 'saving' ? '保存中' : saveState.value === 'error' ? '保存失败' : saveState.value === 'dirty' ? '未保存' : '已保存')
 const runtimeDetectedPythonText = computed(() => String(runtimeDetectedPython.value || '').trim() || '未检测到可用 Python，请手动填写解释器路径。')
-const runtimeInstallCommand = computed(() => `"${resolveRuntimePythonPath(runtimeInstallModal.pythonPath)}" -m pip install jupyter_client ipykernel jedi-language-server`)
+const runtimeInstallCommand = computed(() => `"${resolveRuntimePythonPath(runtimeInstallModal.pythonPath)}" -m pip install ${(normalizeInstallPackageList(runtimeInstallModal.installPackages).length ? normalizeInstallPackageList(runtimeInstallModal.installPackages) : NOTEBOOK_BASE_INSTALL_PACKAGES).join(' ')}`)
 const stickyCell = computed(() => notebook.value.cells.find((cell) => cell.id === stickyCellId.value) || null)
 const stickyCellIndex = computed(() => stickyCell.value ? Math.max(0, notebook.value.cells.findIndex((cell) => cell.id === stickyCell.value.id)) : -1)
 const stickyCellRunning = computed(() => !!stickyCell.value?.id && runningCellId.value === stickyCell.value.id)
@@ -222,6 +234,89 @@ function resetTransientCellState(preferredCellId = '', options = {}) { markdownP
 function setSelectedCell(cellId) { if (!cellId) return selectedCellId.value = ''; if (notebook.value.cells.some((cell) => cell.id === cellId)) selectedCellId.value = cellId }
 function getCellIndex(cellId) { return notebook.value.cells.findIndex((cell) => cell.id === cellId) }
 function getNextCellId(cellId) { const index = getCellIndex(cellId); return index < 0 ? '' : notebook.value.cells[index + 1]?.id || '' }
+function getCellById(cellId) { return notebook.value.cells.find((cell) => cell.id === cellId) || null }
+function getCellRuntime(cellOrId) {
+  const cell = typeof cellOrId === 'string' ? getCellById(cellOrId) : cellOrId
+  return getNotebookCellRuntime(cell)
+}
+function getCellRuntimeDescriptor(cellOrId) {
+  return getNotebookCellRuntimeDescriptor(getCellRuntime(cellOrId))
+}
+function isCellPythonRuntime(cellOrId) {
+  return getCellRuntime(cellOrId) === 'python'
+}
+function buildRuntimeDropdownOptions() {
+  return NOTEBOOK_CELL_RUNTIME_OPTIONS.map((item) => ({
+    label: item.label,
+    key: item.value,
+    props: {
+      title: item.description
+    }
+  }))
+}
+function updateCellRuntime(cellId, runtime) {
+  const targetId = String(cellId || '').trim()
+  const nextRuntime = String(runtime || '').trim()
+  if (!targetId || !nextRuntime) return
+  const index = getCellIndex(targetId)
+  if (index < 0) return
+  const currentCell = notebook.value.cells[index]
+  if (!currentCell || currentCell.cell_type !== 'code' || getCellRuntime(currentCell) === nextRuntime) return
+  mutateNotebook((draft) => {
+    const cell = draft.cells.find((item) => item.id === targetId)
+    if (!cell || cell.cell_type !== 'code') return
+    setNotebookCellRuntime(cell, nextRuntime)
+    cell.execution_count = null
+    cell.outputs = []
+  }, {
+    selectedCellId: targetId,
+    invalidateContextFromIndex: index + 1
+  })
+}
+function buildSqlDependencyHintText(sourceText = '', errorText = '') {
+  return buildNotebookSqlDependencyHintText(sourceText, errorText, availablePythonModules.value)
+}
+function extractNotebookErrorText(outputs = []) {
+  const lines = []
+  ;(Array.isArray(outputs) ? outputs : []).forEach((output) => {
+    if (!output || typeof output !== 'object') return
+    if (output.output_type === 'error') {
+      if (output.ename) lines.push(String(output.ename))
+      if (output.evalue) lines.push(String(output.evalue))
+      if (Array.isArray(output.traceback)) lines.push(...output.traceback.map((item) => String(item || '')))
+    }
+    if (output.output_type === 'stream') {
+      const text = String(output.text || '').trim()
+      if (text) lines.push(text)
+    }
+  })
+  return lines.join('\n').trim()
+}
+function augmentSqlOutputsIfNeeded(cellSource, outputs = [], forceSqlMode = false) {
+  const normalizedOutputs = Array.isArray(outputs) ? outputs.map((item) => ({ ...item })) : []
+  const sourceText = String(cellSource || '')
+  if (!forceSqlMode && !/(?:^|\n)\s*%load_ext\s+sql\b/i.test(sourceText) && !/(?:^|\n)\s*%{1,2}sql\b/i.test(sourceText)) {
+    return normalizedOutputs
+  }
+  const errorText = extractNotebookErrorText(normalizedOutputs)
+  const hintText = buildSqlDependencyHintText(sourceText, errorText)
+  if (!hintText) return normalizedOutputs
+  return [
+    {
+      output_type: 'stream',
+      name: 'stdout',
+      text: `${hintText}\n`
+    },
+    ...normalizedOutputs
+  ]
+}
+function warnPlaintextSqlConnectionRisk(cellSource = '') {
+  if (isProtectedNote()) return
+  const matched = String(cellSource || '').match(/^\s*%sql\s+([^\s]+)\s*$/im)
+  const connectionUrl = String(matched?.[1] || '').trim()
+  if (!connectionUrl) return
+  message.warning('当前笔记未加密，%sql 连接串会以明文保存到 .ipynb 中，请确认不包含敏感凭据。')
+}
 function resolveNotebookScrollViewport() { return editorRootRef.value?.querySelector?.('.notebook-editor__body') || null }
 function resolveCellComponent(cellId) { return cellComponentRefs.get(String(cellId || '')) || null }
 function resolveCellElement(cellId) {
@@ -274,7 +369,7 @@ function ensurePythonContextCaches(index = 0) {
     const previousText = String(pythonContextTextCache[cursor - 1] || '')
     const previousCells = Array.isArray(pythonContextCellsCache[cursor - 1]) ? pythonContextCellsCache[cursor - 1] : []
     const previousCell = notebook.value.cells[cursor - 1]
-    if (previousCell?.cell_type !== 'code') {
+    if (previousCell?.cell_type !== 'code' || getNotebookCellRuntime(previousCell) !== 'python') {
       pythonContextTextCache[cursor] = previousText
       pythonContextCellsCache[cursor] = previousCells
       continue
@@ -564,6 +659,12 @@ function toggleStickyCellCollapsed() {
   if (!cellId) return
   toggleCellCollapsed(cellId)
 }
+function handleStickyRuntimeSelect(runtime) {
+  const cellId = stickyCell.value?.id
+  if (!cellId) return
+  setSelectedCell(cellId)
+  updateCellRuntime(cellId, runtime)
+}
 function toggleStickyMarkdownPreview() {
   const cellId = stickyCell.value?.id
   if (!cellId || stickyCell.value?.cell_type !== 'markdown') return
@@ -671,8 +772,8 @@ function updateCellSource(cellId, nextSource) {
   markNotebookDirty(notebook.value, { assumeDirty: true, skipCleanup: true })
   if (selectedCellId.value !== cellId) setSelectedCell(cellId)
 }
-function insertCellAfter(cellId, cellType) { let insertedCellId = ''; const invalidateFrom = Math.max(0, getCellIndex(cellId) + 1); mutateNotebook((draft) => { const nextCell = createNotebookCell(cellType); insertedCellId = nextCell.id; const index = draft.cells.findIndex((item) => item.id === cellId); if (index < 0) draft.cells.push(nextCell); else draft.cells.splice(index + 1, 0, nextCell) }, { selectedCellId: insertedCellId, invalidateContextFromIndex: invalidateFrom }); setMarkdownPreview(insertedCellId, false); focusCellEditor(insertedCellId) }
-function appendCell(cellType) { let insertedCellId = ''; mutateNotebook((draft) => { const nextCell = createNotebookCell(cellType); insertedCellId = nextCell.id; draft.cells.push(nextCell) }, { selectedCellId: insertedCellId, invalidateContextFromIndex: notebook.value.cells.length }); setMarkdownPreview(insertedCellId, false); focusCellEditor(insertedCellId) }
+function insertCellAfter(cellId, cellType) { let insertedCellId = ''; const invalidateFrom = Math.max(0, getCellIndex(cellId) + 1); const runtime = cellType === 'code' ? getCellRuntime(cellId) : ''; mutateNotebook((draft) => { const nextCell = createNotebookCell(cellType, runtime); insertedCellId = nextCell.id; const index = draft.cells.findIndex((item) => item.id === cellId); if (index < 0) draft.cells.push(nextCell); else draft.cells.splice(index + 1, 0, nextCell) }, { selectedCellId: insertedCellId, invalidateContextFromIndex: invalidateFrom }); setMarkdownPreview(insertedCellId, false); focusCellEditor(insertedCellId) }
+function appendCell(cellType) { let insertedCellId = ''; const runtime = cellType === 'code' ? getCellRuntime(selectedCellId.value) : ''; mutateNotebook((draft) => { const nextCell = createNotebookCell(cellType, runtime); insertedCellId = nextCell.id; draft.cells.push(nextCell) }, { selectedCellId: insertedCellId, invalidateContextFromIndex: notebook.value.cells.length }); setMarkdownPreview(insertedCellId, false); focusCellEditor(insertedCellId) }
 function insertCellRelativeToSelection(cellType) { const selectedId = selectedCellId.value; if (selectedId) return insertCellAfter(selectedId, cellType); return appendCell(cellType) }
 function insertCellRelativeToContext(cellType, anchorCellId = '') { return anchorCellId ? insertCellAfter(anchorCellId, cellType) : appendCell(cellType) }
 function deleteCell(cellId) { const i = getCellIndex(cellId), fallback = notebook.value.cells[i + 1]?.id || notebook.value.cells[i - 1]?.id || ''; mutateNotebook((draft) => { draft.cells = draft.cells.filter((item) => item.id !== cellId) }, { selectedCellId: fallback, invalidateContextFromIndex: Math.max(0, i) }); setMarkdownPreview(cellId, false); setCellCollapsed(cellId, false) }
@@ -938,7 +1039,36 @@ async function inspectPythonEnvironment(preferredPythonPath = '', options = {}) 
   }
 }
 async function loadPythonModulesForCompletion(preferredPythonPath = '', options = {}) { return await inspectPythonEnvironment(preferredPythonPath, options) }
-function openRuntimeInstallModal(messageText, retryRequest = null) { pendingRuntimeRetry.value = retryRequest; runtimeInstallModal.baseMessage = String(messageText || '当前 Notebook 运行环境暂不可用。').trim(); runtimeInstallModal.progressMessage = ''; runtimeInstallModal.installLogs = ''; runtimeInstallModal.pythonPath = extractRuntimePythonPath(messageText) || String(activePythonPath.value || runtimeConfig.value.pythonPath || '').trim(); runtimeInstallModal.show = true; runtimeInstallModal.loading = false; composeRuntimeInstallMessage(); void refreshRuntimePythonDetection() }
+function normalizeInstallPackageList(packages = []) {
+  return Array.from(new Set((Array.isArray(packages) ? packages : []).map((item) => String(item || '').trim()).filter(Boolean)))
+}
+function buildRuntimeInstallPackageList(packages = []) {
+  const normalized = normalizeInstallPackageList(packages)
+  return normalized.length ? normalized : NOTEBOOK_BASE_INSTALL_PACKAGES
+}
+function buildSqlInstallPromptMessage(packages = [], connectionKind = '') {
+  const normalizedPackages = buildRuntimeInstallPackageList(packages)
+  const sections = ['检测到 SQL 运行依赖缺失，已准备自动安装。']
+  if (connectionKind) sections.push(`连接类型：${connectionKind}`)
+  if (normalizedPackages.length) sections.push(`将安装：${normalizedPackages.join('、')}`)
+  sections.push('安装完成后会自动重试当前 Cell。')
+  return sections.join('\n')
+}
+async function ensureSqlDependenciesBeforeRun(sourceText = '', retryRequest = null, options = {}) {
+  const pythonPath = resolveRuntimePythonPath(options?.pythonPath || activePythonPath.value)
+  const inspectionKey = `${String(props.filePath || '').trim()}::${pythonPath}`
+  if (lastInspectedPythonEnvironmentKey.value !== inspectionKey) {
+    await inspectPythonEnvironment(pythonPath).catch(() => {})
+  }
+  const sqlPlan = buildNotebookSqlDependencyPlan(sourceText, availablePythonModules.value, { treatAsSqlCell: !!options?.treatAsSqlCell })
+  if (!sqlPlan.active) return { ok: true, installPackages: [] }
+  const runtimeMissingPackages = Array.isArray(pythonEnvironmentHealth.value?.missingPackages) ? pythonEnvironmentHealth.value.missingPackages : []
+  const installPackages = normalizeInstallPackageList([...runtimeMissingPackages, ...sqlPlan.installPackages])
+  if (!installPackages.length) return { ok: true, installPackages: [] }
+  openRuntimeInstallModal(buildSqlInstallPromptMessage(installPackages, sqlPlan.connectionKind), retryRequest, installPackages)
+  return { ok: false, installPackages }
+}
+function openRuntimeInstallModal(messageText, retryRequest = null, installPackages = []) { pendingRuntimeRetry.value = retryRequest; runtimeInstallModal.baseMessage = String(messageText || '当前 Notebook 运行环境暂不可用。').trim(); runtimeInstallModal.progressMessage = ''; runtimeInstallModal.installLogs = ''; runtimeInstallModal.installPackages = buildRuntimeInstallPackageList(installPackages); runtimeInstallModal.pythonPath = extractRuntimePythonPath(messageText) || String(activePythonPath.value || runtimeConfig.value.pythonPath || '').trim(); runtimeInstallModal.show = true; runtimeInstallModal.loading = false; composeRuntimeInstallMessage(); void refreshRuntimePythonDetection() }
 function closeRuntimeInstallModal() { if (!runtimeInstallModal.loading) runtimeInstallModal.show = false }
 function closeRuntimePromptModal() {
   runtimePromptModal.prompt = ''
@@ -1013,8 +1143,8 @@ function useDetectedRuntimePython() { const detectedPath = String(runtimeDetecte
 async function persistNotebookRuntimePython(pythonPath) { const nextRuntime = normalizeNotebookRuntimeConfig({ ...runtimeConfig.value, pythonPath: String(pythonPath || '').trim() }); await updateNoteConfig({ notebookRuntime: nextRuntime }); return nextRuntime }
 async function retryPendingRuntimeAction() { const request = pendingRuntimeRetry.value; pendingRuntimeRetry.value = null; if (!request) return; if (request.type === 'run-all') return runAllCellsSafe(); if (request.type === 'run-cell' && request.cellId) return runCellById(request.cellId) }
 async function saveRuntimePythonConfigOnly() { runtimeInstallModal.loading = true; try { if (activeManagedVenv.value?.name) throw new Error('当前笔记正在使用托管环境，请使用 `%runtime reset` 恢复默认环境，或用 `%runtime use 环境名` 切换。'); const pythonPath = resolveRuntimePythonPath(runtimeInstallModal.pythonPath); await persistNotebookRuntimePython(pythonPath); runtimeInstallModal.show = false; await loadPythonModulesForCompletion(pythonPath, { force: true }); message.success('Python 解释器路径已保存到当前电脑本地配置。') } catch (err) { message.error(err?.message || String(err)) } finally { runtimeInstallModal.loading = false } }
-async function saveRuntimePythonAndInstall() { runtimeInstallModal.loading = true; runtimeInstallModal.progressMessage = '正在准备安装 Notebook 依赖...'; runtimeInstallModal.installLogs = ''; composeRuntimeInstallMessage(); try { const pythonPath = resolveRuntimePythonPath(runtimeInstallModal.pythonPath || activePythonPath.value); runtimeInstallModal.pythonPath = pythonPath; if (!activeManagedVenv.value?.name) await persistNotebookRuntimePython(pythonPath); await installNotebookDependencies({ pythonPath, onProgress: (progress) => { const summary = String(progress?.message || progress?.text || '').trim(); if (summary) runtimeInstallModal.progressMessage = summary; const rawLog = String(progress?.text || progress?.message || '').trim(); if (rawLog) appendRuntimeInstallLog(rawLog); else composeRuntimeInstallMessage() } }); runtimeInstallModal.progressMessage = '依赖安装完成，正在重新加载 Notebook 运行环境...'; composeRuntimeInstallMessage(); await shutdownCurrentSession(); runtimeIssue.value = ''; await loadPythonModulesForCompletion(pythonPath, { force: true }); runtimeInstallModal.show = false; message.success(activeManagedVenv.value?.name ? `环境 ${activeManagedVenv.value.name} 的 Notebook 依赖已安装完成。` : 'Notebook 依赖已安装完成，已恢复可用。'); await retryPendingRuntimeAction() } catch (err) { runtimeIssue.value = `Notebook 执行失败：${err?.message || String(err)}`; runtimeInstallModal.progressMessage = '安装失败，请检查上面的日志输出后重试。'; appendRuntimeInstallLog(err?.message || String(err)); message.error('Notebook 依赖安装失败，请先处理安装日志中的问题。') } finally { runtimeInstallModal.loading = false; composeRuntimeInstallMessage() } }
-function handleRuntimeFailure(err, retryRequest = null, options = {}) { const detail = String(err?.message || err || '').trim(); if (isUserAbortError(err)) { runtimeIssue.value = ''; pendingRuntimeRetry.value = null; return false } const errorText = `Notebook 执行失败：${detail}`; runtimeIssue.value = errorText; lastPythonCompletionIssue.value = ''; if (shouldPromptRuntimeInstall(detail)) { openRuntimeInstallModal(errorText, retryRequest); return false } pendingRuntimeRetry.value = null; if (options?.showToast) message.error(errorText); return false }
+async function saveRuntimePythonAndInstall() { runtimeInstallModal.loading = true; runtimeInstallModal.progressMessage = '正在准备安装 Notebook 依赖...'; runtimeInstallModal.installLogs = ''; composeRuntimeInstallMessage(); try { const pythonPath = resolveRuntimePythonPath(runtimeInstallModal.pythonPath || activePythonPath.value); runtimeInstallModal.pythonPath = pythonPath; if (!activeManagedVenv.value?.name) await persistNotebookRuntimePython(pythonPath); const installPackages = buildRuntimeInstallPackageList(runtimeInstallModal.installPackages); await installNotebookDependencies({ pythonPath, packages: installPackages, onProgress: (progress) => { const summary = String(progress?.message || progress?.text || '').trim(); if (summary) runtimeInstallModal.progressMessage = summary; const rawLog = String(progress?.text || progress?.message || '').trim(); if (rawLog) appendRuntimeInstallLog(rawLog); else composeRuntimeInstallMessage() } }); runtimeInstallModal.progressMessage = '依赖安装完成，正在重新加载 Notebook 运行环境...'; composeRuntimeInstallMessage(); await shutdownCurrentSession(); runtimeIssue.value = ''; await loadPythonModulesForCompletion(pythonPath, { force: true }); runtimeInstallModal.show = false; message.success(activeManagedVenv.value?.name ? `环境 ${activeManagedVenv.value.name} 的 Notebook 依赖已安装完成。` : 'Notebook 依赖已安装完成，已恢复可用。'); await retryPendingRuntimeAction() } catch (err) { runtimeIssue.value = `Notebook 执行失败：${err?.message || String(err)}`; runtimeInstallModal.progressMessage = '安装失败，请检查上面的日志输出后重试。'; appendRuntimeInstallLog(err?.message || String(err)); message.error('Notebook 依赖安装失败，请先处理安装日志中的问题。') } finally { runtimeInstallModal.loading = false; composeRuntimeInstallMessage() } }
+function handleRuntimeFailure(err, retryRequest = null, options = {}) { const detail = String(err?.message || err || '').trim(); if (isUserAbortError(err)) { runtimeIssue.value = ''; pendingRuntimeRetry.value = null; return false } const errorText = `Notebook 执行失败：${detail}`; runtimeIssue.value = errorText; lastPythonCompletionIssue.value = ''; if (shouldPromptRuntimeInstall(detail)) { const retryCell = retryRequest?.cellId ? getCellById(retryRequest.cellId) : null; const sqlPlan = retryCell ? buildNotebookSqlDependencyPlan(String(retryCell.source || ''), availablePythonModules.value, { treatAsSqlCell: getCellRuntime(retryCell) === 'sql' }) : null; const runtimeMissingPackages = Array.isArray(pythonEnvironmentHealth.value?.missingPackages) ? pythonEnvironmentHealth.value.missingPackages : []; openRuntimeInstallModal(errorText, retryRequest, normalizeInstallPackageList([...runtimeMissingPackages, ...(sqlPlan?.installPackages || [])])); return false } pendingRuntimeRetry.value = null; if (options?.showToast) message.error(errorText); return false }
 function allocateNotebookRuntimeExecutionId(prefix = 'runtime') { return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}` }
 async function ensureManagedEnvironmentDependencies(pythonPath, envName, appendLine = null) {
   const missingLabels = listMissingNotebookDependencyLabels()
@@ -1301,10 +1431,16 @@ async function executeRuntimeMagicCommands(cellId, commands = []) {
     return { ok: false, aborted: false, lines }
   }
 }
-async function runCodeCell(cellId, options = {}) {
+function prepareSqlCellSource(source = '') {
+  return buildNotebookSqlExecutionCode(source)
+}
+async function runPythonCell(cellId, options = {}) {
   if (guardRuntimeInstallPending() || runningCellId.value) return false
   const targetCell = notebook.value.cells.find((item) => item.id === cellId)
   if (!targetCell || targetCell.cell_type !== 'code') return false
+  const source = String(targetCell.source || '')
+  const sqlDependencyPreflight = await ensureSqlDependenciesBeforeRun(source, { type: 'run-cell', cellId }, { treatAsSqlCell: false })
+  if (!sqlDependencyPreflight.ok) return false
   closeRuntimePromptModal()
   clearCodeCellOutputs(cellId)
   runtimeBackendOutputsByCellId.set(cellId, [])
@@ -1315,11 +1451,13 @@ async function runCodeCell(cellId, options = {}) {
   runtimeIssue.value = ''
   setSelectedCell(cellId)
   try {
-    const magicPlan = buildNotebookRuntimeMagicExecutionPlan(String(targetCell.source || ''))
+    const magicPlan = buildNotebookRuntimeMagicExecutionPlan(source)
     if (magicPlan.invalidCommand) {
       patchRuntimeMagicCellFailure(cellId, [`> ${magicPlan.invalidCommand.raw}`], new Error(magicPlan.invalidReason || '环境命令位置不正确'))
       return false
     }
+    const sqlSourceForHints = String(magicPlan.code || source || '')
+    if (sqlSourceForHints) warnPlaintextSqlConnectionRisk(sqlSourceForHints)
     let runtimePreludeLines = []
     if (magicPlan.commands.length) {
       const runtimeResult = await executeRuntimeMagicCommands(cellId, magicPlan.commands)
@@ -1330,7 +1468,7 @@ async function runCodeCell(cellId, options = {}) {
         return true
       }
     }
-    const directExecutionSpecs = parseNotebookDirectExecutionSpecs(String(magicPlan.code || targetCell.source || ''))
+    const directExecutionSpecs = parseNotebookDirectExecutionSpecs(String(magicPlan.code || source || ''))
     if (directExecutionSpecs.length) {
       const ok = await executeNotebookDirectMagicSpecs(cellId, directExecutionSpecs, runtimePreludeLines)
       if (ok && options.moveToNext) await moveToNextCellOrScrollToBottom(cellId)
@@ -1343,7 +1481,7 @@ async function runCodeCell(cellId, options = {}) {
     }
     let latestRuntimeOutputs = []
     const result = await executeNotebookCell(activeSessionId, {
-      code: String(magicPlan.code || targetCell.source || ''),
+      code: String(magicPlan.code || source || ''),
       timeoutMs: runtimeConfig.value.executeTimeoutMs,
       onProgress: (partial) => {
         if (Object.prototype.hasOwnProperty.call(partial || {}, 'outputs')) {
@@ -1351,7 +1489,7 @@ async function runCodeCell(cellId, options = {}) {
           updateRuntimeBackendOutputs(cellId, latestRuntimeOutputs)
         }
         patchRuntimeCodeCellResult(cellId, {
-          outputs: buildRuntimeDisplayOutputs(cellId, runtimePreludeLines, latestRuntimeOutputs),
+          outputs: augmentSqlOutputsIfNeeded(sqlSourceForHints, buildRuntimeDisplayOutputs(cellId, runtimePreludeLines, latestRuntimeOutputs)),
           execution_count: partial?.execution_count
         })
         if (partial?.status === 'input_requested') {
@@ -1361,7 +1499,7 @@ async function runCodeCell(cellId, options = {}) {
     })
     updateRuntimeBackendOutputs(cellId, Array.isArray(result?.outputs) ? result.outputs : [])
     patchRuntimeCodeCellResult(cellId, {
-      outputs: buildRuntimeDisplayOutputs(cellId, runtimePreludeLines, result?.outputs),
+      outputs: augmentSqlOutputsIfNeeded(sqlSourceForHints, buildRuntimeDisplayOutputs(cellId, runtimePreludeLines, result?.outputs)),
       execution_count: result?.execution_count
     })
     if (consumeRuntimeUserAbort(cellId)) {
@@ -1386,7 +1524,149 @@ async function runCodeCell(cellId, options = {}) {
     runningCellId.value = ''
   }
 }
-async function runCellById(cellId, options = {}) { const targetCell = notebook.value.cells.find((item) => item.id === cellId); if (!targetCell) return false; return targetCell.cell_type === 'markdown' ? runMarkdownCell(cellId, options) : runCodeCell(cellId, options) }
+async function runSqlCell(cellId, options = {}) {
+  if (guardRuntimeInstallPending() || runningCellId.value) return false
+  const targetCell = notebook.value.cells.find((item) => item.id === cellId)
+  if (!targetCell || targetCell.cell_type !== 'code') return false
+  const source = String(targetCell.source || '')
+  const sqlDependencyPreflight = await ensureSqlDependenciesBeforeRun(source, { type: 'run-cell', cellId }, { treatAsSqlCell: true })
+  if (!sqlDependencyPreflight.ok) return false
+  closeRuntimePromptModal()
+  clearCodeCellOutputs(cellId)
+  runtimeBackendOutputsByCellId.set(cellId, [])
+  runtimeInputEchoesByCellId.delete(cellId)
+  runtimePreludeLinesByCellId.set(cellId, [])
+  lastRunStoppedByUser.value = false
+  runningCellId.value = cellId
+  runtimeIssue.value = ''
+  setSelectedCell(cellId)
+  try {
+    warnPlaintextSqlConnectionRisk(source)
+    const activeSessionId = await ensureSession()
+    if (consumeRuntimeUserAbort(cellId)) {
+      lastRunStoppedByUser.value = true
+      return false
+    }
+    let latestRuntimeOutputs = []
+    const sqlExecutionSource = prepareSqlCellSource(source)
+    const result = await executeNotebookCell(activeSessionId, {
+      code: sqlExecutionSource,
+      timeoutMs: runtimeConfig.value.executeTimeoutMs,
+      onProgress: (partial) => {
+        if (Object.prototype.hasOwnProperty.call(partial || {}, 'outputs')) {
+          latestRuntimeOutputs = Array.isArray(partial?.outputs) ? partial.outputs : []
+          updateRuntimeBackendOutputs(cellId, latestRuntimeOutputs)
+        }
+        patchRuntimeCodeCellResult(cellId, {
+          outputs: augmentSqlOutputsIfNeeded(source, buildRuntimeDisplayOutputs(cellId, [], latestRuntimeOutputs), true),
+          execution_count: partial?.execution_count
+        })
+      }
+    })
+    updateRuntimeBackendOutputs(cellId, Array.isArray(result?.outputs) ? result.outputs : [])
+    patchRuntimeCodeCellResult(cellId, {
+      outputs: augmentSqlOutputsIfNeeded(source, buildRuntimeDisplayOutputs(cellId, [], result?.outputs), true),
+      execution_count: result?.execution_count
+    })
+    if (consumeRuntimeUserAbort(cellId)) {
+      lastRunStoppedByUser.value = true
+      runtimeIssue.value = ''
+      return false
+    }
+    if (options.moveToNext) await moveToNextCellOrScrollToBottom(cellId)
+    return true
+  } catch (err) {
+    if (consumeRuntimeUserAbort(cellId)) {
+      lastRunStoppedByUser.value = true
+      runtimeIssue.value = ''
+      return false
+    }
+    return handleRuntimeFailure(err, { type: 'run-cell', cellId })
+  } finally {
+    closeRuntimePromptModal()
+    runtimeBackendOutputsByCellId.delete(cellId)
+    runtimeInputEchoesByCellId.delete(cellId)
+    runtimePreludeLinesByCellId.delete(cellId)
+    runningCellId.value = ''
+  }
+}
+async function runJavaScriptCell(cellId, options = {}) {
+  if (guardRuntimeInstallPending() || runningCellId.value) return false
+  const targetCell = notebook.value.cells.find((item) => item.id === cellId)
+  if (!targetCell || targetCell.cell_type !== 'code') return false
+  closeRuntimePromptModal()
+  clearCodeCellOutputs(cellId)
+  runtimeBackendOutputsByCellId.set(cellId, [])
+  runtimeInputEchoesByCellId.delete(cellId)
+  runtimePreludeLinesByCellId.set(cellId, [])
+  lastRunStoppedByUser.value = false
+  runningCellId.value = cellId
+  runtimeIssue.value = ''
+  setSelectedCell(cellId)
+  const executionId = allocateNotebookRuntimeExecutionId('javascript')
+  activeDirectExecutionId.value = executionId
+  try {
+    const result = await executeNotebookJavaScriptCell({
+      code: String(targetCell.source || ''),
+      executionId,
+      timeoutMs: runtimeConfig.value.executeTimeoutMs,
+      onProgress: (partial) => {
+        if (partial?.executionId) activeDirectExecutionId.value = String(partial.executionId || executionId)
+        if (Object.prototype.hasOwnProperty.call(partial || {}, 'outputs')) {
+          const latestOutputs = Array.isArray(partial?.outputs) ? partial.outputs : []
+          updateRuntimeBackendOutputs(cellId, latestOutputs)
+          patchRuntimeCodeCellResult(cellId, {
+            outputs: latestOutputs,
+            execution_count: null
+          })
+        }
+      }
+    })
+    if (result?.executionId) activeDirectExecutionId.value = String(result.executionId || executionId)
+    const resultOutputs = Array.isArray(result?.outputs) ? result.outputs : []
+    updateRuntimeBackendOutputs(cellId, resultOutputs)
+    patchRuntimeCodeCellResult(cellId, {
+      outputs: resultOutputs,
+      execution_count: null
+    }, { immediate: true })
+    if (result && result.ok === false) {
+      runtimeIssue.value = ''
+      return false
+    }
+    if (consumeRuntimeUserAbort(cellId)) {
+      lastRunStoppedByUser.value = true
+      runtimeIssue.value = ''
+      return false
+    }
+    if (options.moveToNext) await moveToNextCellOrScrollToBottom(cellId)
+    return true
+  } catch (err) {
+    if (consumeRuntimeUserAbort(cellId) || isUserAbortError(err)) {
+      lastRunStoppedByUser.value = true
+      runtimeIssue.value = ''
+      return false
+    }
+    return handleRuntimeFailure(err, { type: 'run-cell', cellId })
+  } finally {
+    closeRuntimePromptModal()
+    runtimeBackendOutputsByCellId.delete(cellId)
+    runtimeInputEchoesByCellId.delete(cellId)
+    runtimePreludeLinesByCellId.delete(cellId)
+    activeDirectExecutionId.value = ''
+    runningCellId.value = ''
+  }
+}
+async function runCodeCell(cellId, options = {}) { return runPythonCell(cellId, options) }
+async function runCellById(cellId, options = {}) {
+  const targetCell = notebook.value.cells.find((item) => item.id === cellId)
+  if (!targetCell) return false
+  if (targetCell.cell_type === 'markdown') return runMarkdownCell(cellId, options)
+  if (targetCell.cell_type !== 'code') return false
+  const runtime = getCellRuntime(targetCell)
+  if (runtime === 'javascript') return runJavaScriptCell(cellId, options)
+  if (runtime === 'sql') return runSqlCell(cellId, options)
+  return runPythonCell(cellId, options)
+}
 async function runAllCellsSafe() { if (guardRuntimeInstallPending() || runningCellId.value || runAllLoading.value) return; runAllLoading.value = true; try { for (const cell of notebook.value.cells) { const ok = await runCellById(cell.id); if (!ok) { if (!lastRunStoppedByUser.value) pendingRuntimeRetry.value = { type: 'run-all' }; break } } } finally { runAllLoading.value = false } }
 async function interruptCurrentSessionSafe() {
   if (guardRuntimeInstallPending() || !runningCellId.value || kernelActionLoading.value) return
@@ -1521,6 +1801,10 @@ onBeforeUnmount(async () => { window.removeEventListener('keydown', handleGlobal
   min-width: 0;
   font-size: 12px;
   color: rgba(51, 65, 85, 0.92);
+}
+
+.notebook-editor__sticky-runtime-tag {
+  cursor: pointer;
 }
 
 .notebook-editor.is-dark .notebook-editor__sticky-title {

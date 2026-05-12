@@ -14,13 +14,16 @@
 <script setup>
 import { Compartment, EditorState } from '@codemirror/state'
 import { EditorView, drawSelection, highlightActiveLine, hoverTooltip, keymap, lineNumbers, placeholder as placeholderExtension, tooltips } from '@codemirror/view'
-import { autocompletion, completeAnyWord, completionStatus, startCompletion } from '@codemirror/autocomplete'
+import { autocompletion, completeAnyWord, completeFromList, completionStatus, startCompletion } from '@codemirror/autocomplete'
 import { defaultHighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { history, historyKeymap, defaultKeymap, indentWithTab } from '@codemirror/commands'
 import { markdown } from '@codemirror/lang-markdown'
+import { javascript } from '@codemirror/lang-javascript'
+import { sql as sqlLanguage, keywordCompletionSource, StandardSQL } from '@codemirror/lang-sql'
 import { python } from '@codemirror/lang-python'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { applyResolvedCompletionText, createMarkdownCompletionSource, createSnippetCompletion, mergeCompletionOptions, resolveCompletionRange, resolveSymbolRangeAt } from '@/utils/editorCompletion'
+import { buildNotebookSqlStatementCompletionOptions } from '@/utils/notebookMagicCommands'
 import { getNotebookPythonCompletions, getNotebookPythonDefinition, getNotebookPythonHover, getNotebookPythonSignatureHelp } from '@/utils/notebookRuntime'
 
 const props = defineProps({
@@ -96,9 +99,22 @@ const pythonSnippetDefinitions = [
   createSnippetCompletion('import pandas as pd', 'import pandas as pd', 'variable', 'pandas'),
   createSnippetCompletion('import matplotlib.pyplot as plt', 'import matplotlib.pyplot as plt', 'variable', 'matplotlib')
 ]
+const sqlSnippetDefinitions = buildNotebookSqlStatementCompletionOptions()
+const sqlKeywordCompletionSource = keywordCompletionSource(StandardSQL, true)
 
 function normalizeWord(text) { return String(text || '').trim() }
-function getLanguageExtension(mode) { return mode === 'markdown' ? markdown() : python() }
+function getLanguageExtension(mode) {
+  switch (String(mode || 'python')) {
+    case 'markdown':
+      return markdown()
+    case 'javascript':
+      return javascript()
+    case 'sql':
+      return sqlLanguage({ dialect: StandardSQL, upperCaseKeywords: true })
+    default:
+      return python()
+  }
+}
 
 function parseImportedPythonSymbols(sourceText) {
   const aliases = new Map(), fromImports = new Map()
@@ -158,8 +174,22 @@ function createMemberAccessOption(option) {
   }
 }
 
+function getMagicCompletionModeOptions() {
+  return Array.isArray(props.notebookMagicOptions) ? props.notebookMagicOptions : []
+}
+
+function isMagicOptionVisibleForMode(option, mode) {
+  const currentMode = String(mode || 'python').trim().toLowerCase()
+  const allowedModes = Array.isArray(option?.contextModes) && option.contextModes.length
+    ? option.contextModes.map((item) => String(item || '').trim().toLowerCase()).filter(Boolean)
+    : ['python']
+  return allowedModes.includes(currentMode)
+}
+
 function buildNotebookMagicCompletionItems() {
-  return (Array.isArray(props.notebookMagicOptions) ? props.notebookMagicOptions : [])
+  const mode = String(props.mode || 'python').trim().toLowerCase()
+  return getMagicCompletionModeOptions()
+    .filter((item) => isMagicOptionVisibleForMode(item, mode))
     .filter((item) => item?.label)
     .map((item) => ({
       label: String(item.label || ''),
@@ -182,7 +212,12 @@ function createMagicCompletionResult(context) {
   const lineInfo = context.state.doc.lineAt(context.pos)
   const lineText = context.state.sliceDoc(lineInfo.from, context.pos)
   const trimmedLeading = String(lineText || '').trimStart()
-  if (!trimmedLeading.startsWith('%') && !trimmedLeading.startsWith('!')) return null
+  const mode = String(props.mode || 'python').trim().toLowerCase()
+  if (mode === 'sql') {
+    if (!trimmedLeading.startsWith('%')) return null
+  } else if (!trimmedLeading.startsWith('%') && !trimmedLeading.startsWith('!')) {
+    return null
+  }
   const options = buildNotebookMagicCompletionItems()
   if (!options.length) return null
   return {
@@ -193,12 +228,14 @@ function createMagicCompletionResult(context) {
 }
 
 function isMagicCompletionLine(view) {
-  if (props.mode !== 'python') return false
-  if (!Array.isArray(props.notebookMagicOptions) || !props.notebookMagicOptions.length) return false
+  const mode = String(props.mode || 'python').trim().toLowerCase()
+  if (mode !== 'python' && mode !== 'sql') return false
+  if (!getMagicCompletionModeOptions().length) return false
   const selection = view?.state?.selection?.main
   if (!selection?.empty) return false
   const lineInfo = view.state.doc.lineAt(selection.head)
   const lineText = view.state.sliceDoc(lineInfo.from, selection.head).trimStart()
+  if (mode === 'sql') return lineText.startsWith('%')
   return lineText.startsWith('%') || lineText.startsWith('!')
 }
 
@@ -638,6 +675,45 @@ function createPythonCompletionSource() {
   }
 }
 
+function createSqlCompletionSource() {
+  const sqlSnippetSource = completeFromList(sqlSnippetDefinitions)
+  const mergeSqlCompletionOptions = (optionGroups = []) => {
+    const seen = new Set()
+    const merged = []
+    optionGroups.flat().forEach((option) => {
+      if (!option?.label) return
+      const key = String(option.label || '').trim().toLowerCase()
+      if (seen.has(key)) return
+      seen.add(key)
+      merged.push(option)
+    })
+    return merged
+  }
+  return async (context) => {
+    const magicResult = createMagicCompletionResult(context)
+    if (magicResult) return magicResult
+    const keywordResult = sqlKeywordCompletionSource(context)
+    const snippetResult = sqlSnippetSource(context)
+    const anyWordResult = completeAnyWord(context)
+    const options = mergeSqlCompletionOptions([
+      snippetResult?.options || [],
+      keywordResult?.options || [],
+      anyWordResult?.options || []
+    ])
+    if (!options.length) return null
+    const from = Math.min(
+      snippetResult?.from ?? context.pos,
+      keywordResult?.from ?? context.pos,
+      anyWordResult?.from ?? context.pos
+    )
+    return {
+      from,
+      options,
+      validFor: /^[a-zA-Z0-9_$.]*$/
+    }
+  }
+}
+
 function createDefinitionKeymap() {
   if (props.mode !== 'python' || !props.pythonPath) return []
   return keymap.of([{
@@ -649,7 +725,12 @@ function createDefinitionKeymap() {
   }])
 }
 
-function getCompletionSource(mode) { return mode === 'markdown' ? createMarkdownCompletionSource() : createPythonCompletionSource() }
+function getCompletionSource(mode) {
+  if (mode === 'markdown') return createMarkdownCompletionSource()
+  if (mode === 'python') return createPythonCompletionSource()
+  if (mode === 'sql') return createSqlCompletionSource()
+  return null
+}
 function buildEditorTheme(theme) {
   const isDark = theme === 'dark'
   return EditorView.theme({
@@ -696,7 +777,11 @@ function buildEditorTheme(theme) {
   })
 }
 
-function createAutocompletionExtension() { return autocompletion({ activateOnTyping: true, activateOnTypingDelay: 80, maxRenderedOptions: 60, aboveCursor: false, tooltipClass: () => 'inline-code-editor__autocomplete-popover', override: [getCompletionSource(props.mode)] }) }
+function createAutocompletionExtension() {
+  const source = getCompletionSource(props.mode)
+  if (!source) return []
+  return autocompletion({ activateOnTyping: true, activateOnTypingDelay: 80, maxRenderedOptions: 60, aboveCursor: false, tooltipClass: () => 'inline-code-editor__autocomplete-popover', override: [source] })
+}
 function createEditor() {
   if (!hostRef.value) return
   const state = EditorState.create({
@@ -806,6 +891,7 @@ defineExpose({ focus })
   max-width: min(560px, calc(100vw - 32px));
   max-height: min(420px, calc(100vh - 48px));
   overflow: hidden;
+  z-index: 120;
   pointer-events: auto;
   user-select: text;
 }
@@ -885,6 +971,7 @@ defineExpose({ focus })
   background: rgba(8, 15, 28, 0.995);
   color: #e2e8f0;
   box-shadow: 0 26px 60px rgba(2, 6, 23, 0.62);
+  z-index: 120;
 }
 .inline-code-editor--dark :deep(.inline-code-editor__hover-code) {
   background: rgba(15, 23, 42, 0.9);

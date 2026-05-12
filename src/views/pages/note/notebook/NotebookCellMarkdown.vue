@@ -346,6 +346,12 @@ defineExpose({
   box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.2);
 }
 
+.notebook-cell.is-selected,
+.notebook-cell:focus-within,
+.notebook-cell:hover {
+  z-index: 24;
+}
+
 .notebook-cell__header {
   display: flex;
   align-items: center;

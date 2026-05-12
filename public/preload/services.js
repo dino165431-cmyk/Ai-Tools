@@ -182,6 +182,7 @@ const dangerousApi = deepFreeze({
   notebook: bindMethods(notebookRuntime, [
     'createSession',
     'executeCell',
+    'executeJavaScriptCell',
     'provideInputReply',
     'executeMagicSpecs',
     'interruptMagicExecution',
