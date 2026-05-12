@@ -145,7 +145,30 @@ export function buildNotebookMagicCompletionOptions(envNames = []) {
 }
 
 export function buildNotebookSqlMagicCompletionOptions() {
-  return [...NOTEBOOK_SQL_MAGIC_OPTIONS]
+  const sqlCellConnectionOption = buildSqlMagicOption(
+    '%%sql <connection_url>',
+    '%%sql postgresql://username:password@localhost:5432/dbname\nSELECT 1',
+    'SQL Cell 内先连接再查询',
+    buildNotebookSqlConnectionSupportText()
+  )
+  sqlCellConnectionOption.contextModes = ['python', 'sql']
+
+  return [
+    ...NOTEBOOK_SQL_MAGIC_OPTIONS,
+    buildSqlMagicOption(
+      '%sql <connection_url>',
+      '%sql postgresql://username:password@localhost:5432/dbname',
+      '先连接数据库再查询',
+      buildNotebookSqlConnectionSupportText()
+    ),
+    buildSqlMagicOption(
+      '%sql $DATABASE_URL',
+      '%sql $DATABASE_URL',
+      '使用环境变量连接数据库',
+      '适合把连接串放到环境变量中。'
+    ),
+    sqlCellConnectionOption
+  ]
 }
 
 function normalizeNotebookSqlModuleName(name = '') {
@@ -179,12 +202,145 @@ function detectNotebookSqlConnectionKind(connectionUrl = '') {
   return ''
 }
 
+function isNotebookSqlConnectionReference(value = '') {
+  const normalized = stripWrappingQuotes(value).trim()
+  return !!normalized && (normalized.includes('://') || normalized.startsWith('$'))
+}
+
+function parseNotebookSqlCellSource(sourceText = '') {
+  const text = String(sourceText || '').trimStart()
+  if (!text) {
+    return {
+      hasMagic: false,
+      magicType: '',
+      connectionUrl: '',
+      queryText: ''
+    }
+  }
+
+  const lines = text.split(/\r?\n/)
+  const firstLine = String(lines[0] || '').trim()
+  const magicMatch = firstLine.match(/^%{1,2}sql\b(.*)$/i)
+
+  if (!magicMatch) {
+    return {
+      hasMagic: false,
+      magicType: '',
+      connectionUrl: '',
+      queryText: text
+    }
+  }
+
+  const magicType = firstLine.startsWith('%%sql') ? '%%sql' : '%sql'
+  const remainder = String(magicMatch[1] || '').trim()
+  const remainingText = lines.slice(1).join('\n').replace(/^\s*\n/, '')
+  const remainderParts = remainder.split(/\s+/).filter(Boolean)
+  const connectionToken = String(remainderParts[0] || '').trim()
+
+  if (isNotebookSqlConnectionReference(connectionToken)) {
+    return {
+      hasMagic: true,
+      magicType,
+      connectionUrl: stripWrappingQuotes(connectionToken),
+      queryText: [remainderParts.slice(1).join(' '), remainingText].filter(Boolean).join('\n').trimStart()
+    }
+  }
+
+  if (magicType === '%sql') {
+    return {
+      hasMagic: true,
+      magicType,
+      connectionUrl: '',
+      queryText: [remainder, ...lines.slice(1)].join('\n').trimStart()
+    }
+  }
+
+  return {
+    hasMagic: true,
+    magicType,
+    connectionUrl: '',
+    queryText: [remainder, ...lines.slice(1)].join('\n').trimStart()
+  }
+}
+
+function buildNotebookSqlConnectionSupportText() {
+  return [
+    '支持的 SQL 连接类型：',
+    '- PostgreSQL: `postgresql://...` / `postgres://...`',
+    '- MySQL: `mysql+pymysql://...` / `mysql://...` / `mariadb://...`',
+    '- SQLite: `sqlite:///...`',
+    '常用环境变量写法：`%sql $DATABASE_URL`'
+  ].join('\n')
+}
+
+function buildNotebookSqlDependencyPackages(connectionKind = '', moduleSet = new Set()) {
+  const packages = []
+  if (!hasNotebookSqlModule(moduleSet, ['sql'])) {
+    packages.push('ipython-sql')
+  }
+  if (!hasNotebookSqlModule(moduleSet, ['sqlalchemy'])) {
+    packages.push('sqlalchemy')
+  }
+  if (connectionKind === 'PostgreSQL' && !hasNotebookSqlModule(moduleSet, ['psycopg2', 'psycopg'])) {
+    packages.push('psycopg2-binary')
+  }
+  if (connectionKind === 'MySQL' && !hasNotebookSqlModule(moduleSet, ['pymysql'])) {
+    packages.push('pymysql')
+  }
+  return Array.from(new Set(packages))
+}
+
+export function buildNotebookSqlDependencyInstallPackages(sourceText = '', errorText = '', availableModules = []) {
+  const source = String(sourceText || '')
+  const text = String(errorText || '').toLowerCase()
+  const moduleSet = buildNotebookSqlModuleSet(availableModules)
+  const parsed = parseNotebookSqlCellSource(source)
+  const packages = new Set()
+  const connectionKind = detectNotebookSqlConnectionKind(parsed.connectionUrl)
+  const hasConcreteConnection = !!connectionKind || String(parsed.connectionUrl || '').includes('://')
+
+  if (hasConcreteConnection) {
+    buildNotebookSqlDependencyPackages(connectionKind, moduleSet).forEach((item) => packages.add(item))
+  }
+
+  const missingSqlMagic = text.includes('cell magic %%sql not found') || text.includes('line magic function %sql not found') || text.includes('magic function %sql not found')
+  const missingCoreDeps = text.includes("no module named 'sql'") || text.includes('no module named sql') || text.includes('ipython-sql') || text.includes('sqlalchemy')
+
+  if (missingSqlMagic || missingCoreDeps) {
+    buildNotebookSqlDependencyPackages(connectionKind, moduleSet).forEach((item) => packages.add(item))
+    if (!packages.size) {
+      packages.add('ipython-sql')
+      packages.add('sqlalchemy')
+    }
+  }
+
+  if (/postgres|psycopg/.test(text) || connectionKind === 'PostgreSQL') {
+    if (!hasNotebookSqlModule(moduleSet, ['psycopg2', 'psycopg'])) {
+      packages.add('psycopg2-binary')
+    }
+  }
+
+  if (/pymysql|mysqlclient/.test(text) || connectionKind === 'MySQL') {
+    if (!hasNotebookSqlModule(moduleSet, ['pymysql'])) {
+      packages.add('pymysql')
+    }
+  }
+
+  return Array.from(packages)
+}
+
+export function buildNotebookSqlConnectionSupportSummaryText() {
+  return buildNotebookSqlConnectionSupportText()
+}
+
 export function buildNotebookSqlDependencyPlan(sourceText = '', availableModules = [], options = {}) {
   const source = String(sourceText || '')
   const moduleSet = buildNotebookSqlModuleSet(availableModules)
+  const parsed = parseNotebookSqlCellSource(source)
+  const usesSqlMagic = parsed.hasMagic || /(?:^|\n)\s*%load_ext\s+sql\b/i.test(source) || /(?:^|\n)\s*%reload_ext\s+sql\b/i.test(source)
   const treatAsSqlCell = !!options?.treatAsSqlCell
-  const usesSqlMagic = /(?:^|\n)\s*%{1,2}sql\b/i.test(source) || /(?:^|\n)\s*%load_ext\s+sql\b/i.test(source) || /(?:^|\n)\s*%reload_ext\s+sql\b/i.test(source)
-  const active = treatAsSqlCell || usesSqlMagic
+  const requireConnection = options?.requireConnection !== false
+  const active = !!parsed.connectionUrl || (!requireConnection && (treatAsSqlCell || usesSqlMagic))
 
   if (!active) {
     return {
@@ -196,62 +352,51 @@ export function buildNotebookSqlDependencyPlan(sourceText = '', availableModules
     }
   }
 
-  const connectionUrl = extractNotebookSqlConnectionUrl(source)
+  const connectionUrl = parsed.connectionUrl || extractNotebookSqlConnectionUrl(source)
   const connectionKind = detectNotebookSqlConnectionKind(connectionUrl)
-  const installPackages = []
-
-  if (!hasNotebookSqlModule(moduleSet, ['sql'])) {
-    installPackages.push('ipython-sql')
-  }
-  if (!hasNotebookSqlModule(moduleSet, ['sqlalchemy'])) {
-    installPackages.push('sqlalchemy')
-  }
-  if (connectionKind === 'PostgreSQL' && !hasNotebookSqlModule(moduleSet, ['psycopg2', 'psycopg'])) {
-    installPackages.push('psycopg2-binary')
-  }
-  if (connectionKind === 'MySQL' && !hasNotebookSqlModule(moduleSet, ['pymysql'])) {
-    installPackages.push('pymysql')
-  }
+  const hasConcreteConnection = !!connectionKind || String(connectionUrl || '').includes('://')
+  const installPackages = buildNotebookSqlDependencyPackages(connectionKind, moduleSet)
 
   return {
-    active: true,
+    active: hasConcreteConnection,
     usesSqlMagic,
     connectionUrl,
     connectionKind,
-    installPackages: Array.from(new Set(installPackages))
+    installPackages
   }
 }
 
 export function buildNotebookSqlDependencyHintText(sourceText = '', errorText = '', availableModules = []) {
   const text = String(errorText || '').toLowerCase()
   const plan = buildNotebookSqlDependencyPlan(sourceText, availableModules, { treatAsSqlCell: true })
+  const installPackages = buildNotebookSqlDependencyInstallPackages(sourceText, errorText, availableModules)
   const hints = []
 
   const missingSqlMagic = text.includes('cell magic %%sql not found') || text.includes('line magic function %sql not found') || text.includes('magic function %sql not found')
   if (missingSqlMagic) {
-    hints.push('请先在 Python Cell 中执行 `%load_ext sql`，然后再运行 `%sql <connection_url>`。')
+    hints.push('请先在 Python Cell 中执行 `%load_ext sql`，然后再运行 `%sql <connection_url>`、`%sql $DATABASE_URL` 或 SQL Cell。')
   }
 
-  const missingCoreDeps = text.includes("no module named 'sql'") || text.includes('no module named sql') || text.includes('ipython-sql') || text.includes('sqlalchemy')
-  if (missingCoreDeps) {
-    const installPackages = plan.installPackages.length ? plan.installPackages : ['ipython-sql', 'sqlalchemy']
+  const missingConnection = text.includes('database_url not set') || text.includes('no connect string given') || text.includes('connection info needed in sqlalchemy format') || text.includes('no connection string')
+  if (missingConnection) {
+    hints.push('当前还没有可用连接，请先在 Python Cell 中执行 `%sql <connection_url>` 或 `%sql $DATABASE_URL` 建立连接。')
+    hints.push(buildNotebookSqlConnectionSupportText())
+  }
+
+  if (installPackages.length) {
     hints.push(`SQL 依赖缺失时可安装：\`pip install ${installPackages.join(' ')}\`。`)
   }
 
-  if (plan.connectionKind === 'PostgreSQL' || /postgres|psycopg/.test(text)) {
-    if (!plan.installPackages.includes('psycopg2-binary') && !plan.installPackages.includes('psycopg')) {
-      hints.push('PostgreSQL 驱动可安装：`pip install psycopg2-binary` 或 `pip install psycopg`。')
-    }
+  if (plan.connectionKind === 'PostgreSQL' && !installPackages.includes('psycopg2-binary') && !installPackages.includes('psycopg')) {
+    hints.push('PostgreSQL 驱动可安装：`pip install psycopg2-binary` 或 `pip install psycopg`。')
   }
 
-  if (plan.connectionKind === 'MySQL' || /pymysql|mysqlclient/.test(text)) {
-    if (!plan.installPackages.includes('pymysql')) {
-      hints.push('MySQL 驱动可安装：`pip install pymysql`。')
-    }
+  if (plan.connectionKind === 'MySQL' && !installPackages.includes('pymysql')) {
+    hints.push('MySQL 驱动可安装：`pip install pymysql`。')
   }
 
-  if (!hints.length && plan.installPackages.length) {
-    hints.push(`SQL 依赖缺失时可安装：\`pip install ${plan.installPackages.join(' ')}\`。`)
+  if (!hints.length && /no module named|ipython-sql|sqlalchemy/.test(text)) {
+    hints.push('SQL 扩展可先安装 `ipython-sql` 和 `sqlalchemy`。')
   }
 
   if (!hints.length) return ''
@@ -329,44 +474,55 @@ function normalizeNotebookSqlCellSource(source = '') {
 }
 
 export function buildNotebookSqlExecutionCode(source = '') {
-  const sqlText = normalizeNotebookSqlCellSource(source)
-  if (!String(sqlText || '').trim()) {
+  const parsed = parseNotebookSqlCellSource(source)
+  const sqlText = String(parsed.queryText || '').trim()
+  const connectionUrl = String(parsed.connectionUrl || '').trim()
+  if (!sqlText && !connectionUrl) {
     return 'pass'
   }
-  const sqlLiteral = JSON.stringify(String(sqlText || ''))
+  const sqlLiteral = JSON.stringify(sqlText)
+  const connectionLiteral = connectionUrl ? JSON.stringify(connectionUrl) : ''
+  const queryLines = []
 
-  return [
-    'try:',
-    '    import prettytable as __ai_nb_prettytable',
-    '    from prettytable import TableStyle as __ai_nb_table_style',
-    '    __ai_nb_default_style = getattr(__ai_nb_table_style, "MARKDOWN", None)',
-    '    if __ai_nb_default_style is None:',
-    '        __ai_nb_default_style = getattr(__ai_nb_table_style, "PLAIN_COLUMNS", None)',
-    '    if __ai_nb_default_style is not None and "DEFAULT" not in __ai_nb_prettytable.__dict__:',
-    '        __ai_nb_prettytable.__dict__["DEFAULT"] = __ai_nb_default_style',
-    'except Exception:',
-    '    pass',
-    '__ai_nb_ip = get_ipython()',
-    '__ai_nb_loaded_extensions = getattr(getattr(__ai_nb_ip, "extension_manager", None), "loaded", {})',
-    "if 'sql' not in __ai_nb_loaded_extensions:",
-    "    __ai_nb_ip.run_line_magic('load_ext', 'sql')",
-    `__ai_nb_result = __ai_nb_ip.run_cell_magic('sql', '', ${sqlLiteral})`,
-    'try:',
-    '    __ai_nb_row_count = len(__ai_nb_result) if __ai_nb_result is not None else 0',
-    'except Exception:',
-    '    __ai_nb_row_count = 0',
-    'if __ai_nb_result is not None and __ai_nb_row_count > 0:',
-    '    try:',
-    '        __ai_nb_html_func = getattr(__ai_nb_result, "_repr_html_", None)',
-    '        __ai_nb_html = __ai_nb_html_func() if callable(__ai_nb_html_func) else ""',
-    '    except Exception:',
-    '        __ai_nb_html = ""',
-    '    if __ai_nb_html:',
-    '        from IPython.display import HTML, display',
-    '        display(HTML(__ai_nb_html))',
-    '    else:',
-    '        print(__ai_nb_result)'
-  ].join('\n')
+  queryLines.push('try:')
+  queryLines.push('    import prettytable as __ai_nb_prettytable')
+  queryLines.push('    from prettytable import TableStyle as __ai_nb_table_style')
+  queryLines.push('    __ai_nb_default_style = getattr(__ai_nb_table_style, "MARKDOWN", None)')
+  queryLines.push('    if __ai_nb_default_style is None:')
+  queryLines.push('        __ai_nb_default_style = getattr(__ai_nb_table_style, "PLAIN_COLUMNS", None)')
+  queryLines.push('    if __ai_nb_default_style is not None and "DEFAULT" not in __ai_nb_prettytable.__dict__:')
+  queryLines.push('        __ai_nb_prettytable.__dict__["DEFAULT"] = __ai_nb_default_style')
+  queryLines.push('except Exception:')
+  queryLines.push('    pass')
+  queryLines.push('__ai_nb_ip = get_ipython()')
+  queryLines.push('__ai_nb_loaded_extensions = getattr(getattr(__ai_nb_ip, "extension_manager", None), "loaded", {})')
+  queryLines.push("if 'sql' not in __ai_nb_loaded_extensions:")
+  queryLines.push("    __ai_nb_ip.run_line_magic('load_ext', 'sql')")
+  if (connectionLiteral) {
+    queryLines.push(`__ai_nb_connection = ${connectionLiteral}`)
+    queryLines.push("if __ai_nb_connection:")
+    queryLines.push("    __ai_nb_ip.run_line_magic('sql', __ai_nb_connection)")
+  }
+  if (sqlText) {
+    queryLines.push(`__ai_nb_result = __ai_nb_ip.run_cell_magic('sql', '', ${sqlLiteral})`)
+    queryLines.push('try:')
+    queryLines.push('    __ai_nb_row_count = len(__ai_nb_result) if __ai_nb_result is not None else 0')
+    queryLines.push('except Exception:')
+    queryLines.push('    __ai_nb_row_count = 0')
+    queryLines.push('if __ai_nb_result is not None and __ai_nb_row_count > 0:')
+    queryLines.push('    try:')
+    queryLines.push('        __ai_nb_html_func = getattr(__ai_nb_result, "_repr_html_", None)')
+    queryLines.push('        __ai_nb_html = __ai_nb_html_func() if callable(__ai_nb_html_func) else ""')
+    queryLines.push('    except Exception:')
+    queryLines.push('        __ai_nb_html = ""')
+    queryLines.push('    if __ai_nb_html:')
+    queryLines.push('        from IPython.display import HTML, display')
+    queryLines.push('        display(HTML(__ai_nb_html))')
+    queryLines.push('    else:')
+    queryLines.push('        print(__ai_nb_result)')
+  }
+
+  return queryLines.join('\n')
 }
 
 export function parseNotebookRuntimeMagicLine(line = '') {

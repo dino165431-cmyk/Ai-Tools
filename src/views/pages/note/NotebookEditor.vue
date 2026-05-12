@@ -114,7 +114,7 @@ import { AddOutline, ArrowDownOutline, ArrowUpOutline, ChevronDownOutline, Chevr
 import { getNoteConfig, updateNoteConfig } from '@/utils/configListener'
 import { exists, readFile, writeFile } from '@/utils/fileOperations'
 import { createEmptyNotebook, createNotebookCell, getNotebookCellRuntime, getNotebookCellRuntimeDescriptor, getNotebookRuntimeConfig, normalizeNotebook, NOTEBOOK_CELL_RUNTIME_OPTIONS, parseNotebookTextForEditor, serializeNormalizedNotebook, serializeNotebook, setNotebookCellRuntime } from '@/utils/notebookModel'
-import { buildNotebookMagicCompletionOptions, buildNotebookRuntimeMagicExecutionPlan, buildNotebookSqlDependencyHintText, buildNotebookSqlDependencyPlan, buildNotebookSqlExecutionCode, buildNotebookSqlMagicCompletionOptions, parseNotebookDirectExecutionSpecs } from '@/utils/notebookMagicCommands'
+import { buildNotebookMagicCompletionOptions, buildNotebookRuntimeMagicExecutionPlan, buildNotebookSqlDependencyHintText, buildNotebookSqlDependencyInstallPackages, buildNotebookSqlDependencyPlan, buildNotebookSqlExecutionCode, buildNotebookSqlMagicCompletionOptions, parseNotebookDirectExecutionSpecs } from '@/utils/notebookMagicCommands'
 import { buildRuntimeDisplayOutputs as buildRuntimeDisplayOutputsForCell, buildRuntimeMagicPreludeOutputs } from '@/utils/notebookRuntimeDisplay'
 import { checkNotebookPythonLsp, createManagedNotebookVenv, createNotebookSession, detectNotebookPython, executeNotebookCell, executeNotebookJavaScriptCell, executeNotebookMagicSpecs, forceRestartNotebookSession, installNotebookDependencies, interruptNotebookMagicExecution, interruptNotebookSession, invalidateNotebookRuntimeCaches, listManagedNotebookVenvs, listNotebookPythonModules, provideNotebookCellInput, restartNotebookSession, shutdownNotebookSession } from '@/utils/notebookRuntime'
 import { decryptNoteContent, encryptNoteContent, isEncryptedNoteContent, replaceEncryptedNoteContent } from '@/utils/noteEncryption'
@@ -295,10 +295,8 @@ function extractNotebookErrorText(outputs = []) {
 function augmentSqlOutputsIfNeeded(cellSource, outputs = [], forceSqlMode = false) {
   const normalizedOutputs = Array.isArray(outputs) ? outputs.map((item) => ({ ...item })) : []
   const sourceText = String(cellSource || '')
-  if (!forceSqlMode && !/(?:^|\n)\s*%load_ext\s+sql\b/i.test(sourceText) && !/(?:^|\n)\s*%{1,2}sql\b/i.test(sourceText)) {
-    return normalizedOutputs
-  }
   const errorText = extractNotebookErrorText(normalizedOutputs)
+  if (!String(errorText || '').trim()) return normalizedOutputs
   const hintText = buildSqlDependencyHintText(sourceText, errorText)
   if (!hintText) return normalizedOutputs
   return [
@@ -312,8 +310,9 @@ function augmentSqlOutputsIfNeeded(cellSource, outputs = [], forceSqlMode = fals
 }
 function warnPlaintextSqlConnectionRisk(cellSource = '') {
   if (isProtectedNote()) return
-  const matched = String(cellSource || '').match(/^\s*%sql\s+([^\s]+)\s*$/im)
+  const matched = String(cellSource || '').match(/^\s*%{1,2}sql\s+([^\s]+)\s*$/im)
   const connectionUrl = String(matched?.[1] || '').trim()
+  if (!connectionUrl.includes('://')) return
   if (!connectionUrl) return
   message.warning('当前笔记未加密，%sql 连接串会以明文保存到 .ipynb 中，请确认不包含敏感凭据。')
 }
@@ -1144,7 +1143,36 @@ async function persistNotebookRuntimePython(pythonPath) { const nextRuntime = no
 async function retryPendingRuntimeAction() { const request = pendingRuntimeRetry.value; pendingRuntimeRetry.value = null; if (!request) return; if (request.type === 'run-all') return runAllCellsSafe(); if (request.type === 'run-cell' && request.cellId) return runCellById(request.cellId) }
 async function saveRuntimePythonConfigOnly() { runtimeInstallModal.loading = true; try { if (activeManagedVenv.value?.name) throw new Error('当前笔记正在使用托管环境，请使用 `%runtime reset` 恢复默认环境，或用 `%runtime use 环境名` 切换。'); const pythonPath = resolveRuntimePythonPath(runtimeInstallModal.pythonPath); await persistNotebookRuntimePython(pythonPath); runtimeInstallModal.show = false; await loadPythonModulesForCompletion(pythonPath, { force: true }); message.success('Python 解释器路径已保存到当前电脑本地配置。') } catch (err) { message.error(err?.message || String(err)) } finally { runtimeInstallModal.loading = false } }
 async function saveRuntimePythonAndInstall() { runtimeInstallModal.loading = true; runtimeInstallModal.progressMessage = '正在准备安装 Notebook 依赖...'; runtimeInstallModal.installLogs = ''; composeRuntimeInstallMessage(); try { const pythonPath = resolveRuntimePythonPath(runtimeInstallModal.pythonPath || activePythonPath.value); runtimeInstallModal.pythonPath = pythonPath; if (!activeManagedVenv.value?.name) await persistNotebookRuntimePython(pythonPath); const installPackages = buildRuntimeInstallPackageList(runtimeInstallModal.installPackages); await installNotebookDependencies({ pythonPath, packages: installPackages, onProgress: (progress) => { const summary = String(progress?.message || progress?.text || '').trim(); if (summary) runtimeInstallModal.progressMessage = summary; const rawLog = String(progress?.text || progress?.message || '').trim(); if (rawLog) appendRuntimeInstallLog(rawLog); else composeRuntimeInstallMessage() } }); runtimeInstallModal.progressMessage = '依赖安装完成，正在重新加载 Notebook 运行环境...'; composeRuntimeInstallMessage(); await shutdownCurrentSession(); runtimeIssue.value = ''; await loadPythonModulesForCompletion(pythonPath, { force: true }); runtimeInstallModal.show = false; message.success(activeManagedVenv.value?.name ? `环境 ${activeManagedVenv.value.name} 的 Notebook 依赖已安装完成。` : 'Notebook 依赖已安装完成，已恢复可用。'); await retryPendingRuntimeAction() } catch (err) { runtimeIssue.value = `Notebook 执行失败：${err?.message || String(err)}`; runtimeInstallModal.progressMessage = '安装失败，请检查上面的日志输出后重试。'; appendRuntimeInstallLog(err?.message || String(err)); message.error('Notebook 依赖安装失败，请先处理安装日志中的问题。') } finally { runtimeInstallModal.loading = false; composeRuntimeInstallMessage() } }
-function handleRuntimeFailure(err, retryRequest = null, options = {}) { const detail = String(err?.message || err || '').trim(); if (isUserAbortError(err)) { runtimeIssue.value = ''; pendingRuntimeRetry.value = null; return false } const errorText = `Notebook 执行失败：${detail}`; runtimeIssue.value = errorText; lastPythonCompletionIssue.value = ''; if (shouldPromptRuntimeInstall(detail)) { const retryCell = retryRequest?.cellId ? getCellById(retryRequest.cellId) : null; const sqlPlan = retryCell ? buildNotebookSqlDependencyPlan(String(retryCell.source || ''), availablePythonModules.value, { treatAsSqlCell: getCellRuntime(retryCell) === 'sql' }) : null; const runtimeMissingPackages = Array.isArray(pythonEnvironmentHealth.value?.missingPackages) ? pythonEnvironmentHealth.value.missingPackages : []; openRuntimeInstallModal(errorText, retryRequest, normalizeInstallPackageList([...runtimeMissingPackages, ...(sqlPlan?.installPackages || [])])); return false } pendingRuntimeRetry.value = null; if (options?.showToast) message.error(errorText); return false }
+function handleRuntimeFailure(err, retryRequest = null, options = {}) {
+  const detail = String(err?.message || err || '').trim()
+  if (isUserAbortError(err)) {
+    runtimeIssue.value = ''
+    pendingRuntimeRetry.value = null
+    return false
+  }
+
+  const errorText = `Notebook 执行失败：${detail}`
+  runtimeIssue.value = errorText
+  lastPythonCompletionIssue.value = ''
+
+  if (shouldPromptRuntimeInstall(detail)) {
+    const retryCell = retryRequest?.cellId ? getCellById(retryRequest.cellId) : null
+    const runtimeMissingPackages = Array.isArray(pythonEnvironmentHealth.value?.missingPackages) ? pythonEnvironmentHealth.value.missingPackages : []
+    const sqlInstallPackages = retryCell && getCellRuntime(retryCell) === 'sql'
+      ? buildNotebookSqlDependencyInstallPackages(String(retryCell.source || ''), detail, availablePythonModules.value)
+      : []
+    const installPackages = normalizeInstallPackageList([...runtimeMissingPackages, ...sqlInstallPackages])
+
+    if (installPackages.length) {
+      openRuntimeInstallModal(errorText, retryRequest, installPackages)
+      return false
+    }
+  }
+
+  pendingRuntimeRetry.value = null
+  if (options?.showToast) message.error(errorText)
+  return false
+}
 function allocateNotebookRuntimeExecutionId(prefix = 'runtime') { return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}` }
 async function ensureManagedEnvironmentDependencies(pythonPath, envName, appendLine = null) {
   const missingLabels = listMissingNotebookDependencyLabels()

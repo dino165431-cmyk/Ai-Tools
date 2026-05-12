@@ -14,16 +14,16 @@
 <script setup>
 import { Compartment, EditorState } from '@codemirror/state'
 import { EditorView, drawSelection, highlightActiveLine, hoverTooltip, keymap, lineNumbers, placeholder as placeholderExtension, tooltips } from '@codemirror/view'
-import { autocompletion, completeAnyWord, completeFromList, completionStatus, startCompletion } from '@codemirror/autocomplete'
+import { autocompletion, completeAnyWord, completionStatus, startCompletion } from '@codemirror/autocomplete'
 import { defaultHighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { history, historyKeymap, defaultKeymap, indentWithTab } from '@codemirror/commands'
 import { markdown } from '@codemirror/lang-markdown'
 import { javascript } from '@codemirror/lang-javascript'
-import { sql as sqlLanguage, keywordCompletionSource, StandardSQL } from '@codemirror/lang-sql'
+import { sql as sqlLanguage, StandardSQL } from '@codemirror/lang-sql'
 import { python } from '@codemirror/lang-python'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { applyResolvedCompletionText, createMarkdownCompletionSource, createSnippetCompletion, mergeCompletionOptions, resolveCompletionRange, resolveSymbolRangeAt } from '@/utils/editorCompletion'
-import { buildNotebookSqlStatementCompletionOptions } from '@/utils/notebookMagicCommands'
+import { createNotebookJavaScriptCompletionSource, createNotebookSqlCompletionSource } from '@/utils/notebookCodeCompletions'
 import { getNotebookPythonCompletions, getNotebookPythonDefinition, getNotebookPythonHover, getNotebookPythonSignatureHelp } from '@/utils/notebookRuntime'
 
 const props = defineProps({
@@ -99,8 +99,6 @@ const pythonSnippetDefinitions = [
   createSnippetCompletion('import pandas as pd', 'import pandas as pd', 'variable', 'pandas'),
   createSnippetCompletion('import matplotlib.pyplot as plt', 'import matplotlib.pyplot as plt', 'variable', 'matplotlib')
 ]
-const sqlSnippetDefinitions = buildNotebookSqlStatementCompletionOptions()
-const sqlKeywordCompletionSource = keywordCompletionSource(StandardSQL, true)
 
 function normalizeWord(text) { return String(text || '').trim() }
 function getLanguageExtension(mode) {
@@ -675,42 +673,15 @@ function createPythonCompletionSource() {
   }
 }
 
+function createJavaScriptCompletionSource() {
+  return createNotebookJavaScriptCompletionSource()
+}
+
 function createSqlCompletionSource() {
-  const sqlSnippetSource = completeFromList(sqlSnippetDefinitions)
-  const mergeSqlCompletionOptions = (optionGroups = []) => {
-    const seen = new Set()
-    const merged = []
-    optionGroups.flat().forEach((option) => {
-      if (!option?.label) return
-      const key = String(option.label || '').trim().toLowerCase()
-      if (seen.has(key)) return
-      seen.add(key)
-      merged.push(option)
-    })
-    return merged
-  }
-  return async (context) => {
+  return (context) => {
     const magicResult = createMagicCompletionResult(context)
     if (magicResult) return magicResult
-    const keywordResult = sqlKeywordCompletionSource(context)
-    const snippetResult = sqlSnippetSource(context)
-    const anyWordResult = completeAnyWord(context)
-    const options = mergeSqlCompletionOptions([
-      snippetResult?.options || [],
-      keywordResult?.options || [],
-      anyWordResult?.options || []
-    ])
-    if (!options.length) return null
-    const from = Math.min(
-      snippetResult?.from ?? context.pos,
-      keywordResult?.from ?? context.pos,
-      anyWordResult?.from ?? context.pos
-    )
-    return {
-      from,
-      options,
-      validFor: /^[a-zA-Z0-9_$.]*$/
-    }
+    return createNotebookSqlCompletionSource(context.state.doc.toString())(context)
   }
 }
 
@@ -728,6 +699,7 @@ function createDefinitionKeymap() {
 function getCompletionSource(mode) {
   if (mode === 'markdown') return createMarkdownCompletionSource()
   if (mode === 'python') return createPythonCompletionSource()
+  if (mode === 'javascript' || mode === 'nodejs') return createJavaScriptCompletionSource()
   if (mode === 'sql') return createSqlCompletionSource()
   return null
 }
