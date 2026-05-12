@@ -296,7 +296,10 @@ import {
 } from '@/utils/noteEncryption'
 import { getNoteTypeByPath } from '@/utils/noteTypes'
 import { deleteNoteAttachmentDirectories } from '@/utils/noteAttachmentCleanup'
-import { removeNotebookRuntimeBoundEnvNamesByPredicate } from '@/utils/notebookRuntimeConfig'
+import {
+  removeNotebookRuntimeBoundEnvNamesByPredicate,
+  rewriteNotebookRuntimeBoundEnvNamesByPrefix
+} from '@/utils/notebookRuntimeConfig'
 import MdEditor from './MdEditor.vue'
 
 const FileTree = defineAsyncComponent(() => import('./FileTree.vue'))
@@ -610,6 +613,17 @@ async function removeNotebookRuntimeBindingsByPredicate(predicate) {
   })
 }
 
+async function rewriteNotebookRuntimeBindingsPathMap(oldBase, newBase) {
+  const currentRuntime = noteConfig.value?.notebookRuntime || {}
+  const nextRuntime = rewriteNotebookRuntimeBoundEnvNamesByPrefix(currentRuntime, oldBase, newBase)
+  if (JSON.stringify(nextRuntime.noteEnvBindings || {}) === JSON.stringify(currentRuntime.noteEnvBindings || {})) {
+    return
+  }
+  await updateNoteConfig({
+    notebookRuntime: nextRuntime
+  })
+}
+
 async function ensureNoteCanOpen(filePath, password) {
   const raw = String(await readFile(filePath, 'utf-8') || '')
   await decryptNoteContent(raw, password)
@@ -785,8 +799,9 @@ async function handleFileRename(oldPath, newPath) {
 
   try {
     await rewriteProtectedNotesPathMap(normalizedOldPath, normalizedNewPath)
+    await rewriteNotebookRuntimeBindingsPathMap(normalizedOldPath, normalizedNewPath)
   } catch (err) {
-    message.error('同步笔记密码配置失败：' + (err?.message || String(err)))
+    message.error('同步笔记配置失败：' + (err?.message || String(err)))
   }
 }
 

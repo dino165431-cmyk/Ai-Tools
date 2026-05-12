@@ -118,6 +118,41 @@ export function rewriteNotebookRuntimeBoundEnvName(runtimeConfig, fromFilePath =
   })
 }
 
+export function rewriteNotebookRuntimeBoundEnvNamesByPrefix(runtimeConfig, fromBasePath = '', toBasePath = '') {
+  const normalized = normalizeNotebookRuntimeConfig(runtimeConfig)
+  const fromBase = normalizeNotebookRuntimeBindingKey(fromBasePath)
+  const toBase = normalizeNotebookRuntimeBindingKey(toBasePath)
+  if (!fromBase || !toBase || fromBase === toBase) return normalized
+
+  const nextBindings = {
+    ...normalized.noteEnvBindings
+  }
+  let changed = false
+
+  Object.entries(normalized.noteEnvBindings).forEach(([filePath, envName]) => {
+    if (filePath !== fromBase && !filePath.startsWith(`${fromBase}/`)) return
+
+    const nextPath = filePath === fromBase
+      ? toBase
+      : `${toBase}${filePath.slice(fromBase.length)}`
+    if (!nextPath || nextPath === filePath) return
+
+    changed = true
+    const existingEnvName = String(nextBindings[nextPath] || '').trim()
+    if (!existingEnvName) {
+      nextBindings[nextPath] = envName
+    }
+    delete nextBindings[filePath]
+  })
+
+  if (!changed) return normalized
+
+  return normalizeNotebookRuntimeConfig({
+    ...normalized,
+    noteEnvBindings: nextBindings
+  })
+}
+
 export function removeNotebookRuntimeBoundEnvNamesByPredicate(runtimeConfig, predicate) {
   const normalized = normalizeNotebookRuntimeConfig(runtimeConfig)
   if (typeof predicate !== 'function') return normalized

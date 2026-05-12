@@ -1287,6 +1287,11 @@ import {
 import { isAgentRunToolName, mergeAgentRunTraceEntries } from '@/utils/chatAgentRun'
 import { CHAT_CODE_AUTO_FOLD_THRESHOLD } from '@/utils/chatMarkdownPreview'
 import { extractAssistantTextFromPayload, extractAssistantTextFromPayloads } from '@/utils/chatAssistantResponse'
+import {
+  buildUtoolsEnterEventKey,
+  isComposerCompositionKeydownEvent,
+  shouldSubmitComposerKeydownEvent
+} from '@/utils/chatComposerInput'
 import { stringifyToolResultForModel as stringifyToolResultForLlm } from '@/utils/toolResultForModel'
 import { consumeJsonEventStream } from '@/utils/streamJsonEvents'
 import { buildMcpArgsFromForm, normalizeMcpPromptArgumentDefinitions, resetMcpArgFormData } from '@/utils/mcpArgumentForm'
@@ -9848,6 +9853,7 @@ onBeforeUnmount(() => {
 function handleUserEditKeydown(e, msg) {
   if (!msg || !msg.editing) return
   if (sending.value) return
+  if (isComposerCompositionKeydownEvent(e)) return
 
   if (e.key === 'Escape') {
     e.preventDefault()
@@ -9856,7 +9862,7 @@ function handleUserEditKeydown(e, msg) {
     return
   }
 
-  if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+  if (shouldSubmitComposerKeydownEvent(e)) {
     e.preventDefault()
     toggleOrSubmitUserEdit(msg)
   }
@@ -12816,6 +12822,8 @@ async function applyInlineCommandSuggestion(item) {
 }
 
 function handleInputKeydown(e) {
+  if (isComposerCompositionKeydownEvent(e)) return
+
   if (!sending.value && !e.ctrlKey && !e.metaKey && !e.altKey && showInlineCommandPicker.value) {
     if (e.key === 'ArrowDown') {
       e.preventDefault()
@@ -12878,8 +12886,7 @@ function handleInputKeydown(e) {
     }
   }
 
-  if (e.key !== 'Enter') return
-  if (e.shiftKey) return
+  if (!shouldSubmitComposerKeydownEvent(e)) return
   e.preventDefault()
   send()
 }
@@ -16936,13 +16943,15 @@ const lastEnterKey = ref('')
 watch(
   utoolsEnterData,
   (val) => {
-    if (val?.code !== 'Ai' || val?.type !== 'over') return
-    const payload = typeof val.payload === 'string' ? val.payload : ''
-    const key = `${val.code}|${val.type}|${payload}`
-    if (!payload || key === lastEnterKey.value) return
+    const key = buildUtoolsEnterEventKey(val)
+    if (!key) {
+      lastEnterKey.value = ''
+      return
+    }
+    if (key === lastEnterKey.value) return
     lastEnterKey.value = key
 
-    input.value = payload
+    input.value = typeof val.payload === 'string' ? val.payload : ''
     if (!sending.value) send()
   },
   { immediate: true }
