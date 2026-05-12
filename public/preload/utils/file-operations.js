@@ -39,6 +39,34 @@ function guessMimeByExt(extRaw) {
     return 'application/octet-stream'
 }
 
+function getTimestampMs(value) {
+    if (value instanceof Date) {
+        const timestamp = value.getTime()
+        return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : 0
+    }
+
+    if (typeof value === 'number') {
+        return Number.isFinite(value) && value > 0 ? value : 0
+    }
+
+    if (!value || typeof value !== 'object') return 0
+
+    const directMs = Number(value.mtimeMs ?? value.lastModifiedMs ?? value.timestampMs)
+    if (Number.isFinite(directMs) && directMs > 0) return directMs
+
+    if (value.mtime) {
+        const mtime = new Date(value.mtime).getTime()
+        if (Number.isFinite(mtime) && mtime > 0) return mtime
+    }
+
+    if (value.lastModified) {
+        const lastModified = new Date(value.lastModified).getTime()
+        if (Number.isFinite(lastModified) && lastModified > 0) return lastModified
+    }
+
+    return 0
+}
+
 class FileOperations {
     constructor() {
         if (FileOperations.instance) {
@@ -60,6 +88,7 @@ class FileOperations {
         this._cloudAutoRestoreTimer = null
         this._cloudAutoRestoreRunning = false
         this._cloudAutoRestorePending = false
+        this._cloudAutoDecisionTimer = null
         this._externalWatchers = new Map()
         this._externalWatchDebounceTimers = new Map()
         this._externalWatchResyncTimers = new Map()
@@ -589,11 +618,11 @@ class FileOperations {
     }
 
     _isCloudAutoBackupReady(config = this._getCloudConfigSafe()) {
-        return config?.autoBackupEnabled === true && this._hasRequiredCloudConfig(config)
+        return config?.autoBackupEnabled === true && this._hasRequiredCloudConfig(config) && this._hasDataStorageRoot()
     }
 
     _isCloudAutoRestoreReady(config = this._getCloudConfigSafe()) {
-        return config?.autoRestoreEnabled === true && this._hasRequiredCloudConfig(config)
+        return config?.autoRestoreEnabled === true && this._hasRequiredCloudConfig(config) && this._hasDataStorageRoot()
     }
 
     _getCloudConnectionSignature(config) {
@@ -627,6 +656,12 @@ class FileOperations {
         this._cloudAutoRestoreTimer = null
     }
 
+    _clearCloudAutoDecisionTimer() {
+        if (!this._cloudAutoDecisionTimer) return
+        clearTimeout(this._cloudAutoDecisionTimer)
+        this._cloudAutoDecisionTimer = null
+    }
+
     _handleCloudAutomationConfigChange(config = this._getCloudConfigSafe()) {
         const backupReady = this._isCloudAutoBackupReady(config)
         const backupSignature = backupReady ? this._getCloudAutoBackupSignature(config) : ''
@@ -646,9 +681,22 @@ class FileOperations {
         if (!restoreReady) {
             this._clearCloudAutoRestoreTimer()
         }
+        if (!backupReady || !restoreReady) {
+            this._clearCloudAutoDecisionTimer()
+        }
 
-        if (shouldRunInitialRestore) this._scheduleCloudAutoRestore()
-        if (shouldRunInitialBackup) this._scheduleCloudAutoBackup()
+        if (shouldRunInitialRestore || shouldRunInitialBackup) {
+            if (backupReady && restoreReady) {
+                this._clearCloudAutoDecisionTimer()
+                this._clearCloudAutoBackupTimer()
+                this._clearCloudAutoRestoreTimer()
+                this._scheduleCloudAutoDecision()
+                return
+            }
+
+            if (shouldRunInitialRestore) this._scheduleCloudAutoRestore()
+            if (shouldRunInitialBackup) this._scheduleCloudAutoBackup()
+        }
     }
 
     _scheduleCloudAutoBackup() {
@@ -679,7 +727,21 @@ class FileOperations {
         }, CLOUD_AUTO_RESTORE_DEBOUNCE_MS)
     }
 
+    _scheduleCloudAutoDecision() {
+        if (this._disposed) return
+        if (!this._cloudAutomationInitialized || !this._isCloudAutoBackupReady() || !this._isCloudAutoRestoreReady()) return
+
+        this._clearCloudAutoDecisionTimer()
+        this._cloudAutoDecisionTimer = setTimeout(() => {
+            this._cloudAutoDecisionTimer = null
+            void this._runCloudAutoDecision()
+        }, CLOUD_AUTO_RESTORE_DEBOUNCE_MS)
+    }
+
     _scheduleCloudAutoBackupAfterMutation() {
+        this._clearCloudAutoDecisionTimer()
+        this._clearCloudAutoRestoreTimer()
+        this._cloudAutoRestorePending = false
         this._scheduleCloudAutoBackup()
     }
 
@@ -758,6 +820,128 @@ class FileOperations {
         } finally {
             this._cloudAutoRestoreRunning = false
             this._schedulePendingCloudAutoOperation()
+        }
+    }
+
+    _hasDataStorageRoot() {
+        try {
+            return !!String(globalConfig.getDataStorageRoot?.() || '').trim()
+        } catch {
+            return false
+        }
+    }
+
+    async _getLatestLocalTimestamp() {
+        let localFiles = []
+        try {
+            localFiles = await this._getLocalFiles('')
+        } catch (err) {
+            console.warn?.('[Cloud auto decision] local file scan failed:', err)
+            return { timestamp: 0, path: '', total: 0 }
+        }
+
+        let latestTimestamp = 0
+        let latestPath = ''
+        for (const relPath of localFiles) {
+            const fullPath = this._resolvePath(relPath)
+            let statInfo = null
+            try {
+                statInfo = await fs.stat(fullPath)
+            } catch (err) {
+                if (err?.code === 'ENOENT') continue
+                continue
+            }
+
+            const timestamp = getTimestampMs(statInfo)
+            if (timestamp > latestTimestamp) {
+                latestTimestamp = timestamp
+                latestPath = relPath
+            }
+        }
+
+        return {
+            timestamp: latestTimestamp,
+            path: latestPath,
+            total: localFiles.length
+        }
+    }
+
+    async _getLatestCloudTimestamp() {
+        let s3 = null
+        let bucket = ''
+        try {
+            s3 = this._getS3Client()
+            bucket = globalConfig.getCloudConfig().bucket
+        } catch (err) {
+            console.warn?.('[Cloud auto decision] cloud client init failed:', err)
+            return { timestamp: 0, path: '', total: 0 }
+        }
+
+        let remoteFiles = []
+        try {
+            remoteFiles = (await this._retryOperation(() => s3.listObjects(bucket)))
+                .filter((key) => String(key || '').trim() && !String(key).endsWith('/'))
+        } catch (err) {
+            console.warn?.('[Cloud auto decision] remote file scan failed:', err)
+            return { timestamp: 0, path: '', total: 0 }
+        }
+
+        let latestTimestamp = 0
+        let latestPath = ''
+        for (const key of remoteFiles) {
+            let meta = null
+            try {
+                meta = await this._retryOperation(() => s3.headObject(bucket, key))
+            } catch (err) {
+                continue
+            }
+
+            const timestamp = getTimestampMs(meta)
+            if (timestamp > latestTimestamp) {
+                latestTimestamp = timestamp
+                latestPath = key
+            }
+        }
+
+        return {
+            timestamp: latestTimestamp,
+            path: latestPath,
+            total: remoteFiles.length
+        }
+    }
+
+    async _resolveCloudAutoDecision() {
+        const [localInfo, cloudInfo] = await Promise.all([
+            this._getLatestLocalTimestamp(),
+            this._getLatestCloudTimestamp()
+        ])
+
+        if (!localInfo.total && !cloudInfo.total) return null
+        if (!localInfo.total) return 'restore'
+        if (!cloudInfo.total) return 'backup'
+        if (cloudInfo.timestamp > localInfo.timestamp) return 'restore'
+        return 'backup'
+    }
+
+    async _runCloudAutoDecision() {
+        if (this._disposed) return
+        if (!this._isCloudAutoBackupReady() || !this._isCloudAutoRestoreReady()) return
+
+        let direction = null
+        try {
+            direction = await this._resolveCloudAutoDecision()
+        } catch (err) {
+            console.warn?.('[Cloud auto decision] failed, falling back to backup:', err)
+            direction = 'backup'
+        }
+
+        if (direction === 'restore') {
+            await this._runCloudAutoRestore()
+            return
+        }
+
+        if (direction === 'backup') {
+            await this._runCloudAutoBackup()
         }
     }
 
@@ -1159,6 +1343,7 @@ class FileOperations {
         this._cloudAutoRestoreRunning = false
         this._clearCloudAutoBackupTimer()
         this._clearCloudAutoRestoreTimer()
+        this._clearCloudAutoDecisionTimer()
         this._closeExternalWatchers()
         for (const timer of this._externalWatchDebounceTimers.values()) {
             clearTimeout(timer)

@@ -252,7 +252,7 @@
             </n-flex>
             <n-flex align="center" :size="10" wrap>
               <n-flex align="center" :size="8">
-                <n-text depth="3">自动备份</n-text>
+                <n-text depth="3">自动备份（本地 -> 云端）</n-text>
                 <n-switch
                   :value="cloudAutoBackupEnabled"
                   :loading="cloudAutoBackupSaving"
@@ -260,7 +260,7 @@
                 />
               </n-flex>
               <n-flex align="center" :size="8">
-                <n-text depth="3">自动恢复</n-text>
+                <n-text depth="3">自动恢复（云端 -> 本地）</n-text>
                 <n-switch
                   :value="cloudAutoRestoreEnabled"
                   :loading="cloudAutoRestoreSaving"
@@ -272,8 +272,8 @@
           </n-flex>
           <n-flex wrap :size="10">
             <n-button :loading="cloudActionLoading.backup" @click="confirmCloudAction('backup')">备份到云端</n-button>
-            <n-button :loading="cloudActionLoading.sync" @click="confirmCloudAction('sync')">与云端同步</n-button>
-            <n-button secondary :loading="cloudActionLoading.restore" @click="confirmCloudAction('restore')">从云端恢复</n-button>
+            <n-button :loading="cloudActionLoading.sync" @click="confirmCloudAction('sync')">本地覆盖云端</n-button>
+            <n-button secondary :loading="cloudActionLoading.restore" @click="confirmCloudAction('restore')">从云端恢复到本地</n-button>
           </n-flex>
           <n-alert
             v-if="cloudActionFeedback.visible"
@@ -590,10 +590,10 @@
         <n-form-item label="Force Path Style">
           <n-switch v-model:value="cloudConfigModal.form.forcePathStyle" />
         </n-form-item>
-        <n-form-item label="自动备份">
+        <n-form-item label="自动备份（本地 -> 云端）">
           <n-switch v-model:value="cloudConfigModal.form.autoBackupEnabled" />
         </n-form-item>
-        <n-form-item label="自动恢复">
+        <n-form-item label="自动恢复（云端 -> 本地）">
           <n-switch v-model:value="cloudConfigModal.form.autoRestoreEnabled" />
         </n-form-item>
       </n-form>
@@ -1159,11 +1159,11 @@ const cloudConfigSummary = computed(() => {
   const bucket = String(cfg.bucket || '').trim()
   const region = String(cfg.region || '').trim()
   const autoBackupLabel = cfg.autoBackupEnabled
-    ? (hasCompleteCloudConfig(cfg) ? '自动备份已开启' : '自动备份待补齐配置')
-    : '自动备份关闭'
+    ? (hasCompleteCloudConfig(cfg) ? '自动备份（本地 -> 云端）已开启' : '自动备份（本地 -> 云端）待补齐配置')
+    : '自动备份（本地 -> 云端）关闭'
   const autoRestoreLabel = cfg.autoRestoreEnabled
-    ? (hasCompleteCloudConfig(cfg) ? '自动恢复已开启' : '自动恢复待补齐配置')
-    : '自动恢复关闭'
+    ? (hasCompleteCloudConfig(cfg) ? '自动恢复（云端 -> 本地）已开启' : '自动恢复（云端 -> 本地）待补齐配置')
+    : '自动恢复（云端 -> 本地）关闭'
   if (!endpoint && !bucket && !region) return `未配置云同步 / ${autoBackupLabel} / ${autoRestoreLabel}。`
   return [bucket ? `Bucket: ${bucket}` : '', region ? `Region: ${region}` : '', endpoint ? `Endpoint: ${endpoint}` : '', autoBackupLabel, autoRestoreLabel]
     .filter(Boolean)
@@ -1325,6 +1325,7 @@ function getHistoryFocusLabel(value) {
 function hasCompleteCloudConfig(raw) {
   const cfg = raw && typeof raw === 'object' ? raw : {}
   return ['region', 'accessKeyId', 'secretAccessKey', 'bucket'].every((key) => String(cfg[key] || '').trim())
+    && Boolean(String(dataStorageRoot.value || '').trim())
 }
 
 async function refreshNotebookPythonDetection() {
@@ -2071,9 +2072,9 @@ async function handleToggleCloudAutoBackup(value) {
   try {
     await updateCloudConfig({ autoBackupEnabled: enabled })
     if (enabled && !hasCompleteCloudConfig(cloudConfig.value)) {
-      message.warning('自动备份已开启，补齐云同步配置后会开始后台备份')
+      message.warning('自动备份（本地 -> 云端）已开启，补齐云同步配置后会开始后台上传')
     } else {
-      message.success(enabled ? '自动备份已开启' : '自动备份已关闭')
+      message.success(enabled ? '自动备份（本地 -> 云端）已开启' : '自动备份（本地 -> 云端）已关闭')
     }
   } catch (err) {
     message.error(err?.message || String(err))
@@ -2088,9 +2089,9 @@ async function handleToggleCloudAutoRestore(value) {
   try {
     await updateCloudConfig({ autoRestoreEnabled: enabled })
     if (enabled && !hasCompleteCloudConfig(cloudConfig.value)) {
-      message.warning('自动恢复已开启，补齐云同步配置后会开始后台恢复')
+      message.warning('自动恢复（云端 -> 本地）已开启，补齐云同步配置后会开始后台恢复')
     } else {
-      message.success(enabled ? '自动恢复已开启' : '自动恢复已关闭')
+      message.success(enabled ? '自动恢复（云端 -> 本地）已开启' : '自动恢复（云端 -> 本地）已关闭')
     }
   } catch (err) {
     message.error(err?.message || String(err))
@@ -2101,8 +2102,8 @@ async function handleToggleCloudAutoRestore(value) {
 
 function getCloudActionLabel(action) {
   if (action === 'backup') return '备份到云端'
-  if (action === 'sync') return '以本地为准同步到云端'
-  return '从云端恢复'
+  if (action === 'sync') return '本地覆盖云端'
+  return '从云端恢复到本地'
 }
 
 function getCloudActionConfirmOptions(action) {
@@ -2116,14 +2117,14 @@ function getCloudActionConfirmOptions(action) {
 
   if (action === 'sync') {
     return {
-      title: '确认以本地为准同步到云端',
+      title: '确认本地覆盖云端',
       content: '会上传本地文件并覆盖云端同名文件，同时删除云端中本地不存在的文件。请确认当前本地数据就是你要保留的版本。',
-      positiveText: '开始同步'
+      positiveText: '开始覆盖'
     }
   }
 
   return {
-    title: '确认从云端恢复',
+    title: '确认从云端恢复到本地',
     content: '从云端恢复会覆盖本地已有文件，建议先执行一次“备份到云端”或手动导出配置。',
     positiveText: '继续恢复'
   }
@@ -2138,8 +2139,8 @@ function beginCloudActionFeedback(action) {
   cloudActionFeedback.detail = action === 'backup'
     ? '会上传本地文件并覆盖云端同名文件。'
     : action === 'sync'
-      ? '会执行上传覆盖和云端删除两类操作，并以本地数据为准。'
-      : '会下载云端文件并覆盖本地同名文件。'
+      ? '会按本地版本覆盖云端，并清理云端多余文件。'
+      : '会将云端文件下载到本地并覆盖同名文件。'
   cloudActionFeedback.current = 0
   cloudActionFeedback.total = 0
 }
@@ -2157,7 +2158,7 @@ function updateCloudActionFeedback(action, current, total) {
     ? `已处理 ${nextCurrent} / ${nextTotal} 项`
     : '正在准备文件列表...'
   cloudActionFeedback.detail = action === 'sync'
-    ? '同步过程会同时统计上传覆盖和云端删除操作。'
+    ? '过程包含覆盖上传和云端删除，最终以本地为准。'
     : action === 'backup'
       ? '处理进度包含本地文件上传过程，最终会显示实际上传数量。'
       : '处理进度包含云端文件下载过程，最终会显示实际下载数量。'
@@ -2198,7 +2199,7 @@ async function handleCloudAction(action) {
     cloudActionFeedback.title = `${getCloudActionLabel(action)}已完成`
     cloudActionFeedback.summary = summary
     cloudActionFeedback.detail = action === 'sync'
-      ? '云端已按本地状态完成收敛。'
+      ? '云端已按本地版本完成覆盖，并删除多余文件。'
       : action === 'backup'
         ? '云端同名文件已使用本地版本覆盖。'
         : '本地同名文件已使用云端版本覆盖。'
