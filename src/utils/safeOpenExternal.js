@@ -1,4 +1,4 @@
-const ALLOWED_EXTERNAL_PROTOCOLS = new Set(['https:', 'mailto:'])
+const ALLOWED_EXTERNAL_PROTOCOLS = new Set(['http:', 'https:', 'mailto:'])
 
 function resolveExternalUrl(rawHref) {
   const href = String(rawHref || '').trim()

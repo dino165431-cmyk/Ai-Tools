@@ -5124,7 +5124,7 @@ function handleChatPreviewLinkContextMenu(e) {
     return
   }
 
-  if (externalUrl?.protocol === 'https:') {
+  if (externalUrl?.protocol === 'http:' || externalUrl?.protocol === 'https:') {
     copyToClipboard(externalUrl.toString())
     return
   }
