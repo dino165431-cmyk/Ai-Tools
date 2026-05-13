@@ -1853,6 +1853,59 @@ onBeforeUnmount(async () => { window.removeEventListener('keydown', handleGlobal
   justify-content: flex-end;
   gap: 4px;
 }
+
+.notebook-editor {
+  gap: 8px;
+}
+
+.notebook-editor__header {
+  padding: 12px 16px;
+  border-radius: 20px;
+}
+
+.notebook-editor__eyebrow {
+  margin-bottom: 4px;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+}
+
+.notebook-editor__title-row {
+  gap: 2px;
+  margin-bottom: 6px;
+}
+
+.notebook-editor__title-row h3 {
+  font-size: 20px;
+  line-height: 1.2;
+}
+
+.notebook-editor__path {
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.notebook-editor__meta {
+  gap: 6px;
+}
+
+.notebook-editor__toolbar {
+  gap: 4px;
+}
+
+.notebook-editor__body {
+  padding-right: 8px;
+  padding-bottom: 2px;
+}
+
+.notebook-editor__cells {
+  gap: 10px;
+  padding-right: 4px;
+  padding-bottom: 6px;
+}
+
+.notebook-editor__alert {
+  border-radius: 14px;
+}
 </style>
 
 

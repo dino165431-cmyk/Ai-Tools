@@ -57,10 +57,10 @@
               />
             </div>
 
-            <div
+            <NotebookHtmlTableOutput
               v-else-if="resolveHtmlOutput(item)"
-              class="notebook-output__html markdown-body"
-              v-html="resolveHtmlOutput(item)"
+              :html="resolveHtmlOutput(item)"
+              :theme="theme"
             />
 
             <img
@@ -114,6 +114,7 @@ import LazyMarkdownPreview from '@/components/LazyMarkdownPreview.vue'
 import { parseAnsiTextSegments } from '@/utils/ansiText'
 import { isScrollPositionNearBottom, mergeNotebookStreamOutputs } from '@/utils/notebookRuntimeDisplay'
 import { sanitizeHtml } from '@/utils/sanitizeHtml'
+import NotebookHtmlTableOutput from './notebook/NotebookHtmlTableOutput.vue'
 
 const props = defineProps({
   outputs: {
@@ -400,7 +401,7 @@ function formatTraceback(output) {
 }
 
 .notebook-output__meta {
-  padding: 8px 12px;
+  padding: 6px 10px;
   border-bottom: 1px solid rgba(148, 163, 184, 0.14);
   font-size: 12px;
   font-weight: 600;
@@ -504,7 +505,7 @@ function formatTraceback(output) {
 .notebook-output__rich-body {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .notebook-output pre {
