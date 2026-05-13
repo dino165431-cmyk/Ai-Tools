@@ -86,7 +86,44 @@
       </div>
       <div v-if="loading" class="notebook-editor__empty"><n-spin size="small" /><span>正在加载超级笔记...</span></div>
       <div v-else-if="notebook.cells.length" class="notebook-editor__cells">
-        <component :is="cell.cell_type === 'markdown' ? NotebookCellMarkdown : NotebookCellCode" v-for="(cell, index) in notebook.cells" :ref="setCellRef(cell.id)" :key="cell.id" :cell="cell" :index="index" :cell-count="notebook.cells.length" :selected="selectedCellId === cell.id" :previewing="isMarkdownPreviewing(cell.id)" :collapsed="isCellCollapsed(cell.id)" :running="runningCellId === cell.id" :theme="theme" :file-path="filePath" :content-active="shouldRenderCellContent(cell.id, index)" :runtime-input-request="getRuntimePromptRequestForCell(cell.id)" :python-modules="getCellRuntime(cell) === 'python' ? availablePythonModules : []" :python-path="getCellRuntime(cell) === 'python' ? activePythonPath : ''" :notebook-magic-options="getCellRuntime(cell) === 'python' ? notebookMagicOptions : []" :completion-context="selectedCellId === cell.id && getCellRuntime(cell) === 'python' ? getPythonCompletionContext(index) : ''" :python-context-cells="selectedCellId === cell.id && getCellRuntime(cell) === 'python' ? getPythonContextCells(index) : []" @focus="setSelectedCell(cell.id)" @toggle-preview="toggleMarkdownPreview(cell.id)" @toggle-collapse="toggleCellCollapsed(cell.id)" @update-source="updateCellSource(cell.id, $event)" @update-runtime="updateCellRuntime(cell.id, $event)" @delete="deleteCell(cell.id)" @move-up="moveCell(cell.id, -1)" @move-down="moveCell(cell.id, 1)" @add-after="insertCellAfter(cell.id, $event)" @run="runCellById(cell.id)" @stop="stopCellRun(cell.id)" @clear-outputs="clearCodeCellOutputs(cell.id)" @submit-runtime-input="submitRuntimePromptInput($event)" @abort-runtime-input="abortRuntimePromptInput()" @runtime-error="handlePythonCompletionFailure($event)" @go-to-definition="handlePythonDefinitionNavigation" />
+        <component
+          :is="cell.cell_type === 'markdown' ? NotebookCellMarkdown : NotebookCellCode"
+          v-for="(cell, index) in notebook.cells"
+          :ref="setCellRef(cell.id)"
+          :key="cell.id"
+          :cell="cell"
+          :index="index"
+          :cell-count="notebook.cells.length"
+          :selected="selectedCellId === cell.id"
+          :previewing="isMarkdownPreviewing(cell.id)"
+          :collapsed="isCellCollapsed(cell.id)"
+          :running="runningCellId === cell.id"
+          :theme="theme"
+          :file-path="filePath"
+          :content-active="shouldRenderCellContent(cell.id, index)"
+          :runtime-input-request="getRuntimePromptRequestForCell(cell.id)"
+          :python-modules="getCellRuntime(cell) === 'python' ? availablePythonModules : EMPTY_ARRAY"
+          :python-path="getCellRuntime(cell) === 'python' ? activePythonPath : ''"
+          :notebook-magic-options="getCellRuntime(cell) === 'python' ? notebookMagicOptions : EMPTY_ARRAY"
+          :completion-context="selectedCellId === cell.id && getCellRuntime(cell) === 'python' ? getPythonCompletionContext(index) : ''"
+          :python-context-cells="selectedCellId === cell.id && getCellRuntime(cell) === 'python' ? getPythonContextCells(index) : EMPTY_ARRAY"
+          @focus="setSelectedCell(cell.id)"
+          @toggle-preview="toggleMarkdownPreview(cell.id)"
+          @toggle-collapse="toggleCellCollapsed(cell.id)"
+          @update-source="updateCellSource(cell.id, $event)"
+          @update-runtime="updateCellRuntime(cell.id, $event)"
+          @delete="deleteCell(cell.id)"
+          @move-up="moveCell(cell.id, -1)"
+          @move-down="moveCell(cell.id, 1)"
+          @add-after="insertCellAfter(cell.id, $event)"
+          @run="runCellById(cell.id)"
+          @stop="stopCellRun(cell.id)"
+          @clear-outputs="clearCodeCellOutputs(cell.id)"
+          @submit-runtime-input="submitRuntimePromptInput($event)"
+          @abort-runtime-input="abortRuntimePromptInput()"
+          @runtime-error="handlePythonCompletionFailure($event)"
+          @go-to-definition="handlePythonDefinitionNavigation"
+        />
       </div>
       <div v-else class="notebook-editor__empty notebook-editor__empty--blank">
         <n-empty description="当前超级笔记还是空的"><template #extra><div class="notebook-editor__empty-actions"><n-tooltip trigger="hover"><template #trigger><n-button quaternary circle size="large" @click="insertCellRelativeToSelection('markdown')"><template #icon><n-icon><DocumentTextOutline /></n-icon></template></n-button></template>添加 Markdown（Ctrl+Alt+M）</n-tooltip><n-tooltip trigger="hover"><template #trigger><n-button type="primary" ghost circle size="large" @click="insertCellRelativeToSelection('code')"><template #icon><n-icon><CodeSlashOutline /></n-icon></template></n-button></template>添加代码 Cell（Ctrl+Alt+C）</n-tooltip></div></template></n-empty>
@@ -119,7 +156,11 @@ import { buildRuntimeDisplayOutputs as buildRuntimeDisplayOutputsForCell, buildR
 import { checkNotebookPythonLsp, createManagedNotebookVenv, createNotebookSession, detectNotebookPython, executeNotebookCell, executeNotebookJavaScriptCell, executeNotebookMagicSpecs, forceRestartNotebookSession, installNotebookDependencies, interruptNotebookMagicExecution, interruptNotebookSession, invalidateNotebookRuntimeCaches, listManagedNotebookVenvs, listNotebookPythonModules, provideNotebookCellInput, restartNotebookSession, shutdownNotebookSession } from '@/utils/notebookRuntime'
 import { decryptNoteContent, encryptNoteContent, isEncryptedNoteContent, replaceEncryptedNoteContent } from '@/utils/noteEncryption'
 import { getNotebookRuntimeBoundEnvName, normalizeNotebookRuntimeConfig, rewriteNotebookRuntimeBoundEnvName, setNotebookRuntimeBoundEnvName } from '@/utils/notebookRuntimeConfig'
-import { cleanupUnusedNotebookAttachments } from '@/utils/noteAttachmentCleanup'
+import {
+  buildNotebookMarkdownText,
+  cleanupUnusedNotebookAttachments,
+  hasPotentialNoteAttachmentReferences
+} from '@/utils/noteAttachmentCleanup'
 import NotebookCellCode from './notebook/NotebookCellCode.vue'
 import NotebookCellMarkdown from './notebook/NotebookCellMarkdown.vue'
 import { CollapseCellIcon, ExpandCellIcon, LayersClearIcon } from './notebook/notebookCellIcons'
@@ -172,6 +213,7 @@ const runtimePreludeLinesByCellId = new Map()
 let suppressNotebookWatcher = false, saveTimeout = null, cleanupTimeout = null, saveQueue = Promise.resolve(), lastSavedFilePath = '', lastSavedSerialized = '', latestLoadToken = 0, sessionEnsuringPromise = null, sessionPrewarmTimer = null, runtimePatchTimer = null, cellVisibilityObserver = null, pendingCellObserverRefresh = false, lastHandledRenameToken = '', pythonRuntimeInspectionToken = 0, stickyHeaderSyncFrame = 0, stickyHeaderScrollRoot = null, managedVenvRefreshTimer = null, pythonEnvironmentWarmupTimer = null, pythonEnvironmentWarmupIdleHandle = null
 const REQUIRED_NOTEBOOK_MODULES = ['jupyter_client', 'ipykernel']
 const NOTEBOOK_BASE_INSTALL_PACKAGES = ['jupyter_client', 'ipykernel', 'jedi-language-server']
+const EMPTY_ARRAY = Object.freeze([])
 const noteTitle = computed(() => !props.filePath ? '未命名超级笔记' : path.basename(props.filePath, path.extname(props.filePath)) || '未命名超级笔记')
 const runtimeConfig = computed(() => getNotebookRuntimeConfig(noteConfig.value))
 const notebookRuntimeEnvName = computed(() => getNotebookRuntimeBoundEnvName(runtimeConfig.value, props.filePath))
@@ -194,6 +236,7 @@ const runtimeDetectedPythonText = computed(() => String(runtimeDetectedPython.va
 const runtimeInstallCommand = computed(() => `"${resolveRuntimePythonPath(runtimeInstallModal.pythonPath)}" -m pip install ${(normalizeInstallPackageList(runtimeInstallModal.installPackages).length ? normalizeInstallPackageList(runtimeInstallModal.installPackages) : NOTEBOOK_BASE_INSTALL_PACKAGES).join(' ')}`)
 const stickyCell = computed(() => notebook.value.cells.find((cell) => cell.id === stickyCellId.value) || null)
 const stickyCellIndex = computed(() => stickyCell.value ? Math.max(0, notebook.value.cells.findIndex((cell) => cell.id === stickyCell.value.id)) : -1)
+const selectedCellIndex = computed(() => getCellIndex(selectedCellId.value))
 const stickyCellRunning = computed(() => !!stickyCell.value?.id && runningCellId.value === stickyCell.value.id)
 const stickyCellPreviewing = computed(() => !!stickyCell.value?.id && isMarkdownPreviewing(stickyCell.value.id))
 const stickyCellCollapsed = computed(() => !!stickyCell.value?.id && isCellCollapsed(stickyCell.value.id))
@@ -567,7 +610,7 @@ function shouldRenderCellContent(cellId, index = -1) {
   if (selectedCellId.value === targetId || runningCellId.value === targetId) return true
   if (hydratedCellIds.value.has(targetId)) return true
   if (visibleCellIds.value.has(targetId)) return true
-  const selectedIndex = getCellIndex(selectedCellId.value)
+  const selectedIndex = selectedCellIndex.value
   if (selectedIndex >= 0 && Math.abs(selectedIndex - Number(index)) <= 1) return true
   return false
 }
@@ -746,7 +789,17 @@ function scheduleNotebookSave(filePath, notebookSnapshot, delayMs = 500) {
     }
   }, Math.max(0, Number(delayMs) || 0))
 }
-function scheduleCleanupNotebookAttachments(filePath, notebookSnapshot) { if (cleanupTimeout) clearTimeout(cleanupTimeout); const snapshotPath = String(filePath || ''); const snapshotNotebook = normalizeNotebook(notebookSnapshot); cleanupTimeout = setTimeout(() => { cleanupTimeout = null; cleanupUnusedNotebookAttachments(snapshotPath, snapshotNotebook).catch((err) => { console.warn('cleanupUnusedNotebookAttachments failed:', err) }) }, 5000) }
+function scheduleCleanupNotebookAttachments(filePath, notebookSnapshot) {
+  const snapshotPath = String(filePath || '').trim()
+  if (!snapshotPath) return
+  const snapshotNotebook = normalizeNotebook(notebookSnapshot)
+  if (!hasPotentialNoteAttachmentReferences(buildNotebookMarkdownText(snapshotNotebook))) return
+  if (cleanupTimeout) clearTimeout(cleanupTimeout)
+  cleanupTimeout = setTimeout(() => {
+    cleanupTimeout = null
+    cleanupUnusedNotebookAttachments(snapshotPath, snapshotNotebook).catch((err) => { console.warn('cleanupUnusedNotebookAttachments failed:', err) })
+  }, 5000)
+}
 function markNotebookDirty(notebookSnapshot = notebook.value, options = {}) {
   if (suppressNotebookWatcher || !props.filePath) return
   if (!options.assumeDirty) {
@@ -1801,7 +1854,7 @@ onBeforeUnmount(async () => { window.removeEventListener('keydown', handleGlobal
 .notebook-editor__sticky-layer {
   position: sticky;
   top: 0;
-  z-index: 18;
+  z-index: 30;
   height: 0;
   overflow: visible;
   pointer-events: none;

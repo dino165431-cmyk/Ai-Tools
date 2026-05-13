@@ -40,7 +40,12 @@ function extractReferencedAssetFileNames(markdown, assetsDirName) {
   return out
 }
 
-function buildNotebookMarkdownText(notebookLike) {
+export function hasPotentialNoteAttachmentReferences(markdown) {
+  const text = String(markdown || '')
+  return text.includes('.assets/') || text.includes('.assets\\')
+}
+
+export function buildNotebookMarkdownText(notebookLike) {
   const cells = Array.isArray(notebookLike?.cells) ? notebookLike.cells : []
   return cells
     .filter((cell) => cell?.cell_type === 'markdown')
@@ -85,6 +90,7 @@ export async function cleanupUnusedNoteAttachments(noteFilePath, markdown) {
   if (!supportsNoteAttachments(notePath)) return
 
   const md = String(markdown || '')
+  if (!hasPotentialNoteAttachmentReferences(md)) return
   const assetsInfos = listNoteAssetsDirectories(notePath)
   for (const assetsInfo of assetsInfos) {
     if (!assetsInfo?.assetsDirRel) continue
@@ -94,7 +100,9 @@ export async function cleanupUnusedNoteAttachments(noteFilePath, markdown) {
 }
 
 export async function cleanupUnusedNotebookAttachments(noteFilePath, notebookLike) {
-  return cleanupUnusedNoteAttachments(noteFilePath, buildNotebookMarkdownText(notebookLike))
+  const markdown = buildNotebookMarkdownText(notebookLike)
+  if (!hasPotentialNoteAttachmentReferences(markdown)) return
+  return cleanupUnusedNoteAttachments(noteFilePath, markdown)
 }
 
 export async function deleteNoteAttachmentDirectories(noteFilePath) {

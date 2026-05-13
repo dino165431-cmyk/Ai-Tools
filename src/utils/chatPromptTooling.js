@@ -101,11 +101,10 @@ export function shouldClearBasePromptSelectionFromPromptModal(parsedValue, curre
 export function shouldClearBasePromptSelectionImmediately(currentState = {}, parsedValue = null) {
   if (!hasActiveBasePromptSelection(currentState)) return false
 
-  const parsedType = String(parsedValue?.type || '').trim()
-  const parsedPromptId = String(parsedValue?.promptId || '').trim()
-  if (!parsedType) return true
-
-  return parsedType === 'local' && !parsedPromptId
+  return (
+    shouldClearBasePromptSelectionFromPromptModal(parsedValue, currentState) ||
+    isPromptModalSelectionCurrentBasePrompt(parsedValue, currentState)
+  )
 }
 
 export const AGENT_SKILL_LAZY_LOAD_GUIDANCE_LINES = Object.freeze([

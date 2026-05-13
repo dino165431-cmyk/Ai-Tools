@@ -1132,11 +1132,9 @@ import {
   COMPACT_MCP_TOOL_GUIDANCE_LINES,
   hasActiveBasePromptSelection,
   INTERNAL_TOOL_SPECS,
-  isPromptModalSelectionCurrentBasePrompt,
   normalizePromptText,
   resolveSystemPromptModalApplyState,
   shouldClearBasePromptSelectionImmediately,
-  shouldClearBasePromptSelectionFromPromptModal
 } from '@/utils/chatPromptTooling'
 import {
   buildPromptVariableValues,
@@ -13194,16 +13192,10 @@ async function applyPromptModal() {
 
   const localPrompt = findLocalPromptById(parsed.promptId || null)
   if (!localPrompt) {
-    if (
-      shouldClearBasePromptSelectionFromPromptModal(parsed, {
-        basePromptMode: basePromptMode.value,
-        selectedPromptId: selectedPromptId.value
-      }) ||
-      isPromptModalSelectionCurrentBasePrompt(parsed, {
-        basePromptMode: basePromptMode.value,
-        selectedPromptId: selectedPromptId.value
-      })
-    ) {
+    if (shouldClearBasePromptSelectionImmediately({
+      basePromptMode: basePromptMode.value,
+      selectedPromptId: selectedPromptId.value
+    }, parsed)) {
       applyBasePromptSelection(null)
     }
     showPromptModal.value = false

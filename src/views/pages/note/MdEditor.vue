@@ -117,7 +117,10 @@ import {
   buildUploadedImageAlt,
   resolveImageExtension
 } from '@/utils/noteImageUpload';
-import { cleanupUnusedNoteAttachments } from '@/utils/noteAttachmentCleanup';
+import {
+  cleanupUnusedNoteAttachments,
+  hasPotentialNoteAttachmentReferences
+} from '@/utils/noteAttachmentCleanup';
 import {
   decryptNoteContent,
   encryptNoteContent,
@@ -326,9 +329,10 @@ function getNoteAssetsInfo(noteFilePath) {
 }
 
 function scheduleCleanupAttachments(noteFilePath, markdown) {
-  if (cleanupTimeout) clearTimeout(cleanupTimeout);
   const snapshotPath = String(noteFilePath || '');
   const snapshotMd = String(markdown || '');
+  if (!snapshotPath || !hasPotentialNoteAttachmentReferences(snapshotMd)) return;
+  if (cleanupTimeout) clearTimeout(cleanupTimeout);
   cleanupTimeout = setTimeout(() => {
     cleanupTimeout = null;
     cleanupUnusedNoteAttachments(snapshotPath, snapshotMd).catch((e) => {
