@@ -160,6 +160,8 @@ import path from 'path-browserify';
 import { copyTextToClipboard } from '@/utils/clipboard';
 import { ensureMarkdownPreviewRuntime } from '@/utils/mdEditorRuntime';
 import { sanitizeSvgTree } from '@/utils/sanitizeSvg';
+import { getNoteConfig } from '@/utils/configListener';
+import { decryptNoteContent, normalizeNoteSecurityConfig } from '@/utils/noteEncryption';
 import {
   safeDecodeURIComponent as safeDecodeURIComponentUtil,
   stripUrlHashAndQuery as stripUrlHashAndQueryUtil,
@@ -186,11 +188,16 @@ const props = defineProps({
   theme: {
     type: String,
     default: 'light'
+  },
+  getUnlockedPassword: {
+    type: Function,
+    default: null
   }
 });
 
 const message = useMessage();
 const dialog = useDialog();
+const noteConfig = getNoteConfig();
 
 // 树数据
 const treeData = ref([]);
@@ -202,6 +209,7 @@ const refreshing = ref(false);
 const runtimeIssue = ref('');
 const pendingExternalChangePaths = new Set();
 let externalRefreshTimer = null;
+const noteSecurity = computed(() => normalizeNoteSecurityConfig(noteConfig.value?.noteSecurity));
 
 // 右键菜单状态
 const showContextMenu = ref(false);
@@ -1280,38 +1288,52 @@ async function exportNoteAsHtml(notePath, options = {}) {
     return;
   }
 
+  const protectedMeta = getProtectedNoteMeta(p);
+  const notePassword = getUnlockedPassword(p);
+  if (protectedMeta && !notePassword) {
+    message.warning('受保护的 Markdown 笔记请先在编辑器中解锁后再导出');
+    return;
+  }
+
   const destPath = p.replace(/\.md$/i, '.html');
   const doExport = async () => {
-    const markdown = await readFile(p, 'utf-8');
-    const markdownItMod = await import('markdown-it');
-    const MarkdownIt = markdownItMod?.default || markdownItMod;
-    const md = new MarkdownIt({ html: allowRawHtml, linkify: true, breaks: true });
-    installAdmonitionMarkdownRule(md);
-    const rendered = md.render(String(markdown || ''));
+    try {
+      const rawMarkdown = String(await readFile(p, 'utf-8') || '');
+      const markdown = protectedMeta
+        ? await decryptNoteContent(rawMarkdown, notePassword)
+        : rawMarkdown;
+      const markdownItMod = await import('markdown-it');
+      const MarkdownIt = markdownItMod?.default || markdownItMod;
+      const md = new MarkdownIt({ html: allowRawHtml, linkify: true, breaks: true });
+      installAdmonitionMarkdownRule(md);
+      const rendered = md.render(String(markdown || ''));
 
-    const dom = new DOMParser().parseFromString(rendered, 'text/html');
-    await renderDiagramBlocksForExport(dom, { theme: props.theme });
-    const imgs = Array.from(dom.querySelectorAll('img'));
-    for (const img of imgs) {
-      const src = img.getAttribute('src');
-      const fileRel = resolveImageFileRelPathFromSrc(p, src);
-      if (!fileRel) continue;
+      const dom = new DOMParser().parseFromString(rendered, 'text/html');
+      await renderDiagramBlocksForExport(dom, { theme: props.theme });
+      const imgs = Array.from(dom.querySelectorAll('img'));
+      for (const img of imgs) {
+        const src = img.getAttribute('src');
+        const fileRel = resolveImageFileRelPathFromSrc(p, src);
+        if (!fileRel) continue;
 
-      try {
-        const mime = guessMimeByExt(path.extname(fileRel));
-        const buf = await readFile(fileRel, null);
-        const dataUrl = await binaryToDataUrl(buf, mime);
-        if (dataUrl) img.setAttribute('src', dataUrl);
-      } catch (e) {
-        console.warn('导出时读取图片失败：', fileRel, e);
+        try {
+          const mime = guessMimeByExt(path.extname(fileRel));
+          const buf = await readFile(fileRel, null);
+          const dataUrl = await binaryToDataUrl(buf, mime);
+          if (dataUrl) img.setAttribute('src', dataUrl);
+        } catch (e) {
+          console.warn('导出时读取图片失败：', fileRel, e);
+        }
       }
-    }
 
-    sanitizeExportedDom(dom, { safeMode });
-    const title = path.basename(p, '.md');
-    const html = buildStandaloneHtml({ title, bodyHtml: dom.body.innerHTML, theme: props.theme });
-    await writeFile(destPath, html);
-    message.success(`已导出：${destPath}`);
+      sanitizeExportedDom(dom, { safeMode });
+      const title = path.basename(p, '.md');
+      const html = buildStandaloneHtml({ title, bodyHtml: dom.body.innerHTML, theme: props.theme });
+      await writeFile(destPath, html);
+      message.success(`已导出：${destPath}`);
+    } catch (err) {
+      message.error('导出失败：' + (err?.message || String(err)));
+    }
   };
 
   const already = await exists(destPath);
@@ -1658,6 +1680,18 @@ function copyToClipboard(text) {
   });
 }
 
+function getProtectedNoteMeta(filePath) {
+  const normalized = toPosixPath(String(filePath || '').trim());
+  if (!normalized) return null;
+  return noteSecurity.value.protectedNotes[normalized] || null;
+}
+
+function getUnlockedPassword(filePath) {
+  const normalized = toPosixPath(String(filePath || '').trim());
+  if (!normalized || typeof props.getUnlockedPassword !== 'function') return '';
+  return String(props.getUnlockedPassword(normalized) || '');
+}
+
 function buildNoteHrefFromPath(noteAbsPath) {
   return buildNoteHrefFromPathUtil(noteAbsPath);
 }
@@ -1907,6 +1941,12 @@ async function renameNode(node) {
   const oldPath = node.key;
   const parentPath = oldPath.substring(0, oldPath.lastIndexOf('/'));
   const oldName = node.label;
+  const protectedMeta = isFile && getNodeNoteType(node) === 'markdown' ? getProtectedNoteMeta(oldPath) : null;
+  const unlockedPassword = protectedMeta ? getUnlockedPassword(oldPath) : '';
+  if (protectedMeta && !unlockedPassword) {
+    message.warning('受保护的 Markdown 笔记请先在编辑器中解锁后再重命名');
+    return;
+  }
   const inputValue = ref(oldName);
   dialog.create({
     title: '重命名',

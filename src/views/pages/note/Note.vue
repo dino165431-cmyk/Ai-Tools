@@ -112,6 +112,7 @@
         <FileTree
           ref="fileTreeRef"
           :theme="theme"
+          :get-unlocked-password="getUnlockedPassword"
           @select="handleFileSelect"
           @prepare-delete="handlePrepareDelete"
           @prepare-rename="handlePrepareRename"
@@ -784,6 +785,19 @@ async function handlePrepareDelete(targetPath, done) {
 
 async function handlePrepareRename(oldPath, _newPath, done) {
   try {
+    const normalizedOldPath = normalizeNotePath(oldPath)
+    if (
+      normalizedOldPath &&
+      isSupportedNotePath(normalizedOldPath) &&
+      getNoteTypeByPath(normalizedOldPath) === 'markdown' &&
+      getProtectedNoteMeta(normalizedOldPath) &&
+      !getUnlockedPassword(normalizedOldPath)
+    ) {
+      message.warning('受保护的 Markdown 笔记请先在编辑器中解锁后再重命名')
+      done?.(new Error('受保护的 Markdown 笔记缺少解锁密码'))
+      return
+    }
+
     if (shouldFlushActiveEditorBeforePathChange(oldPath)) {
       await activeEditorRef.value?.flushPendingSave?.()
     }

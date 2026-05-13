@@ -631,6 +631,12 @@ async function loadFileContent(filePath) {
     setEditorContent(fileContent);
   } catch (err) {
     message.error('\u8bfb\u53d6\u6587\u4ef6\u5931\u8d25\uff1a' + (err?.message || String(err)));
+    lastSavedFilePath = String(filePath || '');
+    lastSavedContent = '';
+    setEditorContent('');
+    catalogItems.value = [];
+    catalogScrollElement.value = null;
+    activeCatalogKey.value = '';
   }
 }
 
