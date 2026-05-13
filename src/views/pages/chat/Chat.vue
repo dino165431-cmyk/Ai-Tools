@@ -796,6 +796,10 @@
           :budget-status="contextWindowBudgetStatus"
           :budget-summary-text="contextWindowPreviewBudgetSummaryText"
           :budget-items="contextWindowPreviewBudgetItems"
+          :summary-text="contextWindowCompressedSummaryText"
+          :summary-meta-text="contextWindowCompressedSummaryMetaText"
+          :summary-chain-text="contextWindowCompressedSummaryChainText"
+          :summary-source-text="contextWindowCompressedSummarySourceText"
           :preview-summary-text="contextWindowPreviewSummaryText"
           :entries="contextWindowPreviewEntries"
           :omitted-entries="contextWindowPreviewOmittedEntries"
@@ -1157,7 +1161,11 @@ import {
   inspectChatContextWindow,
   normalizeChatContextWindowConfig,
   resolveChatContextWindowBudgetPlan,
-  resolveChatContextWindowOptions
+  resolveChatContextWindowOptions,
+  resolveContextSummaryLevel,
+  resolveContextSummaryChain,
+  resolveContextSummarySourceLabel,
+  shouldSummarizeContextWindow
 } from '@/utils/chatContextWindow'
 import {
   calculateHistoryContextCharBudget,
@@ -1518,11 +1526,15 @@ const memorySessions = ref([])
 const activeMemorySessionId = ref('')
 const autoPersistMemorySessionInFlight = new Map()
 let autoChatCleanupTimer = null
-
 function createEmptyContextSummaryState() {
   return {
     summaryText: '',
     coveredMessageCount: 0,
+    coveredTurnCount: 0,
+    batchCount: 0,
+    summaryLevel: 0,
+    summaryChain: [],
+    summarySourceLabel: '',
     sourceHash: '',
     updatedAt: 0
   }
@@ -4708,6 +4720,45 @@ const contextWindowSummaryTooltipText = computed(() => {
   return `${contextWindowSummaryText.value} ${budgetTooltip}`.trim()
 })
 
+const activeMemorySessionContextSummary = computed(() => {
+  const activeRecord = getMemorySessionById(activeMemorySessionId.value)
+  return activeRecord && typeof activeRecord.contextSummary === 'object' ? activeRecord.contextSummary : null
+})
+
+const contextWindowCompressedSummaryText = computed(() => String(activeMemorySessionContextSummary.value?.summaryText || '').trim())
+const contextWindowCompressedSummaryMetaText = computed(() => {
+  const summary = activeMemorySessionContextSummary.value
+  const turnCount = Math.max(0, Math.floor(Number(summary?.coveredTurnCount || 0)))
+  const messageCount = Math.max(0, Math.floor(Number(summary?.coveredMessageCount || 0)))
+  const summaryLevel = Math.max(0, Math.floor(Number(summary?.summaryLevel || 0)))
+  const resolvedSummaryLevel = summaryLevel > 0 && Number.isFinite(summaryLevel)
+    ? summaryLevel
+    : (contextWindowCompressedSummaryText.value ? 1 : 0)
+  if (!contextWindowCompressedSummaryText.value) return ''
+  const parts = []
+  if (resolvedSummaryLevel > 0) parts.push(`第 ${resolvedSummaryLevel} 代摘要`)
+  if (turnCount > 0) parts.push(`${turnCount} 轮`)
+  if (messageCount > 0) parts.push(`${messageCount} 条消息`)
+  return parts.join(' · ')
+})
+
+const contextWindowCompressedSummaryChainText = computed(() => {
+  const summary = activeMemorySessionContextSummary.value
+  const summaryChain = Array.isArray(summary?.summaryChain) ? summary.summaryChain : []
+  const chainLevels = summaryChain
+    .map((value) => Math.max(0, Math.floor(Number(value) || 0)))
+    .filter((value) => value > 0)
+  if (chainLevels.length <= 1) return ''
+  return `摘要链：${chainLevels.map((level) => `第 ${level} 代`).join(' → ')}`
+})
+
+const contextWindowCompressedSummarySourceText = computed(() => {
+  const summary = activeMemorySessionContextSummary.value
+  const sourceLabel = String(summary?.summarySourceLabel || '').trim()
+  if (!contextWindowCompressedSummaryText.value) return ''
+  return sourceLabel ? `来源：${sourceLabel}` : ''
+})
+
 const contextWindowPreviewSummaryText = computed(() => {
   const inspection = contextWindowPreviewInspection.value?.inspection
   const entries = contextWindowPreviewEntries.value
@@ -7096,17 +7147,11 @@ function shouldFollowStreamingScroll(options = {}) {
   if (!el) return false
   if (autoScrollSuspendedByUser.value || !autoScrollEnabled.value) return false
   const distanceFromBottom = getDistanceFromBottom(el)
-  const nearBottom = distanceFromBottom <= SCROLL_AUTO_DISABLE_DISTANCE_PX
-  if (!nearBottom) {
-    const recentUserScroll = (
-      lastActiveUserChatScrollAt > 0 &&
-      (Date.now() - lastActiveUserChatScrollAt) <= CHAT_SCROLL_COMPENSATION_SUSPEND_MS &&
-      Date.now() > programmaticChatScrollUntil
-    )
-    if (recentUserScroll) return false
-  }
-  if (!allowNearBottom) return distanceFromBottom <= SCROLL_BOTTOM_THRESHOLD_PX
-  return true
+  // Only keep following if the viewport is still close to the tail.
+  // This avoids yanking the scrollbar back to the bottom when far-history
+  // messages reflow or finish hydrating after the user has already moved away.
+  const followThreshold = allowNearBottom ? SCROLL_AUTO_DISABLE_DISTANCE_PX : SCROLL_BOTTOM_THRESHOLD_PX
+  return distanceFromBottom <= followThreshold
 }
 
 function markProgrammaticChatScroll(durationMs = CHAT_SCROLL_COMPENSATION_SUSPEND_MS) {
@@ -13267,24 +13312,34 @@ const contextWindowHistoryFocusOptions = [
   }
 ]
 
-function getHistoryContextCharBudget(options = {}) {
-  const { tools = [], reservedCharsOverride = null } = options || {}
+function resolveHistoryContextBudgetState(options = {}) {
+  const { tools = [], reservedCharsOverride = null, apiMessages = null } = options || {}
   const reservedChars = Number.isFinite(Number(reservedCharsOverride))
     ? Math.max(0, Math.floor(Number(reservedCharsOverride)))
     : calculateReservedRequestChars({
         systemContent: systemContent.value,
         tools
       })
-  const sourceMessages = Array.isArray(session.apiMessages) ? session.apiMessages : []
+  const sourceMessages = Array.isArray(apiMessages) ? apiMessages : session.apiMessages
   const sourceChars = estimateMessagesSize(sourceMessages)
   const budgetPlan = resolveChatContextWindowBudgetPlan(effectiveContextWindowConfig.value, {
     reservedChars,
     sourceChars
   })
-  return calculateHistoryContextCharBudget({
+  const historyBudget = calculateHistoryContextCharBudget({
     baseChars: budgetPlan.baseChars,
     reservedChars
   })
+  return {
+    reservedChars,
+    sourceChars,
+    budgetPlan,
+    historyBudget
+  }
+}
+
+function getHistoryContextCharBudget(options = {}) {
+  return resolveHistoryContextBudgetState(options).historyBudget
 }
 
 async function getCurrentTurnAttachmentCharBudget(providerKind = 'openai-compatible', options = {}) {
@@ -13319,12 +13374,18 @@ function buildRequestApiMessages(providerKind = 'openai-compatible', options = {
     summaryText && coveredMessageCount > 0 && coveredMessageCount <= sourceMessages.length
       ? sourceMessages.slice(coveredMessageCount)
       : sourceMessages
+  const budgetState = resolveHistoryContextBudgetState({
+    tools,
+    reservedCharsOverride,
+    apiMessages: effectiveMessages
+  })
 
   return buildChatContextWindow(
     effectiveMessages,
     buildChatContextWindowRuntimeOptions(contextWindowResolvedOptions.value, {
       providerKind,
-      maxChars: getHistoryContextCharBudget({ tools, reservedCharsOverride })
+      maxChars: budgetState.historyBudget,
+      preserveToolResultTurns: budgetState.budgetPlan.mode !== 'compact'
     })
   )
 }
@@ -13372,6 +13433,174 @@ function buildContextSummaryTurnPairs(apiMessages = [], options = {}) {
     currentUserText = ''
   }
   return pairs
+}
+
+function buildContextSummaryTurnSegments(apiMessages = [], options = {}) {
+  const list = Array.isArray(apiMessages) ? apiMessages : []
+  const endExclusive = Number.isFinite(Number(options.endExclusive))
+    ? Math.max(0, Math.floor(Number(options.endExclusive)))
+    : list.length
+  const segments = []
+  let currentTurn = null
+
+  const extractSummaryText = (message) =>
+    extractEditableUserTextFromContent(extractRequestMessageTextContent(message?.content)).trim()
+
+  const flushCurrentTurn = () => {
+    if (!currentTurn) return
+    const turnText = currentTurn.parts.filter(Boolean).join('\n\n').trim()
+    if (!turnText) return
+    segments.push({
+      userText: truncateInlineText(currentTurn.userText || '', 3000),
+      assistantText: truncateInlineText(currentTurn.assistantText || '', 4000),
+      toolText: truncateInlineText(currentTurn.toolText || '', 4000),
+      messageCount: Math.max(0, Math.floor(Number(currentTurn.messageCount || 0))),
+      summary: truncateInlineText(currentTurn.summary || currentTurn.userText || currentTurn.assistantText || turnText, 200),
+      turnText: truncateText(turnText, 6000, '（更早的上下文已截断）')
+    })
+  }
+
+  const ensureCurrentTurn = () => {
+    if (!currentTurn) {
+      currentTurn = {
+        userText: '',
+        assistantText: '',
+        toolText: '',
+        summary: '',
+        messageCount: 0,
+        parts: []
+      }
+    }
+    return currentTurn
+  }
+
+  for (let index = 0; index < Math.min(endExclusive, list.length); index += 1) {
+    const message = list[index]
+    if (!message || typeof message !== 'object') continue
+    if (message.role === 'user') {
+      flushCurrentTurn()
+      const text = extractSummaryText(message)
+      currentTurn = {
+        userText: text,
+        assistantText: '',
+        toolText: '',
+        summary: text,
+        messageCount: 1,
+        parts: []
+      }
+      if (text) currentTurn.parts.push(`用户:\n${text}`)
+      continue
+    }
+
+    const block = ensureCurrentTurn()
+    block.messageCount = Math.max(0, Math.floor(Number(block.messageCount || 0))) + 1
+    if (message.role === 'assistant') {
+      const assistantText = extractSummaryText(message)
+      if (assistantText) {
+        block.assistantText = block.assistantText ? `${block.assistantText}\n\n${assistantText}` : assistantText
+        block.parts.push(`助手:\n${assistantText}`)
+      }
+
+      const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : []
+      if (toolCalls.length) {
+        const callLines = toolCalls
+          .map((toolCall, toolIndex) => {
+            const name = String(toolCall?.function?.name || '').trim() || `tool_${toolIndex + 1}`
+            const args = truncateInlineText(String(toolCall?.function?.arguments || '').trim() || '{}', 300)
+            return `${name}: ${args}`
+          })
+          .filter(Boolean)
+        if (callLines.length) {
+          block.parts.push(`工具调用:\n${callLines.map((line) => `- ${line}`).join('\n')}`)
+        }
+      }
+      continue
+    }
+
+    if (message.role === 'tool') {
+      const callId = String(message.tool_call_id || message.call_id || '').trim()
+      const toolText = extractSummaryText(message) || '（空结果）'
+      block.toolText = block.toolText ? `${block.toolText}\n\n${toolText}` : toolText
+      block.parts.push(`工具结果${callId ? `（${callId}）` : ''}:\n${truncateText(toolText, 4000, '（工具结果已截断）')}`)
+      continue
+    }
+
+    const otherText = extractSummaryText(message)
+    if (otherText) {
+      block.parts.push(`${String(message.role || '消息')}:\n${otherText}`)
+    }
+  }
+
+  flushCurrentTurn()
+  return segments
+}
+
+function buildContextSummaryTurnBatches(turnSegments = [], options = {}) {
+  const list = Array.isArray(turnSegments) ? turnSegments : []
+  const maxTurnsPerBatch = Math.max(
+    1,
+    Math.floor(Number(options.maxTurnsPerBatch || CONTEXT_SUMMARY_BATCH_TURN_LIMIT) || CONTEXT_SUMMARY_BATCH_TURN_LIMIT)
+  )
+  const maxCharsPerBatch = Math.max(
+    0,
+    Math.floor(Number(options.maxCharsPerBatch || CONTEXT_SUMMARY_BATCH_CHAR_LIMIT) || CONTEXT_SUMMARY_BATCH_CHAR_LIMIT)
+  )
+  const batches = []
+  let currentBatch = null
+
+  const flushCurrentBatch = () => {
+    if (!currentBatch || !currentBatch.items.length) return
+    const batchText = currentBatch.items
+      .map((item, index) => {
+        const itemLabel = item?.summary ? `轮次 ${index + 1} · ${item.summary}` : `轮次 ${index + 1}`
+        const text = String(item?.turnText || '').trim()
+        return [itemLabel, text].filter(Boolean).join('\n\n')
+      })
+      .filter(Boolean)
+      .join('\n\n')
+      .trim()
+    if (!batchText) {
+      currentBatch = null
+      return
+    }
+    batches.push({
+      turnCount: currentBatch.turnCount,
+      messageCount: currentBatch.messageCount,
+      chars: currentBatch.chars,
+      items: currentBatch.items,
+      batchText
+    })
+    currentBatch = null
+  }
+
+  for (let index = 0; index < list.length; index += 1) {
+    const segment = list[index]
+    const turnText = String(segment?.turnText || '').trim()
+    if (!turnText) continue
+    const nextTurnCount = currentBatch ? currentBatch.turnCount + 1 : 1
+    const nextChars = currentBatch ? currentBatch.chars + turnText.length : turnText.length
+    if (currentBatch && (nextTurnCount > maxTurnsPerBatch || (maxCharsPerBatch > 0 && nextChars > maxCharsPerBatch))) {
+      flushCurrentBatch()
+    }
+    if (!currentBatch) {
+      currentBatch = {
+        turnCount: 0,
+        messageCount: 0,
+        chars: 0,
+        items: []
+      }
+    }
+    currentBatch.turnCount += 1
+    currentBatch.messageCount += Math.max(0, Math.floor(Number(segment?.messageCount || 0)))
+    currentBatch.chars += turnText.length
+    currentBatch.items.push({
+      ...segment,
+      turnText
+    })
+  }
+
+  flushCurrentBatch()
+  return batches
 }
 
 function buildContextSummaryPrelude(summaryText = '') {
@@ -13459,7 +13688,7 @@ function resolveContextSummaryCoverage({
   targetSourceChars = null
 } = {}) {
   const list = Array.isArray(sourceMessages) ? sourceMessages : []
-  if (!cfg || cfg.requestMode !== 'chat' || list.length < 10) {
+  if (!cfg || cfg.requestMode !== 'chat' || list.length < 1) {
     return {
       coveredCount: 0,
       sourceSlice: [],
@@ -13473,10 +13702,10 @@ function resolveContextSummaryCoverage({
     apiMessages: list
   })
   let coveredCount = Math.max(0, list.length - requestMessages.length)
-  if (coveredCount < 4 && Number.isFinite(Number(targetSourceChars))) {
+  if (coveredCount < 1 && list.length > 1 && Number.isFinite(Number(targetSourceChars))) {
     const targetChars = Math.max(4000, Math.floor(Number(targetSourceChars)))
     const keepRecentTurnsFull = Math.max(1, Number(contextWindowResolvedOptions.value?.keepRecentTurnsFull || 6))
-    const minKeptMessages = Math.min(list.length, Math.max(6, keepRecentTurnsFull * 2))
+    const minKeptMessages = Math.max(1, Math.min(list.length - 1, Math.max(2, keepRecentTurnsFull * 2)))
     let keepStart = Math.max(0, list.length - minKeptMessages)
     let keptChars = estimateMessagesSize(list.slice(keepStart))
 
@@ -13487,10 +13716,10 @@ function resolveContextSummaryCoverage({
       keptChars += nextMessageChars
     }
 
-    if (keepStart >= 4) coveredCount = keepStart
+    if (keepStart > 0) coveredCount = keepStart
   }
 
-  if (coveredCount < 4) {
+  if (coveredCount < 1) {
     return {
       coveredCount: 0,
       sourceSlice: [],
@@ -13523,7 +13752,7 @@ async function ensureContextWindowSummary({
     reservedCharsOverride,
     targetSourceChars
   })
-  if (coveredCount < 4) return ''
+  if (coveredCount < 1) return ''
 
   const cached = requestRecord.contextSummary && typeof requestRecord.contextSummary === 'object'
     ? requestRecord.contextSummary
@@ -13532,8 +13761,42 @@ async function ensureContextWindowSummary({
     return String(cached.summaryText || '').trim()
   }
 
-  const conversationPairs = buildContextSummaryTurnPairs(sourceMessages, { endExclusive: coveredCount })
+  const cachedSummaryText = String(cached?.summaryText || '').trim()
+  const cachedCoveredCount = Math.max(0, Math.floor(Number(cached?.coveredMessageCount || 0)))
+  const hasForwardProgress = cachedSummaryText && cachedCoveredCount > 0 && cachedCoveredCount < coveredCount
+  const layeredSourceMessages = hasForwardProgress
+    ? [
+        {
+          role: 'system',
+          content: `previous compressed summary:\n${cachedSummaryText}`
+        },
+        ...sourceMessages.slice(cachedCoveredCount, coveredCount)
+      ]
+    : sourceMessages.slice(0, coveredCount)
+  const conversationTurns = buildContextSummaryTurnSegments(layeredSourceMessages, {
+    endExclusive: layeredSourceMessages.length
+  })
+  const conversationText = conversationTurns
+    .map((item, index) => {
+      const turnText = String(item?.turnText || item?.userText || '').trim()
+      if (!turnText) return ''
+      return [`turn ${index + 1}`, turnText].filter(Boolean).join('\n\n')
+    })
+    .filter(Boolean)
+    .join('\n\n---\n\n')
+  const conversationPairs = conversationText
+    ? [{
+        userText: `all history before compression:\n\n${conversationText}`,
+        assistantText: '',
+        summary: hasForwardProgress
+          ? `compressed history from previous summary plus ${conversationTurns.length} turns`
+          : `all prior history, ${conversationTurns.length} turns`
+      }]
+    : []
   if (!conversationPairs.length) return ''
+  const summaryLevel = resolveContextSummaryLevel(cached, hasForwardProgress)
+  const summaryChain = resolveContextSummaryChain(cached, summaryLevel, hasForwardProgress)
+  const summarySourceLabel = resolveContextSummarySourceLabel(hasForwardProgress)
 
   const summaryText = await requestContextWindowSummary({
     providerKind: cfg.providerKind,
@@ -13550,6 +13813,11 @@ async function ensureContextWindowSummary({
   requestRecord.contextSummary = {
     summaryText: String(summaryText || '').trim(),
     coveredMessageCount: coveredCount,
+    coveredTurnCount: conversationTurns.length,
+    batchCount: 1,
+    summaryLevel,
+    summaryChain,
+    summarySourceLabel,
     sourceHash,
     updatedAt: Date.now()
   }
@@ -13567,7 +13835,7 @@ function syncContextSummaryCacheForRecord(requestRecord, coverage = null) {
   const sourceHash = String(coverage?.sourceHash || '')
   if (
     !String(cached.summaryText || '').trim() ||
-    coveredCount < 4 ||
+    coveredCount < 1 ||
     !sourceHash ||
     coveredCount > (Array.isArray(requestRecord.apiMessages) ? requestRecord.apiMessages.length : 0)
   ) {
@@ -13644,11 +13912,16 @@ async function prepareChatRequestContext({
     const requestTools = []
     const combinedSystemContent = buildCombinedSystemContent(memorySystemContent, { sessionRecord: targetRecord })
     const reservedChars = calculateReservedRequestChars({ systemContent: combinedSystemContent, tools: requestTools })
-    const historyBudget = getHistoryContextCharBudget({ reservedCharsOverride: reservedChars, tools: requestTools })
+    const sourceMessages = Array.isArray(targetRecord.apiMessages) ? targetRecord.apiMessages : []
+    const budgetState = resolveHistoryContextBudgetState({
+      tools: requestTools,
+      reservedCharsOverride: reservedChars,
+      apiMessages: sourceMessages
+    })
+    const historyBudget = budgetState.historyBudget
     const summaryTriggerChars = calculateContextSummaryTriggerChars({
       historyCharsBudget: historyBudget
     })
-    const sourceMessages = Array.isArray(targetRecord.apiMessages) ? targetRecord.apiMessages : []
     const sourceChars = estimateMessagesSize(sourceMessages)
     const coverage = resolveContextSummaryCoverage({
       sourceMessages,
@@ -13668,29 +13941,30 @@ async function prepareChatRequestContext({
       sourceMessages,
       buildChatContextWindowRuntimeOptions(resolvedContext, {
         providerKind: cfg.providerKind || 'openai-compatible',
-        maxChars: historyBudget
+        maxChars: historyBudget,
+        preserveToolResultTurns: budgetState.budgetPlan.mode !== 'compact'
       })
     )
     const contextWouldTrim =
       sourceBudgetMessages.length < sourceMessages.length || hasChatContextWindowReduction(contextInspection)
     const summaryMissing = !String(cachedSummary?.summaryText || '').trim()
     const summaryStale =
-      coverage.coveredCount >= 4 &&
+      coverage.coveredCount >= 1 &&
       (
         coverage.sourceHash !== String(cachedSummary?.sourceHash || '') ||
         coverage.coveredCount !== Math.max(0, Math.floor(Number(cachedSummary?.coveredMessageCount || 0)))
       )
-    const shouldSummarize =
-      summaryTriggerChars > 0 &&
-      sourceMessages.length >= 10 &&
-      (
-        sourceMessages.length > 28 ||
-        sourceChars >= summaryTriggerChars ||
-        contextWouldTrim ||
-        summaryMissing ||
-        summaryStale
-      )
-    if (shouldSummarize && (sourceChars >= summaryTriggerChars || contextWouldTrim || summaryMissing || summaryStale)) {
+    const shouldSummarize = shouldSummarizeContextWindow({
+      sourceMessages,
+      sourceChars,
+      summaryTriggerChars,
+      coveredCount: coverage.coveredCount,
+      contextWouldTrim,
+      summaryMissing,
+      summaryStale,
+      minMessages: 2
+    })
+    if (shouldSummarize) {
       await ensureContextWindowSummary({
         cfg,
         requestRecord: targetRecord,

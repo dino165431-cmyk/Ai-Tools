@@ -94,15 +94,20 @@ const COMPACT_ATTACHMENT_TEXT_LIMIT = 1800
 const COMPACT_USER_TEXT_LIMIT = 1800
 const COMPACT_ASSISTANT_TEXT_LIMIT = 1400
 const COMPACT_ASSISTANT_REASONING_LIMIT = 600
+const COMPACT_TOOL_TEXT_LIMIT = 1800
 const MIN_COMPACT_ATTACHMENT_TEXT_LIMIT = 240
 const MIN_COMPACT_USER_TEXT_LIMIT = 240
 const MIN_COMPACT_ASSISTANT_TEXT_LIMIT = 180
 const MIN_COMPACT_ASSISTANT_REASONING_LIMIT = 80
+const MIN_COMPACT_TOOL_TEXT_LIMIT = 240
 const COMPACT_USER_TEXT_TIGHT_LIMIT = 900
 const COMPACT_ASSISTANT_TEXT_TIGHT_LIMIT = 700
 const COMPACT_ASSISTANT_REASONING_TIGHT_LIMIT = 240
+const COMPACT_TOOL_TEXT_TIGHT_LIMIT = 900
 const COMPACT_TEXT_TRUNCATION_MARKER = '\n\n[Earlier content truncated for compact history]\n\n'
 const COMPACT_REASONING_TRUNCATION_MARKER = '\n\n[Earlier reasoning truncated for compact history]\n\n'
+const COMPACT_TOOL_RESULT_TRUNCATION_MARKER = '\n\n[Earlier tool result truncated for compact history]\n\n'
+const COMPACT_TOOL_CALL_TRUNCATION_MARKER = '\n\n[Earlier tool call truncated for compact history]\n\n'
 const ESTIMATED_IMAGE_URL_CHARS = 256
 const REASONING_FIELD_KEYS = Object.freeze(['reasoning_content', 'reasoning', 'thinking', 'thought'])
 
@@ -293,6 +298,78 @@ export function calculateContextSummaryTriggerChars({ historyCharsBudget = 0, mi
   return Math.min(budget, Math.max(minimum, Math.floor(budget * normalizedRatio)))
 }
 
+export function shouldSummarizeContextWindow({
+  sourceMessages = [],
+  sourceChars = 0,
+  summaryTriggerChars = 0,
+  coveredCount,
+  contextWouldTrim = false,
+  summaryMissing = false,
+  summaryStale = false,
+  minMessages = 2
+} = {}) {
+  const messageCount = Array.isArray(sourceMessages) ? sourceMessages.length : 0
+  const safeMinMessages = Math.max(1, Math.floor(Number(minMessages) || 0))
+  if (messageCount < safeMinMessages) return false
+
+  const parsedCoveredCount = Number(coveredCount)
+  const safeCoveredCount = Number.isFinite(parsedCoveredCount)
+    ? Math.max(0, Math.floor(parsedCoveredCount))
+    : (messageCount > 1 ? 1 : 0)
+  if (!safeCoveredCount) return false
+
+  const triggerChars = Math.max(0, Math.floor(Number(summaryTriggerChars) || 0))
+  const safeSourceChars = Math.max(0, Math.floor(Number(sourceChars) || 0))
+  return (
+    (triggerChars > 0 && safeSourceChars >= triggerChars) ||
+    contextWouldTrim ||
+    summaryMissing ||
+    summaryStale
+  )
+}
+
+export function resolveContextSummaryLevel(cachedSummary = null, hasForwardProgress = false) {
+  const cachedLevel = Math.max(0, Math.floor(Number(cachedSummary?.summaryLevel || 0)))
+  const baseLevel = Math.max(1, cachedLevel || 0)
+  return hasForwardProgress ? baseLevel + 1 : 1
+}
+
+export function resolveContextSummaryChain(cachedSummary = null, summaryLevel = 1, hasForwardProgress = false) {
+  const targetLevel = Math.max(1, Math.floor(Number(summaryLevel) || 0))
+  if (!hasForwardProgress) return [targetLevel]
+
+  const cachedChain = Array.isArray(cachedSummary?.summaryChain) ? cachedSummary.summaryChain : []
+  const normalizedCachedChain = cachedChain
+    .map((value) => Math.max(0, Math.floor(Number(value) || 0)))
+    .filter((value) => value > 0)
+
+  if (normalizedCachedChain.length) {
+    const dedupedChain = []
+    for (const level of normalizedCachedChain) {
+      if (dedupedChain[dedupedChain.length - 1] !== level) dedupedChain.push(level)
+    }
+    if (targetLevel > dedupedChain[dedupedChain.length - 1]) {
+      dedupedChain.push(targetLevel)
+    }
+    return dedupedChain
+  }
+
+  const cachedLevel = Math.max(0, Math.floor(Number(cachedSummary?.summaryLevel || 0)))
+  if (cachedLevel > 0) {
+    const rebuiltChain = Array.from({ length: cachedLevel }, (_, index) => index + 1)
+    if (targetLevel > rebuiltChain[rebuiltChain.length - 1]) {
+      rebuiltChain.push(targetLevel)
+    }
+    return rebuiltChain
+  }
+
+  return [targetLevel]
+}
+
+export function resolveContextSummarySourceLabel(hasForwardProgress = false) {
+  return hasForwardProgress ? '旧摘要 + 新增历史' : '全量前史'
+}
+
 export function buildChatContextWindowRuntimeOptions(raw, runtime = {}) {
   const resolved = resolveChatContextWindowOptions(raw)
   const providerKind = typeof runtime?.providerKind === 'string' ? runtime.providerKind : 'openai-compatible'
@@ -308,6 +385,10 @@ export function buildChatContextWindowRuntimeOptions(raw, runtime = {}) {
       : isUtools
         ? 'strip'
         : 'full'
+  const preserveToolResultTurns =
+    typeof runtime?.preserveToolResultTurns === 'boolean'
+      ? runtime.preserveToolResultTurns
+      : true
 
   return {
     maxChars,
@@ -321,7 +402,8 @@ export function buildChatContextWindowRuntimeOptions(raw, runtime = {}) {
     maxPinnedAttachmentTurns: resolved.maxPinnedAttachmentTurns,
     allowSelectedAttachmentShrink: resolved.allowSelectedAttachmentShrink,
     allowAttachmentTurnDisplacement: resolved.allowAttachmentTurnDisplacement,
-    toolPolicy
+    toolPolicy,
+    preserveToolResultTurns
   }
 }
 
@@ -704,6 +786,17 @@ function compactPlainTextMessage(message, limit = COMPACT_USER_TEXT_LIMIT) {
   return cloned
 }
 
+function summarizeToolCall(toolCall, limit = COMPACT_TOOL_TEXT_LIMIT) {
+  if (!toolCall || typeof toolCall !== 'object') return ''
+  const name = String(toolCall?.function?.name || '').trim() || 'unknown_tool'
+  const args = normalizeTextValue(toolCall?.function?.arguments ?? '{}').trim() || '{}'
+  const compactArgs = truncatePlainText(args, limit, {
+    marker: COMPACT_TOOL_CALL_TRUNCATION_MARKER,
+    keepTail: false
+  })
+  return compactArgs ? `${name}: ${compactArgs}` : name
+}
+
 function compactAssistantReasoning(message, limit = COMPACT_ASSISTANT_REASONING_LIMIT) {
   const reasoning = normalizeTextValue(
     message.reasoning_content ?? message.reasoning ?? message.thinking ?? message.thought
@@ -739,13 +832,46 @@ function compactAssistantMessage(message, options = {}) {
     compactAssistantReasoning(cloned, reasoningLimit)
   }
 
+  if (!assistantHasVisiblePayload(cloned)) {
+    const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : []
+    if (toolCalls.length) {
+      const toolCallLines = toolCalls
+        .map((toolCall) => summarizeToolCall(toolCall, Math.max(MIN_COMPACT_TOOL_TEXT_LIMIT, Math.floor(textLimit * 0.75))))
+        .filter(Boolean)
+      if (toolCallLines.length) {
+        cloned.content = truncatePlainText(
+          `已调用工具:\n${toolCallLines.map((line) => `- ${line}`).join('\n')}`,
+          textLimit,
+          {
+            marker: COMPACT_TOOL_CALL_TRUNCATION_MARKER,
+            keepTail: false
+          }
+        )
+      }
+    }
+  }
+
   if (!assistantHasVisiblePayload(cloned)) return null
+  return cloned
+}
+
+function compactToolMessage(message, limit = COMPACT_TOOL_TEXT_LIMIT) {
+  const cloned = cloneMessage(message)
+  const text = extractMessageTextContent(message.content) || normalizeTextValue(message.content)
+  const summary = truncatePlainText(text, limit, {
+    marker: COMPACT_TOOL_RESULT_TRUNCATION_MARKER,
+    keepTail: true
+  })
+  if (summary) cloned.content = summary
   return cloned
 }
 
 function compactHistoryMessage(message, options = {}) {
   if (!isMessageLike(message)) return null
-  if (message.role === 'tool') return null
+  if (message.role === 'tool') {
+    const toolLimit = Number.isFinite(options?.toolTextLimit) ? options.toolTextLimit : COMPACT_TOOL_TEXT_LIMIT
+    return compactToolMessage(message, toolLimit)
+  }
 
   const truncatePlainTextEnabled = options?.truncatePlainText === true
 
@@ -814,6 +940,7 @@ function compactTurnMessages(turn, options = {}) {
   const toolPolicy = options?.toolPolicy === 'strip' ? 'strip' : 'full'
   const preserveToolResultTurns = options?.preserveToolResultTurns !== false
   const truncatePlainTextEnabled = options?.truncatePlainText === true
+  const toolTextLimit = Number.isFinite(options?.toolTextLimit) ? options.toolTextLimit : COMPACT_TOOL_TEXT_LIMIT
 
   if (toolPolicy !== 'strip' && preserveToolResultTurns && turnHasToolPayload(turn)) {
     return cloneTurnMessages(turn, toolPolicy)
@@ -826,7 +953,8 @@ function compactTurnMessages(turn, options = {}) {
       attachmentTextLimit: options?.attachmentTextLimit,
       userTextLimit: options?.userTextLimit,
       assistantTextLimit: options?.assistantTextLimit,
-      assistantReasoningLimit: options?.assistantReasoningLimit
+      assistantReasoningLimit: options?.assistantReasoningLimit,
+      toolTextLimit
     })
     if (!compacted) continue
     out.push(compacted)
@@ -852,7 +980,8 @@ function selectTurnMessages(
     attachmentTextLimit,
     userTextLimit,
     assistantTextLimit,
-    assistantReasoningLimit
+    assistantReasoningLimit,
+    toolTextLimit
   } = {}
 ) {
   if (!Array.isArray(turn) || !turn.length) return []
@@ -865,7 +994,8 @@ function selectTurnMessages(
       attachmentTextLimit,
       userTextLimit,
       assistantTextLimit,
-      assistantReasoningLimit
+      assistantReasoningLimit,
+      toolTextLimit
     })
   }
 
@@ -978,13 +1108,15 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
     const compactTurn = selectTurnMessages(turn, {
       toolPolicy,
       compact: true,
-      preserveToolResultTurns
+      preserveToolResultTurns,
+      toolTextLimit: COMPACT_TOOL_TEXT_LIMIT
     })
     const compactTextTurn = selectTurnMessages(turn, {
       toolPolicy,
       compact: true,
       truncatePlainText: true,
-      preserveToolResultTurns
+      preserveToolResultTurns,
+      toolTextLimit: COMPACT_TOOL_TEXT_TIGHT_LIMIT
     })
     const compactTightTurn = selectTurnMessages(turn, {
       toolPolicy,
@@ -993,7 +1125,8 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
       preserveToolResultTurns,
       userTextLimit: COMPACT_USER_TEXT_TIGHT_LIMIT,
       assistantTextLimit: COMPACT_ASSISTANT_TEXT_TIGHT_LIMIT,
-      assistantReasoningLimit: COMPACT_ASSISTANT_REASONING_TIGHT_LIMIT
+      assistantReasoningLimit: COMPACT_ASSISTANT_REASONING_TIGHT_LIMIT,
+      toolTextLimit: COMPACT_TOOL_TEXT_TIGHT_LIMIT
     })
 
     const fullTurnMessages = fullTurn.length ? fullTurn : compactTurn.length ? compactTurn : compactTextTurn
@@ -1026,9 +1159,12 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
       fullTurnStats.count > oversizeTurnMessages || fullTurnStats.chars > oversizeTurnChars
     const mustKeepAllowsCompaction =
       mustKeep
-      && hasAttachment
-      && !hasToolPayload
-      && (fullTurnStats.count > maxMessages || fullTurnStats.chars > maxChars || fullTurnOversized)
+      && (
+        (hasAttachment
+          && !hasToolPayload
+          && (fullTurnStats.count > maxMessages || fullTurnStats.chars > maxChars || fullTurnOversized))
+        || (hasToolPayload && !preserveToolResultTurns)
+      )
 
     let messages = compactTurnMessagesSafe
     let stats = compactTurnStats
@@ -1263,7 +1399,7 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
   }
 
   const buildAdaptiveCompactVariant = (candidate, targetChars) => {
-    if (!candidate || candidate.hasToolPayload) return null
+    if (!candidate || (candidate.hasToolPayload && preserveToolResultTurns)) return null
     const safeTargetChars = Math.max(0, Math.floor(Number(targetChars) || 0))
     if (!safeTargetChars) return null
     if (!candidate.hasAttachment && candidate.compactTightTurnStats.chars <= safeTargetChars) {
@@ -1292,13 +1428,17 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
       MIN_COMPACT_ASSISTANT_REASONING_LIMIT,
       Math.floor(COMPACT_ASSISTANT_REASONING_TIGHT_LIMIT * ratio)
     )
+    const toolTextLimit = candidate.hasToolPayload
+      ? Math.max(MIN_COMPACT_TOOL_TEXT_LIMIT, Math.floor(COMPACT_TOOL_TEXT_TIGHT_LIMIT * ratio))
+      : undefined
 
-    const buildAdaptiveMessages = (nextAttachmentTextLimit = attachmentTextLimit) =>
+    const buildAdaptiveMessages = (nextAttachmentTextLimit = attachmentTextLimit, nextToolTextLimit = toolTextLimit) =>
       compactTurnMessages(turns[candidate.index], {
         toolPolicy,
         truncatePlainText: true,
         preserveToolResultTurns,
         attachmentTextLimit: nextAttachmentTextLimit,
+        toolTextLimit: nextToolTextLimit,
         userTextLimit,
         assistantTextLimit,
         assistantReasoningLimit
@@ -1438,7 +1578,7 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
     const mustKeep = candidate.mustKeep
     const hasAttachment = candidate.hasAttachment
     const hasToolPayload = candidate.hasToolPayload
-    const canCompactCurrentTurn = !hasToolPayload && (!mustKeep || candidate.mustKeepAllowsCompaction)
+    const canCompactCurrentTurn = (!hasToolPayload || !preserveToolResultTurns) && (!mustKeep || candidate.mustKeepAllowsCompaction)
     const attachmentSummaryMessages = candidate.attachmentSummaryMessages
     const attachmentSummaryStats = candidate.attachmentSummaryStats
     let chosenMessages = candidate.messages
@@ -1581,7 +1721,7 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
   function findFurtherCompactableSelectedTurnIndex() {
     for (let i = 0; i < selectedTurns.length; i += 1) {
       const item = selectedTurns[i]
-      if (!item || item.mustKeep || item.hasAttachment || item.hasToolPayload) continue
+      if (!item || item.mustKeep || item.hasAttachment || (item.hasToolPayload && preserveToolResultTurns)) continue
       const candidate = turnCandidates[item.index]
       if (!candidate) continue
       const nextVariant = getNextMoreCompactVariant(candidate, item.selectionVariant || item.selectionMode || 'compact')

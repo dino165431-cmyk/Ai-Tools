@@ -38,6 +38,13 @@
       <div class="chat-context-preview__title">已纳入消息</div>
       <div class="chat-context-preview__meta">{{ previewSummaryText }}</div>
     </div>
+    <div v-if="summaryText" class="chat-context-preview__summary">
+      <div class="chat-context-preview__summary-label">摘要内容</div>
+      <div v-if="summaryMetaText" class="chat-context-preview__summary-meta">{{ summaryMetaText }}</div>
+      <div v-if="summarySourceText" class="chat-context-preview__summary-source">{{ summarySourceText }}</div>
+      <div v-if="summaryChainText" class="chat-context-preview__summary-chain">{{ summaryChainText }}</div>
+      <div class="chat-context-preview__summary-text">{{ summaryText }}</div>
+    </div>
     <div v-if="entries.length" class="chat-context-preview__list">
       <div
         v-for="(entry, index) in entries"
@@ -143,6 +150,22 @@ defineProps({
     default: () => []
   },
   previewSummaryText: {
+    type: String,
+    default: ''
+  },
+  summaryText: {
+    type: String,
+    default: ''
+  },
+  summaryMetaText: {
+    type: String,
+    default: ''
+  },
+  summaryChainText: {
+    type: String,
+    default: ''
+  },
+  summarySourceText: {
     type: String,
     default: ''
   },
@@ -524,6 +547,76 @@ function entryKey(entry, index, prefix = '') {
   word-break: break-word;
   font-size: 12px;
   line-height: 1.6;
+}
+
+.chat-context-preview__summary {
+  margin: 12px 0 14px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(24, 160, 88, 0.18);
+  background: linear-gradient(180deg, rgba(24, 160, 88, 0.06), rgba(24, 160, 88, 0.02));
+}
+
+.chat-context-preview__summary-label {
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(24, 160, 88, 0.9);
+}
+
+.chat-context-preview__summary-meta {
+  margin-bottom: 8px;
+  font-size: 11px;
+  opacity: 0.68;
+}
+
+.chat-context-preview__summary-source {
+  margin-bottom: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  opacity: 0.8;
+}
+
+.chat-context-preview__summary-chain {
+  margin-bottom: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  opacity: 0.82;
+}
+
+.chat-context-preview__summary-text {
+  font-size: 12px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: rgba(0, 0, 0, 0.75);
+  max-height: 180px;
+  overflow: auto;
+}
+
+:deep(.chat-page.dark) .chat-context-preview__summary {
+  border-color: rgba(96, 200, 140, 0.25);
+  background: linear-gradient(180deg, rgba(96, 200, 140, 0.08), rgba(96, 200, 140, 0.04));
+}
+
+:deep(.chat-page.dark) .chat-context-preview__summary-label {
+  color: rgba(156, 228, 183, 0.95);
+}
+
+:deep(.chat-page.dark) .chat-context-preview__summary-meta {
+  color: rgba(255, 255, 255, 0.68);
+}
+
+:deep(.chat-page.dark) .chat-context-preview__summary-source {
+  color: rgba(255, 255, 255, 0.8);
+}
+
+:deep(.chat-page.dark) .chat-context-preview__summary-chain {
+  color: rgba(255, 255, 255, 0.8);
+}
+
+:deep(.chat-page.dark) .chat-context-preview__summary-text {
+  color: rgba(255, 255, 255, 0.84);
 }
 
 .chat-context-preview__empty {
