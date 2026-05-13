@@ -72,6 +72,7 @@
             <div class="note-page__editor-pane">
               <component
                 :is="activeEditorComponent"
+                ref="activeEditorRef"
                 :key="`note-${activeNote?.id || 'active'}`"
                 :file-path="activeNote?.path || null"
                 :rename-context="activeNote?.renameContext || null"
@@ -86,6 +87,7 @@
           <div v-else class="note-page__single-editor">
             <component
               :is="MdEditor"
+              ref="activeEditorRef"
               key="note-empty"
               :file-path="null"
               :rename-context="null"
@@ -112,6 +114,7 @@
           :theme="theme"
           @select="handleFileSelect"
           @prepare-delete="handlePrepareDelete"
+          @prepare-rename="handlePrepareRename"
           @delete="handleFileDelete"
           @rename="handleFileRename"
           @set-password="handleSetPasswordRequest"
@@ -292,9 +295,12 @@ import {
   clearEncryptedNoteContent,
   changeNotePassword,
   resetNotePasswordWithFallback,
-  hasFallbackRecovery
+  hasFallbackRecovery,
+  isEncryptedNoteContent,
+  replaceEncryptedNoteContent
 } from '@/utils/noteEncryption'
-import { getNoteTypeByPath } from '@/utils/noteTypes'
+import { rewriteNoteAssetsLinksInMarkdown } from '@/utils/notePathUtils'
+import { getNoteTypeByPath, isSupportedNotePath } from '@/utils/noteTypes'
 import { deleteNoteAttachmentDirectories } from '@/utils/noteAttachmentCleanup'
 import {
   removeNotebookRuntimeBoundEnvNamesByPredicate,
@@ -309,6 +315,7 @@ const theme = getTheme()
 const message = useMessage()
 const noteConfig = getNoteConfig()
 const fileTreeRef = ref(null)
+const activeEditorRef = ref(null)
 const openNotes = ref([])
 const activeNoteId = ref(null)
 const tabsRef = ref(null)
@@ -386,7 +393,7 @@ function buildNoteTabId() {
 }
 
 function normalizeNotePath(filePath) {
-  const normalized = typeof filePath === 'string' ? filePath.trim() : ''
+  const normalized = typeof filePath === 'string' ? filePath.trim().replace(/\\/g, '/') : ''
   return normalized && normalized.startsWith('note/') ? normalized : ''
 }
 
@@ -724,9 +731,62 @@ async function releaseOpenNotesForPath(targetPath) {
   await new Promise((resolve) => window.setTimeout(resolve, 120))
 }
 
+function shouldFlushActiveEditorBeforePathChange(targetPath) {
+  const normalized = normalizeNotePath(targetPath)
+  const activePath = normalizeNotePath(activeNote.value?.path)
+  if (!normalized || !activePath) return false
+  return activePath === normalized || activePath.startsWith(`${normalized}/`)
+}
+
+async function flushActiveEditorForTargetPath(targetPath) {
+  if (!shouldFlushActiveEditorBeforePathChange(targetPath)) return
+  await activeEditorRef.value?.flushPendingSave?.()
+}
+
+async function rewriteProtectedMarkdownNoteAssetsAfterRename(oldPath, newPath, password = '') {
+  const normalizedOldPath = normalizeNotePath(oldPath)
+  const normalizedNewPath = normalizeNotePath(newPath)
+  const notePassword = String(password || '')
+  if (!normalizedOldPath || !normalizedNewPath || !notePassword) return false
+  if (!isSupportedNotePath(normalizedOldPath) || getNoteTypeByPath(normalizedOldPath) !== 'markdown') return false
+  if (!getProtectedNoteMeta(normalizedOldPath)) return false
+
+  const rawContent = String(await readFile(normalizedNewPath, 'utf-8') || '')
+  if (!isEncryptedNoteContent(rawContent)) return false
+
+  const plaintext = await decryptNoteContent(rawContent, notePassword)
+  const oldDocName = path.basename(normalizedOldPath, path.extname(normalizedOldPath))
+  const newDocName = path.basename(normalizedNewPath, path.extname(normalizedNewPath))
+  const rewrittenPlaintext = rewriteNoteAssetsLinksInMarkdown(plaintext, oldDocName, newDocName)
+  if (rewrittenPlaintext === plaintext) return false
+
+  const rewrittenEncrypted = await replaceEncryptedNoteContent(rawContent, {
+    notePassword,
+    plaintext: rewrittenPlaintext
+  })
+  if (rewrittenEncrypted === rawContent) return false
+
+  await writeFile(normalizedNewPath, rewrittenEncrypted)
+  return true
+}
+
 async function handlePrepareDelete(targetPath, done) {
   try {
+    if (shouldFlushActiveEditorBeforePathChange(targetPath)) {
+      await activeEditorRef.value?.flushPendingSave?.()
+    }
     await releaseOpenNotesForPath(targetPath)
+    done?.()
+  } catch (err) {
+    done?.(err)
+  }
+}
+
+async function handlePrepareRename(oldPath, _newPath, done) {
+  try {
+    if (shouldFlushActiveEditorBeforePathChange(oldPath)) {
+      await activeEditorRef.value?.flushPendingSave?.()
+    }
     done?.()
   } catch (err) {
     done?.(err)
@@ -763,6 +823,8 @@ async function handleFileRename(oldPath, newPath) {
 
   const renameTokenPrefix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   let changed = false
+  const openNote = openNotes.value.find((note) => note.path === normalizedOldPath)
+  const protectedMarkdownPassword = String(openNote?.access?.password || getUnlockedPassword(normalizedOldPath) || '')
 
   openNotes.value = openNotes.value.map((note, index) => {
     if (note.path !== normalizedOldPath && !note.path.startsWith(`${normalizedOldPath}/`)) return note
@@ -794,6 +856,15 @@ async function handleFileRename(oldPath, newPath) {
 
   if (changed && activeNote.value?.path) syncTreeSelection(activeNote.value.path)
 
+  let protectedMarkdownRewriteError = null
+  if (protectedMarkdownPassword) {
+    try {
+      await rewriteProtectedMarkdownNoteAssetsAfterRename(normalizedOldPath, normalizedNewPath, protectedMarkdownPassword)
+    } catch (err) {
+      protectedMarkdownRewriteError = err
+    }
+  }
+
   const nextUnlockedPasswords = {}
   Object.entries(unlockedPasswords.value).forEach(([notePath, password]) => {
     nextUnlockedPasswords[replacePathPrefix(notePath, normalizedOldPath, normalizedNewPath)] = password
@@ -805,6 +876,10 @@ async function handleFileRename(oldPath, newPath) {
     await rewriteNotebookRuntimeBindingsPathMap(normalizedOldPath, normalizedNewPath)
   } catch (err) {
     message.error('同步笔记配置失败：' + (err?.message || String(err)))
+  }
+
+  if (protectedMarkdownRewriteError) {
+    message.warning('重命名已完成，但受保护笔记的图片链接同步失败：' + (protectedMarkdownRewriteError?.message || String(protectedMarkdownRewriteError)))
   }
 }
 
@@ -894,6 +969,7 @@ async function submitSetNotePassword() {
 
   setPasswordModal.value.loading = true
   try {
+    await flushActiveEditorForTargetPath(notePath)
     const raw = String(await readFile(notePath, 'utf-8') || '')
     const protectedMeta = getProtectedNoteMeta(notePath)
     const fallbackPassword = await resolveVerifiedFallbackPassword(setPasswordModal.value.fallbackPassword)
@@ -946,6 +1022,7 @@ async function submitClearNotePassword() {
 
   clearPasswordModal.value.loading = true
   try {
+    await flushActiveEditorForTargetPath(notePath)
     const raw = String(await readFile(notePath, 'utf-8') || '')
     const plaintext = await clearEncryptedNoteContent(raw, currentPassword)
     await writeFile(notePath, plaintext)
@@ -988,6 +1065,7 @@ async function submitResetNotePassword() {
       return
     }
 
+    await flushActiveEditorForTargetPath(notePath)
     const raw = String(await readFile(notePath, 'utf-8') || '')
     if (!hasFallbackRecovery(raw)) {
       throw new Error('当前笔记未绑定全局配置密码，无法重置')

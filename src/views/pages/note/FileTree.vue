@@ -217,7 +217,7 @@ const newNoteName = ref('');
 const pendingCreateNoteType = ref('markdown');
 
 // 定义事件
-const emit = defineEmits(['select', 'prepare-delete', 'delete', 'rename', 'set-password', 'clear-password', 'reset-password']);
+const emit = defineEmits(['select', 'prepare-delete', 'prepare-rename', 'delete', 'rename', 'set-password', 'clear-password', 'reset-password']);
 const folderPickerTitle = computed(() => `为新${getNoteTypeLabel(pendingCreateNoteType.value)}选择文件夹`);
 
 // 右键菜单选项
@@ -1944,6 +1944,13 @@ async function renameNode(node) {
       }
 
       try {
+        await new Promise((resolve, reject) => {
+          emit('prepare-rename', oldPath, newPath, (err) => {
+            if (err) reject(err);
+            else resolve();
+          });
+        });
+
         if (isFile) {
           if (getNodeNoteType(node) === 'markdown') {
             await renameNoteWithImagesMove(oldPath, newPath);

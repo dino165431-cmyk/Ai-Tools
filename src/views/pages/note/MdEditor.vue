@@ -688,6 +688,26 @@ function queuePersistContent(filePath, nextContent) {
   return saveQueue;
 }
 
+async function flushPendingSave() {
+  if (saveTimeout) {
+    clearTimeout(saveTimeout);
+    saveTimeout = null;
+  }
+
+  await saveQueue.catch(() => {});
+
+  const snapshotPath = String(props.filePath || '');
+  const snapshotContent = String(content.value ?? '');
+  if (!snapshotPath) return;
+  if (lastSavedFilePath === snapshotPath && lastSavedContent === snapshotContent) return;
+
+  await queuePersistContent(snapshotPath, snapshotContent);
+}
+
+defineExpose({
+  flushPendingSave
+});
+
 watch(content, (newContent) => {
   if (suppressContentWatcher) return;
   if (!props.filePath) return;

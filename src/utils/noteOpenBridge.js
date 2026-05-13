@@ -2,7 +2,7 @@ let pendingNotePath = ''
 const listeners = new Set()
 
 function normalizeNotePath(value) {
-  return typeof value === 'string' ? value.trim() : ''
+  return typeof value === 'string' ? value.trim().replace(/\\/g, '/') : ''
 }
 
 export function requestOpenNoteFile(filePath) {
