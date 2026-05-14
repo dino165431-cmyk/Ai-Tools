@@ -640,6 +640,21 @@ async function ensureNoteCanOpen(filePath, password) {
   await decryptNoteContent(raw, password)
 }
 
+async function tryOpenProtectedNoteWithCachedPassword(filePath, password, options = {}) {
+  try {
+    await ensureNoteCanOpen(filePath, password)
+    return openNoteInTab(filePath, {
+      syncTree: options.syncTree,
+      password
+    })
+  } catch {
+    removeUnlockedPassword(filePath)
+    updateOpenNoteAccess(filePath, '')
+    openUnlockModal(filePath, { syncTree: options.syncTree })
+    return null
+  }
+}
+
 async function ensureNoteOpened(filePath, options = {}) {
   const normalized = normalizeNotePath(filePath)
   if (!normalized) return null
@@ -651,10 +666,7 @@ async function ensureNoteOpened(filePath, options = {}) {
 
   const cachedPassword = getUnlockedPassword(normalized)
   if (cachedPassword) {
-    return openNoteInTab(normalized, {
-      syncTree: options.syncTree,
-      password: cachedPassword
-    })
+    return tryOpenProtectedNoteWithCachedPassword(normalized, cachedPassword, options)
   }
 
   openUnlockModal(normalized, { syncTree: options.syncTree })
@@ -905,12 +917,16 @@ async function handleOpenNote(filePath) {
   await ensureNoteOpened(filePath)
 }
 
-function handleCloseTab(tabId) {
+async function handleCloseTab(tabId) {
   const closedId = String(tabId || '')
   if (!closedId) return
 
   const closedIndex = getOpenNoteIndexById(closedId)
   if (closedIndex < 0) return
+
+  if (activeNoteId.value === closedId) {
+    await activeEditorRef.value?.flushPendingSave?.()
+  }
 
   openNotes.value = openNotes.value.filter((note) => note.id !== closedId)
   activeNoteId.value = chooseFallbackActiveNoteId(closedIndex, closedId)

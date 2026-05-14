@@ -648,20 +648,18 @@ async function readSessionFileMeta(entryPath, statInfo) {
 async function loadDirectory(relativePath, parentNode) {
   try {
     const entries = await listDirectory(relativePath)
-    const children = []
-
-    for (const entry of entries) {
-      if (isChatSessionAssetsDirectoryPath(entry)) continue
+    const children = (await Promise.all(entries.map(async (entry) => {
+      if (isChatSessionAssetsDirectoryPath(entry)) return null
 
       const statInfo = await stat(entry)
       const isDirectory = statInfo.isDirectory()
       const fileName = entry.split('/').pop()
 
-      if (!isDirectory && !String(fileName || '').endsWith('.json')) continue
+      if (!isDirectory && !String(fileName || '').endsWith('.json')) return null
 
       const fileMeta = isDirectory ? null : await readSessionFileMeta(entry, statInfo)
       const label = isDirectory ? displaySystemDirName(fileName) : fileMeta.label
-      children.push({
+      return {
         key: entry,
         label,
         metaLabel: fileMeta?.metaLabel || '',
@@ -669,8 +667,8 @@ async function loadDirectory(relativePath, parentNode) {
         sessionKind: fileMeta?.sessionKind || '',
         isLeaf: !isDirectory,
         children: isDirectory ? [] : undefined
-      })
-    }
+      }
+    }))).filter(Boolean)
 
     children.sort(compareTreeNodes)
 

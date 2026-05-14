@@ -792,6 +792,7 @@
           {{ contextWindowProviderHint }}
         </n-text>
         <ChatContextWindowPreview
+          v-if="showContextWindowModal"
           :theme="theme"
           :budget-status="contextWindowBudgetStatus"
           :budget-summary-text="contextWindowPreviewBudgetSummaryText"
@@ -887,7 +888,7 @@
 
         <template v-if="selectedPromptModalKind === 'mcp'">
           <McpArgumentForm
-            v-if="selectedMcpPromptArgs.length"
+            v-if="showPromptModal && selectedMcpPromptArgs.length"
             :params="selectedMcpPromptArgs"
             :form-data="promptMcpArgsForm"
             max-height="260px"
@@ -900,6 +901,7 @@
         </template>
         <template v-else-if="selectedLocalPromptForModal && selectedLocalPromptVariables.length">
           <McpArgumentForm
+            v-if="showPromptModal"
             :params="selectedLocalPromptVariables"
             :form-data="promptUserArgsForm"
             max-height="260px"
@@ -1043,7 +1045,7 @@
 </template>
 
 <script setup>
- import { computed, ref, reactive, watch, nextTick, h, onMounted, onActivated, onDeactivated, onBeforeUnmount } from 'vue'
+ import { computed, defineAsyncComponent, ref, reactive, watch, nextTick, h, onMounted, onActivated, onDeactivated, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   NCard,
@@ -1303,11 +1305,19 @@ import { consumeJsonEventStream } from '@/utils/streamJsonEvents'
 import { buildMcpArgsFromForm, normalizeMcpPromptArgumentDefinitions, resetMcpArgFormData } from '@/utils/mcpArgumentForm'
 import ChatAssistantMedia from './ChatAssistantMedia.vue'
 import ChatComposerPanel from './ChatComposerPanel.vue'
-import ChatContextWindowPreview from './ChatContextWindowPreview.vue'
 import ChatToolMessage from './ChatToolMessage.vue'
 import ChatUserAttachments from './ChatUserAttachments.vue'
-import McpArgumentForm from '@/components/McpArgumentForm.vue'
 import SessionTree from './SessionTree.vue'
+
+const ChatContextWindowPreview = defineAsyncComponent({
+  loader: () => import('./ChatContextWindowPreview.vue'),
+  suspensible: false
+})
+
+const McpArgumentForm = defineAsyncComponent({
+  loader: () => import('@/components/McpArgumentForm.vue'),
+  suspensible: false
+})
 
 const dialog = useDialog()
 const message = useMessage()

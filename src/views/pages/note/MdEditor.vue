@@ -802,7 +802,6 @@ watch(() => props.filePath, async (newPath, oldPath) => {
     }
   }
   pendingPreviewImageLoads.clear();
-  clearImageBlobCache();
 
   if (newPath) {
     await loadFileContent(newPath);
@@ -843,7 +842,6 @@ onUnmounted(() => {
   cleanupPreviewCatalogSync();
   diagramDecorator.dispose();
   pendingPreviewImageLoads.clear();
-  clearImageBlobCache();
   catalogItems.value = [];
   catalogScrollElement.value = null;
   activeCatalogKey.value = '';
