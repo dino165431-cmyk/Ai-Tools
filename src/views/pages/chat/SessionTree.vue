@@ -316,23 +316,71 @@ async function syncExternalSessionFileChange(sessionPath) {
   })
 }
 
+async function reloadLoadedSessionDirectory(directoryPath) {
+  const normalized = normalizeTreePath(directoryPath)
+  if (!normalized) return false
+  if (normalized === props.root) {
+    await loadDirectory(props.root, null)
+    return true
+  }
+
+  if (!loadedPaths.has(normalized)) return false
+  const node = findNodeByKey(treeData.value, normalized)
+  if (!node || !Array.isArray(node.children)) return false
+  await loadDirectory(normalized, node)
+  return true
+}
+
+async function syncExternalSessionDirectoryChange(sessionPath) {
+  const normalized = normalizeTreePath(sessionPath)
+  if (!normalized || isChatSessionAssetsDirectoryPath(normalized)) return
+
+  if (normalized === props.root) {
+    await refreshTree({ silent: true })
+    return
+  }
+
+  const parentPath = normalized.includes('/') ? normalized.slice(0, normalized.lastIndexOf('/')) : props.root
+  const parentLoaded = parentPath === props.root || loadedPaths.has(parentPath)
+  const pathExists = await exists(normalized).catch(() => false)
+
+  if (!pathExists) {
+    removeTreeNodeByPath(normalized)
+    return
+  }
+
+  const statInfo = await stat(normalized).catch(() => null)
+  if (!statInfo) return
+
+  if (!statInfo.isDirectory?.()) {
+    await syncExternalSessionFileChange(normalized)
+    return
+  }
+
+  if (parentLoaded) {
+    await reloadLoadedSessionDirectory(parentPath || props.root)
+  }
+
+  await reloadLoadedSessionDirectory(normalized)
+}
+
+async function syncExternalSessionPathChange(sessionPath) {
+  const normalized = normalizeTreePath(sessionPath)
+  if (!normalized || isChatSessionAssetsDirectoryPath(normalized)) return
+  if (isJsonSessionPath(normalized)) {
+    await syncExternalSessionFileChange(normalized)
+    return
+  }
+  await syncExternalSessionDirectoryChange(normalized)
+}
+
 async function flushExternalSessionChanges() {
   const changedPaths = Array.from(pendingExternalChangePaths)
   pendingExternalChangePaths.clear()
   if (!changedPaths.length) return
 
-  const needsFullRefresh = changedPaths.some((item) => {
-    if (!item || item === props.root) return true
-    if (isChatSessionAssetsDirectoryPath(item)) return false
-    return !isJsonSessionPath(item)
-  })
-  if (needsFullRefresh) {
-    await refreshTree({ silent: true })
-    return
-  }
-
   for (const item of changedPaths) {
-    await syncExternalSessionFileChange(item)
+    await syncExternalSessionPathChange(item)
   }
 }
 

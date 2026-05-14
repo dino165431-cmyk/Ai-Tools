@@ -253,7 +253,7 @@
                       @keydown="(e) => handleUserEditKeydown(e, msg)"
                     />
 
-                    <pre v-if="msg.render === 'text'" class="chat-plain">{{ msg.content }}</pre>
+                    <pre v-if="!msg.editing && shouldRenderUserMessageAsPlainText(msg)" class="chat-plain">{{ msg.content }}</pre>
                     <LazyMarkdownPreview
                       v-else-if="!msg.editing && shouldRenderHeavyChatMessage(msg)"
                       :editorId="`msg-${msg.id}`"
@@ -6928,6 +6928,7 @@ function resolveChatMessageById(messageId) {
 
 function isMarkdownHeavyRenderCandidate(msg) {
   if (!msg || typeof msg !== 'object') return false
+  if (String(msg?.role || '').trim() === 'user' && shouldRenderUserMessageAsPlainText(msg)) return false
   if (String(msg.render || '').trim() === 'text') return false
   return !!String(msg.content || '').trim()
 }
@@ -9458,6 +9459,24 @@ function isLikelyMarkdownContent(content) {
   return false
 }
 
+function hasHtmlLikeTagLine(content) {
+  const text = String(content || '').replace(/\r\n/g, '\n')
+  if (!text.trim()) return false
+  return text
+    .split('\n')
+    .some((line) => /^\s*<\/?[A-Za-z][\w:-]*(?:\s+[^<>]*)?\/?>\s*$/.test(String(line || '').trim()))
+}
+
+function inferUserDisplayMessageRender(content) {
+  return hasHtmlLikeTagLine(content) ? 'text' : 'md'
+}
+
+function shouldRenderUserMessageAsPlainText(msg) {
+  if (!msg || typeof msg !== 'object') return false
+  if (String(msg.render || '').trim().toLowerCase() === 'text') return true
+  return inferUserDisplayMessageRender(msg.content) === 'text'
+}
+
 function shouldKeepLoadedAssistantTextRender(raw, content) {
   const text = String(content || '').trim()
   if (!text) return false
@@ -9474,6 +9493,7 @@ function inferLoadedDisplayMessageRender(raw, content) {
   if (role === 'assistant' || role === 'thinking') {
     return shouldKeepLoadedAssistantTextRender(raw, content) ? 'text' : 'md'
   }
+  if (role === 'user') return inferUserDisplayMessageRender(content)
   return 'md'
 }
 
@@ -9500,6 +9520,10 @@ function normalizeLoadedDisplayMessage(msg) {
     ) {
       raw.render = 'md'
     }
+  }
+
+  if (raw.role === 'user' && inferUserDisplayMessageRender(content) === 'text') {
+    raw.render = 'text'
   }
 
   if (raw.role === 'assistant') {
@@ -12631,6 +12655,7 @@ async function submitUserEdit(msg) {
 
   await startPreparingSend(async () => {
     msg.content = draft || (hasAttachments ? '(sent attachments)' : '')
+    msg.render = inferUserDisplayMessageRender(msg.content)
     msg.editing = false
     msg.editDraft = ''
 
@@ -15742,7 +15767,11 @@ async function streamChatCompletion({ baseUrl, apiKey, body, signal, onDelta, ab
 }
 
 function createDisplayMessage(role, content = '', extra = {}) {
-  const defaultRender = role === 'assistant' || role === 'thinking' ? 'text' : 'md'
+  const defaultRender = role === 'assistant' || role === 'thinking'
+    ? 'text'
+    : role === 'user'
+      ? inferUserDisplayMessageRender(content)
+      : 'md'
   const base = { id: newId(), role, content, time: nextDisplayMessageTime(), render: defaultRender }
   if (role === 'tool' || role === 'tool_call') {
     base.toolExpanded = false

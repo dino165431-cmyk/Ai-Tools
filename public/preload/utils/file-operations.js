@@ -221,11 +221,12 @@ class FileOperations {
                 console.warn?.('[Content index] external watch dirty mark failed:', err)
             }
 
-            this._dispatchWindowEvent('storageFilesChanged', { path: changed, rootPath: root, paths: [changed] })
+            const eventDetail = { path: changed, rootPath: root, paths: [changed] }
+            this._dispatchWindowEvent('storageFilesChanged', eventDetail)
             if (root === 'note') {
-                this._dispatchWindowEvent('noteFilesChanged', { path: 'note', paths: ['note'] })
+                this._dispatchWindowEvent('noteFilesChanged', eventDetail)
             } else if (root === 'session') {
-                this._dispatchWindowEvent('sessionFilesChanged', { path: 'session', paths: ['session'] })
+                this._dispatchWindowEvent('sessionFilesChanged', eventDetail)
             }
         }, EXTERNAL_WATCH_DEBOUNCE_MS)
 
