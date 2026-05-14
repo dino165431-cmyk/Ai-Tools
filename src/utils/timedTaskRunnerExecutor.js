@@ -484,7 +484,7 @@ async function resolveExecutionProfile(task) {
     agentSkillIds,
     activatedAgentSkillIds: agentSkillIds,
     manualMcpIds,
-    autoApproveTools: false,
+    autoApproveTools: true,
     autoActivateAgentSkills: false,
     toolMode: 'expanded',
     effectiveToolMode: 'expanded',

@@ -164,6 +164,28 @@ export function getAgentRunTraceEntries(msg) {
   return mergeAgentRunTraceEntries(payloadTrace, liveTrace)
 }
 
+function normalizeAgentRunMessageStatus(raw) {
+  const status = String(raw || '').trim()
+  if (!status) return ''
+  if (status === 'completed') return 'success'
+  if (status === 'aborted') return 'stopped'
+  if (status === 'failed') return 'error'
+  if (status === 'blocked') return 'rejected'
+  return ['running', 'paused', 'success', 'error', 'rejected', 'stopped'].includes(status) ? status : ''
+}
+
+export function getAgentRunMessageStatus(msg) {
+  const trace = getAgentRunTraceEntries(msg)
+  for (let i = trace.length - 1; i >= 0; i -= 1) {
+    const phase = String(trace[i]?.phase || '').trim()
+    if (phase === 'run.aborted') return 'stopped'
+    if (phase === 'run.failed') return 'error'
+    if (phase === 'run.finished') return 'success'
+    if (phase === 'run.paused') return 'paused'
+  }
+  return normalizeAgentRunMessageStatus(getAgentRunResultPayload(msg)?.status)
+}
+
 export function getAgentRunTaskText(msg) {
   const trace = getAgentRunTraceEntries(msg)
   const started = trace.find((entry) => String(entry?.phase || '').trim() === 'run.started')

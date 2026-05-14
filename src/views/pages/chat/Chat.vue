@@ -1290,7 +1290,7 @@ import {
   formatToolResultDisplayContent,
   isAgentRunToolResult
 } from '@/utils/chatToolDisplay'
-import { isAgentRunToolName, mergeAgentRunTraceEntries } from '@/utils/chatAgentRun'
+import { getAgentRunMessageStatus, isAgentRunToolName, mergeAgentRunTraceEntries } from '@/utils/chatAgentRun'
 import { CHAT_CODE_AUTO_FOLD_THRESHOLD } from '@/utils/chatMarkdownPreview'
 import { extractAssistantTextFromPayload, extractAssistantTextFromPayloads } from '@/utils/chatAssistantResponse'
 import {
@@ -1430,7 +1430,7 @@ watch(
 const selectedSkillIds = ref([])
 const manualMcpIds = ref([])
 const webSearchEnabled = ref(false)
-const autoApproveTools = ref(false)
+const autoApproveTools = ref(true)
 const autoActivateAgentSkills = ref(true)
 
 // 工具模式：
@@ -1557,6 +1557,7 @@ function createMemorySessionRecord(options = {}) {
     contextSummary: options.contextSummary && typeof options.contextSummary === 'object'
       ? deepCopyJson(options.contextSummary, {})
       : createEmptyContextSummaryState(),
+    autoApproveTools: options.autoApproveTools === true,
     activeSessionFilePath: String(options.activeSessionFilePath || '').trim(),
     activeSessionTitle: String(options.activeSessionTitle || '').trim(),
     state: options.state && typeof options.state === 'object' ? deepCopyJson(options.state, {}) : null,
@@ -1574,6 +1575,7 @@ function getActiveMemorySession() {
     record = createMemorySessionRecord({
       messages: session.messages,
       apiMessages: session.apiMessages,
+      autoApproveTools: autoApproveTools.value,
       activeSessionFilePath: activeSessionFilePath.value,
       activeSessionTitle: activeSessionTitle.value
     })
@@ -1737,6 +1739,7 @@ function saveActiveMemorySessionDraft() {
   const record = getActiveMemorySession()
   record.messages = session.messages
   record.apiMessages = session.apiMessages
+  record.autoApproveTools = autoApproveTools.value === true
   record.input = String(input.value || '')
   record.pendingAttachments = Array.isArray(pendingAttachments.value) ? pendingAttachments.value : []
   record.memoryCandidates = normalizeMemoryCandidateQueue(record.memoryCandidates)
@@ -1751,12 +1754,20 @@ function saveActiveMemorySessionDraft() {
 function restoreMemorySession(record, options = {}) {
   if (!record) return
   if (!options.skipSaveCurrent) saveActiveMemorySessionDraft()
-  primeHydratedHeavyChatMessages(record.messages, {
+  const fallbackAutoApprove =
+    typeof record.autoApproveTools === 'boolean'
+      ? record.autoApproveTools === true
+      : autoApproveTools.value === true
+  const normalizedMessages = normalizeLoadedDisplayMessages(
+    backfillLoadedToolAutoApproved(record.messages, fallbackAutoApprove)
+  )
+  record.messages = normalizedMessages
+  primeHydratedHeavyChatMessages(normalizedMessages, {
     replace: true,
     fromStart: options.fromStart === true
   })
   activeMemorySessionId.value = record.id
-  session.messages = Array.isArray(record.messages) ? record.messages : []
+  session.messages = normalizedMessages
   session.apiMessages = Array.isArray(record.apiMessages) ? record.apiMessages : []
   input.value = String(record.input || '')
   pendingAttachments.value = Array.isArray(record.pendingAttachments) ? record.pendingAttachments : []
@@ -5693,6 +5704,7 @@ function isToolMessage(msgOrRole) {
 const TOOL_MESSAGE_STATUS_LABELS = {
   running: '运行中',
   paused: '已暂停',
+  stopped: '已停止',
   success: '已完成',
   error: '失败',
   rejected: '已拒绝'
@@ -5716,6 +5728,7 @@ function toolMessageStatusDetailText(status) {
   const normalized = normalizeToolMessageStatus(status)
   if (normalized === 'running') return '等待工具结果...'
   if (normalized === 'paused') return '执行已暂停，等待恢复...'
+  if (normalized === 'stopped') return '执行已停止，不会继续运行。'
   return ''
 }
 
@@ -5723,13 +5736,7 @@ function getToolMessageStatus(msg) {
   if (!isToolMessage(msg)) return ''
   const explicit = normalizeToolMessageStatus(msg?.toolStatus)
   if (isAgentRunToolResult(msg?.toolResultPayload)) {
-    const payloadStatusRaw = String(msg?.toolResultPayload?.status || '').trim()
-    const payloadStatus =
-      payloadStatusRaw === 'aborted'
-        ? 'rejected'
-        : payloadStatusRaw === 'completed'
-          ? 'success'
-          : normalizeToolMessageStatus(payloadStatusRaw)
+    const payloadStatus = normalizeToolMessageStatus(getAgentRunMessageStatus(msg))
     if (payloadStatus && payloadStatus !== 'running') return payloadStatus
     if (explicit && explicit !== 'running') return explicit
     if (payloadStatus === 'running') return 'running'
@@ -5758,6 +5765,7 @@ function chatItemStateClasses(msg) {
     'is-streaming': msg?.role === 'assistant' && !!msg?.streaming,
     'is-tool-running': status === 'running',
     'is-tool-paused': status === 'paused',
+    'is-tool-stopped': status === 'stopped',
     'is-tool-success': status === 'success',
     'is-tool-error': status === 'error',
     'is-tool-rejected': status === 'rejected',
@@ -5771,6 +5779,7 @@ function chatAvatarStateClasses(msg) {
     'is-streaming': msg?.role === 'assistant' && !!msg?.streaming,
     'is-running': status === 'running',
     'is-paused': status === 'paused',
+    'is-stopped': status === 'stopped',
     'is-success': status === 'success',
     'is-error': status === 'error',
     'is-rejected': status === 'rejected'
@@ -5807,13 +5816,7 @@ function extractFirstJsonFenceText(content = '') {
 function inferToolResultStatus(messageLike) {
   const explicit = normalizeToolMessageStatus(messageLike?.toolStatus)
   if (isAgentRunToolResult(messageLike?.toolResultPayload)) {
-    const payloadStatusRaw = String(messageLike?.toolResultPayload?.status || '').trim()
-    const payloadStatus =
-      payloadStatusRaw === 'aborted'
-        ? 'rejected'
-        : payloadStatusRaw === 'completed'
-          ? 'success'
-          : normalizeToolMessageStatus(payloadStatusRaw)
+    const payloadStatus = normalizeToolMessageStatus(getAgentRunMessageStatus(messageLike))
     if (payloadStatus && payloadStatus !== 'running') return payloadStatus
     if (explicit && explicit !== 'running') return explicit
     if (payloadStatus === 'running') return 'running'
@@ -5899,7 +5902,8 @@ function createPendingToolExecutionMessage({
       toolExecutionId: normalizedToolExecutionId,
       toolSubMeta: targetAgentLabel ? `智能体：${targetAgentLabel}` : '',
       toolTraceStreamId: normalizedTraceStreamId,
-      toolLiveTrace: []
+      toolLiveTrace: [],
+      toolAbortState: null
     }
   )
 }
@@ -6002,7 +6006,9 @@ function maybeCoalesceLatestToolMessages() {
 function canCoalesceToolResultIntoPending(pending, result) {
   if (!pending || !result) return false
   if (!isToolMessage(pending) || String(result.role || '').trim() !== 'tool') return false
-  if (!isLiveToolMessageStatus(getToolMessageStatus(pending))) return false
+  const pendingRole = String(pending.role || '').trim()
+  const pendingStatus = getToolMessageStatus(pending)
+  if (!isLiveToolMessageStatus(pendingStatus) && pendingRole !== 'tool_call') return false
 
   const pendingExecutionId = String(pending.toolExecutionId || '').trim()
   const resultExecutionId = String(result.toolExecutionId || '').trim()
@@ -6049,11 +6055,15 @@ let pendingBuiltinAgentsEventsFlushTimer = null
 function resolveActiveAgentRunToolMessage(streamId) {
   const id = String(streamId || '').trim()
   if (!id) return null
-  return (
-    activeAgentRunToolMessageByStreamId.get(id) ||
-    (session.messages || []).find((msg) => String(msg?.toolTraceStreamId || '').trim() === id) ||
-    null
-  )
+  const direct = activeAgentRunToolMessageByStreamId.get(id)
+  if (direct) return direct
+  const activeHit = (session.messages || []).find((msg) => String(msg?.toolTraceStreamId || '').trim() === id)
+  if (activeHit) return activeHit
+  for (const record of Array.isArray(memorySessions.value) ? memorySessions.value : []) {
+    const recordHit = (record?.messages || []).find((msg) => String(msg?.toolTraceStreamId || '').trim() === id)
+    if (recordHit) return recordHit
+  }
+  return null
 }
 
 function updateAgentRunToolMessageTraceBatch(streamId, entries) {
@@ -6237,7 +6247,7 @@ function prepareBuiltinAgentToolCallArgs(server, toolName, argsObj, pendingMessa
 
   const nextArgs = argsObj && typeof argsObj === 'object' && !Array.isArray(argsObj) ? { ...argsObj } : {}
   const streamId = String(pendingMessage?.toolTraceStreamId || pendingMessage?.id || '').trim()
-  const approvalMode = autoApproveTools.value ? 'auto' : 'manual'
+  const approvalMode = pendingMessage?.toolAutoApproved === true ? 'auto' : 'manual'
   if (streamId) {
     // Keep legacy/internal key and a plain key to avoid middleware stripping prefixed fields.
     nextArgs.__trace_stream_id = streamId
@@ -6278,6 +6288,41 @@ function dispatchBuiltinAgentsToolApprovalResponse(requestId, approved) {
 
 function createAbortAwareDialogState() {
   const controller = abortController.value
+  if (controller?.onAbort) {
+    return {
+      onAbort(listener) {
+        if (typeof listener !== 'function') return null
+        return controller.onAbort(listener)
+      }
+    }
+  }
+  const signal = controller?.signal
+  if (!signal?.addEventListener) return null
+  return {
+    onAbort(listener) {
+      if (typeof listener !== 'function') return null
+      const handler = () => listener()
+      signal.addEventListener('abort', handler, { once: true })
+      return () => {
+        try {
+          signal.removeEventListener('abort', handler)
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+}
+
+function createAbortAwareDialogStateFromController(controller = null) {
+  if (controller?.onAbort) {
+    return {
+      onAbort(listener) {
+        if (typeof listener !== 'function') return null
+        return controller.onAbort(listener)
+      }
+    }
+  }
   const signal = controller?.signal
   if (!signal?.addEventListener) return null
   return {
@@ -6308,7 +6353,12 @@ async function handleBuiltinAgentsToolApprovalRequest(event) {
   const agentName = String(detail.agentName || '').trim()
   const extraLines = agentName ? ['智能体：' + agentName] : []
 
-  const autoApproved = shouldAutoApproveToolExecution()
+  const streamId = String(detail.streamId || detail.traceStreamId || detail.trace_stream_id || '').trim()
+  const relatedToolMessage = streamId ? resolveActiveAgentRunToolMessage(streamId) : null
+  const autoApproved =
+    typeof relatedToolMessage?.toolAutoApproved === 'boolean'
+      ? relatedToolMessage.toolAutoApproved
+      : shouldAutoApproveToolExecution(relatedToolMessage?.toolAbortState || abortController.value || null)
 
   let approved = null
   if (autoApproved) {
@@ -6319,7 +6369,7 @@ async function handleBuiltinAgentsToolApprovalRequest(event) {
       toolName,
       argsText,
       reasoningText,
-      abortState: createAbortAwareDialogState(),
+      abortState: createAbortAwareDialogStateFromController(relatedToolMessage?.toolAbortState || abortController.value || null),
       titleText: '确认子 Agent 工具调用',
       extraLines
     })
@@ -8738,7 +8788,7 @@ function buildDefaultChatState() {
     activatedAgentSkillIds: [],
     manualMcpIds: [],
     webSearchEnabled: false,
-    autoApproveTools: false,
+    autoApproveTools: true,
     autoActivateAgentSkills: true,
     toolMode: 'auto',
     effectiveToolMode: 'expanded',
@@ -9371,6 +9421,7 @@ function normalizeLoadedDisplayMessage(msg) {
     if (typeof raw.toolExecutionId !== 'string') raw.toolExecutionId = String(raw.toolExecutionId || '')
     if (typeof raw.toolTraceStreamId !== 'string') raw.toolTraceStreamId = String(raw.toolTraceStreamId || '')
     if (!Array.isArray(raw.toolLiveTrace)) raw.toolLiveTrace = []
+    raw.toolAbortState = null
     if (typeof raw.toolAgentName !== 'string') raw.toolAgentName = String(raw.toolAgentName || '')
     if (typeof raw.toolLiveFinalContent !== 'string') raw.toolLiveFinalContent = String(raw.toolLiveFinalContent || '')
     if (typeof raw.toolLiveFinalReasoning !== 'string') raw.toolLiveFinalReasoning = String(raw.toolLiveFinalReasoning || '')
@@ -9383,6 +9434,26 @@ function normalizeLoadedDisplayMessage(msg) {
   }
 
   return raw
+}
+
+function backfillLoadedToolAutoApproved(messages = [], fallbackAutoApprove = false) {
+  const list = Array.isArray(messages) ? messages : []
+  const fallback = fallbackAutoApprove === true
+  for (const msg of list) {
+    if (!msg || (msg.role !== 'tool' && msg.role !== 'tool_call')) continue
+    if (typeof msg.toolAutoApproved === 'boolean') continue
+    const toolApprovalMode = String(msg.toolApprovalMode || '').trim()
+    if (toolApprovalMode === 'auto') {
+      msg.toolAutoApproved = true
+      continue
+    }
+    if (toolApprovalMode === 'manual') {
+      msg.toolAutoApproved = false
+      continue
+    }
+    if (msg.role === 'tool_call') msg.toolAutoApproved = fallback
+  }
+  return list
 }
 
 function normalizeLoadedDisplayMessages(messages) {
@@ -9586,7 +9657,13 @@ async function loadSessionFromFile(filePath) {
       ? apiMessages.filter((m) => m && typeof m === 'object' && typeof m.role === 'string')
       : []
 
-    const displaySafe = normalizeLoadedDisplayMessages(displayMessages)
+    const fallbackAutoApprove =
+      typeof state?.autoApproveTools === 'boolean'
+        ? state.autoApproveTools === true
+        : autoApproveTools.value === true
+    const displaySafe = normalizeLoadedDisplayMessages(
+      backfillLoadedToolAutoApproved(displayMessages, fallbackAutoApprove)
+    )
 
     // 兼容：早期定时任务会话默认按 text 保存，加载到聊天页后需要切回 md 渲染
     const isTimedTaskSession =
@@ -11966,6 +12043,7 @@ async function runChatSession({
   const requestAbortState = {
     aborted: false,
     memorySystemContent,
+    autoApproveTools: runRecord?.autoApproveTools === true || autoApproveTools.value === true,
     onAbort(listener) {
       if (typeof listener !== 'function') return () => {}
       if (requestAbortState.aborted) {
@@ -12481,6 +12559,8 @@ async function submitUserEdit(msg) {
 
 function toggleAutoApproveTools() {
   autoApproveTools.value = !autoApproveTools.value
+  const record = getActiveMemorySession()
+  if (record) record.autoApproveTools = autoApproveTools.value === true
 }
 
 function toggleWebSearch() {
@@ -13064,7 +13144,7 @@ function resetChatSetupUiState() {
 
   // 其他开关回到初始值。
   webSearchEnabled.value = false
-  autoApproveTools.value = false
+  autoApproveTools.value = true
   autoActivateAgentSkills.value = true
   toolMode.value = 'auto'
   effectiveToolMode.value = 'expanded'
@@ -14271,7 +14351,14 @@ function stableStringify(obj, spaces = 2) {
   }
 }
 
-function shouldAutoApproveToolExecution() {
+function shouldAutoApproveToolExecution(abortState = abortController.value) {
+  if (abortState && typeof abortState.autoApproveTools === 'boolean') {
+    return abortState.autoApproveTools === true
+  }
+  const runRecord = getRunRecord(abortState)
+  if (runRecord && typeof runRecord.autoApproveTools === 'boolean') {
+    return runRecord.autoApproveTools === true
+  }
   return autoApproveTools.value === true
 }
 
@@ -15597,6 +15684,8 @@ async function confirmToolCall({
     }
     const dialogReactive = dialog.warning({
       title: titleText,
+      maskClosable: false,
+      closable: false,
       content: () =>
         h('div', { style: { maxWidth: '900px' } }, [
           h('div', { style: { marginBottom: '8px' } }, [
@@ -15983,7 +16072,7 @@ async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, ab
   const targetSession = getRunSessionTarget(abortState)
   throwIfAborted(abortState)
   const context = normalizeToolCallExecutionContext(toolCall, toolMap)
-  const autoApproved = shouldAutoApproveToolExecution()
+  const autoApproved = shouldAutoApproveToolExecution(abortState)
 
   const pendingToolMessage = createPendingToolExecutionMessage({
     serverName: context.serverName,
@@ -15994,6 +16083,7 @@ async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, ab
     toolCallId: context.toolCallId,
     toolExecutionId: context.toolExecutionId
   })
+  pendingToolMessage.toolAbortState = abortState || null
   targetSession.messages.push(pendingToolMessage)
   await maybeScrollToBottomForRun(abortState)
 
@@ -16031,7 +16121,18 @@ async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, ab
         ...context,
         pendingToolMessage,
         skipped: true,
-        execResult: { ok: false, content: '用户拒绝了工具调用' }
+        execResult: {
+          ok: false,
+          content: [
+            'TOOL_REJECTED',
+            `tool_name: ${context.toolName}`,
+            `server_name: ${context.serverName}`,
+            'status: rejected',
+            'reason: user_denied',
+            'message: The user explicitly rejected this tool call.',
+            'guidance: Do not claim the tool failed. Treat this as a user decision and continue by either explaining what can be done without the tool, asking for permission to use an alternative approach, or waiting for new user instructions.'
+          ].join('\n')
+        }
       }
     }
   }
@@ -16947,7 +17048,9 @@ async function executePreparedToolCall(prepared, abortState = null) {
             toolName: tool,
             toolServerName: server.name || server._id,
             toolSubMeta: buildToolExecutionResultSubMeta(result),
-            toolResultPayload
+            toolResultPayload,
+            toolTraceStreamId: String(pendingToolMessage?.toolTraceStreamId || '').trim(),
+            toolAutoApproved: pendingToolMessage?.toolAutoApproved === true
           }
         )
       )
@@ -16971,7 +17074,9 @@ async function executePreparedToolCall(prepared, abortState = null) {
       const errorText = err?.message || String(err)
       targetSession.messages.push(
         createCurrentToolResultMessage(`### MCP 工具结果\n- 工具：\`${tool}\`\n- 错误：${errorText}`, {
-          toolMeta: `${server.name || server._id} / ${tool}`
+          toolMeta: `${server.name || server._id} / ${tool}`,
+          toolTraceStreamId: String(pendingToolMessage?.toolTraceStreamId || '').trim(),
+          toolAutoApproved: pendingToolMessage?.toolAutoApproved === true
         })
       )
       await maybeScrollToBottomForRun(abortState)
@@ -17047,7 +17152,9 @@ async function executePreparedToolCall(prepared, abortState = null) {
           toolName,
           toolServerName: serverName,
           toolSubMeta: buildToolExecutionResultSubMeta(result),
-          toolResultPayload
+          toolResultPayload,
+          toolTraceStreamId: String(pendingToolMessage?.toolTraceStreamId || '').trim(),
+          toolAutoApproved: pendingToolMessage?.toolAutoApproved === true
         }
       )
     )
@@ -17069,7 +17176,11 @@ async function executePreparedToolCall(prepared, abortState = null) {
     closeMcpClientSafely(server, client, pooled)
     const errorText = err?.message || String(err)
     targetSession.messages.push(
-      createCurrentToolResultMessage(`### 工具结果\n- 工具：\`${toolName}\`\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` })
+      createCurrentToolResultMessage(`### 工具结果\n- 工具：\`${toolName}\`\n- 错误：${errorText}`, {
+        toolMeta: `${serverName} / ${toolName}`,
+        toolTraceStreamId: String(pendingToolMessage?.toolTraceStreamId || '').trim(),
+        toolAutoApproved: pendingToolMessage?.toolAutoApproved === true
+      })
     )
     await maybeScrollToBottomForRun(abortState)
     return { ok: false, content: `错误：${errorText}` }
@@ -18018,6 +18129,14 @@ watch(
   color: rgb(180, 83, 9);
 }
 
+.chat-item.tool.is-tool-stopped .chat-item__avatar,
+.chat-item.tool_call.is-tool-stopped .chat-item__avatar,
+.chat-item__avatar.is-stopped {
+  border-color: rgba(100, 116, 139, 0.34);
+  background: rgba(100, 116, 139, 0.16);
+  color: rgb(71, 85, 105);
+}
+
 .chat-item.tool.is-tool-success .chat-item__avatar,
 .chat-item__avatar.is-success {
   border-color: rgba(14, 165, 233, 0.3);
@@ -18136,6 +18255,11 @@ watch(
   box-shadow: 0 10px 26px rgba(224, 168, 63, 0.08);
 }
 
+.chat-item.tool.is-tool-stopped .chat-item__bubble,
+.chat-item.tool_call.is-tool-stopped .chat-item__bubble {
+  border-color: rgba(100, 116, 139, 0.26);
+}
+
 .chat-item.tool.is-tool-success .chat-item__bubble {
   border-color: rgba(14, 165, 233, 0.22);
 }
@@ -18173,6 +18297,11 @@ watch(
 .chat-page.dark .chat-item.tool_call.is-tool-paused .chat-item__bubble {
   border-color: rgba(224, 168, 63, 0.34);
   box-shadow: 0 10px 28px rgba(146, 90, 14, 0.22);
+}
+
+.chat-page.dark .chat-item.tool.is-tool-stopped .chat-item__bubble,
+.chat-page.dark .chat-item.tool_call.is-tool-stopped .chat-item__bubble {
+  border-color: rgba(148, 163, 184, 0.26);
 }
 
 .chat-page.dark .chat-item.tool.is-tool-success .chat-item__bubble {
@@ -18266,6 +18395,11 @@ watch(
 .chat-tool-compact__status.is-paused {
   color: rgb(180, 83, 9);
   background: rgba(224, 168, 63, 0.14);
+}
+
+.chat-tool-compact__status.is-stopped {
+  color: rgb(71, 85, 105);
+  background: rgba(100, 116, 139, 0.12);
 }
 
 .chat-tool-compact__status.is-success {
