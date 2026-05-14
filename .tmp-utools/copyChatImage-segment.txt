@@ -1,0 +1,25 @@
+    return
+  }
+
+  try {
+    const blob = await loadChatImageBlob(img)
+    const mime = normalizeClipboardMediaMime(blob.type || img?.mime, 'image/png', 'image/') || 'image/png'
+    const clipboardBlob = withPreferredBlobMime(blob, mime)
+    await clipboardApi.write([
+      new ClipboardItem({
+        [mime]: clipboardBlob
+      })
+    ])
+    message.success('图片已复制到剪贴�?)
+  } catch (err) {
+    copyChatImageLink(img)
+    message.warning(`当前环境不支持直接复制图片，已改为复制图片链接：${err?.message || String(err)}`)
+  }
+}
+
+function getActiveChatVideoAssetPath(video) {
+  const sessionFilePath = String(activeSessionFilePath.value || '').trim()
+  return (
+    resolveChatMediaAssetPath(video, { sessionFilePath }) ||
+    String(video?.assetPath || video?.localPath || video?.fileRelPath || '').trim()
+  )

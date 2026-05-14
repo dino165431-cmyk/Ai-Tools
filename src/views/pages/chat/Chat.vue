@@ -1233,6 +1233,7 @@ import {
   countSessionMediaItems,
   filterSessionMediaItems
 } from '@/utils/chatMediaLibrary.js'
+import { canWriteClipboardMime, normalizeClipboardMediaMime } from '@/utils/chatClipboard.js'
 import {
   collectChatMediaAssetPathsFromPayload,
   deleteChatSessionAssetDirectory,
@@ -5599,14 +5600,6 @@ async function loadChatVideoBlob(video) {
   return blob
 }
 
-function normalizeClipboardMediaMime(mime, fallbackMime, kindPrefix) {
-  const normalized = String(mime || '').trim().toLowerCase()
-  if (normalized && normalized !== 'application/octet-stream' && (!kindPrefix || normalized.startsWith(kindPrefix))) {
-    return normalized
-  }
-  return String(fallbackMime || '').trim().toLowerCase()
-}
-
 function withPreferredBlobMime(blob, mime) {
   const preferred = String(mime || '').trim()
   if (!preferred || String(blob?.type || '').trim().toLowerCase() === preferred.toLowerCase()) return blob
@@ -5621,26 +5614,77 @@ async function copyChatImage(img) {
   const src = String(img?.src || '').trim()
   if (!src) return
 
-  const clipboardApi = navigator?.clipboard
-  if (!clipboardApi?.write || typeof ClipboardItem === 'undefined') {
-    copyChatImageLink(img)
-    return
-  }
-
   try {
-    const blob = await loadChatImageBlob(img)
-    const mime = normalizeClipboardMediaMime(blob.type || img?.mime, 'image/png', 'image/') || 'image/png'
-    const clipboardBlob = withPreferredBlobMime(blob, mime)
-    await clipboardApi.write([
-      new ClipboardItem({
-        [mime]: clipboardBlob
-      })
-    ])
+    if (await copyChatImageFile(img)) {
+      message.success('图片已复制到剪贴板')
+      return
+    }
+    if (!await copyChatImageBlob(img)) {
+      throw new Error('clipboard image mime unsupported')
+    }
     message.success('图片已复制到剪贴板')
   } catch (err) {
     copyChatImageLink(img)
     message.warning(`当前环境不支持直接复制图片，已改为复制图片链接：${err?.message || String(err)}`)
   }
+}
+
+function getActiveChatImageAssetPath(img) {
+  const sessionFilePath = String(activeSessionFilePath.value || '').trim()
+  return (
+    resolveChatMediaAssetPath(img, { sessionFilePath }) ||
+    String(img?.assetPath || img?.localPath || img?.fileRelPath || '').trim()
+  )
+}
+
+async function ensureChatImageAssetPath(img) {
+  let assetPath = getActiveChatImageAssetPath(img)
+  if (assetPath) return assetPath
+
+  const sessionFilePath = String(activeSessionFilePath.value || '').trim()
+  const src = String(img?.src || '').trim()
+  if (!sessionFilePath || !src) return ''
+
+  const persisted = await persistChatMediaListAssets([img], {
+    kind: 'image',
+    messageId: img?.messageId || img?.id || 'image',
+    sessionFilePath
+  })
+  const next = persisted?.[0]
+  assetPath = getActiveChatImageAssetPath(next)
+  if (assetPath && next && typeof img === 'object') {
+    Object.assign(img, next)
+    scheduleSessionAutosave()
+  }
+  return assetPath || ''
+}
+
+async function copyChatImageFile(img) {
+  const copyFile = globalThis?.utools?.copyFile
+  if (typeof copyFile !== 'function') return false
+
+  const assetPath = await ensureChatImageAssetPath(img)
+  if (!assetPath) return false
+
+  const absPath = String(await resolvePath(assetPath) || '').trim()
+  if (!absPath) return false
+  return !!copyFile(absPath)
+}
+
+async function copyChatImageBlob(img) {
+  const clipboardApi = navigator?.clipboard
+  if (!clipboardApi?.write || typeof ClipboardItem === 'undefined') return false
+
+  const blob = await loadChatImageBlob(img)
+  const mime = normalizeClipboardMediaMime(blob.type || img?.mime, 'image/png', 'image/') || 'image/png'
+  if (!canWriteClipboardMime(mime, ClipboardItem)) return false
+  const clipboardBlob = withPreferredBlobMime(blob, mime)
+  await clipboardApi.write([
+    new ClipboardItem({
+      [mime]: clipboardBlob
+    })
+  ])
+  return true
 }
 
 function getActiveChatVideoAssetPath(video) {
@@ -5691,7 +5735,7 @@ async function copyChatVideoBlob(video) {
 
   const blob = await loadChatVideoBlob(video)
   const mime = normalizeClipboardMediaMime(blob.type || video?.mime, 'video/mp4', 'video/') || 'video/mp4'
-  if (typeof ClipboardItem.supports === 'function' && !ClipboardItem.supports(mime)) return false
+  if (!canWriteClipboardMime(mime, ClipboardItem)) return false
   const clipboardBlob = withPreferredBlobMime(blob, mime)
   await clipboardApi.write([
     new ClipboardItem({
