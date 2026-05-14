@@ -1564,6 +1564,8 @@ function createMemorySessionRecord(options = {}) {
     runningTaskCount: Number(options.runningTaskCount || 0) || 0,
     chatRunCount: Number(options.chatRunCount || 0) || 0,
     activeRequestAbortState: options.activeRequestAbortState || null,
+    pendingApprovalRequests: [],
+    approvalDialogActive: false,
     autoManaged: options.autoManaged === true
   }
 }
@@ -1596,6 +1598,10 @@ function getMemorySessionRunningCount(record) {
 
 function getMemorySessionChatRunCount(record) {
   return Math.max(0, Number(record?.chatRunCount || 0) || 0)
+}
+
+function getMemorySessionPendingApprovalCount(record) {
+  return Math.max(0, Array.isArray(record?.pendingApprovalRequests) ? record.pendingApprovalRequests.length : 0)
 }
 
 function isMemorySessionRunning(record) {
@@ -1735,6 +1741,16 @@ function getMemorySessionForMessage(msg) {
   )
 }
 
+function getMemorySessionForToolMessage(msg) {
+  if (!msg || typeof msg !== 'object') return getActiveMemorySession()
+  const toolSessionId = String(msg.toolSessionId || '').trim()
+  if (toolSessionId) {
+    const directHit = getMemorySessionById(toolSessionId)
+    if (directHit) return directHit
+  }
+  return getMemorySessionForMessage(msg)
+}
+
 function saveActiveMemorySessionDraft() {
   const record = getActiveMemorySession()
   record.messages = session.messages
@@ -1782,6 +1798,7 @@ function restoreMemorySession(record, options = {}) {
   autoScrollSuspendedByUser.value = false
   if (options.syncTreeSelection !== false) syncSessionTreeSelectionForRecord(record)
   scheduleRefreshUserAnchorMeta()
+  void flushMemorySessionApprovalQueue(record)
   if (!options.skipScroll) void nextTick(() => scrollToBottom({ force: true }))
 }
 
@@ -2054,7 +2071,11 @@ function inferMemorySessionTitle(record) {
 function memorySessionOptionLabel(record) {
   const base = inferMemorySessionTitle(record)
   const running = Math.max(getMemorySessionRunningCount(record), getMemorySessionChatRunCount(record))
-  return running > 0 ? `${base}（${running} 个任务）` : base
+  const pendingApprovalCount = getMemorySessionPendingApprovalCount(record)
+  if (running > 0 && pendingApprovalCount > 0) return `${base}（${running} 个任务，待审批 ${pendingApprovalCount}）`
+  if (running > 0) return `${base}（${running} 个任务）`
+  if (pendingApprovalCount > 0) return `${base}（待审批 ${pendingApprovalCount}）`
+  return base
 }
 
 const runningMemorySessions = computed(() => memorySessions.value.filter((record) => isMemorySessionRunning(record)))
@@ -5873,7 +5894,8 @@ function createPendingToolExecutionMessage({
   traceStreamId = '',
   argsObj = null,
   toolCallId = '',
-  toolExecutionId = ''
+  toolExecutionId = '',
+  toolSessionId = ''
 } = {}) {
   const targetAgentLabel = isAgentRunToolName(toolName)
     ? String(argsObj?.agent_name || argsObj?.agent_id || argsObj?.name || argsObj?.id || '').trim()
@@ -5900,6 +5922,7 @@ function createPendingToolExecutionMessage({
       toolAutoApproved: !!autoApproved,
       toolCallId: String(toolCallId || '').trim(),
       toolExecutionId: normalizedToolExecutionId,
+      toolSessionId: String(toolSessionId || '').trim(),
       toolSubMeta: targetAgentLabel ? `智能体：${targetAgentLabel}` : '',
       toolTraceStreamId: normalizedTraceStreamId,
       toolLiveTrace: [],
@@ -6051,6 +6074,72 @@ const pendingBuiltinAgentsEventsByStreamId = new Map()
 const BUILTIN_AGENTS_EVENT_FLUSH_INTERVAL_MS = 80
 const MAX_PENDING_BUILTIN_AGENTS_EVENT_RETRIES = 100
 let pendingBuiltinAgentsEventsFlushTimer = null
+
+function enqueueMemorySessionApprovalRequest(record, request) {
+  if (!record || !request || typeof request !== 'object') return null
+  if (!Array.isArray(record.pendingApprovalRequests)) record.pendingApprovalRequests = []
+  const requestId = String(request.requestId || '').trim()
+  if (!requestId) return null
+  const existing = record.pendingApprovalRequests.find((item) => String(item?.requestId || '').trim() === requestId)
+  if (existing) return existing
+  const next = {
+    requestId,
+    serverName: String(request.serverName || '').trim(),
+    toolName: String(request.toolName || '').trim(),
+    argsText: String(request.argsText || '{}').trim() || '{}',
+    reasoningText: String(request.reasoningText || '').trim(),
+    streamId: String(request.streamId || '').trim(),
+    agentName: String(request.agentName || '').trim(),
+    extraLines: Array.isArray(request.extraLines) ? request.extraLines.map((line) => String(line || '').trim()).filter(Boolean) : [],
+    createdAt: Date.now()
+  }
+  record.pendingApprovalRequests = [...record.pendingApprovalRequests, next]
+  record.updatedAt = Date.now()
+  return next
+}
+
+function removeMemorySessionApprovalRequest(record, requestId) {
+  if (!record || !Array.isArray(record.pendingApprovalRequests)) return null
+  const id = String(requestId || '').trim()
+  if (!id) return null
+  const existing = record.pendingApprovalRequests.find((item) => String(item?.requestId || '').trim() === id) || null
+  if (!existing) return null
+  record.pendingApprovalRequests = record.pendingApprovalRequests.filter((item) => String(item?.requestId || '').trim() !== id)
+  record.updatedAt = Date.now()
+  return existing
+}
+
+async function flushMemorySessionApprovalQueue(record) {
+  if (!record || !isMemorySessionActive(record) || record.approvalDialogActive === true) return false
+  const queue = Array.isArray(record.pendingApprovalRequests) ? record.pendingApprovalRequests : []
+  const nextRequest = queue[0]
+  if (!nextRequest) return false
+
+  record.approvalDialogActive = true
+  try {
+    const approved = await confirmToolCall({
+      serverName: nextRequest.serverName,
+      toolName: nextRequest.toolName,
+      argsText: nextRequest.argsText,
+      reasoningText: nextRequest.reasoningText,
+      abortState: createAbortAwareDialogStateFromController(getMemorySessionById(record.id)?.activeRequestAbortState || abortController.value || null),
+      titleText: '确认子 Agent 工具调用',
+      extraLines: nextRequest.extraLines
+    })
+    removeMemorySessionApprovalRequest(record, nextRequest.requestId)
+    dispatchBuiltinAgentsToolApprovalResponse(nextRequest.requestId, approved)
+    if (approved === null) return true
+  } finally {
+    record.approvalDialogActive = false
+  }
+
+  if (getMemorySessionPendingApprovalCount(record) > 0) {
+    window.setTimeout(() => {
+      void flushMemorySessionApprovalQueue(record)
+    }, 0)
+  }
+  return true
+}
 
 function resolveActiveAgentRunToolMessage(streamId) {
   const id = String(streamId || '').trim()
@@ -6364,15 +6453,21 @@ async function handleBuiltinAgentsToolApprovalRequest(event) {
   if (autoApproved) {
     approved = true
   } else {
-    approved = await confirmToolCall({
+    const targetRecord = relatedToolMessage ? getMemorySessionForToolMessage(relatedToolMessage) : getActiveMemorySession()
+    enqueueMemorySessionApprovalRequest(targetRecord, {
+      requestId,
       serverName,
       toolName,
       argsText,
       reasoningText,
-      abortState: createAbortAwareDialogStateFromController(relatedToolMessage?.toolAbortState || abortController.value || null),
-      titleText: '确认子 Agent 工具调用',
+      streamId,
+      agentName,
       extraLines
     })
+    if (isMemorySessionActive(targetRecord)) {
+      await flushMemorySessionApprovalQueue(targetRecord)
+    }
+    return
   }
 
   dispatchBuiltinAgentsToolApprovalResponse(requestId, approved)
@@ -9419,6 +9514,7 @@ function normalizeLoadedDisplayMessage(msg) {
     if (typeof raw.toolAutoApproved !== 'boolean') raw.toolAutoApproved = false
     if (typeof raw.toolSubMeta !== 'string') raw.toolSubMeta = String(raw.toolSubMeta || '')
     if (typeof raw.toolExecutionId !== 'string') raw.toolExecutionId = String(raw.toolExecutionId || '')
+    if (typeof raw.toolSessionId !== 'string') raw.toolSessionId = String(raw.toolSessionId || '')
     if (typeof raw.toolTraceStreamId !== 'string') raw.toolTraceStreamId = String(raw.toolTraceStreamId || '')
     if (!Array.isArray(raw.toolLiveTrace)) raw.toolLiveTrace = []
     raw.toolAbortState = null
@@ -16070,6 +16166,7 @@ function normalizeToolCallExecutionContext(toolCall, toolMap) {
 
 async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, abortState = null) {
   const targetSession = getRunSessionTarget(abortState)
+  const targetRecord = getRunRecord(abortState) || getActiveMemorySession()
   throwIfAborted(abortState)
   const context = normalizeToolCallExecutionContext(toolCall, toolMap)
   const autoApproved = shouldAutoApproveToolExecution(abortState)
@@ -16081,7 +16178,8 @@ async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, ab
     autoApproved: autoApproved,
     argsObj: context.argsObj,
     toolCallId: context.toolCallId,
-    toolExecutionId: context.toolExecutionId
+    toolExecutionId: context.toolExecutionId,
+    toolSessionId: String(targetRecord?.id || '').trim()
   })
   pendingToolMessage.toolAbortState = abortState || null
   targetSession.messages.push(pendingToolMessage)
