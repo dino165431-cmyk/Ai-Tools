@@ -116,6 +116,7 @@ import { FileTrayFullOutline, Folder, FolderOpenOutline, RefreshOutline, CreateO
 import { NIcon, NTree, NDropdown, useMessage, useDialog, NInput, NButton, NModal, NTooltip, NAlert } from 'naive-ui'
 import { createDirectory, writeFile, listDirectory, exists, stat, deleteItem, moveItem, openInFileManager, describeFileOperationsError } from '@/utils/fileOperations'
 import { buildChatSessionAssetsDirectory, isChatSessionAssetsDirectoryPath } from '@/utils/chatMediaAssets.js'
+import { resolveChatSessionCreatedTimeMs } from '@/utils/chatSessionCreatedTime.js'
 import { readSessionJsonFile } from '@/utils/sessionFileJson.js'
 
 const props = defineProps({
@@ -652,13 +653,7 @@ function parseSessionCreatedTimeMs(value) {
 }
 
 function resolveSessionCreatedTimeMs(data, statInfo) {
-  return (
-    parseSessionCreatedTimeMs(data?.source?.startedAt) ||
-    parseSessionCreatedTimeMs(data?.source?.createdAt) ||
-    parseSessionCreatedTimeMs(data?.createdAt) ||
-    parseSessionCreatedTimeMs(data?.savedAt) ||
-    statTimeMs(statInfo)
-  )
+  return resolveChatSessionCreatedTimeMs(data)
 }
 
 async function readSessionFileMeta(entryPath, statInfo) {
