@@ -403,6 +403,15 @@ function removeTreeNodeByPath(targetPath) {
   return true;
 }
 
+function isSameFileTreeNode(a, b) {
+  return (
+    String(a?.key || '') === String(b?.key || '') &&
+    String(a?.label || '') === String(b?.label || '') &&
+    !!a?.isLeaf === !!b?.isLeaf &&
+    String(a?.noteType || '') === String(b?.noteType || '')
+  );
+}
+
 function upsertFileLeafNode(filePath) {
   const normalized = toPosixPath(String(filePath || '').trim());
   if (!normalized) return false;
@@ -419,6 +428,8 @@ function upsertFileLeafNode(filePath) {
   };
 
   if (parentPath === 'note') {
+    const existing = (Array.isArray(treeData.value) ? treeData.value : []).find((node) => node?.key === normalized);
+    if (existing && isSameFileTreeNode(existing, nextNode)) return true;
     const withoutCurrent = (Array.isArray(treeData.value) ? treeData.value : []).filter((node) => node?.key !== normalized);
     treeData.value = [...withoutCurrent, nextNode].sort((a, b) => {
       if (a.isLeaf === b.isLeaf) return a.label.localeCompare(b.label);
@@ -427,6 +438,8 @@ function upsertFileLeafNode(filePath) {
   } else {
     const parentNode = findNodeByKey(parentPath);
     if (!parentNode || !Array.isArray(parentNode.children)) return false;
+    const existing = parentNode.children.find((node) => node?.key === normalized);
+    if (existing && isSameFileTreeNode(existing, nextNode)) return true;
     const withoutCurrent = parentNode.children.filter((node) => node?.key !== normalized);
     parentNode.children = [...withoutCurrent, nextNode].sort((a, b) => {
       if (a.isLeaf === b.isLeaf) return a.label.localeCompare(b.label);

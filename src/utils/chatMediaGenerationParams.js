@@ -79,7 +79,7 @@ export function normalizeMediaGenerationParamsEnabled(value) {
   return value === true
 }
 
-export function normalizeGenerationSize(value, fallback = 'auto') {
+function normalizeGenerationSize(value, fallback = 'auto') {
   const text = String(value || '').trim()
   if (!text || text === 'auto') return fallback
   const match = text.match(/^(\d{2,5})\s*[x×*]\s*(\d{2,5})$/i)

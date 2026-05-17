@@ -1175,6 +1175,7 @@ import {
   shouldIncludeReasoningContent,
   shouldRetryWithReasoningContent
 } from '@/utils/chatRequestCompat'
+import { resolveChatSessionCreatedTimeMs } from '@/utils/chatSessionCreatedTime.js'
 import {
   buildMemoryInjection,
   estimateMemoryCandidatePriority,
@@ -1235,6 +1236,7 @@ import {
 } from '@/utils/chatMediaLibrary.js'
 import { canWriteClipboardMime, normalizeClipboardMediaMime } from '@/utils/chatClipboard.js'
 import {
+  buildChatSessionAssetsDirectory,
   collectChatMediaAssetPathsFromPayload,
   deleteChatSessionAssetDirectory,
   deleteChatMediaAssetPaths,
@@ -1273,7 +1275,7 @@ import {
   INLINE_COMMAND_DEFINITIONS,
   INLINE_COMMAND_KIND_LABELS
 } from '@/utils/chatInlinePicker'
-import { createDirectory, deleteItem, exists, listDirectory, readFile, resolvePath, stat, writeFile } from '@/utils/fileOperations'
+import { createDirectory, deleteItem, exists, listDirectory, moveItem, readFile, resolvePath, stat, writeFile } from '@/utils/fileOperations'
 import { requestOpenNoteFile } from '@/utils/noteOpenBridge'
 import { buildNoteHrefFromPath, resolveNoteAbsPathFromHref, safeDecodeURIComponent, splitMarkdownLinkDestination } from '@/utils/notePathUtils'
 import { getSafeExternalUrl, safeOpenExternal } from '@/utils/safeOpenExternal'
@@ -1534,6 +1536,7 @@ const pendingAttachments = ref([])
 const memorySessions = ref([])
 const activeMemorySessionId = ref('')
 const autoPersistMemorySessionInFlight = new Map()
+const sessionTitleRequestTokens = new Map()
 let autoChatCleanupTimer = null
 function createEmptyContextSummaryState() {
   return {
@@ -2071,6 +2074,8 @@ function queueMemoryCandidateForRecord(record, payload = {}) {
 }
 
 function inferMemorySessionTitle(record) {
+  const explicitTitle = String(record?.activeSessionTitle || record?.title || '').trim()
+  if (explicitTitle && explicitTitle !== DEFAULT_MEMORY_SESSION_TITLE) return explicitTitle
   const pathTitle = getSessionTitleFromPath(record?.activeSessionFilePath || '')
   if (pathTitle) return pathTitle
   const firstUser = (record?.messages || []).find((msg) => msg?.role === 'user')
@@ -8091,6 +8096,7 @@ onMounted(async () => {
   window?.addEventListener?.(BUILTIN_AGENTS_TRACE_EVENT, handleBuiltinAgentsTraceEvent)
   window?.addEventListener?.(BUILTIN_AGENTS_TOOL_APPROVAL_REQUEST_EVENT, handleBuiltinAgentsToolApprovalRequest)
   void cleanupAutoChatSessions()
+  void migrateLegacyAutoChatSessionCreatedAt()
   autoChatCleanupTimer = window.setInterval(() => {
     void cleanupAutoChatSessions()
   }, AUTO_CHAT_SESSION_CLEANUP_INTERVAL_MS)
@@ -8482,6 +8488,24 @@ function parseIsoTimeMs(value, fallback = 0) {
   return Number.isFinite(ms) && ms > 0 ? ms : fallback
 }
 
+function resolvePersistedSessionCreatedAtMs({ record = null, payload = null, previousPayload = null } = {}) {
+  const candidates = []
+  const recordCreatedAtMs = Number(record?.createdAt || 0)
+  if (Number.isFinite(recordCreatedAtMs) && recordCreatedAtMs > 0) candidates.push(recordCreatedAtMs)
+
+  const payloadCreatedAtMs = parseIsoTimeMs(payload?.createdAt)
+  if (payloadCreatedAtMs > 0) candidates.push(payloadCreatedAtMs)
+
+  const previousCreatedAtMs = resolveChatSessionCreatedTimeMs(previousPayload)
+  if (previousCreatedAtMs > 0) candidates.push(previousCreatedAtMs)
+
+  const previousSavedAtMs = parseIsoTimeMs(previousPayload?.savedAt)
+  if (previousSavedAtMs > 0) candidates.push(previousSavedAtMs)
+
+  if (!candidates.length) return 0
+  return Math.min(...candidates)
+}
+
 function buildDefaultSessionName(sessionLike = session) {
   const firstUser = (sessionLike?.messages || []).find((msg) => msg?.role === 'user')
   const prompt = extractEditableUserTextFromContent(firstUser?.content ?? '')
@@ -8525,6 +8549,95 @@ function buildAutoSessionTitle(record) {
   return title || AUTO_CHAT_SESSION_DIR_NAME
 }
 
+function normalizeGeneratedSessionTitle(text, fallback = '') {
+  const raw = String(text || '')
+    .replace(/^\s*(?:标题|会话标题|title)\s*[:：-]\s*/i, '')
+    .replace(/^[`"'“”‘’《》〈〉「」『』【】（）()]+|[`"'“”‘’《》〈〉「」『』【】（）()]+$/g, '')
+    .split(/\r?\n/)[0]
+    .trim()
+  const normalized = sanitizeAutoSessionTitle(raw, 32)
+  if (normalized) return normalized
+  return sanitizeAutoSessionTitle(fallback, 32)
+}
+
+function summarizeAttachmentNamesForSessionTitle(attachments = []) {
+  const names = (Array.isArray(attachments) ? attachments : [])
+    .map((item) => String(item?.name || item?.filename || item?.fileName || '').trim())
+    .filter(Boolean)
+    .slice(0, 4)
+  if (!names.length) return ''
+  return names.join('、')
+}
+
+function buildSessionTitleGenerationPrompt({ text = '', attachments = [] } = {}) {
+  const cleanText = String(text || '').trim()
+  const attachmentSummary = summarizeAttachmentNamesForSessionTitle(attachments)
+  return [
+    '请根据这条用户消息生成一个简短的会话标题。',
+    '要求：',
+    '1. 只输出标题本身，不要解释，不要引号，不要序号。',
+    '2. 优先使用中文，控制在 4 到 18 个字以内。',
+    '3. 避免使用“请帮我”“帮我”“如何”“能不能”等口语开头。',
+    '4. 不要包含路径、扩展名、时间戳或多余符号。',
+    cleanText ? `用户消息：${cleanText}` : '用户消息：用户发送了附件，请结合附件信息概括主题。',
+    attachmentSummary ? `附件信息：${attachmentSummary}` : ''
+  ].filter(Boolean).join('\n')
+}
+
+async function requestSessionTitleFromModel({
+  providerKind = 'openai-compatible',
+  baseUrl = '',
+  apiKey = '',
+  model = '',
+  prompt = ''
+} = {}) {
+  const userPrompt = String(prompt || '').trim()
+  if (!userPrompt) return ''
+
+  const systemPrompt = '你是会话标题生成器，只输出一个忠实、简短的标题。'
+
+  if (providerKind === 'utools-ai') {
+    if (!canUseUtoolsAi()) return ''
+    const result = await window.utools.ai({
+      model,
+      messages: buildUtoolsAiMessages({
+        systemContent: systemPrompt,
+        apiMessages: [{ role: 'user', content: userPrompt }]
+      })
+    })
+    return String(result?.content || '').trim()
+  }
+
+  if (!baseUrl || !apiKey || !model) return ''
+  const result = await streamChatCompletion({
+    baseUrl,
+    apiKey,
+    body: {
+      model,
+      stream: true,
+      temperature: 0.2,
+      max_tokens: 64,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ]
+    }
+  })
+  return String(result?.content || '').trim()
+}
+
+async function moveAutoChatSessionAssetsForRename(oldPath, newPath) {
+  const from = buildChatSessionAssetsDirectory(oldPath)
+  const to = buildChatSessionAssetsDirectory(newPath)
+  if (!from || !to || from === to) return
+  try {
+    if (!(await exists(from))) return
+    await moveItem(from, to, { overwrite: true })
+  } catch (err) {
+    console.warn('[chat session title] move assets failed:', err)
+  }
+}
+
 async function ensureAutoChatSessionRoot() {
   const rootExists = await exists(CHAT_SESSION_ROOT)
   if (!rootExists) await createDirectory(CHAT_SESSION_ROOT)
@@ -8532,23 +8645,137 @@ async function ensureAutoChatSessionRoot() {
   if (!autoExists) await createDirectory(AUTO_CHAT_SESSION_ROOT)
 }
 
-async function allocateAutoChatSessionPath(record) {
+async function allocateAutoChatSessionPathByTitle(title, options = {}) {
   await ensureAutoChatSessionRoot()
-  const title = buildAutoSessionTitle(record)
-  const baseName = sanitizeAutoSessionTitle(title, 96) || AUTO_CHAT_SESSION_DIR_NAME
-  let candidate = `${AUTO_CHAT_SESSION_ROOT}/${baseName}.json`
+  const sanitizedTitle = sanitizeAutoSessionTitle(title, 96) || AUTO_CHAT_SESSION_DIR_NAME
+  const excludePath = String(options.excludePath || '').trim()
+  let candidate = `${AUTO_CHAT_SESSION_ROOT}/${sanitizedTitle}.json`
   let index = 2
   while (await exists(candidate)) {
-    candidate = `${AUTO_CHAT_SESSION_ROOT}/${baseName}-${index}.json`
+    if (candidate === excludePath) break
+    candidate = `${AUTO_CHAT_SESSION_ROOT}/${sanitizedTitle}-${index}.json`
     index += 1
   }
-  return { filePath: candidate, title }
+  return {
+    filePath: candidate,
+    title: sanitizeAutoSessionTitle(title, 32) || AUTO_CHAT_SESSION_DIR_NAME
+  }
+}
+
+async function allocateAutoChatSessionPath(record) {
+  const title = buildAutoSessionTitle(record)
+  return allocateAutoChatSessionPathByTitle(title)
+}
+
+function shouldBootstrapAutoChatSession(record) {
+  if (!record) return false
+  if (String(record.activeSessionFilePath || '').trim()) return false
+  const userCount = (Array.isArray(record.messages) ? record.messages : []).filter((msg) => msg?.role === 'user').length
+  return userCount === 1
+}
+
+async function applyGeneratedSessionTitle(record, nextTitle, options = {}) {
+  if (!record) return ''
+
+  const fallbackTitle = normalizeGeneratedSessionTitle(options.fallbackTitle, buildAutoSessionTitle(record))
+  const generatedTitle = normalizeGeneratedSessionTitle(nextTitle, fallbackTitle)
+  if (!generatedTitle) return ''
+
+  const currentPath = String(record.activeSessionFilePath || '').trim()
+  if (!currentPath || !isAutoChatSessionPath(currentPath)) return currentPath
+
+  const currentVisibleTitle = String(record.activeSessionTitle || '').trim()
+  if (
+    currentVisibleTitle &&
+    currentVisibleTitle !== fallbackTitle &&
+    currentVisibleTitle !== generatedTitle
+  ) {
+    return currentPath
+  }
+
+  const allocated = await allocateAutoChatSessionPathByTitle(generatedTitle, { excludePath: currentPath })
+  let nextPath = currentPath
+
+  if (allocated.filePath !== currentPath) {
+    await moveItem(currentPath, allocated.filePath)
+    await moveAutoChatSessionAssetsForRename(currentPath, allocated.filePath)
+    handleSessionPathRenamed(currentPath, allocated.filePath)
+    nextPath = allocated.filePath
+  }
+
+  record.activeSessionFilePath = nextPath
+  record.activeSessionTitle = generatedTitle
+  record.title = generatedTitle
+  record.updatedAt = Date.now()
+
+  if (isMemorySessionActive(record)) {
+    activeSessionFilePath.value = nextPath
+    activeSessionTitle.value = generatedTitle
+  }
+
+  await autoPersistMemorySession(record, { notify: false, syncActiveUi: true })
+  await sessionTreeRef.value?.refreshTree?.({ silent: true })
+  await sessionTreeRef.value?.selectPath?.(nextPath)
+  return nextPath
+}
+
+function requestSessionTitleAsync({
+  record,
+  cfg,
+  text,
+  attachments = [],
+  initialPersistPromise = Promise.resolve('')
+} = {}) {
+  if (!record || !shouldBootstrapAutoChatSession(record)) return
+
+  const recordId = String(record.id || '').trim()
+  if (!recordId) return
+
+  const fallbackTitle = buildAutoSessionTitle(record)
+  const prompt = buildSessionTitleGenerationPrompt({ text, attachments })
+  if (!prompt) return
+
+  const titleToken = `${recordId}-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  sessionTitleRequestTokens.set(recordId, titleToken)
+
+  void (async () => {
+    try {
+      const persistedPath = String(await Promise.resolve(initialPersistPromise).catch(() => '') || '').trim()
+      const generated = await requestSessionTitleFromModel({
+        providerKind: cfg?.providerKind || 'openai-compatible',
+        baseUrl: String(cfg?.baseUrl || '').trim(),
+        apiKey: String(cfg?.apiKey || '').trim(),
+        model: String(cfg?.model || '').trim(),
+        prompt
+      })
+
+      if (sessionTitleRequestTokens.get(recordId) !== titleToken) return
+
+      const latestRecord = getMemorySessionById(recordId)
+      if (!latestRecord) return
+
+      const currentPath = String(latestRecord.activeSessionFilePath || persistedPath || '').trim()
+      if (!currentPath || !isAutoChatSessionPath(currentPath)) return
+
+      const normalizedTitle = normalizeGeneratedSessionTitle(generated, fallbackTitle)
+      if (!normalizedTitle || normalizedTitle === fallbackTitle) return
+
+      await applyGeneratedSessionTitle(latestRecord, normalizedTitle, { fallbackTitle })
+    } catch (err) {
+      console.warn('[chat session title] generation failed:', err)
+    } finally {
+      if (sessionTitleRequestTokens.get(recordId) === titleToken) {
+        sessionTitleRequestTokens.delete(recordId)
+      }
+    }
+  })()
 }
 
 async function autoPersistMemorySession(record, options = {}) {
   if (!record || !Array.isArray(record.messages) || !record.messages.length) return ''
   const currentPath = String(record.activeSessionFilePath || '').trim()
   if (currentPath && !isAutoChatSessionPath(currentPath)) return currentPath
+  const previousPath = currentPath
 
   const persistKey = getMemorySessionAutoPersistKey(record)
   const shouldSyncActiveUi = options.syncActiveUi !== false
@@ -8573,12 +8800,16 @@ async function autoPersistMemorySession(record, options = {}) {
         }
       }
 
-      const previousCreatedAt = String(previousPayload?.createdAt || previousPayload?.savedAt || '').trim()
-      const createdAtMs = Number(record.createdAt || 0)
-      const createdAtIso = Number.isFinite(createdAtMs) && createdAtMs > 0 ? new Date(createdAtMs).toISOString() : new Date().toISOString()
+      const resolvedCreatedAtMs = resolvePersistedSessionCreatedAtMs({
+        record,
+        payload,
+        previousPayload
+      })
+      const createdAtIso = resolvedCreatedAtMs > 0 ? new Date(resolvedCreatedAtMs).toISOString() : new Date().toISOString()
+      const previousSavedAt = String(previousPayload?.savedAt || previousPayload?.createdAt || '').trim()
       payload.title = allocated.title
-      payload.createdAt = previousCreatedAt || payload.createdAt || createdAtIso
-      if (previousCreatedAt) payload.savedAt = String(previousPayload?.savedAt || previousCreatedAt)
+      payload.createdAt = createdAtIso
+      if (previousSavedAt) payload.savedAt = previousSavedAt
       payload.updatedAt = new Date().toISOString()
       payload.source = {
         type: AUTO_CHAT_SESSION_SOURCE_TYPE,
@@ -8591,14 +8822,15 @@ async function autoPersistMemorySession(record, options = {}) {
       record.activeSessionFilePath = allocated.filePath
       record.activeSessionTitle = allocated.title
       record.autoManaged = true
+      if (resolvedCreatedAtMs > 0) record.createdAt = resolvedCreatedAtMs
       record.updatedAt = Date.now()
 
-      if (isMemorySessionActive(record) && shouldSyncActiveUi) {
+      if (isMemorySessionActive(record) && shouldSyncActiveUi && previousPath !== allocated.filePath) {
         activeSessionFilePath.value = allocated.filePath
         activeSessionTitle.value = allocated.title
         void sessionTreeRef.value?.selectPath?.(allocated.filePath)
       }
-      void sessionTreeRef.value?.touchPath?.(allocated.filePath, {
+      sessionTreeRef.value?.touchPath?.(allocated.filePath, {
         label: allocated.title,
         createdTimeMs: Number(record.createdAt || 0) || Date.now()
       })
@@ -8682,6 +8914,59 @@ async function cleanupAutoChatSessions(options = {}) {
     if (notify) message.success(removed ? `已清理 ${removed} 个历史会话` : '没有需要清理的历史会话')
   } catch (err) {
     if (notify) message.error('清理历史会话失败：' + (err?.message || String(err)))
+  }
+}
+
+async function migrateLegacyAutoChatSessionCreatedAt(options = {}) {
+  const notify = options.notify === true
+  let migrated = 0
+
+  try {
+    await ensureAutoChatSessionRoot()
+    const entries = await listDirectory(AUTO_CHAT_SESSION_ROOT)
+    for (const entry of entries) {
+      const entryPath = String(entry || '').trim().replace(/\\/g, '/')
+      if (!entryPath || !entryPath.toLowerCase().endsWith('.json')) continue
+
+      let parsed = null
+      try {
+        parsed = await readSessionJsonFile(entryPath, { repairIfRecovered: true })
+      } catch {
+        parsed = null
+      }
+      if (!parsed?.ok || !parsed.value || typeof parsed.value !== 'object') continue
+
+      const payload = parsed.value
+      const currentCreatedAt = String(payload?.createdAt || '').trim()
+      const sourceCreatedAt = String(payload?.source?.createdAt || '').trim()
+      const sourceStartedAt = String(payload?.source?.startedAt || '').trim()
+      const existingCreatedAtMs =
+        parseIsoTimeMs(currentCreatedAt) ||
+        parseIsoTimeMs(sourceCreatedAt) ||
+        parseIsoTimeMs(sourceStartedAt)
+      const inferredCreatedAtMs = resolveChatSessionCreatedTimeMs(payload)
+      if (!Number.isFinite(inferredCreatedAtMs) || inferredCreatedAtMs <= 0) continue
+      if (existingCreatedAtMs > 0 && inferredCreatedAtMs >= existingCreatedAtMs) continue
+
+      const inferredCreatedAt = new Date(inferredCreatedAtMs).toISOString()
+      payload.createdAt = inferredCreatedAt
+      payload.source = payload.source && typeof payload.source === 'object'
+        ? { ...payload.source, createdAt: inferredCreatedAt }
+        : { createdAt: inferredCreatedAt }
+      if (!String(payload.savedAt || '').trim()) payload.savedAt = inferredCreatedAt
+
+      await writeFile(entryPath, JSON.stringify(payload, null, 2))
+      migrated += 1
+    }
+
+    if (migrated) {
+      void sessionTreeRef.value?.refreshTree?.({ silent: true })
+      if (notify) message.success(`已补齐 ${migrated} 个历史会话的创建时间`)
+    } else if (notify) {
+      message.info('没有需要补齐创建时间的历史会话')
+    }
+  } catch (err) {
+    if (notify) message.error('补齐历史会话创建时间失败：' + (err?.message || String(err)))
   }
 }
 
@@ -9055,16 +9340,21 @@ async function persistMemorySessionToBoundPath(record, options = {}) {
       previousPayload = null
     }
 
-    const createdAt = String(previousPayload?.createdAt || previousPayload?.savedAt || '').trim()
-    if (createdAt) {
-      payload.createdAt = createdAt
-      payload.savedAt = String(previousPayload?.savedAt || createdAt)
-    }
+    const resolvedCreatedAtMs = resolvePersistedSessionCreatedAtMs({
+      record,
+      payload,
+      previousPayload
+    })
+    const createdAtIso = resolvedCreatedAtMs > 0 ? new Date(resolvedCreatedAtMs).toISOString() : ''
+    const previousSavedAt = String(previousPayload?.savedAt || previousPayload?.createdAt || '').trim()
+    if (createdAtIso) payload.createdAt = createdAtIso
+    if (previousSavedAt) payload.savedAt = previousSavedAt
     const title = String(record.activeSessionTitle || record.title || getSessionTitleFromPath(filePath)).trim()
     if (title) payload.title = title
     payload.updatedAt = new Date().toISOString()
 
     await writeFile(filePath, JSON.stringify(payload, null, 2))
+    if (resolvedCreatedAtMs > 0) record.createdAt = resolvedCreatedAtMs
     record.updatedAt = Date.now()
     void sessionTreeRef.value?.touchPath?.(filePath, {
       label: title,
@@ -9116,16 +9406,21 @@ async function runSessionAutosave() {
     } catch {
       previousPayload = null
     }
-    const createdAt = String(previousPayload?.createdAt || previousPayload?.savedAt || '').trim()
-    if (createdAt) {
-      payload.createdAt = createdAt
-      payload.savedAt = String(previousPayload?.savedAt || createdAt)
-    }
+    const resolvedCreatedAtMs = resolvePersistedSessionCreatedAtMs({
+      record: activeRecord,
+      payload,
+      previousPayload
+    })
+    const createdAtIso = resolvedCreatedAtMs > 0 ? new Date(resolvedCreatedAtMs).toISOString() : ''
+    const previousSavedAt = String(previousPayload?.savedAt || previousPayload?.createdAt || '').trim()
+    if (createdAtIso) payload.createdAt = createdAtIso
+    if (previousSavedAt) payload.savedAt = previousSavedAt
     const title = String(activeSessionTitle.value || '').trim()
     if (title) payload.title = title
     payload.updatedAt = new Date().toISOString()
     const json = JSON.stringify(payload, null, 2)
     await writeFile(filePath, json)
+    if (activeRecord && resolvedCreatedAtMs > 0) activeRecord.createdAt = resolvedCreatedAtMs
     lastSessionAutosaveAt = Date.now()
   } catch (err) {
     const msg = err?.message || String(err)
@@ -9799,9 +10094,7 @@ async function loadSessionFromFile(filePath) {
     const persistedState = data?.state && typeof data.state === 'object' ? data.state : null
     const state = persistedState ? buildHydratedChatState(persistedState) : buildDefaultChatState()
     const sessionCreatedAtMs =
-      parseIsoTimeMs(data?.source?.startedAt) ||
-      parseIsoTimeMs(data?.source?.createdAt) ||
-      parseIsoTimeMs(data?.createdAt) ||
+      resolveChatSessionCreatedTimeMs(data) ||
       parseIsoTimeMs(data?.savedAt) ||
       Date.now()
 
@@ -9873,7 +10166,10 @@ async function loadSessionFromFile(filePath) {
       memorySessions.value = [...memorySessions.value, record]
     } else {
       record.title = loadedTitle
-      record.createdAt = Number(record.createdAt || 0) || sessionCreatedAtMs
+      if (sessionCreatedAtMs > 0) {
+        const existingCreatedAtMs = Number(record.createdAt || 0)
+        record.createdAt = existingCreatedAtMs > 0 ? Math.min(existingCreatedAtMs, sessionCreatedAtMs) : sessionCreatedAtMs
+      }
       record.messages = displaySafe
       record.apiMessages = deepCopyJson(apiSafe, [])
       record.input = ''
@@ -17474,8 +17770,31 @@ async function send() {
       return
     }
     if (cfg.requestMode === 'video-generation') {
+      const shouldBootstrapHistory = shouldBootstrapAutoChatSession(requestRecord)
+      if (shouldBootstrapHistory) {
+        const initialPersistPromise = autoPersistMemorySession(requestRecord, { notify: false, syncActiveUi: true })
+        requestSessionTitleAsync({
+          record: requestRecord,
+          cfg,
+          text,
+          attachments,
+          initialPersistPromise
+        })
+      }
       await startDetachedVideoGeneration({ cfg, text, attachments, userDisplay })
       return
+    }
+
+    const shouldBootstrapHistory = shouldBootstrapAutoChatSession(requestRecord)
+    if (shouldBootstrapHistory) {
+      const initialPersistPromise = autoPersistMemorySession(requestRecord, { notify: false, syncActiveUi: true })
+      requestSessionTitleAsync({
+        record: requestRecord,
+        cfg,
+        text,
+        attachments,
+        initialPersistPromise
+      })
     }
 
     await runChatSession({

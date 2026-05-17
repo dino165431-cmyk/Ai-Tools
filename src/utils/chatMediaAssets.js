@@ -1,6 +1,6 @@
 import { createDirectory, deleteItem, getFileBlobUrl, listDirectory, writeFile } from './fileOperations.js'
 
-export const CHAT_SESSION_ASSET_DIR_SUFFIX = '.assets'
+const CHAT_SESSION_ASSET_DIR_SUFFIX = '.assets'
 
 const MIME_EXTENSION_MAP = new Map([
   ['image/png', 'png'],
@@ -44,7 +44,7 @@ function extensionFromName(name) {
   return match ? match[1].toLowerCase() : ''
 }
 
-export function inferChatMediaAssetExtension(media = {}, kind = 'image') {
+function inferChatMediaAssetExtension(media = {}, kind = 'image') {
   const normalizedKind = normalizeKind(kind)
   const mime = normalizeMime(media?.mime || media?.contentType || media?.type)
   return (
@@ -54,11 +54,11 @@ export function inferChatMediaAssetExtension(media = {}, kind = 'image') {
   )
 }
 
-export function getChatMediaAssetPath(media = {}) {
+function getChatMediaAssetPath(media = {}) {
   return normalizeSlash(media?.assetPath || media?.localPath || media?.fileRelPath || '')
 }
 
-export function getChatMediaAssetRef(media = {}) {
+function getChatMediaAssetRef(media = {}) {
   return normalizeSlash(media?.assetRef || media?.assetRelativePath || media?.relativePath || '')
     .replace(/^\.\/+/, '')
     .replace(/^\/+/, '')
@@ -86,7 +86,7 @@ export function buildChatSessionAssetsDirectory(sessionFilePath) {
   return dir ? `${dir}/${assetsDirName}` : assetsDirName
 }
 
-export function resolveChatSessionAssetPath(sessionFilePath, assetRef) {
+function resolveChatSessionAssetPath(sessionFilePath, assetRef) {
   const assetsDir = buildChatSessionAssetsDirectory(sessionFilePath)
   const ref = getChatMediaAssetRef({ assetRef })
   if (!assetsDir || !ref) return ''
@@ -113,7 +113,7 @@ export function resolveChatMediaAssetPath(media = {}, options = {}) {
   return ''
 }
 
-export function isTransientChatMediaSrc(src) {
+function isTransientChatMediaSrc(src) {
   const text = String(src || '').trim()
   return /^data:(image|video)\//i.test(text) || /^blob:/i.test(text)
 }

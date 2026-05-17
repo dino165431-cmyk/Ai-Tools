@@ -653,7 +653,47 @@ function parseSessionCreatedTimeMs(value) {
 }
 
 function resolveSessionCreatedTimeMs(data, statInfo) {
-  return resolveChatSessionCreatedTimeMs(data)
+  const candidates = [
+    parseTimeMs(data?.source?.startedAt),
+    parseTimeMs(data?.source?.createdAt),
+    parseTimeMs(data?.session?.createdAt),
+    parseTimeMs(data?.createdAt)
+  ]
+
+  const messages = Array.isArray(data?.session?.messages)
+    ? data.session.messages
+    : Array.isArray(data?.messages)
+      ? data.messages
+      : []
+  messages.forEach((msg) => {
+    candidates.push(
+      parseTimeMs(msg?.time),
+      parseTimeMs(msg?.createdAt),
+      parseTimeMs(msg?.savedAt),
+      parseTimeMs(msg?.updatedAt)
+    )
+  })
+
+  const apiMessages = Array.isArray(data?.session?.apiMessages)
+    ? data.session.apiMessages
+    : Array.isArray(data?.apiMessages)
+      ? data.apiMessages
+      : []
+  apiMessages.forEach((msg) => {
+    candidates.push(
+      parseTimeMs(msg?.time),
+      parseTimeMs(msg?.createdAt),
+      parseTimeMs(msg?.savedAt),
+      parseTimeMs(msg?.updatedAt)
+    )
+  })
+
+  const metaTime = resolveChatSessionCreatedTimeMs(data)
+  const statTime = statTimeMs(statInfo)
+  if (metaTime > 0) candidates.push(metaTime)
+  if (statTime > 0) candidates.push(statTime)
+  const validTimes = candidates.filter((ms) => Number.isFinite(ms) && ms > 0)
+  return validTimes.length ? Math.min(...validTimes) : 0
 }
 
 async function readSessionFileMeta(entryPath, statInfo) {
@@ -874,6 +914,30 @@ function compareTreeNodes(a, b) {
   return String(a?.label || '').localeCompare(String(b?.label || ''), 'zh-Hans-CN')
 }
 
+function normalizeComparableTreeNode(node) {
+  return {
+    key: normalizeTreePath(node?.key),
+    label: String(node?.label || ''),
+    metaLabel: String(node?.metaLabel || ''),
+    sortTimeMs: Number(node?.sortTimeMs || 0) || 0,
+    sessionKind: String(node?.sessionKind || ''),
+    isLeaf: !!node?.isLeaf
+  }
+}
+
+function isSameComparableTreeNode(a, b) {
+  const left = normalizeComparableTreeNode(a)
+  const right = normalizeComparableTreeNode(b)
+  return (
+    left.key === right.key &&
+    left.label === right.label &&
+    left.metaLabel === right.metaLabel &&
+    left.sortTimeMs === right.sortTimeMs &&
+    left.sessionKind === right.sessionKind &&
+    left.isLeaf === right.isLeaf
+  )
+}
+
 function sortTreeChildren(children = []) {
   return [...children].sort((a, b) => {
     return compareTreeNodes(a, b)
@@ -899,8 +963,13 @@ function createTreeNode(entryPath, isDirectory) {
 
 function upsertTreeNode(parentPath, node) {
   const normalizedParentPath = String(parentPath || '').trim().replace(/\\/g, '/')
-  const nextNode = node ? { ...node } : null
+  const nextNode = node ? { ...node, key: normalizeTreePath(node.key) } : null
   if (!normalizedParentPath || !nextNode?.key) return null
+
+  const existingNode = findNodeByKey(treeData.value, nextNode.key)
+  if (existingNode && isSameComparableTreeNode(existingNode, nextNode)) {
+    return existingNode
+  }
 
   if (normalizedParentPath === props.root) {
     const existing = Array.isArray(treeData.value) ? [...treeData.value] : []
@@ -934,12 +1003,15 @@ function touchPath(entryPath, options = {}) {
   )
   const nextLabel = String(options.label || '').trim() || existingNode?.label || fallbackLabel
   const createdTimeMs = Number(options.createdTimeMs || 0)
+  const nextSortTimeMs = existingNode?.sortTimeMs && createdTimeMs > 0
+    ? Math.min(Number(existingNode.sortTimeMs || 0) || createdTimeMs, createdTimeMs)
+    : Number(existingNode?.sortTimeMs || createdTimeMs || now)
   const nextNode = existingNode
     ? {
         ...existingNode,
         label: nextLabel,
-        metaLabel: existingNode.metaLabel || formatTreeMetaDate(existingNode.sortTimeMs || createdTimeMs || now),
-        sortTimeMs: Number(existingNode.sortTimeMs || createdTimeMs || now)
+        metaLabel: formatTreeMetaDate(nextSortTimeMs || now),
+        sortTimeMs: nextSortTimeMs
       }
     : {
         ...createTreeNode(normalizedPath, false),
