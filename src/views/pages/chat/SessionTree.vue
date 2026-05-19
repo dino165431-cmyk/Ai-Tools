@@ -144,8 +144,6 @@ const runtimeIssue = ref('')
 let pendingRefreshRequested = false
 let pendingRefreshSilent = true
 let refreshPromise = null
-let externalRefreshTimer = null
-const pendingExternalChangePaths = new Set()
 
 const showContextMenu = ref(false)
 const menuX = ref(0)
@@ -248,22 +246,6 @@ async function moveSessionAssetDirectoryForRename(oldPath, newPath) {
   }
 }
 
-function handleExternalSessionFilesChanged(e) {
-  const rawPaths = Array.isArray(e?.detail?.paths) ? e.detail.paths : [e?.detail?.path]
-  rawPaths
-    .map((item) => normalizeTreePath(item))
-    .filter((item) => item && item.startsWith(String(props.root || '')))
-    .forEach((item) => pendingExternalChangePaths.add(item))
-  if (!pendingExternalChangePaths.size) return
-  if (externalRefreshTimer) {
-    clearTimeout(externalRefreshTimer)
-  }
-  externalRefreshTimer = window.setTimeout(() => {
-    externalRefreshTimer = null
-    void flushExternalSessionChanges()
-  }, 180)
-}
-
 function removeTreeNodeByPath(targetPath) {
   const normalized = normalizeTreePath(targetPath)
   if (!normalized) return false
@@ -285,104 +267,6 @@ function removeTreeNodeByPath(targetPath) {
   folderExpandedKeys.value = folderExpandedKeys.value.filter((key) => key !== normalized && !String(key || '').startsWith(`${normalized}/`))
   loadedPaths.delete(normalized)
   return true
-}
-
-async function syncExternalSessionFileChange(sessionPath) {
-  const normalized = normalizeTreePath(sessionPath)
-  if (!normalized || !isJsonSessionPath(normalized) || isChatSessionAssetsDirectoryPath(normalized)) return
-  const parentPath = normalized.includes('/') ? normalized.slice(0, normalized.lastIndexOf('/')) : props.root
-  const parentLoaded = parentPath === props.root || loadedPaths.has(parentPath)
-  if (!parentLoaded) return
-
-  const fileExists = await exists(normalized).catch(() => false)
-  if (!fileExists) {
-    removeTreeNodeByPath(normalized)
-    return
-  }
-
-  const statInfo = await stat(normalized)
-  if (statInfo?.isDirectory?.()) {
-    await refreshTree({ silent: true })
-    return
-  }
-
-  const fileMeta = await readSessionFileMeta(normalized, statInfo)
-  upsertTreeNode(parentPath || props.root, {
-    key: normalized,
-    label: fileMeta.label,
-    metaLabel: fileMeta.metaLabel || '',
-    sortTimeMs: fileMeta.sortTimeMs || statTimeMs(statInfo),
-    sessionKind: fileMeta.sessionKind || '',
-    isLeaf: true
-  })
-}
-
-async function reloadLoadedSessionDirectory(directoryPath) {
-  const normalized = normalizeTreePath(directoryPath)
-  if (!normalized) return false
-  if (normalized === props.root) {
-    await loadDirectory(props.root, null)
-    return true
-  }
-
-  if (!loadedPaths.has(normalized)) return false
-  const node = findNodeByKey(treeData.value, normalized)
-  if (!node || !Array.isArray(node.children)) return false
-  await loadDirectory(normalized, node)
-  return true
-}
-
-async function syncExternalSessionDirectoryChange(sessionPath) {
-  const normalized = normalizeTreePath(sessionPath)
-  if (!normalized || isChatSessionAssetsDirectoryPath(normalized)) return
-
-  if (normalized === props.root) {
-    await refreshTree({ silent: true })
-    return
-  }
-
-  const parentPath = normalized.includes('/') ? normalized.slice(0, normalized.lastIndexOf('/')) : props.root
-  const parentLoaded = parentPath === props.root || loadedPaths.has(parentPath)
-  const pathExists = await exists(normalized).catch(() => false)
-
-  if (!pathExists) {
-    removeTreeNodeByPath(normalized)
-    return
-  }
-
-  const statInfo = await stat(normalized).catch(() => null)
-  if (!statInfo) return
-
-  if (!statInfo.isDirectory?.()) {
-    await syncExternalSessionFileChange(normalized)
-    return
-  }
-
-  if (parentLoaded) {
-    await reloadLoadedSessionDirectory(parentPath || props.root)
-  }
-
-  await reloadLoadedSessionDirectory(normalized)
-}
-
-async function syncExternalSessionPathChange(sessionPath) {
-  const normalized = normalizeTreePath(sessionPath)
-  if (!normalized || isChatSessionAssetsDirectoryPath(normalized)) return
-  if (isJsonSessionPath(normalized)) {
-    await syncExternalSessionFileChange(normalized)
-    return
-  }
-  await syncExternalSessionDirectoryChange(normalized)
-}
-
-async function flushExternalSessionChanges() {
-  const changedPaths = Array.from(pendingExternalChangePaths)
-  pendingExternalChangePaths.clear()
-  if (!changedPaths.length) return
-
-  for (const item of changedPaths) {
-    await syncExternalSessionPathChange(item)
-  }
 }
 
 function getPathDepth(p) {
@@ -423,25 +307,7 @@ onMounted(async () => {
   }
 })
 
-onMounted(() => {
-  try {
-    window.addEventListener('sessionFilesChanged', handleExternalSessionFilesChanged)
-  } catch {
-    // ignore
-  }
-})
-
 onBeforeUnmount(() => {
-  try {
-    window.removeEventListener('sessionFilesChanged', handleExternalSessionFilesChanged)
-  } catch {
-    // ignore
-  }
-  if (externalRefreshTimer) {
-    clearTimeout(externalRefreshTimer)
-    externalRefreshTimer = null
-  }
-  pendingExternalChangePaths.clear()
 })
 
 async function refreshTree(options = {}) {
@@ -653,47 +519,7 @@ function parseSessionCreatedTimeMs(value) {
 }
 
 function resolveSessionCreatedTimeMs(data, statInfo) {
-  const candidates = [
-    parseTimeMs(data?.source?.startedAt),
-    parseTimeMs(data?.source?.createdAt),
-    parseTimeMs(data?.session?.createdAt),
-    parseTimeMs(data?.createdAt)
-  ]
-
-  const messages = Array.isArray(data?.session?.messages)
-    ? data.session.messages
-    : Array.isArray(data?.messages)
-      ? data.messages
-      : []
-  messages.forEach((msg) => {
-    candidates.push(
-      parseTimeMs(msg?.time),
-      parseTimeMs(msg?.createdAt),
-      parseTimeMs(msg?.savedAt),
-      parseTimeMs(msg?.updatedAt)
-    )
-  })
-
-  const apiMessages = Array.isArray(data?.session?.apiMessages)
-    ? data.session.apiMessages
-    : Array.isArray(data?.apiMessages)
-      ? data.apiMessages
-      : []
-  apiMessages.forEach((msg) => {
-    candidates.push(
-      parseTimeMs(msg?.time),
-      parseTimeMs(msg?.createdAt),
-      parseTimeMs(msg?.savedAt),
-      parseTimeMs(msg?.updatedAt)
-    )
-  })
-
-  const metaTime = resolveChatSessionCreatedTimeMs(data)
-  const statTime = statTimeMs(statInfo)
-  if (metaTime > 0) candidates.push(metaTime)
-  if (statTime > 0) candidates.push(statTime)
-  const validTimes = candidates.filter((ms) => Number.isFinite(ms) && ms > 0)
-  return validTimes.length ? Math.min(...validTimes) : 0
+  return resolveChatSessionCreatedTimeMs(data)
 }
 
 async function readSessionFileMeta(entryPath, statInfo) {
@@ -746,7 +572,7 @@ async function loadDirectory(relativePath, parentNode) {
         key: entry,
         label,
         metaLabel: fileMeta?.metaLabel || '',
-        sortTimeMs: fileMeta?.sortTimeMs || statTimeMs(statInfo),
+        sortTimeMs: fileMeta?.sortTimeMs || 0,
         sessionKind: fileMeta?.sessionKind || '',
         isLeaf: !isDirectory,
         children: isDirectory ? [] : undefined
@@ -910,8 +736,9 @@ function compareTreeNodes(a, b) {
     const at = Number(a?.sortTimeMs || 0)
     const bt = Number(b?.sortTimeMs || 0)
     if (at !== bt) return bt - at
+    return 0
   }
-  return String(a?.label || '').localeCompare(String(b?.label || ''), 'zh-Hans-CN')
+  return 0
 }
 
 function normalizeComparableTreeNode(node) {

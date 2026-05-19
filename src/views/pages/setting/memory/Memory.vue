@@ -466,7 +466,21 @@ async function handleClean() {
     const result = await manageMemoryStore('clean')
     await refreshList()
     const mergedCount = Number(result?.stats?.mergedCount || 0)
-    message.success(mergedCount > 0 ? `记忆已完成清洗与合并，本次合并 ${mergedCount} 条重复项` : '记忆已完成清洗，未发现可合并的重复项')
+    const trimmedCount = Number(result?.stats?.trimmedCount || 0)
+    const normalizedProfileKeyCount = Number(result?.stats?.normalizedProfileKeyCount || 0)
+    const clearedProfileKeyCount = Number(result?.stats?.clearedProfileKeyCount || 0)
+    const correctedKindCount = Number(result?.stats?.correctedKindCount || 0)
+    const refreshedEmbeddingCount = Number(result?.stats?.refreshedEmbeddingCount || 0)
+    const profileTrimmedCount = Number(result?.stats?.profileTrimmedCount || 0)
+    const parts = []
+    if (mergedCount > 0) parts.push(`合并 ${mergedCount} 条重复项`)
+    if (trimmedCount > 0) parts.push(`清理 ${trimmedCount} 条低优先级记忆`)
+    if (normalizedProfileKeyCount > 0) parts.push(`规范化 ${normalizedProfileKeyCount} 个画像键`)
+    if (clearedProfileKeyCount > 0) parts.push(`清除 ${clearedProfileKeyCount} 个误挂画像键`)
+    if (correctedKindCount > 0) parts.push(`纠正 ${correctedKindCount} 条错分类记忆`)
+    if (refreshedEmbeddingCount > 0) parts.push(`补齐 ${refreshedEmbeddingCount} 条缺失向量`)
+    if (profileTrimmedCount > 0) parts.push(`收敛 ${profileTrimmedCount} 条低优先级画像`)
+    message.success(parts.length ? `记忆已完成清洗与整理，本次${parts.join('，')}` : '记忆已完成清洗，未发现可整理的条目')
   } catch (err) {
     message.error(err?.message || String(err))
   } finally {

@@ -25,6 +25,7 @@ const MEMORY_CANDIDATE_MAX = 12
 const MEMORY_CANDIDATE_IDLE_MS = 90 * 1000
 const MEMORY_AUTO_CLEAN_MIN_INTERVAL_MS = 10 * 60 * 1000
 const MEMORY_AUTO_CLEAN_ITEM_THRESHOLD = 12
+const MEMORY_PROFILE_STORE_RATIO = 0.4
 const PROFILE_MEMORY_MERGE_MIN_SIMILARITY = 0.72
 const PROFILE_MEMORY_MERGE_STRONG_SIMILARITY = 0.84
 const RELEVANT_MEMORY_MERGE_MIN_SIMILARITY = 0.92
@@ -180,6 +181,10 @@ function dedupeBy(items, keyBuilder) {
     out.push(item)
   }
   return out
+}
+
+function buildMemoryEmbeddingText(item) {
+  return `${item?.kind || ''}\n${item?.summary || item?.text || ''}`.slice(0, MEMORY_EMBED_LIMIT)
 }
 
 function normalizeEmbeddingVector(raw) {
@@ -370,6 +375,7 @@ function getProfileKeyHintScore(profileKey = '') {
   if (!key) return 0
   if (MEMORY_PROFILE_KEYS.has(key)) return 0.92
   if (key.includes('name')) return 0.9
+  if (key.includes('constraint')) return 0.84
   if (key.includes('prefer') || key.includes('style') || key.includes('language')) return 0.82
   if (key.includes('user') || key.includes('profile') || key.includes('identity')) return 0.8
   if (key.includes('job') || key.includes('role')) return 0.76
@@ -387,6 +393,22 @@ export function isProfileMemoryKind(kind) {
   return MEMORY_PROFILE_KINDS.has(normalizeText(kind).toLowerCase())
 }
 
+function canonicalizeProfileKey(profileKey = '') {
+  const key = normalizeProfileKeyName(profileKey)
+  if (!key) return ''
+  if (isNameLikeProfileKey(key)) return 'name'
+  const tokens = canonicalizeProfileKeyTokens(key)
+  if (tokens.includes('project') && (tokens.includes('constraint') || tokens.includes('rule') || tokens.includes('requirement'))) {
+    return 'project.constraint'
+  }
+  const group = getProfileKeySemanticGroup(key)
+  if (group === 'preference:language') return 'language.preference'
+  if (group === 'style:response') return 'reply.style'
+  if (group === 'preference:doc_update') return 'document.update.preference'
+  if (group === 'preference:material_matching') return 'asset.matching.preference'
+  return key
+}
+
 export function getMemoryLane(raw) {
   const kind = typeof raw === 'string' ? raw : raw?.kind
   if (isProfileMemoryKind(kind)) return 'profile'
@@ -401,6 +423,7 @@ function normalizeMemoryItem(raw = {}) {
   const src = raw && typeof raw === 'object' ? raw : {}
   const text = normalizeText(src.text || src.summary || src.content)
   const kind = normalizeText(src.kind).toLowerCase() || 'fact'
+  const canonicalProfileKey = isProfileMemoryKind(kind) ? canonicalizeProfileKey(src.profileKey) : ''
   const scope = normalizeText(src.scope).toLowerCase() || 'global'
   const createdAt = normalizeText(src.createdAt) || nowIso()
   const updatedAt = normalizeText(src.updatedAt) || createdAt
@@ -409,7 +432,7 @@ function normalizeMemoryItem(raw = {}) {
     text: text.slice(0, MEMORY_TEXT_LIMIT),
     summary: normalizeText(src.summary || text).slice(0, MEMORY_SUMMARY_LIMIT),
     kind,
-    lane: getMemoryLane(kind),
+    lane: getMemoryLane({ kind, profileKey: canonicalProfileKey }),
     scope,
     confidence: clampNumber(src.confidence, 0.7, 0, 1),
     status:
@@ -419,7 +442,7 @@ function normalizeMemoryItem(raw = {}) {
           ? 'archived'
           : 'active',
     tags: normalizeStringList(src.tags),
-    profileKey: normalizeText(src.profileKey),
+    profileKey: canonicalProfileKey,
     dedupeKey: normalizeText(src.dedupeKey),
     embedding: normalizeEmbeddingVector(src.embedding),
     hitCount: Math.max(0, Math.round(Number(src.hitCount) || 0)),
@@ -648,9 +671,12 @@ function buildExtractionPrompt({ conversationPairs, systemPrompt }) {
   const blocks = [
     '你是一个长期记忆提取器。请从下面的多轮对话片段里提取适合长期保存的记忆，严格输出 JSON 数组。',
     '每一项格式：{ "kind": "profile|preference|style|constraint|fact|project", "text": "...", "summary": "...", "confidence": 0~1, "tags": ["..."], "profileKey": "可选", "dedupeKey": "可选" }。',
-    '对于画像项优先提供稳定的 profileKey；如果 dedupeKey 不能稳定命名，可以留空，不要只改分隔符、前后缀或同义表达。',
-    '优先提取用户画像、长期偏好、回答风格偏好、项目长期约束、稳定事实、持续中的项目背景。',
-    '不要提取一次性的寒暄、短期上下文、当前轮立即失效的信息。',
+    '先判断信息是否会在未来多次对话中稳定有用；如果只是当前问题的临时上下文、一次性结论、寒暄、过程性讨论或助手刚给出的普通建议，不要提取。',
+    '分类边界：profile 只用于用户身份、称呼、职业、长期角色等稳定个人信息；preference/style/constraint 只用于用户明确表达或多次体现的长期偏好、回答风格和长期约束。',
+    '项目事实、技术方案、代码库背景、待办、外部资料、当前问题结论，即使长期有用，也优先归为 fact 或 project，不要归为画像类。',
+    '只有画像类项目才填写 profileKey，且应使用稳定键名，例如 name、occupation、language.preference、reply.style、project.constraint；fact/project 通常留空 profileKey。',
+    'dedupeKey 应表示稳定语义槽位，能复用就复用；不确定时留空，不要只改分隔符、前后缀或同义表达来制造新键。',
+    '尽量合并同一语义的内容，输出少量高置信、低重复的条目；没有明确长期价值时输出 []。',
     '如果没有值得保存的内容，输出 []。'
   ]
 
@@ -825,6 +851,7 @@ function pickPreferredTextValue(existingValue = '', incomingValue = '', options 
 function buildMergedMemoryItem(existing, incoming, options = {}) {
   const prev = normalizeMemoryItem(existing)
   const next = normalizeMemoryItem(incoming)
+  const mergedProfileKey = canonicalizeProfileKey(prev.profileKey || next.profileKey)
   return upsertMergedItem(prev, {
     ...next,
     id: prev.id,
@@ -837,7 +864,7 @@ function buildMergedMemoryItem(existing, incoming, options = {}) {
     confidence: Math.max(prev.confidence, next.confidence),
     hitCount: Math.max(prev.hitCount, next.hitCount),
     lastUsedAt: pickLaterTimestamp(prev.lastUsedAt, next.lastUsedAt),
-    profileKey: normalizeText(prev.profileKey || next.profileKey),
+    profileKey: isProfileMemoryKind(prev.kind || next.kind) ? mergedProfileKey : '',
     dedupeKey: normalizeText(prev.dedupeKey || next.dedupeKey),
     tags: normalizeStringList([...(prev.tags || []), ...(next.tags || [])]),
     aliases: normalizeStringList([...(prev.aliases || []), ...(next.aliases || [])]),
@@ -866,21 +893,33 @@ function getMemoryRetentionScore(item) {
   const laneBonus = lane === 'profile' ? 45 : 0
   const keyBonus = item.profileKey ? 8 : 0
   const manualBonus = sourceType === 'manual' ? 20 : 0
+  const embeddingBonus = Array.isArray(item.embedding) && item.embedding.length ? 4 : -3
   const archivedPenalty = status === 'archived' ? -40 : 0
-  return laneBonus + keyBonus + manualBonus + confidenceScore + hitScore + recencyScore + usageScore + archivedPenalty
+  return laneBonus + keyBonus + manualBonus + embeddingBonus + confidenceScore + hitScore + recencyScore + usageScore + archivedPenalty
 }
 
 function trimMemoryItemsToConfiguredLimit(items = [], config = getDefaultMemoryConfig()) {
   const list = Array.isArray(items) ? items.map((item) => normalizeMemoryItem(item)) : []
   const nonDeleted = list.filter((item) => item.status !== 'deleted')
   const limit = Math.max(1, Number(config?.storeMaxItems || getDefaultMemoryConfig().storeMaxItems))
+  const profileRows = nonDeleted.filter((item) => getMemoryLane(item) === 'profile')
+  const memoryRows = nonDeleted.filter((item) => getMemoryLane(item) !== 'profile')
+  const configuredProfileMax = Math.max(1, Number(config?.profileMaxItems || getDefaultMemoryConfig().profileMaxItems))
+  const profileSoftCap = Math.min(limit, Math.max(configuredProfileMax, Math.floor(limit * MEMORY_PROFILE_STORE_RATIO)))
   if (nonDeleted.length <= limit) {
     return {
       items: sortMemoryItems(list),
       stats: {
         trimmedCount: 0,
         limit,
-        keptCount: nonDeleted.length
+        keptCount: nonDeleted.length,
+        profileSoftCap,
+        profileCountBefore: profileRows.length,
+        profileCountAfter: profileRows.length,
+        memoryCountBefore: memoryRows.length,
+        memoryCountAfter: memoryRows.length,
+        profileTrimmedCount: 0,
+        memoryTrimmedCount: 0
       }
     }
   }
@@ -896,14 +935,44 @@ function trimMemoryItemsToConfiguredLimit(items = [], config = getDefaultMemoryC
       return b.updatedAtMs - a.updatedAtMs
     })
 
-  const keepIds = new Set(ranked.slice(0, limit).map((row) => row.item.id))
+  const rankedProfileRows = ranked.filter((row) => getMemoryLane(row.item) === 'profile')
+  const rankedMemoryRows = ranked.filter((row) => getMemoryLane(row.item) !== 'profile')
+  const keepIds = new Set()
+  const primaryMemoryCount = Math.min(rankedMemoryRows.length, Math.max(0, limit - Math.min(rankedProfileRows.length, profileSoftCap)))
+
+  rankedMemoryRows.slice(0, primaryMemoryCount).forEach((row) => {
+    keepIds.add(row.item.id)
+  })
+
+  const currentCount = () => keepIds.size
+  for (const row of rankedProfileRows) {
+    if (currentCount() >= limit) break
+    const keptProfileCount = [...keepIds].filter((id) => rankedProfileRows.some((profileRow) => profileRow.item.id === id)).length
+    if (keptProfileCount >= profileSoftCap) break
+    keepIds.add(row.item.id)
+  }
+
+  for (const row of ranked) {
+    if (currentCount() >= limit) break
+    keepIds.add(row.item.id)
+  }
+
   const kept = nonDeleted.filter((item) => keepIds.has(item.id))
+  const keptProfileCount = kept.filter((item) => getMemoryLane(item) === 'profile').length
+  const keptMemoryCount = kept.filter((item) => getMemoryLane(item) !== 'profile').length
   return {
     items: sortMemoryItems(kept),
     stats: {
       trimmedCount: Math.max(0, nonDeleted.length - kept.length),
       limit,
-      keptCount: kept.length
+      keptCount: kept.length,
+      profileSoftCap,
+      profileCountBefore: profileRows.length,
+      profileCountAfter: keptProfileCount,
+      memoryCountBefore: memoryRows.length,
+      memoryCountAfter: keptMemoryCount,
+      profileTrimmedCount: Math.max(0, profileRows.length - keptProfileCount),
+      memoryTrimmedCount: Math.max(0, memoryRows.length - keptMemoryCount)
     }
   }
 }
@@ -959,11 +1028,104 @@ function getProfileKeySemanticGroup(profileKey = '') {
   if (isNameLikeProfileKey(key)) return 'identity:name'
   const tokens = canonicalizeProfileKeyTokens(key)
   if (!tokens.length) return `key:${key}`
+  if (tokens.includes('project') && (tokens.includes('constraint') || tokens.includes('rule') || tokens.includes('requirement'))) {
+    return 'constraint:project'
+  }
   if (tokens.includes('language')) return 'preference:language'
   if (tokens.includes('response') && tokens.includes('style')) return 'style:response'
   if (tokens.includes('document') && tokens.includes('update')) return 'preference:doc_update'
   if (tokens.includes('asset') && tokens.includes('match')) return 'preference:material_matching'
   return `generic:${tokens.sort().join('.')}`
+}
+
+function buildLaneBreakdown(items = []) {
+  const result = { profile: 0, memory: 0 }
+  for (const item of items) {
+    if (!item || item.status === 'deleted') continue
+    if (getMemoryLane(item) === 'profile') result.profile += 1
+    else result.memory += 1
+  }
+  return result
+}
+
+function buildKindBreakdown(items = []) {
+  const result = {}
+  for (const item of items) {
+    if (!item || item.status === 'deleted') continue
+    const key = normalizeText(item.kind).toLowerCase() || 'fact'
+    result[key] = (Number(result[key]) || 0) + 1
+  }
+  return result
+}
+
+function inferCleanupKindCorrection(item) {
+  if (!item || getMemoryLane(item) !== 'profile') return ''
+  const text = buildMemoryComparableText(item)
+  const normalized = normalizeText(text).toLowerCase()
+  if (!normalized) return ''
+
+  const profileGroup = getProfileKeySemanticGroup(item.profileKey)
+  if (profileGroup && !String(profileGroup).startsWith('generic:')) return ''
+
+  const stableUserSignal =
+    /(用户|我|本人|名字|姓名|称呼|昵称|语言|偏好|喜欢|习惯|默认|以后|今后|回答|回复|语气|风格|不要|尽量|职业|岗位|角色|身份|公司)/i.test(normalized)
+  const projectConstraintSignal =
+    /(项目|仓库|代码库|repo|repository|codebase).*(约束|规范|统一|必须|不要|禁止|固定|默认|requirement|constraint|rule)/i.test(normalized)
+  if (stableUserSignal || projectConstraintSignal) return ''
+
+  const projectSignal =
+    /(项目|仓库|代码库|repo|repository|codebase|模块|接口|api|数据库|部署|服务|脚本|技术栈|前端|后端|系统|workflow|pipeline|sdk|java|python|node|vue|react|vite|sql|表结构)/i.test(normalized)
+  if (projectSignal) return 'project'
+
+  const factSignal =
+    /(版本|发布日期|截止日期|链接|文档|资料|官网|地址|邮箱|手机号|电话|订单号|编号|账号|日期|时间|价格|报价)/i.test(normalized)
+  if (factSignal) return 'fact'
+
+  return ''
+}
+
+function applyCleanupCorrections(rawItems = []) {
+  const items = []
+  let normalizedProfileKeyCount = 0
+  let clearedProfileKeyCount = 0
+  let correctedKindCount = 0
+  let correctedToProjectCount = 0
+  let correctedToFactCount = 0
+
+  for (const raw of Array.isArray(rawItems) ? rawItems : []) {
+    const initial = normalizeMemoryItem(raw)
+    let next = initial
+    const correctedKind = inferCleanupKindCorrection(initial)
+    if (correctedKind && correctedKind !== initial.kind) {
+      correctedKindCount += 1
+      if (correctedKind === 'project') correctedToProjectCount += 1
+      if (correctedKind === 'fact') correctedToFactCount += 1
+      next = normalizeMemoryItem({
+        ...initial,
+        kind: correctedKind,
+        profileKey: '',
+        lane: undefined
+      })
+    }
+
+    const rawProfileKey = normalizeText(raw?.profileKey)
+    const normalizedProfileKey = normalizeText(next?.profileKey)
+    if (rawProfileKey && !normalizedProfileKey) clearedProfileKeyCount += 1
+    else if (rawProfileKey && normalizedProfileKey && rawProfileKey !== normalizedProfileKey) normalizedProfileKeyCount += 1
+
+    items.push(next)
+  }
+
+  return {
+    items: sortMemoryItems(items),
+    stats: {
+      normalizedProfileKeyCount,
+      clearedProfileKeyCount,
+      correctedKindCount,
+      correctedToProjectCount,
+      correctedToFactCount
+    }
+  }
 }
 
 function areProfileKeysCompatible(leftKey = '', rightKey = '') {
@@ -1101,8 +1263,20 @@ export function getMemoryIdentityKey(item) {
   return `${normalizeText(item.kind).toLowerCase()}:${normalizeIdentitySignature(item.summary || item.text)}`
 }
 
-export function dedupeMemoryItems(items = [], config = getDefaultMemoryConfig()) {
-  const source = sortMemoryItems((Array.isArray(items) ? items : []).map((item) => normalizeMemoryItem(item)))
+export function dedupeMemoryItems(items = [], config = getDefaultMemoryConfig(), options = {}) {
+  const prepared = options.skipCleanupPreparation === true
+    ? {
+        items: sortMemoryItems((Array.isArray(items) ? items : []).map((item) => normalizeMemoryItem(item))),
+        stats: {
+          normalizedProfileKeyCount: 0,
+          clearedProfileKeyCount: 0,
+          correctedKindCount: 0,
+          correctedToProjectCount: 0,
+          correctedToFactCount: 0
+        }
+      }
+    : applyCleanupCorrections(items)
+  const source = prepared.items
   const merged = []
   let mergedCount = 0
 
@@ -1125,7 +1299,23 @@ export function dedupeMemoryItems(items = [], config = getDefaultMemoryConfig())
       outputCount: trimmed.items.filter((item) => item && item.status !== 'deleted').length,
       mergedCount,
       trimmedCount: Number(trimmed?.stats?.trimmedCount || 0),
-      storeLimit: Number(trimmed?.stats?.limit || 0)
+      storeLimit: Number(trimmed?.stats?.limit || 0),
+      normalizedProfileKeyCount: Number(prepared?.stats?.normalizedProfileKeyCount || 0),
+      clearedProfileKeyCount: Number(prepared?.stats?.clearedProfileKeyCount || 0),
+      correctedKindCount: Number(prepared?.stats?.correctedKindCount || 0),
+      correctedToProjectCount: Number(prepared?.stats?.correctedToProjectCount || 0),
+      correctedToFactCount: Number(prepared?.stats?.correctedToFactCount || 0),
+      profileCountBefore: Number(trimmed?.stats?.profileCountBefore || 0),
+      profileCountAfter: Number(trimmed?.stats?.profileCountAfter || 0),
+      memoryCountBefore: Number(trimmed?.stats?.memoryCountBefore || 0),
+      memoryCountAfter: Number(trimmed?.stats?.memoryCountAfter || 0),
+      profileTrimmedCount: Number(trimmed?.stats?.profileTrimmedCount || 0),
+      memoryTrimmedCount: Number(trimmed?.stats?.memoryTrimmedCount || 0),
+      profileSoftCap: Number(trimmed?.stats?.profileSoftCap || 0),
+      laneBreakdownBefore: buildLaneBreakdown(source),
+      laneBreakdownAfter: buildLaneBreakdown(trimmed.items),
+      kindBreakdownBefore: buildKindBreakdown(source),
+      kindBreakdownAfter: buildKindBreakdown(trimmed.items)
     }
   }
 }
@@ -1284,12 +1474,31 @@ export async function markMemoryItemUsed(id) {
 
 export async function cleanMemoryStore() {
   const store = await withStore()
-  const { items, stats } = dedupeMemoryItems(store.items || [], getMemoryConfig())
+  const config = getMemoryConfig()
+  const prepared = applyCleanupCorrections(store.items || [])
+  let refreshedEmbeddingCount = 0
+
+  for (const item of prepared.items) {
+    if (!item || item.status !== 'active') continue
+    if (Array.isArray(item.embedding) && item.embedding.length) continue
+    item.embedding = await requestEmbeddingVector(buildMemoryEmbeddingText(item), config.embedding).catch(() => item.embedding || [])
+    if (Array.isArray(item.embedding) && item.embedding.length) refreshedEmbeddingCount += 1
+  }
+
+  const { items, stats } = dedupeMemoryItems(prepared.items, config, { skipCleanupPreparation: true })
   store.items = items
   store.updatedAt = nowIso()
   const saved = await saveStoreToDisk(store)
   state.lastAutoCleanAt = nowMs()
-  return { ...saved, stats }
+  return {
+    ...saved,
+    stats: {
+      ...stats,
+      refreshedEmbeddingCount,
+      laneBreakdownPrepared: buildLaneBreakdown(prepared.items),
+      kindBreakdownPrepared: buildKindBreakdown(prepared.items)
+    }
+  }
 }
 
 export async function getResidentProfileItems(limit = getMemoryConfig().profileMaxItems) {
@@ -1641,7 +1850,7 @@ export async function rebuildMemoryEmbeddings() {
   for (const item of store.items || []) {
     if (!item || item.status !== 'active') continue
     item.embedding = await requestEmbeddingVector(
-      `${item.kind}\n${item.summary || item.text}`.slice(0, MEMORY_EMBED_LIMIT),
+      buildMemoryEmbeddingText(item),
       config.embedding
     ).catch(() => [])
     item.updatedAt = nowIso()

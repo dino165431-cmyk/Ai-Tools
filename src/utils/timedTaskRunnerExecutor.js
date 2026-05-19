@@ -73,6 +73,22 @@ function createDisplayMessage(role, content, extra = {}) {
   return { ...base, ...extra }
 }
 
+function updateTimedTaskToolMessage(message, { status = 'success', serverName = '', toolName = '', resultText = '', errorText = '' } = {}) {
+  if (!message || typeof message !== 'object') return message
+  const safeServerName = String(serverName || message.toolServerName || '').trim() || '未知'
+  const safeToolName = String(toolName || message.toolName || '').trim() || ''
+  const normalizedStatus = String(status || '').trim() || 'success'
+  message.role = 'tool'
+  message.toolStatus = normalizedStatus
+  message.toolMeta = `${safeServerName} / ${safeToolName}`.trim()
+  message.toolServerName = safeServerName
+  message.toolName = safeToolName
+  message.content = normalizedStatus === 'error'
+    ? `### 工具结果\n- 错误：${String(errorText || '').trim()}`
+    : `### 工具结果\n- 服务：**${safeServerName}**\n- 工具：\`${safeToolName}\`\n\n\`\`\`json\n${String(resultText || '').trim() || '{}'}\n\`\`\``
+  return message
+}
+
 function normalizeBaseUrl(url) {
   const raw = String(url || '').trim()
   if (!raw) return ''
@@ -609,20 +625,17 @@ async function executeMcpToolCall({ toolCall, mapping, argsObj }) {
 async function invokeTimedTaskUtoolsAiTool({ name, argsObj, map, displayMessages }) {
   const mapping = map.get(name)
   const argsText = stableStringify(argsObj || {})
-
-  displayMessages.push(
-    createDisplayMessage(
-      'tool_call',
-      `### 工具调用\n- 服务：**${mapping?.serverName || '未知'}**\n- 工具：\`${mapping?.toolName || name || ''}\`\n\n\`\`\`json\n${argsText || '{}'}\n\`\`\``,
-      { toolMeta: `${mapping?.serverName || '未知'} / ${mapping?.toolName || name || ''}` }
-    )
+  const toolMessage = createDisplayMessage(
+    'tool_call',
+    `### 工具调用\n- 服务：**${mapping?.serverName || '未知'}**\n- 工具：\`${mapping?.toolName || name || ''}\`\n\n\`\`\`json\n${argsText || '{}'}\n\`\`\``,
+    { toolMeta: `${mapping?.serverName || '未知'} / ${mapping?.toolName || name || ''}` }
   )
+
+  displayMessages.push(toolMessage)
 
   if (!mapping) {
     const errorText = `未找到工具映射：${name}`
-    displayMessages.push(
-      createDisplayMessage('tool', `### 工具结果\n- 错误：${errorText}`, { toolMeta: `未知 / ${name || ''}` })
-    )
+    updateTimedTaskToolMessage(toolMessage, { status: 'error', serverName: '未知', toolName: name || '', errorText })
     return errorText
   }
 
@@ -640,13 +653,12 @@ async function invokeTimedTaskUtoolsAiTool({ name, argsObj, map, displayMessages
   })
 
   const resultText = String(exec?.content || '')
-  displayMessages.push(
-    createDisplayMessage(
-      'tool',
-      `### 工具结果\n- 服务：**${mapping.serverName}**\n- 工具：\`${mapping.toolName}\`\n\n\`\`\`json\n${resultText}\n\`\`\``,
-      { toolMeta: `${mapping.serverName} / ${mapping.toolName}` }
-    )
-  )
+  updateTimedTaskToolMessage(toolMessage, {
+    status: 'success',
+    serverName: mapping.serverName,
+    toolName: mapping.toolName,
+    resultText
+  })
 
   const parsed = safeJsonParse(resultText)
   return parsed.ok ? parsed.value : resultText
@@ -748,12 +760,6 @@ async function saveTimedTaskSession({ task, startedAt, payload }) {
   const base = `${taskDir}/${taskName}`
   const filePath = await ensureUniqueJsonPath(base)
   await writeFile(filePath, JSON.stringify(payload, null, 2))
-
-  try {
-    window.dispatchEvent(new CustomEvent('sessionFilesChanged', { detail: { path: filePath } }))
-  } catch {
-    // ignore
-  }
 
   return filePath
 }
@@ -926,19 +932,16 @@ export async function runTimedTaskOnce(task, options = {}) {
         const argsObj = parsedArgs.ok && parsedArgs.value && typeof parsedArgs.value === 'object' ? parsedArgs.value : {}
         const argsText = parsedArgs.ok ? stableStringify(parsedArgs.value) : argsRaw
 
-        displayMessages.push(
-          createDisplayMessage(
-            'tool_call',
-            `### 工具调用\n- 服务：**${mapping?.serverName || '未知'}**\n- 工具：\`${mapping?.toolName || fn || ''}\`\n\n\`\`\`json\n${argsText || '{}'}\n\`\`\``,
-            { toolMeta: `${mapping?.serverName || '未知'} / ${mapping?.toolName || fn || ''}` }
-          )
+        const toolMessage = createDisplayMessage(
+          'tool_call',
+          `### 工具调用\n- 服务：**${mapping?.serverName || '未知'}**\n- 工具：\`${mapping?.toolName || fn || ''}\`\n\n\`\`\`json\n${argsText || '{}'}\n\`\`\``,
+          { toolMeta: `${mapping?.serverName || '未知'} / ${mapping?.toolName || fn || ''}` }
         )
+        displayMessages.push(toolMessage)
 
         if (!mapping) {
           const errorText = `未找到工具映射：${fn}`
-          displayMessages.push(
-            createDisplayMessage('tool', `### 工具结果\n- 错误：${errorText}`, { toolMeta: `未知 / ${fn || ''}` })
-          )
+          updateTimedTaskToolMessage(toolMessage, { status: 'error', serverName: '未知', toolName: fn || '', errorText })
           apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: errorText })
           continue
         }
@@ -946,13 +949,12 @@ export async function runTimedTaskOnce(task, options = {}) {
         const exec = await executeMcpToolCall({ toolCall: tc, mapping, argsObj })
         apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: String(exec?.content || '') })
 
-        displayMessages.push(
-          createDisplayMessage(
-            'tool',
-            `### 工具结果\n- 服务：**${mapping.serverName}**\n- 工具：\`${mapping.toolName}\`\n\n\`\`\`json\n${String(exec?.content || '')}\n\`\`\``,
-            { toolMeta: `${mapping.serverName} / ${mapping.toolName}` }
-          )
-        )
+        updateTimedTaskToolMessage(toolMessage, {
+          status: 'success',
+          serverName: mapping.serverName,
+          toolName: mapping.toolName,
+          resultText: String(exec?.content || '')
+        })
       }
     }
   } catch (err) {

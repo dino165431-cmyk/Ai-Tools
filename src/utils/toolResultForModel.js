@@ -19,7 +19,7 @@ function stableStringify(obj, spaces = 2) {
   }
 }
 
-function sanitizeToolResultForModel(result) {
+export function sanitizeToolResultForModel(result) {
   const seen = new WeakSet()
   const KEY_HINT_IMAGE = /^(images|image|artifacts)$/i
   const KEY_HINT_BASE64 = /(base64|b64|b64_json|dataurl|data_url)$/i

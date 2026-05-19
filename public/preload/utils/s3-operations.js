@@ -255,7 +255,13 @@ class S3ClientWrapper {
         }
         const arrayBuffer = await response.arrayBuffer();
         await fs.writeFile(localFilePath, Buffer.from(arrayBuffer));
-        return { $metadata: { httpStatusCode: response.status } };
+        return {
+            $metadata: { httpStatusCode: response.status },
+            lastModified: response.headers.get('Last-Modified')
+                ? new Date(response.headers.get('Last-Modified'))
+                : null,
+            metadata: this._headersToMetadata(response.headers),
+        };
     }
 }
 

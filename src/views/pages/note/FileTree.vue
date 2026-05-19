@@ -119,7 +119,7 @@
 </template>
 
 <script setup>
-import { ref, h, computed, onMounted, onBeforeUnmount, watch } from 'vue';
+import { ref, h, computed, onMounted, watch } from 'vue';
 import {
   FileTrayFullOutline,
   Folder,
@@ -207,8 +207,6 @@ const loadedPaths = new Set();
 const treeNodeIndex = new Map();
 const refreshing = ref(false);
 const runtimeIssue = ref('');
-const pendingExternalChangePaths = new Set();
-let externalRefreshTimer = null;
 const noteSecurity = computed(() => normalizeNoteSecurityConfig(noteConfig.value?.noteSecurity));
 
 // 右键菜单状态
@@ -342,43 +340,6 @@ onMounted(async () => {
   }
 });
 
-function handleExternalNoteFilesChanged(e) {
-  const rawPaths = Array.isArray(e?.detail?.paths) ? e.detail.paths : [e?.detail?.path];
-  rawPaths
-    .map((item) => toPosixPath(String(item || '').trim()))
-    .filter((item) => item && (item === 'note' || item.startsWith('note/')))
-    .forEach((item) => pendingExternalChangePaths.add(item));
-  if (!pendingExternalChangePaths.size) return;
-  if (externalRefreshTimer) {
-    clearTimeout(externalRefreshTimer);
-  }
-  externalRefreshTimer = window.setTimeout(() => {
-    externalRefreshTimer = null;
-    void flushExternalNoteChanges();
-  }, 180);
-}
-
-onMounted(() => {
-  try {
-    window.addEventListener('noteFilesChanged', handleExternalNoteFilesChanged);
-  } catch {
-    // ignore
-  }
-});
-
-onBeforeUnmount(() => {
-  try {
-    window.removeEventListener('noteFilesChanged', handleExternalNoteFilesChanged);
-  } catch {
-    // ignore
-  }
-  if (externalRefreshTimer) {
-    clearTimeout(externalRefreshTimer);
-    externalRefreshTimer = null;
-  }
-  pendingExternalChangePaths.clear();
-});
-
 function removeTreeNodeByPath(targetPath) {
   const normalized = toPosixPath(String(targetPath || '').trim());
   if (!normalized) return false;
@@ -448,49 +409,6 @@ function upsertFileLeafNode(filePath) {
   }
   rebuildTreeNodeIndex();
   return true;
-}
-
-async function syncExternalNoteFileChange(notePath) {
-  const normalized = toPosixPath(String(notePath || '').trim());
-  if (!normalized || !isSupportedNotePath(normalized)) return;
-  const parentPath = normalized.includes('/') ? normalized.substring(0, normalized.lastIndexOf('/')) : 'note';
-  const parentLoaded = parentPath === 'note' || loadedPaths.has(parentPath);
-  if (!parentLoaded) return;
-
-  const fileExists = await exists(normalized).catch(() => false);
-  if (!fileExists) {
-    removeTreeNodeByPath(normalized);
-    return;
-  }
-
-  const statInfo = await stat(normalized);
-  if (statInfo?.isDirectory?.()) {
-    await refreshTree({ silent: true });
-    return;
-  }
-
-  upsertFileLeafNode(normalized);
-}
-
-async function flushExternalNoteChanges() {
-  const changedPaths = Array.from(pendingExternalChangePaths);
-  pendingExternalChangePaths.clear();
-  if (!changedPaths.length) return;
-
-  const needsFullRefresh = changedPaths.some((item) => {
-    const name = String(item || '').split('/').pop() || '';
-    if (!item || item === 'note') return true;
-    if (name === 'assets' || name.endsWith('.assets')) return true;
-    return !isSupportedNotePath(item);
-  });
-  if (needsFullRefresh) {
-    await refreshTree({ silent: true });
-    return;
-  }
-
-  for (const item of changedPaths) {
-    await syncExternalNoteFileChange(item);
-  }
 }
 
 async function refreshTree(options = {}) {

@@ -44,7 +44,7 @@ function extensionFromName(name) {
   return match ? match[1].toLowerCase() : ''
 }
 
-function inferChatMediaAssetExtension(media = {}, kind = 'image') {
+export function inferChatMediaAssetExtension(media = {}, kind = 'image') {
   const normalizedKind = normalizeKind(kind)
   const mime = normalizeMime(media?.mime || media?.contentType || media?.type)
   return (
@@ -113,7 +113,7 @@ export function resolveChatMediaAssetPath(media = {}, options = {}) {
   return ''
 }
 
-function isTransientChatMediaSrc(src) {
+export function isTransientChatMediaSrc(src) {
   const text = String(src || '').trim()
   return /^data:(image|video)\//i.test(text) || /^blob:/i.test(text)
 }

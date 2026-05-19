@@ -51,6 +51,15 @@ function getTimestampMs(value) {
 
     if (!value || typeof value !== 'object') return 0
 
+    const metadataSourceMtime = Number(
+        value.metadata?.['source-mtime-ms']
+        ?? value.metadata?.sourceMtimeMs
+        ?? value.sourceMtimeMs
+    )
+    if (Number.isFinite(metadataSourceMtime) && metadataSourceMtime > 0) {
+        return metadataSourceMtime
+    }
+
     const directMs = Number(value.mtimeMs ?? value.lastModifiedMs ?? value.timestampMs)
     if (Number.isFinite(directMs) && directMs > 0) return directMs
 
@@ -763,6 +772,14 @@ class FileOperations {
         }
     }
 
+    _clearQueuedCloudAutomation() {
+        this._clearCloudAutoDecisionTimer()
+        this._clearCloudAutoBackupTimer()
+        this._clearCloudAutoRestoreTimer()
+        this._cloudAutoBackupPending = false
+        this._cloudAutoRestorePending = false
+    }
+
     async _runExclusiveCloudOperation(operation) {
         if (this._cloudOperationRunning) {
             throw new Error('已有云端任务正在执行，请稍后再试')
@@ -776,11 +793,25 @@ class FileOperations {
     }
 
     async _runManualCloudOperation(operation) {
+        this._clearQueuedCloudAutomation()
         try {
             return await this._runExclusiveCloudOperation(operation)
         } finally {
             this._schedulePendingCloudAutoOperation()
         }
+    }
+
+    async _buildCloudUploadMetadata(fullPath) {
+        let statInfo = null
+        try {
+            statInfo = await fs.stat(fullPath)
+        } catch {
+            statInfo = null
+        }
+
+        const sourceMtimeMs = getTimestampMs(statInfo)
+        if (!sourceMtimeMs) return {}
+        return { 'source-mtime-ms': String(sourceMtimeMs) }
     }
 
     async _runCloudAutoBackup() {
@@ -1219,7 +1250,8 @@ class FileOperations {
 
         for (const relPath of localFiles) {
             const fullPath = this._resolvePath(relPath)
-            await this._retryOperation(() => s3.uploadFile(bucket, fullPath, relPath))
+            const metadata = await this._buildCloudUploadMetadata(fullPath)
+            await this._retryOperation(() => s3.uploadFile(bucket, fullPath, relPath, { metadata }))
             completed += 1
             if (progressCallback) progressCallback(completed, total)
         }
@@ -1243,7 +1275,12 @@ class FileOperations {
         for (const key of remoteFiles) {
             const fullPath = this._resolvePath(key)
             await fs.mkdir(path.dirname(fullPath), { recursive: true })
-            await this._retryOperation(() => s3.downloadFile(bucket, key, fullPath))
+            const downloadResult = await this._retryOperation(() => s3.downloadFile(bucket, key, fullPath))
+            const restoredTimestamp = getTimestampMs(downloadResult)
+            if (restoredTimestamp > 0) {
+                const restoredDate = new Date(restoredTimestamp)
+                await fs.utimes(fullPath, restoredDate, restoredDate).catch(() => {})
+            }
             completed += 1
             this._clearBlobCacheForRelativePath(key)
             const normalizedKey = this._normalizeRelativePath(key)
@@ -1281,7 +1318,8 @@ class FileOperations {
 
         for (const relPath of toUpload) {
             const fullPath = this._resolvePath(relPath)
-            await this._retryOperation(() => s3.uploadFile(bucket, fullPath, relPath))
+            const metadata = await this._buildCloudUploadMetadata(fullPath)
+            await this._retryOperation(() => s3.uploadFile(bucket, fullPath, relPath, { metadata }))
             updateProgress()
         }
 

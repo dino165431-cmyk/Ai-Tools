@@ -18,7 +18,7 @@ function hasReasoningPayload(message) {
   }
 }
 
-function isDeepSeekReasonerModel(model) {
+export function isDeepSeekReasonerModel(model) {
   const modelId = normalizeLowercaseText(model)
   if (!modelId) return false
   if (modelId.includes('deepseek-reasoner')) return true
@@ -26,7 +26,7 @@ function isDeepSeekReasonerModel(model) {
   return modelId.includes('reasoner') || hasStandaloneR1Token(modelId)
 }
 
-function hasAssistantReasoningContent(messages = []) {
+export function hasAssistantReasoningContent(messages = []) {
   return (Array.isArray(messages) ? messages : []).some((message) => {
     return message?.role === 'assistant' && hasReasoningPayload(message)
   })
