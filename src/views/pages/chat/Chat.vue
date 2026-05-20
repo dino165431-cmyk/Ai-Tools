@@ -9655,6 +9655,7 @@ function resetChatRuntimeState() {
   pendingAttachments.value = []
   abortController.value = null
   const record = getActiveMemorySession()
+  const now = Date.now()
   clearMemoryCandidateFlushTimer(record)
   record.messages = session.messages
   record.apiMessages = session.apiMessages
@@ -9662,15 +9663,23 @@ function resetChatRuntimeState() {
   record.pendingAttachments = []
   record.memoryCandidates = []
   record.memoryCandidateUpdatedAt = 0
+  record.contextSummary = createEmptyContextSummaryState()
   record.activeSessionFilePath = ''
   record.activeSessionTitle = ''
   record.title = DEFAULT_MEMORY_SESSION_TITLE
+  record.titleSource = ''
+  record.titleRetryCount = 0
+  record.titlePostReplyRetryDone = false
+  record.titleReadyAt = 0
+  record.createdAt = now
   record.runningTaskCount = 0
   record.chatRunCount = 0
   record.activeRequestAbortState = null
+  record.pendingApprovalRequests = []
+  record.approvalDialogActive = false
   record.autoManaged = false
   record.state = applyDefaultChatState()
-  record.updatedAt = Date.now()
+  record.updatedAt = now
   syncActiveRequestUiState(record)
 }
 
