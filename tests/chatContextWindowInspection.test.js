@@ -1,0 +1,129 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+
+import { buildChatContextWindow, inspectChatContextWindow } from '../src/utils/chatContextWindow.js'
+
+const attachmentHeader = '\u3010\u9644\u4ef6\u5185\u5bb9\u3011'
+const attachmentPrefix = '\u9644\u4ef6\uff1a'
+
+test('inspectChatContextWindow exposes ordered entries for preview rendering', () => {
+  const messages = [
+    { role: 'system', content: 'system prelude' },
+    { role: 'user', content: `${attachmentHeader}\n${attachmentPrefix}spec-a.pdf\n` + 'A'.repeat(800) },
+    { role: 'assistant', content: 'spec a reply' },
+    { role: 'user', content: 'plain turn 1' },
+    { role: 'assistant', content: 'plain answer 1' },
+    { role: 'user', content: 'latest user' },
+    { role: 'assistant', content: 'latest answer' }
+  ]
+
+  const options = {
+    maxChars: 1800,
+    maxMessages: 4,
+    maxTurns: 2,
+    keepRecentTurnsFull: 1,
+    maxPreludeMessages: 1,
+    maxPinnedAttachmentTurns: 4,
+    allowSelectedAttachmentShrink: true,
+    allowAttachmentTurnDisplacement: true,
+    toolPolicy: 'full'
+  }
+
+  const result = inspectChatContextWindow(messages, options)
+  const direct = buildChatContextWindow(messages, options)
+
+  assert.ok(Array.isArray(result.messages))
+  assert.ok(Array.isArray(result.inspection.entries))
+  assert.deepEqual(result.messages, direct)
+  assert.ok(result.inspection.entries.length >= 1)
+  assert.equal(result.inspection.entries.at(-1).mustKeep, true)
+  assert.ok(result.inspection.entries.some((entry) => entry.mode === 'full' || entry.mode === 'compact'))
+})
+
+test('inspectChatContextWindow exposes omitted entries and reasons for preview diagnostics', () => {
+  const messages = [
+    { role: 'system', content: 'system prelude a' },
+    { role: 'system', content: 'system prelude b' },
+    { role: 'user', content: `${attachmentHeader}\n${attachmentPrefix}spec-a.pdf\n` + 'A'.repeat(400) },
+    { role: 'assistant', content: 'spec a reply' },
+    { role: 'user', content: 'plain turn 1' },
+    { role: 'assistant', content: 'plain answer 1' },
+    { role: 'user', content: 'latest user' },
+    { role: 'assistant', content: 'latest answer' }
+  ]
+
+  const result = inspectChatContextWindow(messages, {
+    maxChars: 4000,
+    maxMessages: 4,
+    maxTurns: 2,
+    keepRecentTurnsFull: 1,
+    maxPreludeMessages: 1,
+    maxPinnedAttachmentTurns: 0,
+    allowSelectedAttachmentShrink: false,
+    allowAttachmentTurnDisplacement: false,
+    toolPolicy: 'full'
+  })
+
+  assert.deepEqual(result.messages.map((item) => item.content), ['plain turn 1', 'plain answer 1', 'latest user', 'latest answer'])
+  assert.ok(Array.isArray(result.inspection.omittedEntries))
+
+  const omittedPrelude = result.inspection.omittedEntries.find((entry) => entry.kind === 'prelude')
+  assert.ok(omittedPrelude)
+  assert.ok(omittedPrelude.reasons.includes('prelude_budget_exhausted'))
+
+  const omittedAttachmentTurn = result.inspection.omittedEntries.find((entry) => entry.kind === 'turn' && entry.index === 0)
+  assert.ok(omittedAttachmentTurn)
+  assert.ok(omittedAttachmentTurn.reasons.includes('attachment_policy_disabled'))
+  assert.ok(
+    omittedAttachmentTurn.reasons.includes('turn_limit') ||
+      omittedAttachmentTurn.reasons.includes('message_limit') ||
+      omittedAttachmentTurn.reasons.includes('char_limit')
+  )
+})
+
+test('inspectChatContextWindow groups synthetic tool-vision messages into the tool turn and discounts base64 payloads', () => {
+  const largeDataUrl = `data:image/png;base64,${'a'.repeat(200000)}`
+  const result = inspectChatContextWindow([
+    { role: 'user', content: '查看笔记里的图' },
+    {
+      role: 'assistant',
+      content: '',
+      tool_calls: [
+        {
+          id: 'call_1',
+          type: 'function',
+          function: { name: 'notes_read', arguments: '{"path":"demo.md"}' }
+        }
+      ]
+    },
+    { role: 'tool', tool_call_id: 'call_1', content: '{"path":"demo.md","content":"demo"}' },
+    {
+      role: 'user',
+      synthetic_tool_vision: true,
+      content: [
+        { type: 'text', text: '系统补充：以下图片来自刚才的工具结果。' },
+        { type: 'image_url', image_url: { url: largeDataUrl } }
+      ]
+    },
+    { role: 'assistant', content: '图片里是一张示例图。' }
+  ], {
+    maxChars: 2000,
+    maxMessages: 20,
+    maxTurns: 4,
+    keepRecentTurnsFull: 4,
+    maxPreludeMessages: 2,
+    maxPinnedAttachmentTurns: 0,
+    allowSelectedAttachmentShrink: true,
+    allowAttachmentTurnDisplacement: false,
+    toolPolicy: 'full'
+  })
+
+  assert.equal(result.inspection.turnCount, 1)
+  assert.equal(result.inspection.entries.length, 1)
+  assert.ok(result.inspection.entries[0].chars < 2000)
+  assert.deepEqual(
+    result.messages.map((message) => message.role),
+    ['user', 'assistant', 'tool', 'user', 'assistant']
+  )
+  assert.equal(result.messages[3].synthetic_tool_vision, true)
+})

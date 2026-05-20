@@ -27,6 +27,12 @@ function decodeXmlText(text) {
     });
 }
 
+function encodeS3KeySegment(segment) {
+    return encodeURIComponent(segment).replace(/[!'()*]/g, (char) => (
+        `%${char.charCodeAt(0).toString(16).toUpperCase()}`
+    ));
+}
+
 class S3ClientWrapper {
     /**
      * @param {Object} config - 配置对象，与原来完全一致
@@ -81,7 +87,7 @@ class S3ClientWrapper {
      */
     _buildUrl(key, bucket = this.bucket) {
         // 将 key 按 '/' 分割，分别编码每个片段，再重新拼接
-        const encodedKey = key.split('/').map(encodeURIComponent).join('/');
+        const encodedKey = String(key || '').split('/').map(encodeS3KeySegment).join('/');
         if (this.forcePathStyle) {
             return `${this.endpoint}/${bucket}/${encodedKey}`;
         } else {
