@@ -403,8 +403,7 @@ const DEFAULT_CLOUD_CONFIG = Object.freeze({
     bucket: '',
     endpoint: '',
     forcePathStyle: null,
-    autoBackupEnabled: false,
-    autoRestoreEnabled: false
+    autoSyncEnabled: false
 })
 const LOCAL_WEB_SEARCH_CONFIG_KEYS = Object.freeze(['proxyUrl', 'allowInsecureTlsFallback'])
 const SYNCED_WEB_SEARCH_CONFIG_KEYS = Object.freeze(['searchApiProvider', 'searchApiKey', 'searchApiEndpoint', 'searchApiMarket'])
@@ -453,8 +452,7 @@ function normalizeCloudConfig(raw) {
         bucket: typeof src.bucket === 'string' ? src.bucket.trim() : '',
         endpoint: typeof src.endpoint === 'string' ? src.endpoint.trim() : '',
         forcePathStyle: typeof src.forcePathStyle === 'boolean' ? src.forcePathStyle : null,
-        autoBackupEnabled: src.autoBackupEnabled === true,
-        autoRestoreEnabled: src.autoRestoreEnabled === true
+        autoSyncEnabled: src.autoSyncEnabled === true || src.autoBackupEnabled === true || src.autoRestoreEnabled === true
     }
 }
 

@@ -132,6 +132,7 @@ test('file operations keep session index in sync and cloud restore marks it dirt
   const rebuilt = await contentIndex.ensureIndex('session')
   assert.ok(rebuilt.entries.some((entry) => entry.path === 'cloud/newer.json'))
   assert.ok(rebuilt.entries.some((entry) => entry.path === 'demo.json'))
+  assert.equal(fs.existsSync(path.join(tempRoot, 'session', 'demo.json')), true)
 })
 
 test('content index watcher filters ignore asset and hidden paths', () => {

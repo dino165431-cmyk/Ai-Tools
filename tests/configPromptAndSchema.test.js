@@ -785,6 +785,37 @@ test('chatConfig memory storeMaxItems persists through config updates', () => {
   assert.equal(storage.get('global-config')?.chatConfig?.memory?.storeMaxItems, 320)
 })
 
+test('legacy cloud flags are normalized to auto sync and memory autoExtract persists', () => {
+  resetConfigStorage()
+
+  storage.set('global-config', {
+    cloudConfig: {
+      region: 'test-region',
+      accessKeyId: 'test-key',
+      secretAccessKey: 'test-secret',
+      bucket: 'test-bucket',
+      autoBackupEnabled: true,
+      autoRestoreEnabled: false
+    },
+    chatConfig: {
+      memory: {
+        enabled: true,
+        autoExtract: false
+      }
+    }
+  })
+
+  const cfg = globalConfig.getConfig()
+
+  assert.equal(cfg.cloudConfig.autoSyncEnabled, true)
+  assert.equal('autoBackupEnabled' in cfg.cloudConfig, false)
+  assert.equal('autoRestoreEnabled' in cfg.cloudConfig, false)
+  assert.equal(cfg.chatConfig.memory.enabled, true)
+  assert.equal(cfg.chatConfig.memory.autoExtract, false)
+  assert.equal(storage.get('global-config')?.cloudConfig?.autoSyncEnabled, true)
+  assert.equal(storage.get('global-config')?.chatConfig?.memory?.autoExtract, false)
+})
+
 test('noteConfig noteEditor defaults and updates are normalized', () => {
   resetConfigStorage()
 

@@ -1939,6 +1939,16 @@ function clearMemoryCandidateFlushTimer(record) {
   record.memoryCandidateFlushTimer = null
 }
 
+function clearPendingMemoryCandidates(record) {
+  if (!record) return false
+  const hadCandidates = Array.isArray(record.memoryCandidates) && record.memoryCandidates.length > 0
+  const hadTimer = !!record.memoryCandidateFlushTimer
+  clearMemoryCandidateFlushTimer(record)
+  record.memoryCandidates = []
+  record.memoryCandidateUpdatedAt = 0
+  return hadCandidates || hadTimer
+}
+
 function buildMemoryRecallQueryFromRecord(record, currentUserText = '', options = {}) {
   const parts = []
   const currentText = String(currentUserText || '').trim()
@@ -2269,6 +2279,33 @@ watch(
     if (!sessionContextWindowOverride.value) syncContextWindowDraft(next)
   },
   { immediate: true, deep: true }
+)
+
+watch(
+  () => {
+    const memoryCfg = chatConfig.value?.memory
+    return `${isChatMemoryEnabled(memoryCfg)}|${memoryCfg?.autoExtract !== false}`
+  },
+  (next, prev) => {
+    if (!prev || next === prev) return
+    const [prevEnabled, prevAutoExtract] = String(prev).split('|')
+    const [nextEnabled, nextAutoExtract] = String(next).split('|')
+    const shouldClearQueuedCandidates =
+      (prevEnabled === 'true' && nextEnabled !== 'true') ||
+      (prevAutoExtract === 'true' && nextAutoExtract !== 'true')
+
+    if (!shouldClearQueuedCandidates) return
+
+    let changed = false
+    for (const record of memorySessions.value) {
+      if (clearPendingMemoryCandidates(record)) {
+        record.updatedAt = Date.now()
+        changed = true
+      }
+    }
+    if (changed) scheduleSessionAutosave({ force: true })
+  },
+  { immediate: true }
 )
 
 watch(

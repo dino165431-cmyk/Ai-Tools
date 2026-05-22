@@ -10,6 +10,8 @@ const CLOUD_AUTO_BACKUP_DEBOUNCE_MS = 15000
 const CLOUD_AUTO_RESTORE_DEBOUNCE_MS = 15000
 const CLOUD_AUTO_BACKUP_MIN_INTERVAL_MS = 5 * 60 * 1000
 const CLOUD_AUTO_REQUIRED_KEYS = ['region', 'accessKeyId', 'secretAccessKey', 'bucket']
+const CLOUD_DELETE_QUEUE_STORAGE_KEY = 'ai-tools-cloud-delete-queue-v1'
+const CLOUD_DELETE_SYNC_ROOTS = ['note', 'session']
 const EXTERNAL_WATCH_DEBOUNCE_MS = 500
 const EXTERNAL_WATCH_RESCAN_DEBOUNCE_MS = 250
 const EXTERNAL_WATCH_POLL_INTERVAL_MS = 2000
@@ -105,6 +107,7 @@ class FileOperations {
         this._lastWatcherRootSignature = ''
         this._globalConfigChangedListener = null
         this._recursiveExternalWatchSupported = null
+        this._pendingCloudDeleteStorageKey = CLOUD_DELETE_QUEUE_STORAGE_KEY
     }
 
     _revokeCachedBlobUrl(cacheKey) {
@@ -148,6 +151,190 @@ class FileOperations {
 
     _normalizeRelativePath(relativePath) {
         return String(relativePath || '').trim().replace(/\\/g, '/').replace(/^\/+/, '')
+    }
+
+    _isCloudDeleteTrackedPath(relativePath) {
+        const normalized = this._normalizeRelativePath(relativePath)
+        if (!normalized) return false
+        const root = normalized.split('/').filter(Boolean)[0]
+        return CLOUD_DELETE_SYNC_ROOTS.includes(root)
+    }
+
+    _getCloudDeleteStorageApi() {
+        return globalThis?.utools?.dbCryptoStorage || null
+    }
+
+    _normalizePendingCloudDeleteQueue(rawQueue) {
+        const source = Array.isArray(rawQueue) ? rawQueue : []
+        const aggregated = new Map()
+
+        for (const entry of source) {
+            const rawPath = typeof entry === 'string' ? entry : entry?.path
+            const normalizedPath = this._normalizeRelativePath(rawPath)
+            if (!this._isCloudDeleteTrackedPath(normalizedPath)) continue
+            const recursive = entry?.recursive === true
+            aggregated.set(normalizedPath, (aggregated.get(normalizedPath) === true) || recursive)
+        }
+
+        const normalized = [...aggregated.entries()]
+            .map(([path, recursive]) => ({ path, recursive: recursive === true }))
+            .sort((a, b) => {
+                const lengthDiff = a.path.length - b.path.length
+                if (lengthDiff !== 0) return lengthDiff
+                return a.path.localeCompare(b.path)
+            })
+
+        const compacted = []
+        for (const entry of normalized) {
+            const coveredByRecursiveParent = compacted.some((item) => item.recursive === true && (entry.path === item.path || entry.path.startsWith(`${item.path}/`)))
+            if (coveredByRecursiveParent) continue
+            compacted.push(entry)
+        }
+
+        return compacted
+    }
+
+    _readPendingCloudDeleteQueue() {
+        const api = this._getCloudDeleteStorageApi()
+        if (typeof api?.getItem !== 'function') return []
+        try {
+            return this._normalizePendingCloudDeleteQueue(api.getItem(this._pendingCloudDeleteStorageKey))
+        } catch {
+            return []
+        }
+    }
+
+    _writePendingCloudDeleteQueue(queue) {
+        const api = this._getCloudDeleteStorageApi()
+        if (typeof api?.setItem !== 'function') return []
+        const normalized = this._normalizePendingCloudDeleteQueue(queue)
+        try {
+            api.setItem(this._pendingCloudDeleteStorageKey, normalized)
+        } catch {
+            // ignore local queue persistence failures
+        }
+        return normalized
+    }
+
+    _queuePendingCloudDelete(relativePath, options = {}) {
+        const normalizedPath = this._normalizeRelativePath(relativePath)
+        if (!this._isCloudDeleteTrackedPath(normalizedPath)) return []
+        const queue = this._readPendingCloudDeleteQueue()
+        queue.push({
+            path: normalizedPath,
+            recursive: options?.recursive === true
+        })
+        return this._writePendingCloudDeleteQueue(queue)
+    }
+
+    _clearPendingCloudDeleteQueueForPath(relativePath, options = {}) {
+        const normalizedPath = this._normalizeRelativePath(relativePath)
+        if (!this._isCloudDeleteTrackedPath(normalizedPath)) return []
+        const clearDescendants = options?.clearDescendants === true
+        const queue = this._readPendingCloudDeleteQueue()
+        const nextQueue = queue.filter((entry) => {
+            const entryPath = this._normalizeRelativePath(entry?.path)
+            if (!entryPath) return false
+            if (entryPath === normalizedPath) return false
+            if (clearDescendants && entryPath.startsWith(`${normalizedPath}/`)) return false
+            if (entry?.recursive === true && normalizedPath.startsWith(`${entryPath}/`)) return false
+            return true
+        })
+        return this._writePendingCloudDeleteQueue(nextQueue)
+    }
+
+    _normalizeRemoteCloudKeys(remoteFiles) {
+        return (Array.isArray(remoteFiles) ? remoteFiles : [])
+            .map((key) => this._normalizeRelativePath(key))
+            .filter((key) => key && !key.endsWith('/'))
+    }
+
+    async _listRemoteCloudFiles(s3, bucket) {
+        const remoteFiles = await this._retryOperation(() => s3.listObjects(bucket))
+        return this._normalizeRemoteCloudKeys(remoteFiles)
+    }
+
+    _collectPendingCloudDeleteKeys(queue, remoteFiles) {
+        const deleteKeys = new Set()
+        const normalizedQueue = this._normalizePendingCloudDeleteQueue(queue)
+        const normalizedRemoteFiles = this._normalizeRemoteCloudKeys(remoteFiles)
+
+        for (const entry of normalizedQueue) {
+            if (entry?.recursive === true) {
+                const prefix = `${entry.path}/`
+                for (const key of normalizedRemoteFiles) {
+                    if (key === entry.path || key.startsWith(prefix)) deleteKeys.add(key)
+                }
+                continue
+            }
+
+            if (normalizedRemoteFiles.includes(entry.path)) {
+                deleteKeys.add(entry.path)
+            }
+        }
+
+        return [...deleteKeys].sort()
+    }
+
+    async _buildPendingCloudDeletePlan({ s3 = null, bucket = '', remoteFiles = null } = {}) {
+        const queue = this._readPendingCloudDeleteQueue()
+        const normalizedRemoteFiles = Array.isArray(remoteFiles) ? this._normalizeRemoteCloudKeys(remoteFiles) : null
+        if (!queue.length) {
+            return {
+                queue: [],
+                remoteFiles: normalizedRemoteFiles || [],
+                toDelete: []
+            }
+        }
+
+        const client = s3 || this._getS3Client()
+        const resolvedBucket = String(bucket || globalConfig.getCloudConfig().bucket || '').trim()
+        const remoteList = normalizedRemoteFiles || await this._listRemoteCloudFiles(client, resolvedBucket)
+
+        return {
+            queue,
+            remoteFiles: remoteList,
+            toDelete: this._collectPendingCloudDeleteKeys(queue, remoteList)
+        }
+    }
+
+    async _applyPendingCloudDeletePlan(plan, options = {}) {
+        const queue = this._normalizePendingCloudDeleteQueue(plan?.queue)
+        const remoteFiles = this._normalizeRemoteCloudKeys(plan?.remoteFiles)
+        const toDelete = this._normalizeRemoteCloudKeys(plan?.toDelete)
+        if (!queue.length) {
+            return {
+                deleted: 0,
+                remainingRemoteFiles: remoteFiles
+            }
+        }
+
+        const client = options?.s3 || this._getS3Client()
+        const resolvedBucket = String(options?.bucket || globalConfig.getCloudConfig().bucket || '').trim()
+        const progressState = options?.progressState && typeof options.progressState === 'object'
+            ? options.progressState
+            : null
+        const progressCallback = typeof options?.progressCallback === 'function'
+            ? options.progressCallback
+            : null
+
+        for (const key of toDelete) {
+            await this._retryOperation(() => client.deleteFile(resolvedBucket, key))
+            if (progressState) {
+                progressState.current += 1
+                progressState.total = Math.max(progressState.total, progressState.current)
+            }
+            if (progressCallback && progressState) {
+                progressCallback(progressState.current, progressState.total)
+            }
+        }
+
+        this._writePendingCloudDeleteQueue([])
+        const deletedSet = new Set(toDelete)
+        return {
+            deleted: toDelete.length,
+            remainingRemoteFiles: remoteFiles.filter((key) => !deletedSet.has(key))
+        }
     }
 
     _notifyRestoredRelativePathsChanged(relativePaths = []) {
@@ -706,11 +893,11 @@ class FileOperations {
     }
 
     _isCloudAutoBackupReady(config = this._getCloudConfigSafe()) {
-        return config?.autoBackupEnabled === true && this._hasRequiredCloudConfig(config) && this._hasDataStorageRoot()
+        return config?.autoSyncEnabled === true && this._hasRequiredCloudConfig(config) && this._hasDataStorageRoot()
     }
 
     _isCloudAutoRestoreReady(config = this._getCloudConfigSafe()) {
-        return config?.autoRestoreEnabled === true && this._hasRequiredCloudConfig(config) && this._hasDataStorageRoot()
+        return config?.autoSyncEnabled === true && this._hasRequiredCloudConfig(config) && this._hasDataStorageRoot()
     }
 
     _getCloudConnectionSignature(config) {
@@ -1037,6 +1224,19 @@ class FileOperations {
         if (this._disposed) return
         if (!this._isCloudAutoBackupReady() || !this._isCloudAutoRestoreReady()) return
 
+        const pendingDeleteQueue = this._readPendingCloudDeleteQueue()
+        if (pendingDeleteQueue.length) {
+            try {
+                const s3 = this._getS3Client()
+                const bucket = globalConfig.getCloudConfig().bucket
+                const deletePlan = await this._buildPendingCloudDeletePlan({ s3, bucket })
+                await this._applyPendingCloudDeletePlan(deletePlan, { s3, bucket })
+            } catch (err) {
+                console.warn?.('[Cloud auto decision] failed to flush pending cloud deletes:', err)
+                return
+            }
+        }
+
         let direction = null
         try {
             direction = await this._resolveCloudAutoDecision()
@@ -1124,6 +1324,7 @@ class FileOperations {
 
     async createDirectory(relativePath) {
         const fullPath = this._resolvePath(relativePath)
+        this._clearPendingCloudDeleteQueueForPath(relativePath)
         this._markInternalMutation(relativePath)
         await fs.mkdir(fullPath, { recursive: true })
         return true
@@ -1132,6 +1333,7 @@ class FileOperations {
     async writeFile(relativePath, data) {
         const fullPath = this._resolvePath(relativePath)
         await fs.mkdir(path.dirname(fullPath), { recursive: true })
+        this._clearPendingCloudDeleteQueueForPath(relativePath)
         this._markInternalMutation(relativePath)
         await fs.writeFile(fullPath, data)
         this._clearBlobCacheForRelativePath(relativePath)
@@ -1169,6 +1371,7 @@ class FileOperations {
     async deleteItem(relativePath) {
         const fullPath = this._resolvePath(relativePath)
         const stat = await fs.stat(fullPath)
+        this._queuePendingCloudDelete(relativePath, { recursive: stat.isDirectory() })
         this._markInternalMutation(relativePath)
         if (stat.isDirectory()) {
             await this._runDeleteWithRetry(() => fs.rm(fullPath, { recursive: true, force: true }))
@@ -1216,6 +1419,7 @@ class FileOperations {
         const recursiveCacheClear = fromStat.isDirectory()
         this._markInternalMutation(fromRel)
         this._markInternalMutation(toRel)
+        this._clearPendingCloudDeleteQueueForPath(toRel, { clearDescendants: recursiveCacheClear })
 
         const overwrite = !!options?.overwrite
         const toExists = await this.exists(toRel)
@@ -1236,8 +1440,10 @@ class FileOperations {
             await fs.rm(fromAbs, { recursive: true, force: true })
         }
 
+        this._queuePendingCloudDelete(fromRel, { recursive: recursiveCacheClear })
         this._clearBlobCacheForRelativePath(fromRel, { recursive: recursiveCacheClear })
         this._clearBlobCacheForRelativePath(toRel, { recursive: recursiveCacheClear })
+        this._clearPendingCloudDeleteQueueForPath(toRel, { clearDescendants: recursiveCacheClear })
         await this._updateContentIndexAfterMove(fromRel, toRel, { isDirectory: recursiveCacheClear })
         this._scheduleCloudAutoBackupAfterMutation()
         return true
@@ -1323,18 +1529,28 @@ class FileOperations {
         const s3 = this._getS3Client()
         const bucket = globalConfig.getCloudConfig().bucket
         const localFiles = await this._getLocalFiles('')
-        const total = localFiles.length
-        let completed = 0
+        const deletePlan = await this._buildPendingCloudDeletePlan({ s3, bucket })
+        const progressState = {
+            current: 0,
+            total: localFiles.length + deletePlan.toDelete.length
+        }
+
+        const deleteResult = await this._applyPendingCloudDeletePlan(deletePlan, {
+            s3,
+            bucket,
+            progressCallback,
+            progressState
+        })
 
         for (const relPath of localFiles) {
             const fullPath = this._resolvePath(relPath)
             const metadata = await this._buildCloudUploadMetadata(fullPath)
             await this._retryOperation(() => s3.uploadFile(bucket, fullPath, relPath, { metadata }))
-            completed += 1
-            if (progressCallback) progressCallback(completed, total)
+            progressState.current += 1
+            if (progressCallback) progressCallback(progressState.current, progressState.total)
         }
 
-        return { uploaded: total }
+        return { uploaded: localFiles.length, deleted: deleteResult.deleted }
     }
 
     async backupToCloud(progressCallback) {
@@ -1346,11 +1562,14 @@ class FileOperations {
         const bucket = globalConfig.getCloudConfig().bucket
         const remoteFiles = (await this._retryOperation(() => s3.listObjects(bucket)))
             .filter((key) => String(key || '').trim() && !String(key).endsWith('/'))
-        const total = remoteFiles.length
+        const normalizedRemoteFiles = remoteFiles
+            .map((key) => this._normalizeRelativePath(key))
+            .filter(Boolean)
+        const total = normalizedRemoteFiles.length
         let completed = 0
         const changedRoots = new Set()
 
-        for (const key of remoteFiles) {
+        for (const key of normalizedRemoteFiles) {
             const fullPath = this._resolvePath(key)
             await fs.mkdir(path.dirname(fullPath), { recursive: true })
             const downloadResult = await this._retryOperation(() => s3.downloadFile(bucket, key, fullPath))
@@ -1361,8 +1580,7 @@ class FileOperations {
             }
             completed += 1
             this._clearBlobCacheForRelativePath(key)
-            const normalizedKey = this._normalizeRelativePath(key)
-            const root = normalizedKey.split('/').filter(Boolean)[0]
+            const root = key.split('/').filter(Boolean)[0]
             if (root) changedRoots.add(root)
             if (progressCallback) progressCallback(completed, total)
         }
@@ -1370,11 +1588,15 @@ class FileOperations {
         await contentIndex.markDirtyRoots([...changedRoots], 'cloud_restore')
         this._notifyRestoredRelativePathsChanged([...changedRoots])
 
-        return { downloaded: total }
+        return { downloaded: normalizedRemoteFiles.length }
     }
 
     async restoreFromCloud(progressCallback) {
-        return this._runManualCloudOperation(() => this._restoreFromCloudInternal(progressCallback))
+        return this._runManualCloudOperation(async () => {
+            const result = await this._restoreFromCloudInternal(progressCallback)
+            this._writePendingCloudDeleteQueue([])
+            return result
+        })
     }
 
     async _syncToCloudInternal(progressCallback) {
@@ -1405,6 +1627,8 @@ class FileOperations {
             await this._retryOperation(() => s3.deleteFile(bucket, key))
             updateProgress()
         }
+
+        this._writePendingCloudDeleteQueue([])
 
         return {
             uploaded: toUpload.length,

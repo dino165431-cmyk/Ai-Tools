@@ -91,8 +91,7 @@ const globalConfig = ref({
     bucket: '',
     endpoint: '',
     forcePathStyle: null,
-    autoBackupEnabled: false,
-    autoRestoreEnabled: false
+    autoSyncEnabled: false
   },
   webSearchConfig: getDefaultWebSearchConfig()
 })

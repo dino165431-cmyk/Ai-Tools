@@ -28,16 +28,30 @@ function createFixtureFile(rootPath, relativePath, content = 'fixture') {
   return targetPath
 }
 
+function getCryptoStorageApi() {
+  return globalThis.utools?.dbCryptoStorage
+}
+
+function readCryptoStorageValue(key) {
+  return getCryptoStorageApi()?.getItem?.(key)
+}
+
+function writeCryptoStorageValue(key, value) {
+  return getCryptoStorageApi()?.setItem?.(key, value)
+}
+
 function setupFileOperationsTest(t) {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-file-ops-'))
   const originalGetDataStorageRoot = globalConfig.getDataStorageRoot
   const originalCreateObjectURL = URL.createObjectURL
   const originalRevokeObjectURL = URL.revokeObjectURL
+  const pendingDeleteKey = fileOperations._pendingCloudDeleteStorageKey
   const revoked = []
   const createdBlobs = []
   let nextBlobId = 0
 
   globalConfig.getDataStorageRoot = () => tempRoot
+  if (pendingDeleteKey) writeCryptoStorageValue(pendingDeleteKey, null)
   fileOperations.clearImageBlobCache()
   URL.createObjectURL = (blob) => {
     createdBlobs.push(blob)
@@ -50,6 +64,7 @@ function setupFileOperationsTest(t) {
     globalConfig.getDataStorageRoot = originalGetDataStorageRoot
     URL.createObjectURL = originalCreateObjectURL
     URL.revokeObjectURL = originalRevokeObjectURL
+    if (pendingDeleteKey) writeCryptoStorageValue(pendingDeleteKey, null)
     fs.rmSync(tempRoot, { recursive: true, force: true })
   })
 
@@ -226,13 +241,99 @@ test('backupToCloud uploads source mtime metadata for auto decision', async (t) 
 
   const result = await fileOperations._backupToCloudInternal()
 
-  assert.deepEqual(result, { uploaded: 1 })
+  assert.deepEqual(result, { uploaded: 1, deleted: 0 })
   assert.equal(uploads.length, 1)
   assert.equal(uploads[0].relPath, 'note/mtime.md')
   assert.equal(
     uploads[0].options?.metadata?.['source-mtime-ms'],
     String(mtime.getTime())
   )
+})
+
+test('deleteItem queues note and session deletions for later cloud cleanup', async (t) => {
+  const { tempRoot } = setupFileOperationsTest(t)
+  const queueKey = fileOperations._pendingCloudDeleteStorageKey
+
+  createFixtureFile(tempRoot, 'note/demo.md', '# demo')
+  createFixtureFile(tempRoot, 'chat-memory/memory-store.json', '{}')
+
+  await fileOperations.deleteItem('note/demo.md')
+  await fileOperations.deleteItem('chat-memory/memory-store.json')
+
+  assert.deepEqual(readCryptoStorageValue(queueKey), [
+    { path: 'note/demo.md', recursive: false }
+  ])
+})
+
+test('moveItem queues old tracked paths for later cloud cleanup', async (t) => {
+  const { tempRoot } = setupFileOperationsTest(t)
+  const queueKey = fileOperations._pendingCloudDeleteStorageKey
+
+  createFixtureFile(tempRoot, 'note/from.md', '# from')
+
+  await fileOperations.moveItem('note/from.md', 'note/to.md')
+
+  assert.equal(fs.existsSync(path.join(tempRoot, 'note', 'from.md')), false)
+  assert.equal(fs.existsSync(path.join(tempRoot, 'note', 'to.md')), true)
+  assert.deepEqual(readCryptoStorageValue(queueKey), [
+    { path: 'note/from.md', recursive: false }
+  ])
+})
+
+test('backupToCloud deletes queued note/session keys before uploading local files', async (t) => {
+  const { tempRoot } = setupFileOperationsTest(t)
+  const originalGetS3Client = fileOperations._getS3Client
+  const originalGetCloudConfig = globalConfig.getCloudConfig
+  const queueKey = fileOperations._pendingCloudDeleteStorageKey
+  const uploads = []
+  const deleted = []
+  const progress = []
+
+  createFixtureFile(tempRoot, 'note/keep.md', '# keep')
+  writeCryptoStorageValue(queueKey, [
+    { path: 'note/deleted.md', recursive: false },
+    { path: 'session/old', recursive: true },
+    { path: 'chat-memory/memory-store.json', recursive: false }
+  ])
+
+  globalConfig.getCloudConfig = () => ({
+    region: 'test-region',
+    accessKeyId: 'test-key',
+    secretAccessKey: 'test-secret',
+    bucket: 'test-bucket'
+  })
+  fileOperations._getS3Client = () => ({
+    listObjects: async () => [
+      'note/deleted.md',
+      'session/old/a.json',
+      'chat-memory/memory-store.json'
+    ],
+    deleteFile: async (bucket, key) => {
+      deleted.push({ bucket, key })
+    },
+    uploadFile: async (bucket, fullPath, relPath, options) => {
+      uploads.push({ bucket, fullPath, relPath, options })
+    }
+  })
+
+  t.after(() => {
+    fileOperations._getS3Client = originalGetS3Client
+    globalConfig.getCloudConfig = originalGetCloudConfig
+  })
+
+  const result = await fileOperations._backupToCloudInternal((current, total) => {
+    progress.push([current, total])
+  })
+
+  assert.deepEqual(deleted, [
+    { bucket: 'test-bucket', key: 'note/deleted.md' },
+    { bucket: 'test-bucket', key: 'session/old/a.json' }
+  ])
+  assert.equal(uploads.length, 1)
+  assert.equal(uploads[0].relPath, 'note/keep.md')
+  assert.deepEqual(progress, [[1, 3], [2, 3], [3, 3]])
+  assert.deepEqual(result, { uploaded: 1, deleted: 2 })
+  assert.deepEqual(readCryptoStorageValue(queueKey), [])
 })
 
 test('restoreFromCloud dispatches tree refresh events for restored roots', async (t) => {
@@ -310,6 +411,103 @@ test('restoreFromCloud dispatches tree refresh events for restored roots', async
     fs.statSync(path.join(tempRoot, 'note', 'demo.md')).mtime.getTime(),
     new Date('2025-02-02T03:04:05Z').getTime()
   )
+})
+
+test('restoreFromCloud keeps local files that are not present in cloud', async (t) => {
+  const { tempRoot } = setupFileOperationsTest(t)
+  const originalGetS3Client = fileOperations._getS3Client
+  const originalResolvePath = fileOperations._resolvePath
+  const originalGetCloudConfig = globalConfig.getCloudConfig
+
+  createFixtureFile(tempRoot, 'note/local-only.md', 'local-only')
+  createFixtureFile(tempRoot, 'session/old/demo.json', '{}')
+
+  globalConfig.getCloudConfig = () => ({
+    region: 'test-region',
+    accessKeyId: 'test-key',
+    secretAccessKey: 'test-secret',
+    bucket: 'test-bucket'
+  })
+  fileOperations._resolvePath = (relativePath) => path.join(tempRoot, ...String(relativePath || '').split('/'))
+  fileOperations._getS3Client = () => ({
+    listObjects: async () => [
+      'note/remote.md'
+    ],
+    downloadFile: async (_bucket, key, fullPath) => {
+      fs.writeFileSync(fullPath, `remote:${key}`)
+      return {}
+    }
+  })
+
+  t.after(() => {
+    fileOperations._getS3Client = originalGetS3Client
+    fileOperations._resolvePath = originalResolvePath
+    globalConfig.getCloudConfig = originalGetCloudConfig
+  })
+
+  const result = await fileOperations._restoreFromCloudInternal()
+
+  assert.deepEqual(result, { downloaded: 1 })
+  assert.equal(fs.existsSync(path.join(tempRoot, 'note', 'local-only.md')), true)
+  assert.equal(fs.existsSync(path.join(tempRoot, 'session', 'old', 'demo.json')), true)
+  assert.equal(fs.existsSync(path.join(tempRoot, 'session', 'old')), true)
+  assert.equal(fs.readFileSync(path.join(tempRoot, 'note', 'remote.md'), 'utf8'), 'remote:note/remote.md')
+})
+
+test('cloud auto decision flushes pending deletes before considering restore', async (t) => {
+  const { tempRoot } = setupFileOperationsTest(t)
+  const originalGetS3Client = fileOperations._getS3Client
+  const originalGetCloudConfig = globalConfig.getCloudConfig
+  const originalRunCloudAutoRestore = fileOperations._runCloudAutoRestore
+  const originalRunCloudAutoBackup = fileOperations._runCloudAutoBackup
+  const queueKey = fileOperations._pendingCloudDeleteStorageKey
+  const deleted = []
+  let restoreCalls = 0
+  let backupCalls = 0
+  const remoteKeys = ['note/deleted.md']
+
+  createFixtureFile(tempRoot, 'note/local.md', 'local')
+  fs.utimesSync(path.join(tempRoot, 'note', 'local.md'), new Date('2025-03-01T00:00:00Z'), new Date('2025-03-01T00:00:00Z'))
+  writeCryptoStorageValue(queueKey, [{ path: 'note/deleted.md', recursive: false }])
+
+  globalConfig.getCloudConfig = () => ({
+    region: 'test-region',
+    accessKeyId: 'test-key',
+    secretAccessKey: 'test-secret',
+    bucket: 'test-bucket',
+    autoSyncEnabled: true
+  })
+  fileOperations._getS3Client = () => ({
+    listObjects: async () => [...remoteKeys],
+    deleteFile: async (_bucket, key) => {
+      deleted.push(key)
+      const idx = remoteKeys.indexOf(key)
+      if (idx >= 0) remoteKeys.splice(idx, 1)
+    },
+    headObject: async () => ({
+      lastModified: new Date('2025-04-01T00:00:00Z')
+    })
+  })
+  fileOperations._runCloudAutoRestore = async () => {
+    restoreCalls += 1
+  }
+  fileOperations._runCloudAutoBackup = async () => {
+    backupCalls += 1
+  }
+
+  t.after(() => {
+    fileOperations._getS3Client = originalGetS3Client
+    globalConfig.getCloudConfig = originalGetCloudConfig
+    fileOperations._runCloudAutoRestore = originalRunCloudAutoRestore
+    fileOperations._runCloudAutoBackup = originalRunCloudAutoBackup
+  })
+
+  await fileOperations._runCloudAutoDecision()
+
+  assert.deepEqual(deleted, ['note/deleted.md'])
+  assert.equal(restoreCalls, 0)
+  assert.equal(backupCalls, 1)
+  assert.deepEqual(readCryptoStorageValue(queueKey), [])
 })
 
 test('cloud auto decision prefers the newer side by file timestamps', async (t) => {

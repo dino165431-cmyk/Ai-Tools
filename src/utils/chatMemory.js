@@ -1529,7 +1529,9 @@ export async function extractAndStoreMemory({ userText, assistantText, systemPro
     selection: config.extraction,
     conversationPairs
   })
-  const items = await upsertExtractedMemoryItems(extracted, config)
+  const latestConfig = getMemoryConfig()
+  if (!latestConfig.enabled || latestConfig.autoExtract === false) return []
+  const items = await upsertExtractedMemoryItems(extracted, latestConfig)
   if (autoClean && items.length) scheduleAutoCleanMemoryStore()
   return items
 }
