@@ -28,19 +28,33 @@
       {{ runtimeIssue }}
     </n-alert>
 
-    <div class="session-tree__scroll">
+    <div
+      class="session-tree__scroll"
+      :class="{ 'is-drop-root-target': isDropRootTarget }"
+      @dragover.prevent="handleBlankAreaDragOver"
+      @dragleave="handleBlankAreaDragLeave"
+      @drop.prevent="handleBlankAreaDrop"
+    >
       <n-tree
         class="session-tree__list"
         block-line
         virtual-scroll
+        draggable
         :animated="false"
         expand-on-click
         ellipsis
         :data="treeData"
+        :allow-drop="allowTreeDrop"
         :node-props="nodeProps"
         v-model:expanded-keys="expandedKeys"
         v-model:selected-keys="selectedKeys"
         @update:selected-keys="handleSelectedKeysChange"
+        @dragstart="handleTreeDragStart"
+        @dragend="handleTreeDragEnd"
+        @dragenter="handleTreeDragEnter"
+        @dragleave="handleTreeDragLeave"
+        @dragover="handleTreeDragOver"
+        @drop="handleTreeDrop"
         style="width: 100%; height: 100%; min-height: 0;"
         :scrollbar-props="{ trigger: 'none' }"
         :render-prefix="renderPrefix"
@@ -112,6 +126,7 @@
 
 <script setup>
 import { ref, h, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import path from 'path-browserify'
 import { FileTrayFullOutline, Folder, FolderOpenOutline, RefreshOutline, CreateOutline, TrashOutline } from '@vicons/ionicons5'
 import { NIcon, NTree, NDropdown, useMessage, useDialog, NInput, NButton, NModal, NTooltip, NAlert } from 'naive-ui'
 import { createDirectory, writeFile, listDirectory, exists, stat, deleteItem, moveItem, openInFileManager, describeFileOperationsError } from '@/utils/fileOperations'
@@ -149,6 +164,9 @@ const showContextMenu = ref(false)
 const menuX = ref(0)
 const menuY = ref(0)
 const currentNode = ref(null)
+const draggingSourcePath = ref('')
+const dropTargetPath = ref('')
+const isDropRootTarget = computed(() => normalizeTreePath(dropTargetPath.value) === normalizeTreePath(props.root))
 
 const showFolderPicker = ref(false)
 const folderExpandedKeys = ref([])
@@ -248,25 +266,49 @@ async function moveSessionAssetDirectoryForRename(oldPath, newPath) {
 
 function removeTreeNodeByPath(targetPath) {
   const normalized = normalizeTreePath(targetPath)
-  if (!normalized) return false
-  const parentPath = normalized.includes('/') ? normalized.slice(0, normalized.lastIndexOf('/')) : props.root
-  if (parentPath === props.root) {
-    const next = (Array.isArray(treeData.value) ? treeData.value : []).filter((node) => node?.key !== normalized)
-    if (next.length === treeData.value.length) return false
-    treeData.value = next
-  } else {
-    const parentNode = findNodeByKey(treeData.value, parentPath)
-    if (!parentNode || !Array.isArray(parentNode.children)) return false
-    const next = parentNode.children.filter((node) => node?.key !== normalized)
-    if (next.length === parentNode.children.length) return false
-    parentNode.children = next
-  }
-  selectedKeys.value = selectedKeys.value.filter((key) => key !== normalized)
-  selectedFolderKeys.value = selectedFolderKeys.value.filter((key) => key !== normalized)
+  return !!detachTreeNodeByPath(normalized)
+}
+
+function clearTreeStateForRemovedPath(targetPath) {
+  const normalized = normalizeTreePath(targetPath)
+  if (!normalized) return
+  selectedKeys.value = selectedKeys.value.filter((key) => key !== normalized && !String(key || '').startsWith(`${normalized}/`))
+  selectedFolderKeys.value = selectedFolderKeys.value.filter((key) => key !== normalized && !String(key || '').startsWith(`${normalized}/`))
   expandedKeys.value = expandedKeys.value.filter((key) => key !== normalized && !String(key || '').startsWith(`${normalized}/`))
   folderExpandedKeys.value = folderExpandedKeys.value.filter((key) => key !== normalized && !String(key || '').startsWith(`${normalized}/`))
-  loadedPaths.delete(normalized)
-  return true
+  for (const loadedPath of [...loadedPaths]) {
+    if (loadedPath === normalized || String(loadedPath || '').startsWith(`${normalized}/`)) {
+      loadedPaths.delete(loadedPath)
+    }
+  }
+}
+
+function detachTreeNodeByPath(targetPath, options = {}) {
+  const normalized = normalizeTreePath(targetPath)
+  if (!normalized || normalized === props.root) return null
+  const parentPath = normalized.includes('/') ? normalized.slice(0, normalized.lastIndexOf('/')) : props.root
+  let detached = null
+  if (parentPath === props.root) {
+    const current = Array.isArray(treeData.value) ? [...treeData.value] : []
+    const next = []
+    current.forEach((node) => {
+      if (node?.key === normalized && !detached) detached = node
+      else next.push(node)
+    })
+    if (detached) treeData.value = next
+  } else {
+    const parentNode = findNodeByKey(treeData.value, parentPath)
+    if (!parentNode || !Array.isArray(parentNode.children)) return null
+    const next = []
+    parentNode.children.forEach((node) => {
+      if (node?.key === normalized && !detached) detached = node
+      else next.push(node)
+    })
+    if (detached) parentNode.children = next
+  }
+  if (!detached) return null
+  if (!options.preserveState) clearTreeStateForRemovedPath(normalized)
+  return detached
 }
 
 function getPathDepth(p) {
@@ -298,6 +340,12 @@ async function ensureRootReady() {
 
 onMounted(async () => {
   try {
+    window.addEventListener('sessionFilesChanged', handleExternalSessionFilesChanged)
+  } catch {
+    // ignore
+  }
+
+  try {
     await ensureRootReady()
     await loadDirectory(props.root, null)
     runtimeIssue.value = ''
@@ -308,7 +356,18 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  try {
+    window.removeEventListener('sessionFilesChanged', handleExternalSessionFilesChanged)
+  } catch {
+    // ignore
+  }
 })
+
+function handleExternalSessionFilesChanged(e) {
+  const rootPath = String(e?.detail?.rootPath || '').trim()
+  if (rootPath && rootPath !== props.root) return
+  void applyExternalTreeChanges(e?.detail)
+}
 
 async function refreshTree(options = {}) {
   const silent = !!options.silent
@@ -418,7 +477,7 @@ async function handleMenuSelect(key) {
     return
   }
   if (!node) return
-  if (key === 'rename') await renameNode(node)
+  if (key === 'rename') await handleRenameNode(node)
   if (key === 'delete') await deleteNode(node)
 }
 
@@ -591,7 +650,10 @@ async function loadDirectory(relativePath, parentNode) {
 }
 
 function nodeProps({ option }) {
+  const normalizedOptionPath = normalizeTreePath(option.key)
+  const isDropTarget = normalizedOptionPath && normalizeTreePath(dropTargetPath.value) === normalizedOptionPath
   return {
+    class: isDropTarget ? 'is-drop-target' : '',
     onClick() {
       selectedKeys.value = [option.key]
     },
@@ -627,6 +689,16 @@ function handleTreeContextMenu(e) {
   setTimeout(() => {
     showContextMenu.value = true
   }, 10)
+}
+
+function handleTreeDragStart({ node }) {
+  dropTargetPath.value = ''
+  draggingSourcePath.value = normalizeTreePath(node?.key)
+}
+
+function handleTreeDragEnd() {
+  draggingSourcePath.value = ''
+  dropTargetPath.value = ''
 }
 
 function getDirectoryPathForNode(node) {
@@ -860,6 +932,362 @@ function updateTreeStateAfterPathChange(oldBase, newBase) {
   folderExpandedKeys.value = uniqueStrings(folderExpandedKeys.value.map((k) => replacePathPrefix(k, oldBase, newBase)))
   selectedKeys.value = uniqueStrings(selectedKeys.value.map((k) => replacePathPrefix(k, oldBase, newBase)))
   selectedFolderKeys.value = uniqueStrings(selectedFolderKeys.value.map((k) => replacePathPrefix(k, oldBase, newBase)))
+  const nextLoaded = new Set()
+  for (const loadedPath of loadedPaths) {
+    nextLoaded.add(replacePathPrefix(loadedPath, oldBase, newBase))
+  }
+  loadedPaths.clear()
+  for (const loadedPath of nextLoaded) {
+    loadedPaths.add(loadedPath)
+  }
+}
+
+function updateNodeKeysRecursively(treeNode, oldBase, newBase) {
+  if (!treeNode) return
+  treeNode.key = replacePathPrefix(treeNode.key, oldBase, newBase)
+  if (Array.isArray(treeNode.children)) {
+    treeNode.children.forEach((child) => updateNodeKeysRecursively(child, oldBase, newBase))
+  }
+}
+
+function pruneNestedPaths(paths, options = {}) {
+  const normalized = Array.from(new Set((Array.isArray(paths) ? paths : [])
+    .map((item) => normalizeTreePath(item))
+    .filter(Boolean)))
+  const descending = options.descending === true
+  normalized.sort((a, b) => {
+    const depthDiff = a.split('/').length - b.split('/').length
+    return descending ? depthDiff * -1 : depthDiff
+  })
+  return normalized.filter((item, index) => {
+    return !normalized.some((other, otherIndex) => {
+      if (otherIndex === index || !other) return false
+      return other !== item && item.startsWith(`${other}/`)
+    })
+  })
+}
+
+async function buildExternalTreeNode(entryPath) {
+  const normalizedPath = normalizeTreePath(entryPath)
+  if (!normalizedPath || normalizedPath === props.root || isChatSessionAssetsDirectoryPath(normalizedPath)) return null
+
+  let statInfo = null
+  try {
+    statInfo = await stat(normalizedPath)
+  } catch {
+    return null
+  }
+
+  const isDirectory = !!statInfo?.isDirectory?.()
+  const fileName = normalizedPath.split('/').pop()
+  if (!isDirectory && !String(fileName || '').endsWith('.json')) return null
+
+  const fileMeta = isDirectory ? null : await readSessionFileMeta(normalizedPath, statInfo)
+  return {
+    key: normalizedPath,
+    label: isDirectory ? displaySystemDirName(fileName) : fileMeta.label,
+    metaLabel: fileMeta?.metaLabel || '',
+    sortTimeMs: fileMeta?.sortTimeMs || 0,
+    sessionKind: fileMeta?.sessionKind || '',
+    isLeaf: !isDirectory,
+    children: isDirectory ? [] : undefined
+  }
+}
+
+async function applyExternalAddedPath(entryPath) {
+  const normalizedPath = normalizeTreePath(entryPath)
+  if (!normalizedPath || normalizedPath === props.root || isChatSessionAssetsDirectoryPath(normalizedPath)) return false
+  const parentPath = normalizedPath.includes('/') ? normalizedPath.substring(0, normalizedPath.lastIndexOf('/')) : props.root
+  if (parentPath !== props.root && !loadedPaths.has(parentPath)) return false
+  const node = await buildExternalTreeNode(normalizedPath)
+  if (!node) return false
+  const inserted = upsertTreeNode(parentPath || props.root, node)
+  if (!inserted) return false
+  if (!node.isLeaf && (expandedKeys.value.includes(normalizedPath) || folderExpandedKeys.value.includes(normalizedPath))) {
+    await loadDirectory(normalizedPath, inserted)
+  }
+  return true
+}
+
+function moveExistingTreeNode(oldPath, newPath, nodePatch = null) {
+  const normalizedOldPath = normalizeTreePath(oldPath)
+  const normalizedNewPath = normalizeTreePath(newPath)
+  if (!normalizedOldPath || !normalizedNewPath || normalizedOldPath === normalizedNewPath) return false
+  const detached = detachTreeNodeByPath(normalizedOldPath, { preserveState: true })
+  if (!detached) return false
+
+  updateNodeKeysRecursively(detached, normalizedOldPath, normalizedNewPath)
+  if (nodePatch && typeof nodePatch === 'object') {
+    detached.label = String(nodePatch.label || detached.label || '')
+    detached.metaLabel = String(nodePatch.metaLabel || detached.metaLabel || '')
+    detached.sortTimeMs = Number(nodePatch.sortTimeMs || detached.sortTimeMs || 0) || 0
+    detached.sessionKind = String(nodePatch.sessionKind || detached.sessionKind || '')
+    detached.isLeaf = !!nodePatch.isLeaf
+  }
+
+  const parentPath = normalizedNewPath.includes('/') ? normalizedNewPath.substring(0, normalizedNewPath.lastIndexOf('/')) : props.root
+  upsertTreeNode(parentPath || props.root, detached)
+  updateTreeStateAfterPathChange(normalizedOldPath, normalizedNewPath)
+  return true
+}
+
+async function applyExternalTreeChanges(detail = {}) {
+  const addedPaths = pruneNestedPaths(detail?.addedPaths || [])
+  const removedPaths = pruneNestedPaths(detail?.removedPaths || [])
+  const totalRoots = addedPaths.length + removedPaths.length
+
+  if (
+    totalRoots === 0
+    || addedPaths.includes(props.root)
+    || removedPaths.includes(props.root)
+    || totalRoots > 24
+  ) {
+    await refreshTree({ silent: true })
+    return
+  }
+
+  if (addedPaths.length === 1 && removedPaths.length === 1) {
+    const nextNode = await buildExternalTreeNode(addedPaths[0])
+    const moved = moveExistingTreeNode(removedPaths[0], addedPaths[0], nextNode)
+    if (moved) return
+  }
+
+  removedPaths
+    .sort((a, b) => b.split('/').length - a.split('/').length)
+    .forEach((targetPath) => {
+      removeTreeNodeByPath(targetPath)
+    })
+
+  for (const targetPath of addedPaths.sort((a, b) => a.split('/').length - b.split('/').length)) {
+    await applyExternalAddedPath(targetPath)
+  }
+}
+
+async function refreshTreeBranch(targetPath, force = false) {
+  const normalizedPath = normalizeTreePath(targetPath)
+  if (!normalizedPath) return false
+
+  if (normalizedPath === props.root) {
+    await loadDirectory(props.root, null)
+    return true
+  }
+
+  const node = findNodeByKey(treeData.value, normalizedPath)
+  if (!node) return false
+  if (!force && !loadedPaths.has(normalizedPath)) return false
+
+  await loadDirectory(normalizedPath, node)
+  return true
+}
+
+function allowTreeDrop({ node, dropPosition }) {
+  if (!node) return true
+  if (dropPosition === 'inside') return !node.isLeaf
+  return true
+}
+
+function resolveDropTargetDirectory(targetNode, dropPosition) {
+  if (!targetNode) return props.root
+  if (dropPosition === 'inside') {
+    return targetNode.isLeaf ? '' : normalizeTreePath(targetNode.key)
+  }
+  return getDirectoryPathForNode(targetNode)
+}
+
+function isPathEqualOrInside(targetPath, basePath) {
+  const target = normalizeTreePath(targetPath)
+  const base = normalizeTreePath(basePath)
+  if (!target || !base) return false
+  return target === base || target.startsWith(`${base}/`)
+}
+
+async function moveSessionEntryToPath(oldPathRaw, newPathRaw) {
+  const oldPath = normalizeTreePath(oldPathRaw)
+  const newPath = normalizeTreePath(newPathRaw)
+  if (!oldPath || !newPath || oldPath === newPath) return false
+
+  const movingNode = findNodeByKey(treeData.value, oldPath)
+  const isDirectory = !!movingNode && !movingNode.isLeaf
+  const targetParent = newPath.includes('/') ? newPath.substring(0, newPath.lastIndexOf('/')) : props.root
+
+  if (isProtectedSystemDir(oldPath) || isInsideProtectedSystemDir(oldPath)) {
+    message.warning('系统目录及其内容不支持拖拽移动')
+    return false
+  }
+  if (isProtectedSystemDir(targetParent) || isInsideProtectedSystemDir(targetParent)) {
+    message.warning('不能移动到系统目录中')
+    return false
+  }
+  if (isDirectory && isPathEqualOrInside(newPath, oldPath)) {
+    message.warning('不能把文件夹移动到自身或其子目录中')
+    return false
+  }
+  if (await exists(newPath)) {
+    message.warning('目标位置已存在同名文件或文件夹')
+    return false
+  }
+
+  await moveItem(oldPath, newPath)
+  if (movingNode?.isLeaf) {
+    await moveSessionAssetDirectoryForRename(oldPath, newPath)
+  }
+
+  const nextNode = await buildExternalTreeNode(newPath)
+  const oldParentPath = oldPath.includes('/') ? oldPath.substring(0, oldPath.lastIndexOf('/')) : props.root
+  const targetParentPath = newPath.includes('/') ? newPath.substring(0, newPath.lastIndexOf('/')) : props.root
+  moveExistingTreeNode(oldPath, newPath, nextNode)
+  if (!findNodeByKey(treeData.value, newPath)) {
+    await refreshTreeBranch(targetParentPath, true)
+  }
+  if (findNodeByKey(treeData.value, oldPath)) {
+    await refreshTreeBranch(oldParentPath)
+  }
+  emit('rename', oldPath, newPath)
+  return true
+}
+
+function clearDropTarget() {
+  dropTargetPath.value = ''
+}
+
+function setDropTargetFromNode(node) {
+  const path = normalizeTreePath(node?.key)
+  if (!path) return
+  dropTargetPath.value = path
+}
+
+async function handleTreeDrop({ node, dragNode, dropPosition }) {
+  const sourcePath = normalizeTreePath(dragNode?.key)
+  const targetDir = resolveDropTargetDirectory(node, dropPosition)
+  clearDropTarget()
+  if (!sourcePath || !targetDir) return
+
+  const nextPath = normalizeTreePath(`${targetDir}/${path.basename(sourcePath)}`)
+  if (!nextPath || nextPath === sourcePath) return
+
+  try {
+    await moveSessionEntryToPath(sourcePath, nextPath)
+  } catch (err) {
+    message.error('移动失败：' + (err?.message || String(err)))
+  }
+}
+
+function handleTreeDragEnter({ node }) {
+  if (!draggingSourcePath.value) return
+  setDropTargetFromNode(node)
+}
+
+function handleTreeDragOver({ node }) {
+  if (!draggingSourcePath.value) return
+  setDropTargetFromNode(node)
+}
+
+function handleTreeDragLeave({ node, event }) {
+  if (!draggingSourcePath.value) return
+  if (event?.currentTarget !== event?.target) return
+  const path = normalizeTreePath(node?.key)
+  if (path && normalizeTreePath(dropTargetPath.value) === path) {
+    clearDropTarget()
+  }
+}
+
+function handleBlankAreaDragOver(event) {
+  const target = event?.target
+  if (target?.closest?.('.n-tree-node, .n-tree-node-content')) return
+  if (!draggingSourcePath.value) return
+  dropTargetPath.value = normalizeTreePath(props.root)
+}
+
+function handleBlankAreaDragLeave(event) {
+  if (event?.currentTarget !== event?.target) return
+  if (isDropRootTarget.value) {
+    clearDropTarget()
+  }
+}
+
+async function handleBlankAreaDrop(event) {
+  const target = event?.target
+  if (target?.closest?.('.n-tree-node, .n-tree-node-content')) return
+
+  const sourcePath = normalizeTreePath(draggingSourcePath.value)
+  if (!sourcePath) return
+
+  const nextPath = normalizeTreePath(`${props.root}/${path.basename(sourcePath)}`)
+  if (!nextPath || nextPath === sourcePath) return
+
+  try {
+    await moveSessionEntryToPath(sourcePath, nextPath)
+  } catch (err) {
+    message.error('移动失败：' + (err?.message || String(err)))
+  } finally {
+    draggingSourcePath.value = ''
+    clearDropTarget()
+  }
+}
+
+async function handleRenameNode(node) {
+  try {
+    await ensureRootReady()
+  } catch (err) {
+    message.error('初始化失败：' + (err?.message || String(err)))
+    return
+  }
+
+  const isFile = !!node?.isLeaf
+  const oldPath = String(node?.key || '').trim()
+  if (!oldPath) return
+  if (isProtectedPath(oldPath)) {
+    message.warning('系统目录不支持重命名')
+    return
+  }
+
+  const parentPath = oldPath.includes('/') ? oldPath.substring(0, oldPath.lastIndexOf('/')) : props.root
+  const inputValue = ref(String(node?.label || ''))
+
+  dialog.create({
+    title: '重命名',
+    content: () =>
+      h('div', [
+        h('span', null, '新名称：'),
+        h(NInput, {
+          value: inputValue.value,
+          onUpdateValue: (val) => {
+            inputValue.value = val
+          },
+          autofocus: true,
+          placeholder: isFile ? '请输入新名称（不含扩展名）' : '请输入新文件夹名称',
+          style: 'margin-top: 8px; width: 100%;'
+        })
+      ]),
+    positiveText: '确定',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      const newName = String(inputValue.value || '').trim()
+      if (!newName) {
+        message.warning('名称不能为空')
+        return false
+      }
+
+      const newPath = isFile
+        ? `${parentPath}/${newName.endsWith('.json') ? newName : `${newName}.json`}`
+        : `${parentPath}/${newName}`
+
+      if (oldPath === newPath) return true
+      if (await exists(newPath)) {
+        message.warning('已存在同名文件或文件夹')
+        return false
+      }
+
+      try {
+        await moveSessionEntryToPath(oldPath, newPath)
+        message.success('重命名成功')
+        return true
+      } catch (err) {
+        message.error('重命名失败：' + (err?.message || String(err)))
+        return false
+      }
+    }
+  })
 }
 
 async function renameNode(node) {
@@ -1249,12 +1677,19 @@ defineExpose({
 
 .session-tree__scroll {
   flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
   min-height: 0;
   overflow: hidden;
   overscroll-behavior: contain;
 }
 
+.session-tree__scroll.is-drop-root-target {
+  box-shadow: inset 0 0 0 1px rgba(55, 128, 138, 0.22), inset 0 0 0 999px rgba(55, 128, 138, 0.035);
+}
+
 .session-tree__list {
+  flex: 1 1 auto;
   width: 100%;
   height: 100%;
   min-height: 0;
@@ -1294,6 +1729,11 @@ defineExpose({
   transition: background-color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
 }
 
+.session-tree :deep(.n-tree-node.is-drop-target > .n-tree-node-content) {
+  background: linear-gradient(90deg, rgba(55, 128, 138, 0.2), rgba(55, 128, 138, 0.08));
+  box-shadow: inset 0 0 0 1px rgba(55, 128, 138, 0.22);
+}
+
 .session-tree :deep(.n-tree-node-content__text) {
   min-width: 0;
   width: 100%;
@@ -1303,6 +1743,11 @@ defineExpose({
 
 .session-tree.is-dark :deep(.n-tree-node-content) {
   color: rgba(226, 232, 240, 0.94);
+}
+
+.session-tree.is-dark :deep(.n-tree-node.is-drop-target > .n-tree-node-content) {
+  background: linear-gradient(90deg, rgba(148, 163, 184, 0.18), rgba(148, 163, 184, 0.07));
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.22);
 }
 
 .session-tree.is-dark :deep(.n-tree-node-switcher) {

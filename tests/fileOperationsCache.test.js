@@ -374,10 +374,11 @@ test('manual cloud operations clear queued auto timers before running', async (t
   assert.deepEqual(calls.slice(0, 4), ['clearDecision', 'clearBackup', 'clearRestore', 'run'])
 })
 
-test('external tree refresh marks indexes dirty and dispatches root events', async (t) => {
+test('external watch content changes mark indexes dirty without dispatching tree events', async (t) => {
   const { tempRoot } = setupFileOperationsTest(t)
   const originalWindow = globalThis.window
   const dispatched = []
+  const noteRoot = path.join(tempRoot, 'note')
 
   createFixtureFile(tempRoot, 'note/demo.md', '# demo')
   await require('../public/preload/utils/content-index.js').ensureIndex('note')
@@ -392,8 +393,72 @@ test('external tree refresh marks indexes dirty and dispatches root events', asy
 
   t.after(() => {
     globalThis.window = originalWindow
+    fileOperations._externalWatchers.delete('note')
+    const timer = fileOperations._externalWatchDebounceTimers.get('note')
+    if (timer) clearTimeout(timer)
+    fileOperations._externalWatchDebounceTimers.delete('note')
   })
 
+  const entry = fileOperations._createExternalWatcherEntry('note', noteRoot)
+  entry.snapshot = fileOperations._captureExternalWatchSnapshot('note', noteRoot)
+  entry.treeSnapshot = fileOperations._captureExternalWatchSnapshot('note', noteRoot, {
+    includeFileMetadata: false
+  })
+  fileOperations._externalWatchers.set('note', entry)
+
+  fs.writeFileSync(path.join(noteRoot, 'demo.md'), '# demo changed')
+  fileOperations._internalMutationSuppressUntil.clear()
+  fileOperations._queueExternalTreeRefresh('note', 'note/demo.md')
+  await new Promise((resolve) => setTimeout(resolve, 700))
+
+  const contentIndex = require('../public/preload/utils/content-index.js')
+  const noteIndex = await contentIndex._internal.readIndex('note')
+
+  assert.equal(noteIndex.dirty, true)
+  assert.deepEqual(
+    dispatched.map((item) => item.type),
+    ['storageFilesChanged']
+  )
+  assert.deepEqual(dispatched.find((item) => item.type === 'storageFilesChanged')?.detail, {
+    path: 'note/demo.md',
+    rootPath: 'note',
+    paths: ['note/demo.md']
+  })
+})
+
+test('external watch structural changes dispatch tree events', async (t) => {
+  const { tempRoot } = setupFileOperationsTest(t)
+  const originalWindow = globalThis.window
+  const dispatched = []
+  const noteRoot = path.join(tempRoot, 'note')
+
+  createFixtureFile(tempRoot, 'note/demo.md', '# demo')
+  await require('../public/preload/utils/content-index.js').ensureIndex('note')
+
+  globalThis.window = {
+    CustomEvent,
+    dispatchEvent(event) {
+      dispatched.push({ type: event?.type, detail: event?.detail })
+      return true
+    }
+  }
+
+  t.after(() => {
+    globalThis.window = originalWindow
+    fileOperations._externalWatchers.delete('note')
+    const timer = fileOperations._externalWatchDebounceTimers.get('note')
+    if (timer) clearTimeout(timer)
+    fileOperations._externalWatchDebounceTimers.delete('note')
+  })
+
+  const entry = fileOperations._createExternalWatcherEntry('note', noteRoot)
+  entry.snapshot = fileOperations._captureExternalWatchSnapshot('note', noteRoot)
+  entry.treeSnapshot = fileOperations._captureExternalWatchSnapshot('note', noteRoot, {
+    includeFileMetadata: false
+  })
+  fileOperations._externalWatchers.set('note', entry)
+
+  fs.writeFileSync(path.join(noteRoot, 'outside.md'), '# outside')
   fileOperations._internalMutationSuppressUntil.clear()
   fileOperations._queueExternalTreeRefresh('note', 'note/outside.md')
   await new Promise((resolve) => setTimeout(resolve, 700))
@@ -409,6 +474,8 @@ test('external tree refresh marks indexes dirty and dispatches root events', asy
   assert.deepEqual(dispatched.find((item) => item.type === 'noteFilesChanged')?.detail, {
     path: 'note/outside.md',
     rootPath: 'note',
-    paths: ['note/outside.md']
+    paths: ['note/outside.md'],
+    addedPaths: ['note/outside.md'],
+    removedPaths: []
   })
 })

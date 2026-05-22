@@ -224,18 +224,60 @@ class FileOperations {
 
         const timer = setTimeout(async () => {
             this._externalWatchDebounceTimers.delete(root)
+            const entry = this._externalWatchers.get(root)
+            if (!entry) return
+
+            let nextSnapshot = entry.snapshot
+            let nextTreeSnapshot = entry.treeSnapshot
+            try {
+                nextSnapshot = this._captureExternalWatchSnapshot(root, entry.absPath)
+                nextTreeSnapshot = this._captureExternalWatchSnapshot(root, entry.absPath, {
+                    includeFileMetadata: false
+                })
+            } catch (err) {
+                if (err?.code === 'ENOENT') {
+                    nextSnapshot = new Map()
+                    nextTreeSnapshot = new Map()
+                } else {
+                    console.warn?.(`[External watch] snapshot refresh failed for ${root}:`, err)
+                    return
+                }
+            }
+
+            const contentChangedPaths = this._diffExternalWatchSnapshots(entry.snapshot, nextSnapshot)
+            const structureChangedPaths = this._diffExternalWatchSnapshots(entry.treeSnapshot, nextTreeSnapshot)
+            const { addedPaths, removedPaths } = this._diffExternalWatchPresence(entry.treeSnapshot, nextTreeSnapshot)
+            entry.snapshot = nextSnapshot
+            entry.treeSnapshot = nextTreeSnapshot
+
+            if (!contentChangedPaths.length) return
+
             try {
                 await contentIndex.markDirtyByPath(root, 'external_watch')
             } catch (err) {
                 console.warn?.('[Content index] external watch dirty mark failed:', err)
             }
 
-            const eventDetail = { path: changed, rootPath: root, paths: [changed] }
-            this._dispatchWindowEvent('storageFilesChanged', eventDetail)
-            if (root === 'note') {
-                this._dispatchWindowEvent('noteFilesChanged', eventDetail)
-            } else if (root === 'session') {
-                this._dispatchWindowEvent('sessionFilesChanged', eventDetail)
+            const storageEventDetail = {
+                path: contentChangedPaths.length === 1 ? contentChangedPaths[0] : root,
+                rootPath: root,
+                paths: contentChangedPaths
+            }
+            this._dispatchWindowEvent('storageFilesChanged', storageEventDetail)
+
+            if (structureChangedPaths.length) {
+                const treeEventDetail = {
+                    path: structureChangedPaths.length === 1 ? structureChangedPaths[0] : root,
+                    rootPath: root,
+                    paths: structureChangedPaths,
+                    addedPaths,
+                    removedPaths
+                }
+                if (root === 'note') {
+                    this._dispatchWindowEvent('noteFilesChanged', treeEventDetail)
+                } else if (root === 'session') {
+                    this._dispatchWindowEvent('sessionFilesChanged', treeEventDetail)
+                }
             }
         }, EXTERNAL_WATCH_DEBOUNCE_MS)
 
@@ -269,7 +311,8 @@ class FileOperations {
             watcher: null,
             childWatchers: new Map(),
             pollTimer: null,
-            snapshot: new Map()
+            snapshot: new Map(),
+            treeSnapshot: new Map()
         }
     }
 
@@ -297,6 +340,7 @@ class FileOperations {
         }
 
         entry.snapshot = new Map()
+        entry.treeSnapshot = new Map()
     }
 
     _closeExternalWatchers() {
@@ -389,7 +433,8 @@ class FileOperations {
         return dirs
     }
 
-    _captureExternalWatchSnapshot(rootRel, rootAbs) {
+    _captureExternalWatchSnapshot(rootRel, rootAbs, options = {}) {
+        const includeFileMetadata = options.includeFileMetadata !== false
         const entriesMap = new Map()
         const queue = [{ abs: rootAbs, rel: '' }]
 
@@ -421,6 +466,11 @@ class FileOperations {
                 }
 
                 if (entry.isFile()) {
+                    if (!includeFileMetadata) {
+                        entriesMap.set(normalizedRel, 'file')
+                        continue
+                    }
+
                     let statInfo = null
                     try {
                         statInfo = fsSync.statSync(path.join(current.abs, entry.name))
@@ -434,6 +484,44 @@ class FileOperations {
         }
 
         return entriesMap
+    }
+
+    _diffExternalWatchSnapshots(previousSnapshot, nextSnapshot) {
+        const previous = previousSnapshot instanceof Map ? previousSnapshot : new Map()
+        const next = nextSnapshot instanceof Map ? nextSnapshot : new Map()
+        const changedPaths = new Set()
+
+        for (const [entryPath, signature] of next.entries()) {
+            if (!previous.has(entryPath) || previous.get(entryPath) !== signature) {
+                changedPaths.add(entryPath)
+            }
+        }
+
+        for (const entryPath of previous.keys()) {
+            if (!next.has(entryPath)) {
+                changedPaths.add(entryPath)
+            }
+        }
+
+        return [...changedPaths].sort()
+    }
+
+    _diffExternalWatchPresence(previousSnapshot, nextSnapshot) {
+        const previous = previousSnapshot instanceof Map ? previousSnapshot : new Map()
+        const next = nextSnapshot instanceof Map ? nextSnapshot : new Map()
+        const addedPaths = []
+        const removedPaths = []
+
+        for (const entryPath of next.keys()) {
+            if (!previous.has(entryPath)) addedPaths.push(entryPath)
+        }
+        for (const entryPath of previous.keys()) {
+            if (!next.has(entryPath)) removedPaths.push(entryPath)
+        }
+
+        addedPaths.sort()
+        removedPaths.sort()
+        return { addedPaths, removedPaths }
     }
 
     _armRecursiveExternalWatcher(entry) {
@@ -456,28 +544,13 @@ class FileOperations {
 
     _armPollingExternalWatcher(entry) {
         entry.snapshot = this._captureExternalWatchSnapshot(entry.rootRel, entry.absPath)
+        entry.treeSnapshot = this._captureExternalWatchSnapshot(entry.rootRel, entry.absPath, {
+            includeFileMetadata: false
+        })
         entry.pollTimer = setInterval(() => {
             try {
                 const nextSnapshot = this._captureExternalWatchSnapshot(entry.rootRel, entry.absPath)
-                const previousSnapshot = entry.snapshot || new Map()
-                let changed = false
-
-                for (const [filePath, signature] of nextSnapshot.entries()) {
-                    if (!previousSnapshot.has(filePath) || previousSnapshot.get(filePath) !== signature) {
-                        changed = true
-                        break
-                    }
-                }
-
-                if (!changed) {
-                    for (const filePath of previousSnapshot.keys()) {
-                        if (!nextSnapshot.has(filePath)) {
-                            changed = true
-                            break
-                        }
-                    }
-                }
-
+                const changed = this._diffExternalWatchSnapshots(entry.snapshot, nextSnapshot).length > 0
                 entry.snapshot = nextSnapshot
                 if (changed) {
                     this._queueExternalTreeRefresh(entry.rootRel, entry.rootRel)
@@ -485,6 +558,7 @@ class FileOperations {
             } catch (err) {
                 if (err?.code === 'ENOENT') {
                     entry.snapshot = new Map()
+                    entry.treeSnapshot = new Map()
                     this._queueExternalTreeRefresh(entry.rootRel, entry.rootRel)
                     return
                 }
@@ -497,6 +571,10 @@ class FileOperations {
 
     _startExternalWatcherForRoot(rootRel, absPath) {
         const entry = this._createExternalWatcherEntry(rootRel, absPath)
+        entry.snapshot = this._captureExternalWatchSnapshot(rootRel, absPath)
+        entry.treeSnapshot = this._captureExternalWatchSnapshot(rootRel, absPath, {
+            includeFileMetadata: false
+        })
         this._externalWatchers.set(rootRel, entry)
 
         try {
