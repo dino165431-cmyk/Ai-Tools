@@ -243,7 +243,7 @@ const newNoteName = ref('');
 const pendingCreateNoteType = ref('markdown');
 
 // 定义事件
-const emit = defineEmits(['select', 'prepare-delete', 'prepare-rename', 'delete', 'rename', 'set-password', 'clear-password', 'reset-password']);
+const emit = defineEmits(['select', 'prepare-delete', 'prepare-rename', 'delete', 'rename', 'set-password', 'clear-password', 'reset-password', 'export-html', 'export-png']);
 const folderPickerTitle = computed(() => `为新${getNoteTypeLabel(pendingCreateNoteType.value)}选择文件夹`);
 
 // 右键菜单选项
@@ -275,22 +275,10 @@ const menuOptions = computed(() => [
     type: 'divider'
   },
   {
-    label: '复制笔记链接',
-    key: 'copyNoteLink',
-    icon: () => h(NIcon, null, { default: () => h(CopyOutline) }),
-    disabled: !(currentNode.value && currentNode.value.isLeaf)
-  },
-  {
     label: '复制 Markdown 链接',
     key: 'copyNoteMarkdownLink',
     icon: () => h(NIcon, null, { default: () => h(CopyOutline) }),
     disabled: !(currentNode.value && currentNode.value.isLeaf)
-  },
-  {
-    label: '复制文件名',
-    key: 'copyFileName',
-    icon: () => h(NIcon, null, { default: () => h(CopyOutline) }),
-    disabled: !currentNode.value
   },
   {
     label: '复制相对路径',
@@ -326,8 +314,8 @@ const menuOptions = computed(() => [
     disabled: !(currentNode.value && currentNode.value.isLeaf && getNodeNoteType(currentNode.value) === 'markdown')
   },
   {
-    label: '导出 HTML（保留原始 HTML）',
-    key: 'exportHtmlRaw',
+    label: '导出成 PNG',
+    key: 'exportPng',
     icon: () => h(NIcon, null, { default: () => h(DownloadOutline) }),
     disabled: !(currentNode.value && currentNode.value.isLeaf && getNodeNoteType(currentNode.value) === 'markdown')
   },
@@ -996,19 +984,13 @@ async function handleMenuSelect(key) {
       if (node) deleteNode(node);
       break;
     case 'exportHtml':
-      if (node && node.isLeaf) await exportNoteAsHtml(node.key, { allowRawHtml: false });
+      if (node && node.isLeaf) emit('export-html', node.key);
       break;
-    case 'exportHtmlRaw':
-      if (node && node.isLeaf) await exportNoteAsHtml(node.key, { allowRawHtml: true });
-      break;
-    case 'copyNoteLink':
-      if (node && node.isLeaf) copyNoteLink(node);
+    case 'exportPng':
+      if (node && node.isLeaf) emit('export-png', node.key);
       break;
     case 'copyNoteMarkdownLink':
       if (node && node.isLeaf) copyNoteMarkdownLink(node);
-      break;
-    case 'copyFileName':
-      if (node) copyNodeFileName(node);
       break;
     case 'copyRelativePath':
       if (node) copyNodeRelativePath(node);

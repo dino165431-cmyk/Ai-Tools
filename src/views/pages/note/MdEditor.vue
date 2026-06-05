@@ -87,6 +87,7 @@ import { useMessage } from 'naive-ui';
 import {
   readFile,
   writeFile,
+  writeAbsoluteFile,
   exists,
   createDirectory,
   getFileBlobUrl,
@@ -97,7 +98,11 @@ import LazyMarkdownEditor from '@/components/LazyMarkdownEditor.vue';
 import { FileTrayFullOutline, CreateOutline } from '@vicons/ionicons5';
 import { NIcon, NCard, NButton } from 'naive-ui';
 import { copyTextToClipboard } from '@/utils/clipboard';
-import { createMarkdownDiagramDecorator } from '@/utils/markdownDiagramDecorator';
+import {
+  createMarkdownDiagramDecorator,
+  renderEchartsSvgForExport,
+  renderMermaidSvgForExport
+} from '@/utils/markdownDiagramDecorator';
 import { getSafeExternalUrl, safeOpenExternal } from '@/utils/safeOpenExternal';
 import { shouldPersistMarkdownDraftOnPathChange } from '@/utils/mdEditorSaveState';
 import {
@@ -714,8 +719,736 @@ async function flushPendingSave() {
   await queuePersistContent(snapshotPath, snapshotContent);
 }
 
+const EXPORT_MAX_CANVAS_EDGE = 16384;
+const EXPORT_IMAGE_TIMEOUT_MS = 12000;
+
+function getUtoolsApi() {
+  return window?.utools || globalThis?.utools || null;
+}
+
+function extractDialogPath(entry) {
+  if (!entry) return '';
+  if (typeof entry === 'string') return entry.trim();
+  if (typeof entry === 'object') {
+    const candidates = [entry.path, entry.filePath, entry.fullPath, entry.value];
+    for (const candidate of candidates) {
+      const text = typeof candidate === 'string' ? candidate.trim() : '';
+      if (text) return text;
+    }
+  }
+  return '';
+}
+
+function resolveSaveDialogPath(result) {
+  if (!result) return '';
+  if (typeof result === 'string') return result.trim();
+  if (typeof result === 'object') return extractDialogPath(result);
+  return '';
+}
+
+function openExportSaveDialog({ title, defaultPath, filters }) {
+  const api = getUtoolsApi();
+  if (!api?.showSaveDialog) throw new Error('当前环境不支持保存文件对话框。');
+  return resolveSaveDialogPath(api.showSaveDialog({
+    title,
+    defaultPath,
+    filters
+  }));
+}
+
+function sanitizeExportFileBaseName(name) {
+  const text = String(name || '').trim() || 'note';
+  return text.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_');
+}
+
+function buildDefaultExportFileName(extension) {
+  const safeExt = String(extension || '').replace(/^\./, '').trim() || 'txt';
+  return `${sanitizeExportFileBaseName(noteTitle.value)}.${safeExt}`;
+}
+
+function getPreviewViewportWidth(preview) {
+  const rect = preview?.getBoundingClientRect?.() || { width: 0 };
+  return Math.max(
+    1,
+    Math.ceil(preview?.clientWidth || preview?.scrollWidth || rect.width || 1)
+  );
+}
+
+function getDiagramExportSize(node) {
+  const sourceSvg = node?.querySelector?.('svg');
+  if (sourceSvg instanceof SVGElement) {
+    const rect = sourceSvg.getBoundingClientRect?.() || { width: 0, height: 0 };
+    const viewBox = String(sourceSvg.getAttribute?.('viewBox') || '').trim();
+    if (rect.width > 0 && rect.height > 0) {
+      return {
+        width: Math.max(240, Math.ceil(rect.width)),
+        height: Math.max(180, Math.ceil(rect.height))
+      };
+    }
+    if (viewBox) {
+      const parts = viewBox.split(/[\s,]+/).map((value) => Number(value)).filter((value) => Number.isFinite(value));
+      if (parts.length === 4 && parts[2] > 0 && parts[3] > 0) {
+        return {
+          width: Math.max(240, Math.ceil(parts[2])),
+          height: Math.max(180, Math.ceil(parts[3]))
+        };
+      }
+    }
+  }
+
+  const sourceCanvas = node?.querySelector?.('canvas');
+  if (sourceCanvas instanceof HTMLCanvasElement) {
+    return {
+      width: Math.max(240, Math.ceil(sourceCanvas.width || sourceCanvas.getBoundingClientRect?.().width || 960)),
+      height: Math.max(180, Math.ceil(sourceCanvas.height || sourceCanvas.getBoundingClientRect?.().height || 540))
+    };
+  }
+
+  const explicitWidth = parsePixelDimensionValue(node?.dataset?.aiToolsDiagramWidth);
+  const explicitHeight = parsePixelDimensionValue(node?.dataset?.aiToolsDiagramHeight);
+  if (explicitWidth || explicitHeight) {
+    return {
+      width: explicitWidth || 960,
+      height: explicitHeight || 540
+    };
+  }
+
+  const rect = node?.getBoundingClientRect?.() || { width: 0, height: 0 };
+  return {
+    width: Math.max(240, Math.ceil(node?.scrollWidth || rect.width || 960)),
+    height: Math.max(180, Math.ceil(node?.scrollHeight || rect.height || 540))
+  };
+}
+
+  function guessMimeByExt(extRaw) {
+  const ext = String(extRaw || '').toLowerCase();
+  if (ext === '.png') return 'image/png';
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.gif') return 'image/gif';
+  if (ext === '.webp') return 'image/webp';
+  if (ext === '.svg') return 'image/svg+xml';
+  if (ext === '.bmp') return 'image/bmp';
+  if (ext === '.ico') return 'image/x-icon';
+  return 'application/octet-stream';
+}
+
+function toUint8Array(bufLike) {
+  if (!bufLike) return new Uint8Array();
+  if (bufLike instanceof Uint8Array) return bufLike;
+  if (bufLike instanceof ArrayBuffer) return new Uint8Array(bufLike);
+  if (ArrayBuffer.isView(bufLike)) {
+    return new Uint8Array(bufLike.buffer, bufLike.byteOffset, bufLike.byteLength);
+  }
+  if (bufLike?.type === 'Buffer' && Array.isArray(bufLike?.data)) {
+    return Uint8Array.from(bufLike.data);
+  }
+  return new Uint8Array();
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error('FileReader failed'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function binaryToDataUrl(bufLike, mime) {
+  const bytes = toUint8Array(bufLike);
+  if (!bytes.byteLength) return '';
+  return await blobToDataUrl(new Blob([bytes], { type: mime || 'application/octet-stream' }));
+}
+
+function waitForAnimationFrames(count = 1) {
+  const frames = Math.max(1, Number(count) || 1);
+  return new Promise((resolve) => {
+    const step = (remaining) => {
+      if (remaining <= 0) {
+        resolve();
+        return;
+      }
+      const raf = window?.requestAnimationFrame || ((cb) => window.setTimeout(cb, 16));
+      raf(() => step(remaining - 1));
+    };
+    step(frames);
+  });
+}
+
+function waitForImageReady(img, timeoutMs = EXPORT_IMAGE_TIMEOUT_MS) {
+  if (!(img instanceof HTMLImageElement)) return Promise.resolve();
+  if (img.complete && img.naturalWidth > 0) return Promise.resolve();
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      img.removeEventListener('load', handleDone);
+      img.removeEventListener('error', handleDone);
+      resolve();
+    };
+    const handleDone = () => finish();
+    const timer = window.setTimeout(finish, Math.max(1000, timeoutMs));
+    img.addEventListener('load', handleDone, { once: true });
+    img.addEventListener('error', handleDone, { once: true });
+  });
+}
+
+async function waitForPreviewImages(preview) {
+  const images = Array.from(preview?.querySelectorAll?.('img') || []);
+  if (!images.length) return;
+  await Promise.all(images.map((img) => waitForImageReady(img)));
+}
+
+function previewDiagramNodeIsRendered(node) {
+  if (!(node instanceof HTMLElement)) return true;
+  if (node.classList.contains('md-editor-echarts')) {
+    return !!node.querySelector?.('svg, canvas');
+  }
+  if (node.classList.contains('md-editor-mermaid')) {
+    return !!node.querySelector?.('svg');
+  }
+  return true;
+}
+
+async function waitForPreviewDiagrams(preview, timeoutMs = 4000) {
+  const deadline = Date.now() + Math.max(1000, Number(timeoutMs) || 0);
+  while (Date.now() < deadline) {
+    const diagramNodes = Array.from(preview?.querySelectorAll?.(DIAGRAM_HOST_SELECTOR) || []);
+    if (!diagramNodes.length) return;
+    if (diagramNodes.every((node) => previewDiagramNodeIsRendered(node))) return;
+    await waitForAnimationFrames(2);
+  }
+}
+
+function hasUnsafeExportUrl(value) {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  const match = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(text);
+  if (!match) return false;
+  const scheme = String(match[1] || '').toLowerCase();
+  return scheme === 'javascript' || scheme === 'vbscript';
+}
+
+function stripExportOnlyNodes(root) {
+  if (!(root instanceof Element)) return;
+  root.querySelectorAll('.note-preview-diagram-actions, .md-editor-mermaid-action, script, iframe, object, embed, frame, frameset').forEach((node) => {
+    node.remove();
+  });
+  root.querySelectorAll('*').forEach((el) => {
+    Array.from(el.attributes || []).forEach((attr) => {
+      if (/^on/i.test(String(attr?.name || ''))) {
+        el.removeAttribute(attr.name);
+      }
+    });
+    if (hasUnsafeExportUrl(el.getAttribute?.('href'))) {
+      el.removeAttribute('href');
+    }
+    if (hasUnsafeExportUrl(el.getAttribute?.('src'))) {
+      el.removeAttribute('src');
+    }
+  });
+}
+
+function replaceExportImageWithPlaceholder(img, messageText = '该图片无法导出') {
+  if (!(img instanceof HTMLImageElement)) return;
+  img.removeAttribute('src');
+  img.removeAttribute('srcset');
+  img.removeAttribute('sizes');
+  img.setAttribute('alt', img.getAttribute('alt') || messageText);
+  img.style.display = 'inline-flex';
+  img.style.alignItems = 'center';
+  img.style.justifyContent = 'center';
+  img.style.minHeight = img.style.minHeight || '48px';
+  img.style.minWidth = img.style.minWidth || '120px';
+  img.style.padding = img.style.padding || '8px 12px';
+  img.style.border = img.style.border || '1px dashed rgba(148, 163, 184, 0.5)';
+  img.style.borderRadius = img.style.borderRadius || '10px';
+  img.style.background = img.style.background || 'rgba(148, 163, 184, 0.08)';
+}
+
+function inlineComputedStyle(sourceEl, cloneEl) {
+  if (!(sourceEl instanceof Element) || !(cloneEl instanceof Element)) return;
+  const computed = window.getComputedStyle(sourceEl);
+  const declarations = [];
+
+  for (let index = 0; index < computed.length; index += 1) {
+    const propertyName = computed[index];
+    const value = computed.getPropertyValue(propertyName);
+    if (!value) continue;
+    declarations.push(`${propertyName}:${value};`);
+  }
+
+  declarations.push('animation:none !important;');
+  declarations.push('transition:none !important;');
+  declarations.push('content-visibility:visible !important;');
+  declarations.push('contain:none !important;');
+  declarations.push('contain-intrinsic-size:auto !important;');
+  declarations.push('caret-color:transparent;');
+  cloneEl.setAttribute('style', declarations.join(''));
+}
+
+function cloneRenderedDiagramContent(sourceNode, cloneNode) {
+  if (!(sourceNode instanceof HTMLElement) || !(cloneNode instanceof HTMLElement)) return false;
+
+  const renderedSvg = sourceNode.querySelector?.('svg');
+  if (renderedSvg instanceof SVGElement) {
+    const svgClone = renderedSvg.cloneNode(true);
+    if (svgClone instanceof SVGElement && !svgClone.getAttribute('xmlns')) {
+      svgClone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    }
+    cloneNode.replaceChildren(svgClone);
+    return true;
+  }
+
+  const renderedCanvas = sourceNode.querySelector?.('canvas');
+  if (renderedCanvas instanceof HTMLCanvasElement) {
+    try {
+      const image = document.createElement('img');
+      image.setAttribute('src', renderedCanvas.toDataURL('image/png'));
+      image.setAttribute('alt', renderedCanvas.getAttribute('aria-label') || 'canvas');
+      image.width = renderedCanvas.width;
+      image.height = renderedCanvas.height;
+      cloneNode.replaceChildren(image);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  return false;
+}
+
+function normalizeExportDiagramBoxes(root) {
+  if (!(root instanceof Element)) return;
+  root.querySelectorAll('.note-preview-diagram, .md-editor-echarts, .md-editor-mermaid, p.md-editor-mermaid').forEach((node) => {
+    if (!(node instanceof HTMLElement)) return;
+    node.style.setProperty('overflow', 'visible', 'important');
+    node.style.setProperty('contain', 'none', 'important');
+    node.style.setProperty('content-visibility', 'visible', 'important');
+    node.style.setProperty('height', 'auto', 'important');
+    node.style.setProperty('min-height', '0', 'important');
+    node.style.setProperty('max-height', 'none', 'important');
+    node.style.setProperty('width', 'auto', 'important');
+  });
+  root.querySelectorAll('svg').forEach((svg) => {
+    if (!(svg instanceof SVGElement)) return;
+    svg.style.setProperty('max-width', 'none', 'important');
+    svg.style.setProperty('max-height', 'none', 'important');
+    svg.style.setProperty('overflow', 'visible', 'important');
+  });
+}
+
+function clonePreviewNodeForExport(sourceNode) {
+  if (!sourceNode) return null;
+  if (sourceNode.nodeType === Node.TEXT_NODE) {
+    return document.createTextNode(sourceNode.textContent || '');
+  }
+  if (sourceNode.nodeType !== Node.ELEMENT_NODE) return null;
+
+  const sourceEl = sourceNode;
+  if (sourceEl.matches?.('.note-preview-diagram-actions, .md-editor-mermaid-action, script, iframe, object, embed, frame, frameset')) {
+    return null;
+  }
+
+  if (sourceEl instanceof HTMLCanvasElement) {
+    const image = document.createElement('img');
+    try {
+      image.setAttribute('src', sourceEl.toDataURL('image/png'));
+    } catch {
+      image.setAttribute('src', '');
+    }
+    image.setAttribute('alt', sourceEl.getAttribute('aria-label') || 'canvas');
+    image.width = sourceEl.width;
+    image.height = sourceEl.height;
+    image.className = sourceEl.className || '';
+    inlineComputedStyle(sourceEl, image);
+    return image;
+  }
+
+  const clone = sourceEl.cloneNode(false);
+  if (clone instanceof Element) {
+    inlineComputedStyle(sourceEl, clone);
+    if (clone instanceof HTMLImageElement) {
+      clone.loading = 'eager';
+      clone.decoding = 'sync';
+      clone.removeAttribute('srcset');
+    }
+    if (clone.tagName.toLowerCase() === 'svg' && !clone.getAttribute('xmlns')) {
+      clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    }
+  }
+
+  Array.from(sourceEl.childNodes || []).forEach((child) => {
+    const clonedChild = clonePreviewNodeForExport(child);
+    if (clonedChild) clone.appendChild(clonedChild);
+  });
+
+  return clone;
+}
+
+async function inlineClonedImages(sourceRoot, cloneRoot) {
+  const sourceImages = Array.from(sourceRoot?.querySelectorAll?.('img') || []);
+  const cloneImages = Array.from(cloneRoot?.querySelectorAll?.('img') || []);
+
+  await Promise.all(cloneImages.map(async (cloneImg, index) => {
+    const sourceImg = sourceImages[index];
+    if (!(cloneImg instanceof HTMLImageElement) || !(sourceImg instanceof HTMLImageElement)) return;
+
+    const localPath = String(sourceImg.dataset.localSrcPath || '').trim();
+    const currentSrc = String(sourceImg.currentSrc || sourceImg.src || cloneImg.getAttribute('src') || '').trim();
+    let nextSrc = currentSrc;
+
+    try {
+      if (localPath) {
+        const buffer = await readFile(localPath, null);
+        nextSrc = await binaryToDataUrl(buffer, guessMimeByExt(path.extname(localPath)));
+      } else if (currentSrc.startsWith('blob:')) {
+        const response = await fetch(currentSrc);
+        if (response.ok) {
+          nextSrc = await blobToDataUrl(await response.blob());
+        }
+      } else if (/^https?:\/\//i.test(currentSrc)) {
+        const response = await fetch(currentSrc);
+        if (response.ok) {
+          nextSrc = await blobToDataUrl(await response.blob());
+        }
+      }
+    } catch {
+      nextSrc = currentSrc;
+    }
+
+    if (nextSrc) cloneImg.setAttribute('src', nextSrc);
+    cloneImg.removeAttribute('srcset');
+    cloneImg.removeAttribute('sizes');
+    cloneImg.removeAttribute('loading');
+    cloneImg.removeAttribute('decoding');
+    cloneImg.removeAttribute('fetchpriority');
+  }));
+}
+
+async function inlineClonedDiagrams(sourceRoot, cloneRoot) {
+  const sourceNodes = Array.from(sourceRoot?.querySelectorAll?.('.md-editor-echarts, div.md-editor-mermaid, p.md-editor-mermaid') || []);
+  const cloneNodes = Array.from(cloneRoot?.querySelectorAll?.('.md-editor-echarts, div.md-editor-mermaid, p.md-editor-mermaid') || []);
+
+  await Promise.all(cloneNodes.map(async (cloneNode, index) => {
+    const sourceNode = sourceNodes[index];
+    if (!(cloneNode instanceof HTMLElement) || !(sourceNode instanceof HTMLElement)) return;
+
+    const isEcharts = cloneNode.classList.contains('md-editor-echarts');
+    const isMermaid = cloneNode.classList.contains('md-editor-mermaid');
+    if (!isEcharts && !isMermaid) return;
+
+    try {
+      if (cloneRenderedDiagramContent(sourceNode, cloneNode)) {
+        return;
+      }
+
+      if (isEcharts) {
+        const source = String(sourceNode.dataset.aiToolsDiagramSource || sourceNode.textContent || '').trim();
+        if (!source) return;
+        const svgMarkup = await renderEchartsSvgForExport(source, props.theme, getDiagramExportSize(sourceNode));
+        cloneNode.innerHTML = svgMarkup;
+      } else {
+        const source = String(sourceNode.dataset.aiToolsDiagramSource || sourceNode.dataset.content || sourceNode.textContent || '').trim();
+        if (!source) return;
+        const svgMarkup = await renderMermaidSvgForExport(source, props.theme, getDiagramExportSize(sourceNode));
+        cloneNode.innerHTML = svgMarkup;
+      }
+    } catch (err) {
+      console.warn('导出图表失败，保留当前渲染结果：', err);
+    }
+  }));
+}
+
+function getExportBackgroundColor(preview) {
+  const previewWrapper = preview?.closest?.('.md-editor-preview-wrapper');
+  const target = previewWrapper instanceof HTMLElement ? previewWrapper : preview;
+  const color = String(window.getComputedStyle(target || document.body).backgroundColor || '').trim();
+  if (!color || color === 'rgba(0, 0, 0, 0)' || color === 'transparent') {
+    return props.theme === 'dark' ? '#0f172a' : '#ffffff';
+  }
+  return color;
+}
+
+function getPreviewExportSize(preview) {
+  const rect = preview?.getBoundingClientRect?.() || { width: 0, height: 0 };
+  const width = Math.max(
+    1,
+    Math.ceil(preview?.scrollWidth || 0),
+    Math.ceil(preview?.clientWidth || 0),
+    Math.ceil(rect.width || 0)
+  );
+  const height = Math.max(
+    1,
+    Math.ceil(preview?.scrollHeight || 0),
+    Math.ceil(preview?.clientHeight || 0),
+    Math.ceil(rect.height || 0)
+  );
+  return { width, height };
+}
+
+async function buildPreviewExportClone(preview) {
+  const cloneRoot = clonePreviewNodeForExport(preview);
+  if (!(cloneRoot instanceof HTMLElement || cloneRoot instanceof SVGElement)) {
+    throw new Error('无法创建导出内容');
+  }
+
+  if (cloneRoot instanceof Element) {
+    cloneRoot.style.overflow = 'visible';
+    cloneRoot.style.height = 'auto';
+    cloneRoot.style.maxHeight = 'none';
+    cloneRoot.style.minHeight = '0';
+  }
+
+  stripExportOnlyNodes(cloneRoot);
+  await inlineClonedImages(preview, cloneRoot);
+  await inlineClonedDiagrams(preview, cloneRoot);
+  normalizeExportDiagramBoxes(cloneRoot);
+  return cloneRoot;
+}
+
+function buildStandaloneExportHtml(title, bodyHtml) {
+  const safeTitle = String(title || 'note')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+  const background = props.theme === 'dark' ? '#0f172a' : '#ffffff';
+  const color = props.theme === 'dark' ? '#e5e7eb' : '#111827';
+
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="referrer" content="no-referrer" />
+  <title>${safeTitle}</title>
+  <style>
+    html, body { margin: 0; padding: 0; background: ${background}; color: ${color}; }
+    body { padding: 24px; box-sizing: border-box; overflow: visible; }
+    *, *::before, *::after { content-visibility: visible !important; contain: none !important; }
+    .note-preview-diagram, .md-editor-echarts, .md-editor-mermaid, p.md-editor-mermaid {
+      overflow: visible !important;
+      height: auto !important;
+      min-height: 0 !important;
+      max-height: none !important;
+      width: auto !important;
+    }
+    svg {
+      overflow: visible !important;
+      max-width: none !important;
+      max-height: none !important;
+    }
+    img, svg, canvas { max-width: 100%; height: auto; }
+  </style>
+</head>
+<body>
+${String(bodyHtml || '')}
+</body>
+</html>`;
+}
+
+async function waitForPreviewExportReady() {
+  await flushPendingSave();
+  clearPendingHtmlRefresh();
+  editorRef.value?.rerender?.();
+  await nextTick();
+  await waitForAnimationFrames(3);
+
+  const preview = getPreviewRoot();
+  if (!(preview instanceof HTMLElement)) {
+    throw new Error('未找到可导出的笔记预览内容');
+  }
+  if (previewHasDiagramHosts(preview)) {
+    decoratePreviewDiagrams(preview);
+  }
+  await waitForPreviewImages(preview);
+  await waitForPreviewDiagrams(preview);
+  await waitForAnimationFrames(2);
+  return preview;
+}
+
+async function renderPreviewCloneToPngBlob(preview, cloneRoot) {
+  const api = getUtoolsApi();
+  if (!api?.createBrowserWindow) {
+    throw new Error('当前环境不支持 PNG 导出窗口');
+  }
+
+  const width = getPreviewViewportWidth(preview);
+  const background = getExportBackgroundColor(preview);
+  const html = buildStandaloneExportHtml(noteTitle.value, cloneRoot.outerHTML);
+  const exportUrl = 'export-preview.html';
+  const windowOptions = {
+    show: false,
+    width,
+    height: 1,
+    frame: false,
+    resizable: true,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    skipTaskbar: true,
+    autoHideMenuBar: true,
+    focusable: false,
+    backgroundColor: background,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      backgroundThrottling: false
+    }
+  };
+
+  const captureWindow = await new Promise((resolve, reject) => {
+    let settled = false;
+    let win = null;
+    const timeout = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error('PNG 导出窗口加载超时'));
+    }, 10000);
+
+    try {
+      win = api.createBrowserWindow(exportUrl, windowOptions, () => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeout);
+        resolve(win);
+      });
+    } catch (err) {
+      window.clearTimeout(timeout);
+      reject(err instanceof Error ? err : new Error(String(err)));
+    }
+  });
+
+  try {
+    await captureWindow.webContents.executeJavaScript(`
+      (async () => {
+        const html = ${JSON.stringify(html)};
+        document.open();
+        document.write(html);
+        document.close();
+
+        if (document.fonts?.ready) {
+          try { await document.fonts.ready; } catch {}
+        }
+
+        const waitForImage = (img) => new Promise((resolve) => {
+          if (img.complete && img.naturalWidth > 0) {
+            resolve();
+            return;
+          }
+          const done = () => resolve();
+          img.addEventListener('load', done, { once: true });
+          img.addEventListener('error', done, { once: true });
+          setTimeout(done, 5000);
+        });
+
+        await Promise.all(Array.from(document.images || []).map((img) => waitForImage(img)));
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        return true;
+      })()
+    `);
+
+    const measureSize = () => captureWindow.webContents.executeJavaScript(`
+      ({
+        width: Math.max(1, Math.ceil(document.documentElement.scrollWidth || document.body.scrollWidth || ${width})),
+        height: Math.max(1, Math.ceil(document.documentElement.scrollHeight || document.body.scrollHeight || 1))
+      })
+    `);
+
+    let captureWidth = Math.max(1, Math.ceil(Number(width || 1)));
+    let captureHeight = 1;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const size = await measureSize();
+      const nextWidth = Math.max(1, Math.ceil(Number(size?.width || captureWidth)));
+      const nextHeight = Math.max(1, Math.ceil(Number(size?.height || captureHeight)));
+      captureWidth = Math.max(captureWidth, nextWidth);
+      captureHeight = Math.max(captureHeight, nextHeight);
+
+      captureWindow.setContentSize(captureWidth, captureHeight, false);
+      await captureWindow.webContents.executeJavaScript(
+        `new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))`
+      );
+
+      const settledSize = await measureSize();
+      const settledWidth = Math.max(1, Math.ceil(Number(settledSize?.width || captureWidth)));
+      const settledHeight = Math.max(1, Math.ceil(Number(settledSize?.height || captureHeight)));
+      if (settledWidth === captureWidth && settledHeight === captureHeight) {
+        break;
+      }
+      captureWidth = Math.max(captureWidth, settledWidth);
+      captureHeight = Math.max(captureHeight, settledHeight);
+    }
+
+    const nativeImage = await captureWindow.capturePage(
+      { x: 0, y: 0, width: captureWidth, height: captureHeight },
+      { stayHidden: true }
+    );
+    const pngBuffer = nativeImage?.toPNG?.();
+    if (!pngBuffer || !pngBuffer.length) {
+      throw new Error('PNG 生成失败');
+    }
+    return new Blob([pngBuffer], { type: 'image/png' });
+  } finally {
+    try {
+      captureWindow?.destroy?.();
+    } catch {
+      // ignore
+    }
+  }
+}
+
+async function exportCurrentNoteAsHtml() {
+  if (!props.filePath) throw new Error('当前没有打开的笔记');
+
+  try {
+    const outputPath = openExportSaveDialog({
+      title: '导出 HTML',
+      defaultPath: buildDefaultExportFileName('html'),
+      filters: [{ name: 'HTML', extensions: ['html'] }]
+    });
+    if (!outputPath) return false;
+
+    const preview = await waitForPreviewExportReady();
+    const cloneRoot = await buildPreviewExportClone(preview);
+    const html = buildStandaloneExportHtml(noteTitle.value, cloneRoot.outerHTML);
+    await writeAbsoluteFile(outputPath, html);
+    message.success(`已导出：${outputPath}`);
+    return true;
+  } finally {
+    await nextTick();
+  }
+}
+
+async function exportCurrentNoteAsPng() {
+  if (!props.filePath) throw new Error('当前没有打开的笔记');
+
+  try {
+    const outputPath = openExportSaveDialog({
+      title: '导出 PNG',
+      defaultPath: buildDefaultExportFileName('png'),
+      filters: [{ name: 'PNG', extensions: ['png'] }]
+    });
+    if (!outputPath) return false;
+
+    const preview = await waitForPreviewExportReady();
+    const cloneRoot = await buildPreviewExportClone(preview);
+    const blob = await renderPreviewCloneToPngBlob(preview, cloneRoot);
+    await writeAbsoluteFile(outputPath, new Uint8Array(await blob.arrayBuffer()));
+    message.success(`已导出：${outputPath}`);
+    return true;
+  } finally {
+    await nextTick();
+  }
+}
+
 defineExpose({
-  flushPendingSave
+  flushPendingSave,
+  exportCurrentNoteAsHtml,
+  exportCurrentNoteAsPng
 });
 
 watch(content, (newContent) => {

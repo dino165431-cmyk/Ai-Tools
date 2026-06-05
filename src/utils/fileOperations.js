@@ -66,6 +66,10 @@ export function writeFile(relativePath, data) {
     return callFileOpsAsync('writeFile', relativePath, data);
 }
 
+export function writeAbsoluteFile(filePath, data) {
+    return callFileOpsAsync('writeAbsoluteFile', filePath, data);
+}
+
 export function readFile(relativePath, encoding) {
     return callFileOpsAsync('readFile', relativePath, encoding);
 }

@@ -117,11 +117,13 @@
           @prepare-delete="handlePrepareDelete"
           @prepare-rename="handlePrepareRename"
           @delete="handleFileDelete"
-          @rename="handleFileRename"
-          @set-password="handleSetPasswordRequest"
-          @clear-password="handleClearPasswordRequest"
-          @reset-password="handleResetPasswordRequest"
-        />
+        @rename="handleFileRename"
+        @set-password="handleSetPasswordRequest"
+        @clear-password="handleClearPasswordRequest"
+        @reset-password="handleResetPasswordRequest"
+        @export-html="handleExportHtmlRequest"
+        @export-png="handleExportPngRequest"
+      />
       </n-layout-sider>
     </n-layout>
     <n-modal
@@ -915,6 +917,60 @@ function handleNewNote() {
 
 async function handleOpenNote(filePath) {
   await ensureNoteOpened(filePath)
+}
+
+async function exportMarkdownNoteWithActiveEditor(filePath, methodName, actionLabel) {
+  const normalized = normalizeNotePath(filePath)
+  if (!normalized) return
+  if (getNoteTypeByPath(normalized) !== 'markdown') {
+    message.warning('当前仅支持导出 Markdown 笔记')
+    return
+  }
+
+  const previousActiveId = String(activeNoteId.value || '')
+  const wasOpen = openNotes.value.some((note) => note.path === normalized)
+  const previousActivePath = normalizeNotePath(activeNote.value?.path)
+
+  try {
+    if (previousActivePath && previousActivePath !== normalized) {
+      await activeEditorRef.value?.flushPendingSave?.()
+    }
+
+    const openedNote = await ensureNoteOpened(normalized, { syncTree: false })
+    if (!openedNote) return
+
+    await nextTick()
+    await new Promise((resolve) => window.setTimeout(resolve, 180))
+
+    const editor = activeEditorRef.value
+    const exporter = editor?.[methodName]
+    if (typeof exporter !== 'function') {
+      throw new Error('当前编辑器不支持此导出方式')
+    }
+
+    await exporter.call(editor)
+  } catch (err) {
+    message.error(`${actionLabel}失败：` + (err?.message || String(err)))
+  } finally {
+    if (!wasOpen) {
+      openNotes.value = openNotes.value.filter((note) => note.path !== normalized)
+    }
+
+    if (previousActiveId && openNotes.value.some((note) => note.id === previousActiveId)) {
+      activeNoteId.value = previousActiveId
+      await nextTick()
+    } else if (!openNotes.value.length) {
+      activeNoteId.value = null
+    }
+  }
+}
+
+async function handleExportHtmlRequest(filePath) {
+  await exportMarkdownNoteWithActiveEditor(filePath, 'exportCurrentNoteAsHtml', '导出 HTML')
+}
+
+async function handleExportPngRequest(filePath) {
+  await exportMarkdownNoteWithActiveEditor(filePath, 'exportCurrentNoteAsPng', '导出 PNG')
 }
 
 async function handleCloseTab(tabId) {

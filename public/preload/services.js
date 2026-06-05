@@ -142,6 +142,7 @@ const configApi = bindMethods(globalConfig, [
 const fileApi = bindMethods(fileOperations, [
   'createDirectory',
   'writeFile',
+  'writeAbsoluteFile',
   'readFile',
   'deleteItem',
   'listDirectory',

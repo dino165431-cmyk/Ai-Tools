@@ -258,7 +258,7 @@ async function inlineSvgExternalAssets(svgInput, options = {}) {
   return svg
 }
 
-async function renderMermaidSvgForExport(source, theme, size = null) {
+export async function renderMermaidSvgForExport(source, theme, size = null) {
   const normalizedSource = normalizeMermaidExportSource(source).trim()
   if (!normalizedSource) {
     throw new Error('Mermaid \u6e90\u7801\u4e3a\u7a7a')
@@ -541,7 +541,7 @@ async function resolveEchartsPayloadFromNode(node) {
   throw lastError instanceof Error ? lastError : new Error('\u672a\u627e\u5230\u53ef\u7528\u7684 ECharts \u914d\u7f6e')
 }
 
-async function renderEchartsSvgForExport(optionInput, theme, size = {}) {
+export async function renderEchartsSvgForExport(optionInput, theme, size = {}) {
   const option = normalizeEchartsOptionForExport(optionInput, theme)
   const { width, height } = normalizeDiagramSize(size)
   const renderHost = createOffscreenRenderHost({ width, height })

@@ -154,6 +154,21 @@ test('getFileBlobUrl assigns video mime types from file extension', async (t) =>
   assert.equal(createdBlobs.at(-1)?.type, 'video/mp4')
 })
 
+test('writeAbsoluteFile writes export payloads outside data storage root', async (t) => {
+  setupFileOperationsTest(t)
+  const externalRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-export-'))
+  const targetPath = path.join(externalRoot, 'exports', 'note.html')
+
+  t.after(() => {
+    fs.rmSync(externalRoot, { recursive: true, force: true })
+  })
+
+  const result = await fileOperations.writeAbsoluteFile(targetPath, '<html>ok</html>')
+
+  assert.equal(result, targetPath)
+  assert.equal(fs.readFileSync(targetPath, 'utf-8'), '<html>ok</html>')
+})
+
 test('syncToCloud uploads local files even when the remote key already exists', async (t) => {
   const originalGetS3Client = fileOperations._getS3Client
   const originalGetLocalFiles = fileOperations._getLocalFiles
@@ -458,12 +473,9 @@ test('cloud auto decision flushes pending deletes before considering restore', a
   const { tempRoot } = setupFileOperationsTest(t)
   const originalGetS3Client = fileOperations._getS3Client
   const originalGetCloudConfig = globalConfig.getCloudConfig
-  const originalRunCloudAutoRestore = fileOperations._runCloudAutoRestore
-  const originalRunCloudAutoBackup = fileOperations._runCloudAutoBackup
   const queueKey = fileOperations._pendingCloudDeleteStorageKey
   const deleted = []
-  let restoreCalls = 0
-  let backupCalls = 0
+  const uploaded = []
   const remoteKeys = ['note/deleted.md']
 
   createFixtureFile(tempRoot, 'note/local.md', 'local')
@@ -484,29 +496,20 @@ test('cloud auto decision flushes pending deletes before considering restore', a
       const idx = remoteKeys.indexOf(key)
       if (idx >= 0) remoteKeys.splice(idx, 1)
     },
-    headObject: async () => ({
-      lastModified: new Date('2025-04-01T00:00:00Z')
-    })
+    uploadFile: async (_bucket, fullPath, relPath) => {
+      uploaded.push({ fullPath, relPath })
+    }
   })
-  fileOperations._runCloudAutoRestore = async () => {
-    restoreCalls += 1
-  }
-  fileOperations._runCloudAutoBackup = async () => {
-    backupCalls += 1
-  }
 
   t.after(() => {
     fileOperations._getS3Client = originalGetS3Client
     globalConfig.getCloudConfig = originalGetCloudConfig
-    fileOperations._runCloudAutoRestore = originalRunCloudAutoRestore
-    fileOperations._runCloudAutoBackup = originalRunCloudAutoBackup
   })
 
   await fileOperations._runCloudAutoDecision()
 
   assert.deepEqual(deleted, ['note/deleted.md'])
-  assert.equal(restoreCalls, 0)
-  assert.equal(backupCalls, 1)
+  assert.deepEqual(uploaded.map((item) => item.relPath), ['note/local.md'])
   assert.deepEqual(readCryptoStorageValue(queueKey), [])
 })
 
@@ -541,6 +544,78 @@ test('cloud auto decision prefers the newer side by file timestamps', async (t) 
 
   fs.utimesSync(localFile, new Date('2025-03-01T00:00:00Z'), new Date('2025-03-01T00:00:00Z'))
   assert.equal(await fileOperations._resolveCloudAutoDecision(), 'backup')
+})
+
+test('cloud auto sync reconciles each file by its own newer timestamp', async (t) => {
+  const { tempRoot } = setupFileOperationsTest(t)
+  const originalGetS3Client = fileOperations._getS3Client
+  const originalGetCloudConfig = globalConfig.getCloudConfig
+  const uploads = []
+  const downloads = []
+
+  const localNewerPath = createFixtureFile(tempRoot, 'note/local-newer.md', 'local-newer')
+  const cloudNewerPath = createFixtureFile(tempRoot, 'note/cloud-newer.md', 'local-stale')
+  const localOnlyPath = createFixtureFile(tempRoot, 'note/local-only.md', 'local-only')
+
+  fs.utimesSync(localNewerPath, new Date('2025-03-01T00:00:00Z'), new Date('2025-03-01T00:00:00Z'))
+  fs.utimesSync(cloudNewerPath, new Date('2025-01-01T00:00:00Z'), new Date('2025-01-01T00:00:00Z'))
+  fs.utimesSync(localOnlyPath, new Date('2025-02-01T00:00:00Z'), new Date('2025-02-01T00:00:00Z'))
+
+  globalConfig.getCloudConfig = () => ({
+    region: 'test-region',
+    accessKeyId: 'test-key',
+    secretAccessKey: 'test-secret',
+    bucket: 'test-bucket',
+    autoSyncEnabled: true
+  })
+  fileOperations._getS3Client = () => ({
+    listObjects: async () => [
+      'note/local-newer.md',
+      'note/cloud-newer.md',
+      'note/remote-only.md'
+    ],
+    headObject: async (_bucket, key) => ({
+      metadata: {
+        'source-mtime-ms': String(
+          key === 'note/local-newer.md'
+            ? new Date('2025-01-01T00:00:00Z').getTime()
+            : new Date('2025-03-01T00:00:00Z').getTime()
+        )
+      }
+    }),
+    uploadFile: async (_bucket, fullPath, relPath) => {
+      uploads.push({ fullPath, relPath })
+    },
+    downloadFile: async (_bucket, key, fullPath) => {
+      fs.mkdirSync(path.dirname(fullPath), { recursive: true })
+      fs.writeFileSync(fullPath, `remote:${key}`)
+      downloads.push({ key, fullPath })
+      return {
+        metadata: {
+          'source-mtime-ms': String(new Date('2025-03-01T00:00:00Z').getTime())
+        }
+      }
+    }
+  })
+
+  t.after(() => {
+    fileOperations._getS3Client = originalGetS3Client
+    globalConfig.getCloudConfig = originalGetCloudConfig
+  })
+
+  const result = await fileOperations._reconcileCloudFilesInternal()
+
+  assert.deepEqual(result, { uploaded: 2, downloaded: 2, deleted: 0 })
+  assert.deepEqual(uploads.map((item) => item.relPath).sort(), [
+    'note/local-newer.md',
+    'note/local-only.md'
+  ])
+  assert.deepEqual(downloads.map((item) => item.key).sort(), [
+    'note/cloud-newer.md',
+    'note/remote-only.md'
+  ])
+  assert.equal(fs.readFileSync(path.join(tempRoot, 'note', 'cloud-newer.md'), 'utf8'), 'remote:note/cloud-newer.md')
+  assert.equal(fs.readFileSync(path.join(tempRoot, 'note', 'remote-only.md'), 'utf8'), 'remote:note/remote-only.md')
 })
 
 test('manual cloud operations clear queued auto timers before running', async (t) => {

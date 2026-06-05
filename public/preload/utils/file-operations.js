@@ -8,7 +8,8 @@ const { execFile } = require('child_process')
 
 const CLOUD_AUTO_BACKUP_DEBOUNCE_MS = 15000
 const CLOUD_AUTO_RESTORE_DEBOUNCE_MS = 15000
-const CLOUD_AUTO_BACKUP_MIN_INTERVAL_MS = 5 * 60 * 1000
+const CLOUD_AUTO_BACKUP_MIN_INTERVAL_MS = 60 * 1000
+const CLOUD_AUTO_POLL_INTERVAL_MS = 60 * 1000
 const CLOUD_AUTO_REQUIRED_KEYS = ['region', 'accessKeyId', 'secretAccessKey', 'bucket']
 const CLOUD_DELETE_QUEUE_STORAGE_KEY = 'ai-tools-cloud-delete-queue-v1'
 const CLOUD_DELETE_SYNC_ROOTS = ['note', 'session']
@@ -99,7 +100,10 @@ class FileOperations {
         this._cloudAutoRestoreTimer = null
         this._cloudAutoRestoreRunning = false
         this._cloudAutoRestorePending = false
+        this._cloudAutoDecisionRunning = false
+        this._cloudAutoDecisionPending = false
         this._cloudAutoDecisionTimer = null
+        this._cloudAutoPollTimer = null
         this._externalWatchers = new Map()
         this._externalWatchDebounceTimers = new Map()
         this._externalWatchResyncTimers = new Map()
@@ -466,6 +470,8 @@ class FileOperations {
                     this._dispatchWindowEvent('sessionFilesChanged', treeEventDetail)
                 }
             }
+
+            this._scheduleCloudAutoBackupAfterMutation()
         }, EXTERNAL_WATCH_DEBOUNCE_MS)
 
         this._externalWatchDebounceTimers.set(root, timer)
@@ -937,6 +943,12 @@ class FileOperations {
         this._cloudAutoDecisionTimer = null
     }
 
+    _clearCloudAutoPollTimer() {
+        if (!this._cloudAutoPollTimer) return
+        clearTimeout(this._cloudAutoPollTimer)
+        this._cloudAutoPollTimer = null
+    }
+
     _handleCloudAutomationConfigChange(config = this._getCloudConfigSafe()) {
         const backupReady = this._isCloudAutoBackupReady(config)
         const backupSignature = backupReady ? this._getCloudAutoBackupSignature(config) : ''
@@ -958,6 +970,8 @@ class FileOperations {
         }
         if (!backupReady || !restoreReady) {
             this._clearCloudAutoDecisionTimer()
+            this._cloudAutoDecisionPending = false
+            this._clearCloudAutoPollTimer()
         }
 
         if (shouldRunInitialRestore || shouldRunInitialBackup) {
@@ -966,11 +980,16 @@ class FileOperations {
                 this._clearCloudAutoBackupTimer()
                 this._clearCloudAutoRestoreTimer()
                 this._scheduleCloudAutoDecision()
+                this._scheduleCloudAutoPoll()
                 return
             }
 
             if (shouldRunInitialRestore) this._scheduleCloudAutoRestore()
             if (shouldRunInitialBackup) this._scheduleCloudAutoBackup()
+        }
+
+        if (backupReady && restoreReady) {
+            this._scheduleCloudAutoPoll()
         }
     }
 
@@ -1013,19 +1032,40 @@ class FileOperations {
         }, CLOUD_AUTO_RESTORE_DEBOUNCE_MS)
     }
 
+    _scheduleCloudAutoPoll() {
+        if (this._disposed) return
+        if (!this._cloudAutomationInitialized || !this._isCloudAutoBackupReady() || !this._isCloudAutoRestoreReady()) return
+        if (this._cloudAutoPollTimer) return
+
+        this._cloudAutoPollTimer = setTimeout(() => {
+            this._cloudAutoPollTimer = null
+            void this._runCloudAutoDecision()
+            this._scheduleCloudAutoPoll()
+        }, CLOUD_AUTO_POLL_INTERVAL_MS)
+    }
+
     _scheduleCloudAutoBackupAfterMutation() {
         this._clearCloudAutoDecisionTimer()
+        this._cloudAutoDecisionPending = false
         this._clearCloudAutoRestoreTimer()
         this._cloudAutoRestorePending = false
         this._scheduleCloudAutoBackup()
     }
 
     _isCloudAutoOperationRunning() {
-        return this._cloudOperationRunning || this._cloudAutoBackupRunning || this._cloudAutoRestoreRunning
+        return this._cloudOperationRunning
+            || this._cloudAutoBackupRunning
+            || this._cloudAutoRestoreRunning
+            || this._cloudAutoDecisionRunning
     }
 
     _schedulePendingCloudAutoOperation() {
         if (this._disposed) return
+        if (this._cloudAutoDecisionPending) {
+            this._cloudAutoDecisionPending = false
+            this._scheduleCloudAutoDecision()
+            return
+        }
         if (this._cloudAutoRestorePending) {
             this._cloudAutoRestorePending = false
             this._scheduleCloudAutoRestore()
@@ -1041,6 +1081,7 @@ class FileOperations {
         this._clearCloudAutoDecisionTimer()
         this._clearCloudAutoBackupTimer()
         this._clearCloudAutoRestoreTimer()
+        this._cloudAutoDecisionPending = false
         this._cloudAutoBackupPending = false
         this._cloudAutoRestorePending = false
     }
@@ -1077,6 +1118,131 @@ class FileOperations {
         const sourceMtimeMs = getTimestampMs(statInfo)
         if (!sourceMtimeMs) return {}
         return { 'source-mtime-ms': String(sourceMtimeMs) }
+    }
+
+    async _uploadLocalFileToCloud(s3, bucket, relativePath) {
+        const relPath = this._normalizeRelativePath(relativePath)
+        const fullPath = this._resolvePath(relPath)
+        const metadata = await this._buildCloudUploadMetadata(fullPath)
+        await this._retryOperation(() => s3.uploadFile(bucket, fullPath, relPath, { metadata }))
+        return { fullPath, metadata, relativePath: relPath }
+    }
+
+    async _downloadCloudFileToLocal(s3, bucket, relativePath) {
+        const relPath = this._normalizeRelativePath(relativePath)
+        const fullPath = this._resolvePath(relPath)
+        this._markInternalMutation(relPath)
+        await fs.mkdir(path.dirname(fullPath), { recursive: true })
+        const downloadResult = await this._retryOperation(() => s3.downloadFile(bucket, relPath, fullPath))
+        const restoredTimestamp = getTimestampMs(downloadResult)
+        if (restoredTimestamp > 0) {
+            const restoredDate = new Date(restoredTimestamp)
+            await fs.utimes(fullPath, restoredDate, restoredDate).catch(() => {})
+        }
+        this._clearBlobCacheForRelativePath(relPath)
+        return { relativePath: relPath, fullPath, downloadResult, restoredTimestamp }
+    }
+
+    async _getLocalFileTimestamp(relativePath) {
+        const fullPath = this._resolvePath(relativePath)
+        try {
+            const statInfo = await fs.stat(fullPath)
+            return getTimestampMs(statInfo)
+        } catch (err) {
+            if (err?.code === 'ENOENT') return 0
+            throw err
+        }
+    }
+
+    async _getRemoteFileTimestamp(s3, bucket, relativePath) {
+        const headResult = await this._retryOperation(() => s3.headObject(bucket, relativePath))
+        return getTimestampMs(headResult)
+    }
+
+    async _reconcileCloudFilesInternal(progressCallback) {
+        const s3 = this._getS3Client()
+        const bucket = globalConfig.getCloudConfig().bucket
+        const localFiles = [...new Set((await this._getLocalFiles('')).map((item) => this._normalizeRelativePath(item)).filter(Boolean))].sort()
+        const deletePlan = await this._buildPendingCloudDeletePlan({ s3, bucket })
+        const progressState = {
+            current: 0,
+            total: 0
+        }
+
+        let deleted = 0
+        let remoteFiles = deletePlan.remoteFiles
+        if (deletePlan.queue.length) {
+            progressState.total += deletePlan.toDelete.length
+            const deleteResult = await this._applyPendingCloudDeletePlan(deletePlan, {
+                s3,
+                bucket,
+                progressCallback,
+                progressState
+            })
+            deleted = deleteResult.deleted
+            remoteFiles = deleteResult.remainingRemoteFiles
+        } else {
+            remoteFiles = await this._listRemoteCloudFiles(s3, bucket)
+        }
+
+        const normalizedRemoteFiles = [...new Set(this._normalizeRemoteCloudKeys(remoteFiles))].sort()
+        const localSet = new Set(localFiles)
+        const remoteSet = new Set(normalizedRemoteFiles)
+        const localOnlyFiles = localFiles.filter((key) => !remoteSet.has(key))
+        const remoteOnlyFiles = normalizedRemoteFiles.filter((key) => !localSet.has(key))
+        const sharedFiles = localFiles.filter((key) => remoteSet.has(key))
+        const changedRoots = new Set()
+        let uploaded = 0
+        let downloaded = 0
+
+        progressState.total += localOnlyFiles.length + remoteOnlyFiles.length + sharedFiles.length
+
+        const advanceProgress = () => {
+            progressState.current += 1
+            if (typeof progressCallback === 'function') {
+                progressCallback(progressState.current, progressState.total)
+            }
+        }
+
+        for (const relPath of localOnlyFiles) {
+            await this._uploadLocalFileToCloud(s3, bucket, relPath)
+            uploaded += 1
+            advanceProgress()
+        }
+
+        for (const relPath of remoteOnlyFiles) {
+            await this._downloadCloudFileToLocal(s3, bucket, relPath)
+            downloaded += 1
+            const root = relPath.split('/').filter(Boolean)[0]
+            if (root) changedRoots.add(root)
+            advanceProgress()
+        }
+
+        for (const relPath of sharedFiles) {
+            const [localTimestamp, remoteTimestamp] = await Promise.all([
+                this._getLocalFileTimestamp(relPath),
+                this._getRemoteFileTimestamp(s3, bucket, relPath)
+            ])
+
+            if (remoteTimestamp > localTimestamp) {
+                await this._downloadCloudFileToLocal(s3, bucket, relPath)
+                downloaded += 1
+                const root = relPath.split('/').filter(Boolean)[0]
+                if (root) changedRoots.add(root)
+            } else if (localTimestamp > remoteTimestamp) {
+                await this._uploadLocalFileToCloud(s3, bucket, relPath)
+                uploaded += 1
+            }
+
+            advanceProgress()
+        }
+
+        if (changedRoots.size) {
+            await contentIndex.markDirtyRoots([...changedRoots], 'cloud_auto_sync')
+            this._notifyRestoredRelativePathsChanged([...changedRoots])
+        }
+
+        return { uploaded, downloaded, deleted }
     }
 
     async _runCloudAutoBackup() {
@@ -1224,34 +1390,19 @@ class FileOperations {
         if (this._disposed) return
         if (!this._isCloudAutoBackupReady() || !this._isCloudAutoRestoreReady()) return
 
-        const pendingDeleteQueue = this._readPendingCloudDeleteQueue()
-        if (pendingDeleteQueue.length) {
-            try {
-                const s3 = this._getS3Client()
-                const bucket = globalConfig.getCloudConfig().bucket
-                const deletePlan = await this._buildPendingCloudDeletePlan({ s3, bucket })
-                await this._applyPendingCloudDeletePlan(deletePlan, { s3, bucket })
-            } catch (err) {
-                console.warn?.('[Cloud auto decision] failed to flush pending cloud deletes:', err)
-                return
-            }
-        }
-
-        let direction = null
-        try {
-            direction = await this._resolveCloudAutoDecision()
-        } catch (err) {
-            console.warn?.('[Cloud auto decision] failed, falling back to backup:', err)
-            direction = 'backup'
-        }
-
-        if (direction === 'restore') {
-            await this._runCloudAutoRestore()
+        if (this._isCloudAutoOperationRunning()) {
+            this._cloudAutoDecisionPending = true
             return
         }
 
-        if (direction === 'backup') {
-            await this._runCloudAutoBackup()
+        this._cloudAutoDecisionRunning = true
+        try {
+            await this._runExclusiveCloudOperation(() => this._reconcileCloudFilesInternal())
+        } catch (err) {
+            console.warn?.('[Cloud auto sync] failed:', err)
+        } finally {
+            this._cloudAutoDecisionRunning = false
+            this._schedulePendingCloudAutoOperation()
         }
     }
 
@@ -1340,6 +1491,17 @@ class FileOperations {
         await this._updateContentIndexAfterWrite(relativePath)
         this._scheduleCloudAutoBackupAfterMutation()
         return true
+    }
+
+    async writeAbsoluteFile(filePath, data) {
+        const outputPath = typeof filePath === 'string' ? filePath.trim() : ''
+        if (!outputPath) throw new Error('filePath 不能为空')
+        if (outputPath.includes('\0')) throw new Error('filePath 包含非法字符')
+        if (!path.isAbsolute(outputPath)) throw new Error('filePath 必须为绝对路径')
+
+        await fs.mkdir(path.dirname(outputPath), { recursive: true })
+        await fs.writeFile(outputPath, data)
+        return outputPath
     }
 
     _shouldRetryDeleteError(err) {
@@ -1543,9 +1705,7 @@ class FileOperations {
         })
 
         for (const relPath of localFiles) {
-            const fullPath = this._resolvePath(relPath)
-            const metadata = await this._buildCloudUploadMetadata(fullPath)
-            await this._retryOperation(() => s3.uploadFile(bucket, fullPath, relPath, { metadata }))
+            await this._uploadLocalFileToCloud(s3, bucket, relPath)
             progressState.current += 1
             if (progressCallback) progressCallback(progressState.current, progressState.total)
         }
@@ -1570,16 +1730,8 @@ class FileOperations {
         const changedRoots = new Set()
 
         for (const key of normalizedRemoteFiles) {
-            const fullPath = this._resolvePath(key)
-            await fs.mkdir(path.dirname(fullPath), { recursive: true })
-            const downloadResult = await this._retryOperation(() => s3.downloadFile(bucket, key, fullPath))
-            const restoredTimestamp = getTimestampMs(downloadResult)
-            if (restoredTimestamp > 0) {
-                const restoredDate = new Date(restoredTimestamp)
-                await fs.utimes(fullPath, restoredDate, restoredDate).catch(() => {})
-            }
+            await this._downloadCloudFileToLocal(s3, bucket, key)
             completed += 1
-            this._clearBlobCacheForRelativePath(key)
             const root = key.split('/').filter(Boolean)[0]
             if (root) changedRoots.add(root)
             if (progressCallback) progressCallback(completed, total)
@@ -1617,9 +1769,7 @@ class FileOperations {
         }
 
         for (const relPath of toUpload) {
-            const fullPath = this._resolvePath(relPath)
-            const metadata = await this._buildCloudUploadMetadata(fullPath)
-            await this._retryOperation(() => s3.uploadFile(bucket, fullPath, relPath, { metadata }))
+            await this._uploadLocalFileToCloud(s3, bucket, relPath)
             updateProgress()
         }
 
@@ -1679,12 +1829,15 @@ class FileOperations {
         this._cloudAutoRestoreReady = false
         this._cloudAutoRestoreSignature = ''
         this._cloudAutoRestorePending = false
+        this._cloudAutoDecisionRunning = false
+        this._cloudAutoDecisionPending = false
         this._cloudOperationRunning = false
         this._cloudAutoBackupRunning = false
         this._cloudAutoRestoreRunning = false
         this._clearCloudAutoBackupTimer()
         this._clearCloudAutoRestoreTimer()
         this._clearCloudAutoDecisionTimer()
+        this._clearCloudAutoPollTimer()
         this._closeExternalWatchers()
         for (const timer of this._externalWatchDebounceTimers.values()) {
             clearTimeout(timer)
