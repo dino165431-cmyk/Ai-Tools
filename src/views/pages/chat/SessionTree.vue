@@ -179,6 +179,9 @@ const pendingSaveOptions = ref({})
 const TIMED_TASK_DIR_NAME = '定时任务'
 const AUTO_CHAT_DIR_NAME = '历史会话'
 
+const SESSION_META_CACHE_MAX_ENTRIES = 2000
+const sessionFileMetaCache = new Map()
+
 const protectedSystemDirs = computed(() => [
   `${props.root}/${TIMED_TASK_DIR_NAME}`,
   `${props.root}/${AUTO_CHAT_DIR_NAME}`
@@ -186,6 +189,71 @@ const protectedSystemDirs = computed(() => [
 
 function normalizeTreePath(p) {
   return String(p || '').trim().replace(/\\/g, '/')
+}
+
+function buildSessionFileMetaCacheVersion(statInfo) {
+  const size = Number(statInfo?.size)
+  const mtimeMs = statTimeMs(statInfo)
+  const hasSize = Number.isFinite(size)
+  const hasMtime = Number.isFinite(mtimeMs) && mtimeMs > 0
+  if (!hasSize && !hasMtime) return ''
+  return `${hasSize ? size : '?'}:${hasMtime ? mtimeMs : 0}`
+}
+
+function getCachedSessionFileMeta(entryPath, statInfo) {
+  const normalizedPath = normalizeTreePath(entryPath)
+  if (!normalizedPath) return null
+  const version = buildSessionFileMetaCacheVersion(statInfo)
+  if (!version) return null
+  const cached = sessionFileMetaCache.get(normalizedPath)
+  if (!cached || cached.version !== version || !cached.value) return null
+  sessionFileMetaCache.delete(normalizedPath)
+  sessionFileMetaCache.set(normalizedPath, cached)
+  return { ...cached.value }
+}
+
+function setCachedSessionFileMeta(entryPath, statInfo, value) {
+  const normalizedPath = normalizeTreePath(entryPath)
+  if (!normalizedPath || !value || typeof value !== 'object') return value
+  const version = buildSessionFileMetaCacheVersion(statInfo)
+  if (!version) return value
+  if (sessionFileMetaCache.has(normalizedPath)) sessionFileMetaCache.delete(normalizedPath)
+  sessionFileMetaCache.set(normalizedPath, {
+    version,
+    value: { ...value }
+  })
+  while (sessionFileMetaCache.size > SESSION_META_CACHE_MAX_ENTRIES) {
+    const oldestKey = sessionFileMetaCache.keys().next().value
+    if (!oldestKey) break
+    sessionFileMetaCache.delete(oldestKey)
+  }
+  return value
+}
+
+function invalidateSessionFileMetaCacheTree(targetPath) {
+  const normalizedPath = normalizeTreePath(targetPath)
+  if (!normalizedPath) return
+  for (const cacheKey of [...sessionFileMetaCache.keys()]) {
+    if (cacheKey === normalizedPath || cacheKey.startsWith(`${normalizedPath}/`)) {
+      sessionFileMetaCache.delete(cacheKey)
+    }
+  }
+}
+
+function renameSessionFileMetaCacheTree(oldBase, newBase) {
+  const normalizedOldBase = normalizeTreePath(oldBase)
+  const normalizedNewBase = normalizeTreePath(newBase)
+  if (!normalizedOldBase || !normalizedNewBase || normalizedOldBase === normalizedNewBase) return
+  const movedEntries = []
+  for (const [cacheKey, cacheValue] of sessionFileMetaCache.entries()) {
+    if (cacheKey === normalizedOldBase || cacheKey.startsWith(`${normalizedOldBase}/`)) {
+      movedEntries.push([`${normalizedNewBase}${cacheKey.slice(normalizedOldBase.length)}`, cacheValue])
+      sessionFileMetaCache.delete(cacheKey)
+    }
+  }
+  movedEntries.forEach(([nextKey, cacheValue]) => {
+    sessionFileMetaCache.set(nextKey, cacheValue)
+  })
 }
 
 function isPathInside(target, base) {
@@ -272,6 +340,7 @@ function removeTreeNodeByPath(targetPath) {
 function clearTreeStateForRemovedPath(targetPath) {
   const normalized = normalizeTreePath(targetPath)
   if (!normalized) return
+  invalidateSessionFileMetaCacheTree(normalized)
   selectedKeys.value = selectedKeys.value.filter((key) => key !== normalized && !String(key || '').startsWith(`${normalized}/`))
   selectedFolderKeys.value = selectedFolderKeys.value.filter((key) => key !== normalized && !String(key || '').startsWith(`${normalized}/`))
   expandedKeys.value = expandedKeys.value.filter((key) => key !== normalized && !String(key || '').startsWith(`${normalized}/`))
@@ -585,6 +654,8 @@ async function readSessionFileMeta(entryPath, statInfo) {
   const fileName = String(entryPath || '').split('/').pop() || ''
   const fallbackName = String(fileName || '').replace(/\.json$/i, '')
   const maxMetaReadBytes = 1024 * 1024
+  const cachedMeta = getCachedSessionFileMeta(entryPath, statInfo)
+  if (cachedMeta) return cachedMeta
   let data = null
 
   try {
@@ -605,12 +676,12 @@ async function readSessionFileMeta(entryPath, statInfo) {
 
   const metaLabel = formatTreeMetaDate(timeMs)
 
-  return {
-    label: title || fallbackName || '未命名会话',
+  return setCachedSessionFileMeta(entryPath, statInfo, {
+    label: title || fallbackName || '\u672a\u547d\u540d\u4f1a\u8bdd',
     metaLabel,
     sortTimeMs: timeMs,
     sessionKind: timedTask ? 'timed-task' : autoChat ? 'history-session' : 'session'
-  }
+  })
 }
 
 async function loadDirectory(relativePath, parentNode) {
@@ -928,6 +999,7 @@ function resolveCreatedTimeMsForPayload(payload) {
 }
 
 function updateTreeStateAfterPathChange(oldBase, newBase) {
+  renameSessionFileMetaCacheTree(oldBase, newBase)
   expandedKeys.value = uniqueStrings(expandedKeys.value.map((k) => replacePathPrefix(k, oldBase, newBase)))
   folderExpandedKeys.value = uniqueStrings(folderExpandedKeys.value.map((k) => replacePathPrefix(k, oldBase, newBase)))
   selectedKeys.value = uniqueStrings(selectedKeys.value.map((k) => replacePathPrefix(k, oldBase, newBase)))

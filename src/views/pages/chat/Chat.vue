@@ -1297,6 +1297,7 @@ import {
 } from '@/utils/chatToolDisplay'
 import { getAgentRunMessageStatus, isAgentRunToolName, mergeAgentRunTraceEntries } from '@/utils/chatAgentRun'
 import { CHAT_CODE_AUTO_FOLD_THRESHOLD } from '@/utils/chatMarkdownPreview'
+import { resolveChatHeavyRenderTuning } from '@/utils/chatPerformance.js'
 import { extractAssistantTextFromPayload, extractAssistantTextFromPayloads } from '@/utils/chatAssistantResponse'
 import {
   buildUtoolsEnterEventKey,
@@ -2243,9 +2244,7 @@ const CHAT_LIST_GAP_PX = 14
 const CHAT_DEFAULT_MESSAGE_HEIGHT = 180
 const CHAT_RECENT_HEAVY_RENDER_COUNT = 24
 const CHAT_HEAVY_RENDER_SEED_COUNT = 32
-const CHAT_HEAVY_RENDER_VIEWPORT_BUFFER = 6
-const CHAT_HEAVY_RENDER_ROOT_MARGIN_PX = 720
-const CHAT_HEAVY_RENDER_MAX_HYDRATED = 96
+const CHAT_HEAVY_RENDER_WARM_BUFFER_EXTRA = 8
 const CHAT_SCROLL_COMPENSATION_SUSPEND_MS = 640
 const CHAT_TOOL_COMPACT_MIN_MESSAGES = 120
 const CHAT_TOOL_COMPACT_MIN_TOOL_MESSAGES = 32
@@ -7017,6 +7016,12 @@ const recentHeavyChatMessageIds = computed(() => {
   })
   return ids
 })
+const chatHeavyRenderTuning = computed(() => resolveChatHeavyRenderTuning(session.messages?.length || 0))
+
+function resolveCurrentHeavyRenderViewportBuffer(extra = 0) {
+  return Math.max(0, Number(chatHeavyRenderTuning.value.viewportBuffer || 0) + Math.max(0, Number(extra) || 0))
+}
+
 let chatLayoutResizeObserver = null
 let chatMessageVisibilityObserver = null
 let chatMessageResizeObserver = null
@@ -7189,7 +7194,7 @@ function pruneHydratedHeavyChatMessageIds(options = {}) {
   const requestedLimit = Number(options.limit)
   const limit = Number.isFinite(requestedLimit)
     ? Math.max(0, Math.round(requestedLimit))
-    : CHAT_HEAVY_RENDER_MAX_HYDRATED
+    : Math.max(0, Number(chatHeavyRenderTuning.value.maxHydrated) || 0)
   if (current.size <= limit) return false
 
   const keepIds = new Set()
@@ -7200,7 +7205,7 @@ function pruneHydratedHeavyChatMessageIds(options = {}) {
   forcedRenderedChatMessageIdSet.value.forEach((id) => keepIds.add(id))
 
   const items = Array.isArray(chatVirtualLayout.value?.items) ? chatVirtualLayout.value.items : []
-  const buffer = Math.max(0, CHAT_HEAVY_RENDER_VIEWPORT_BUFFER)
+  const buffer = resolveCurrentHeavyRenderViewportBuffer()
   const start = Math.max(0, Number(renderedChatRange.value?.start || 0) - buffer)
   const end = Math.min(items.length - 1, Number(renderedChatRange.value?.end || -1) + buffer)
   for (let i = start; i <= end; i += 1) {
@@ -7277,7 +7282,7 @@ function primeHydratedRenderedChatMessages(options = {}) {
   const requestedBuffer = Number(options.buffer)
   const buffer = Number.isFinite(requestedBuffer)
     ? Math.max(0, Math.round(requestedBuffer))
-    : CHAT_HEAVY_RENDER_VIEWPORT_BUFFER
+    : resolveCurrentHeavyRenderViewportBuffer()
   const start = Math.max(0, Number(range.start || 0) - buffer)
   const end = Math.min(items.length - 1, Number(range.end || -1) + buffer)
   if (end < start) return false
@@ -7880,7 +7885,7 @@ function setupChatMessageVisibilityObserver() {
     },
     {
       root,
-      rootMargin: `${CHAT_HEAVY_RENDER_ROOT_MARGIN_PX}px 0px`
+      rootMargin: `${Math.max(0, Number(chatHeavyRenderTuning.value.rootMarginPx) || 0)}px 0px`
     }
   )
 
@@ -8161,7 +8166,7 @@ async function settleChatViewportAfterSessionOpen(options = {}) {
   const requestedBuffer = Number(options.buffer)
   const buffer = Number.isFinite(requestedBuffer)
     ? Math.max(0, Math.round(requestedBuffer))
-    : CHAT_HEAVY_RENDER_VIEWPORT_BUFFER + 2
+    : resolveCurrentHeavyRenderViewportBuffer(2)
   primeHydratedRenderedChatMessages({ buffer })
   primeHydratedMountedHeavyChatMessages()
 }
@@ -8223,6 +8228,14 @@ watch(
   () => session.messages.length,
   () => {
     maybeCoalesceLatestToolMessages()
+  }
+)
+
+watch(
+  () => `${chatHeavyRenderTuning.value.viewportBuffer}|${chatHeavyRenderTuning.value.rootMarginPx}|${chatHeavyRenderTuning.value.maxHydrated}`,
+  () => {
+    pruneHydratedHeavyChatMessageIds()
+    if (chatMessageVisibilityObserver) setupChatMessageVisibilityObserver()
   }
 )
 
@@ -9294,7 +9307,7 @@ async function switchMemorySession(id) {
     await scrollToBottom({ force: true })
     await settleChatViewportAfterSessionOpen({
       reconnectObserver: true,
-      buffer: CHAT_HEAVY_RENDER_VIEWPORT_BUFFER + 8
+      buffer: resolveCurrentHeavyRenderViewportBuffer(CHAT_HEAVY_RENDER_WARM_BUFFER_EXTRA)
     })
   })
   pruneDormantMemorySessions({ keepId: record.id })
@@ -10271,7 +10284,7 @@ async function loadSessionFromFile(filePath) {
       await scrollToBottom({ force: true })
       await settleChatViewportAfterSessionOpen({
         reconnectObserver: true,
-        buffer: CHAT_HEAVY_RENDER_VIEWPORT_BUFFER + 8
+        buffer: resolveCurrentHeavyRenderViewportBuffer(CHAT_HEAVY_RENDER_WARM_BUFFER_EXTRA)
       })
     })
     message.success('正在运行的会话已加载')
@@ -10435,7 +10448,7 @@ async function loadSessionFromFile(filePath) {
       await scrollToBottom({ force: true })
       await settleChatViewportAfterSessionOpen({
         reconnectObserver: true,
-        buffer: CHAT_HEAVY_RENDER_VIEWPORT_BUFFER + 8
+        buffer: resolveCurrentHeavyRenderViewportBuffer(CHAT_HEAVY_RENDER_WARM_BUFFER_EXTRA)
       })
     })
 
