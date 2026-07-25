@@ -10,6 +10,7 @@ import {
     PeopleSettings24Regular,
     AppsListDetail20Regular,
     BrainCircuit20Regular,
+    DataUsage24Regular,
     Timer24Regular
 } from '@vicons/fluent'
 
@@ -30,6 +31,7 @@ export const routers = [
             keepAlive: true,
             menu: true,
             label: '聊天',
+            description: '与模型对话、调用工具和智能体',
             icon: ChatMultiple24Filled
         }
     },
@@ -41,6 +43,7 @@ export const routers = [
             keepAlive: true,
             menu: true,
             label: '笔记',
+            description: '管理 Markdown 笔记与 Notebook',
             icon: NotepadEdit16Regular
         }
     },
@@ -51,106 +54,127 @@ export const routers = [
         meta: {
             menu: true,
             label: '设置',
+            description: '模型、助手、扩展能力和应用选项',
             icon: PeopleSettings24Regular
         },
         children: [
             {
-                path: '/timedTask',
+                path: 'tasks',
                 name: 'timedTask',
                 component: () => import('@/views/pages/setting/timedTask/TimedTask.vue'),
                 meta: {
                     keepAlive: true,
                     menu: true,
-                    label: '定时任务',
+                    label: '自动任务',
+                    description: '按计划自动运行对话或智能体',
                     icon: Timer24Regular
                 }
             },
             {
-                path: '/memory',
+                path: 'memory',
                 name: 'memory',
                 component: () => import('@/views/pages/setting/memory/Memory.vue'),
                 meta: {
                     keepAlive: true,
                     menu: true,
                     label: '记忆管理',
+                    description: '查看和管理助手保存的长期信息',
                     icon: BrainCircuit20Regular,
                     requiresMemoryEnabled: true
                 }
             },
             {
-                path: '/provider',
+                path: 'models',
                 name: 'provider',
                 component: () => import('@/views/pages/setting/provider/Provider.vue'),
                 meta: {
                     keepAlive: true,
                     menu: true,
-                    label: '服务商',
+                    label: '模型服务',
+                    description: '配置 OpenAI 兼容接口和可用模型',
                     icon: AppsListDetail20Regular
                 }
             },
             {
-                path: '/agent',
+                path: 'assistants',
                 name: 'agent',
                 component: () => import('@/views/pages/setting/agent/Agent.vue'),
                 meta: {
                     keepAlive: true,
                     menu: true,
-                    label: '智能体',
+                    label: '智能助手',
+                    description: '组合模型、提示词、技能与工具',
                     icon: Magento
                 }
             },
             {
-                path: '/prompt',
+                path: 'prompts',
                 name: 'prompt',
                 component: () => import('@/views/pages/setting/prompt/Prompt.vue'),
                 meta: {
                     keepAlive: true,
                     menu: true,
                     label: '提示词',
+                    description: '管理可复用的系统提示词与模板',
                     icon: Prompt
                 }
             },
             {
-                path: '/skill',
+                path: 'skills',
                 name: 'skill',
                 component: () => import('@/views/pages/setting/skill/Skill.vue'),
                 meta: {
                     keepAlive: true,
                     menu: true,
                     label: '技能',
+                    description: '导入和管理标准 SKILL.md 技能包',
                     icon: SkillLevelIntermediate
                 }
             },
             {
-                path: '/mcp',
+                path: 'tools',
                 name: 'mcp',
                 component: () => import('@/views/pages/setting/mcp/Mcp.vue'),
                 meta: {
                     keepAlive: true,
                     menu: true,
-                    label: 'MCP',
+                    label: '扩展工具',
+                    description: '管理 MCP 服务和内置 Bash 工具箱',
                     icon: BareMetalServer02
                 }
             },
             {
-                path: '/noteTemplate',
+                path: 'notes',
                 name: 'noteTemplate',
                 component: () => import('@/views/pages/setting/noteTemplate/NoteTemplate.vue'),
                 meta: {
                     keepAlive: true,
                     menu: true,
                     label: '笔记配置',
+                    description: '设置笔记模板、编辑器和目录规则',
                     icon: NotepadEdit16Regular
                 }
             },
             {
-                path: '/config',
+                path: 'usage',
+                name: 'usage',
+                component: () => import('@/views/pages/setting/usage/Usage.vue'),
+                meta: {
+                    menu: true,
+                    label: '用量统计',
+                    description: '查看保存在本地的模型 Token 消耗',
+                    icon: DataUsage24Regular
+                }
+            },
+            {
+                path: 'advanced',
                 name: 'config',
                 component: () => import('@/views/pages/setting/config/Config.vue'),
                 meta: {
                     keepAlive: true,
                     menu: true,
-                    label: '配置',
+                    label: '高级设置',
+                    description: '上下文、联网、存储、安全和实验选项',
                     icon: CloudSatelliteConfig
                 }
             }

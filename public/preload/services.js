@@ -5,6 +5,7 @@ const notebookRuntime = require('./utils/notebook-runtime')
 const pythonLsp = require('./utils/python-lsp')
 const webOperations = require('./utils/web-operations')
 const contentIndex = require('./utils/content-index')
+const usageStatistics = require('./utils/usage-statistics')
 
 const BRIDGE_NAME = 'aiToolsApi'
 const preloadCleanupTasks = new Map()
@@ -204,6 +205,10 @@ const aiToolsApi = deepFreeze({
   web: bindMethods(webOperations, [
     'webSearch',
     'webRead'
+  ]),
+  usage: bindMethods(usageStatistics, [
+    'recordUsage',
+    'getUsageSummary'
   ]),
   lifecycle: Object.freeze({
     start: startPreloadLifecycle,

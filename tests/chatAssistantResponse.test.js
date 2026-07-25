@@ -71,13 +71,14 @@ test('buildResponsesRequestBodyFromChatBody converts messages, tools, and tool r
         content: '',
         tool_calls: [
           {
-            id: 'call_lookup',
+            id: 'fc_lookup',
+            call_id: 'call_lookup',
             type: 'function',
             function: { name: 'notes_read', arguments: '{"path":"a.md"}' }
           }
         ]
       },
-      { role: 'tool', tool_call_id: 'call_lookup', content: 'note body' }
+      { role: 'tool', tool_call_id: 'fc_lookup', call_id: 'call_lookup', content: 'note body' }
     ],
     tools: [
       {
@@ -134,9 +135,30 @@ test('applyResponsesStreamEvent converts text deltas and function calls', () => 
   assert.equal(result.toolCalls[0].function.name, 'notes_read')
 })
 
+test('Responses function argument events retain call_id before the completed response item', () => {
+  const state = createResponsesStreamAccumulator()
+
+  applyResponsesStreamEvent(state, {
+    type: 'response.function_call_arguments.done',
+    item_id: 'fc_lookup',
+    call_id: 'call_lookup',
+    name: 'notes_read',
+    arguments: '{"path":"a.md"}',
+    output_index: 0
+  })
+
+  const result = finalizeResponsesStreamAccumulator(state)
+  assert.equal(result.toolCalls.length, 1)
+  assert.equal(result.toolCalls[0].id, 'fc_lookup')
+  assert.equal(result.toolCalls[0].call_id, 'call_lookup')
+  assert.equal(result.toolCalls[0].function.name, 'notes_read')
+  assert.equal(result.toolCalls[0].function.arguments, '{"path":"a.md"}')
+})
+
 test('shouldFallbackChatCompletionsToResponses recognizes Responses-only errors', () => {
   assert.equal(shouldFallbackChatCompletionsToResponses('This model is supported only in the Responses API.'), true)
   assert.equal(shouldFallbackChatCompletionsToResponses('Use /v1/responses instead.'), true)
+  assert.equal(shouldFallbackChatCompletionsToResponses('Tool calling is available only through /v1/responses.'), true)
   assert.equal(shouldFallbackChatCompletionsToResponses('rate limit exceeded'), false)
 })
 
@@ -151,6 +173,7 @@ test('shouldPreferResponsesApiForModel uses OpenAI model capability segments', (
 test('Responses fallback helpers distinguish endpoint and streaming compatibility', () => {
   assert.equal(shouldFallbackResponsesToChatCompletions('Responses 请求失败（HTTP 404）：Not Found\nURL：https://api.example.com/responses'), true)
   assert.equal(shouldFallbackResponsesToChatCompletions('Responses 请求失败（HTTP 400）：invalid model'), false)
+  assert.equal(shouldFallbackResponsesToChatCompletions('Responses 请求失败（HTTP 405）：Method Not Allowed'), true)
   assert.equal(shouldRetryResponsesWithoutStreaming('This model does not support streaming responses.'), true)
   assert.equal(shouldRetryResponsesWithoutStreaming('invalid api key'), false)
   assert.equal(shouldRetryWithoutParallelToolCalls("Unsupported parameter: 'parallel_tool_calls'."), true)

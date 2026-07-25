@@ -9,6 +9,18 @@ import { getChatConfig, getDataStorageRoot, getProviders, updateChatConfig } fro
 import { parseSessionJsonText } from '@/utils/sessionFileJson'
 import { buildUtoolsAiMessages, canUseUtoolsAi } from '@/utils/utoolsAiProvider'
 import { normalizeChatMemoryConfig, isChatMemoryEnabled, DEFAULT_CHAT_MEMORY_CONFIG } from '@/utils/chatMemoryConfig'
+import { extractAssistantTextFromPayload } from '@/utils/chatAssistantResponse'
+import {
+  buildResponsesRequestBodyFromChatBody,
+  shouldFallbackChatCompletionsToResponses,
+  shouldFallbackResponsesToChatCompletions,
+  shouldPreferResponsesApiForModel
+} from '@/utils/openaiResponsesCompat'
+import {
+  allowsAutomaticApiFallback,
+  normalizeProviderApiMode,
+  resolveChatApiMode
+} from '@/utils/providerModelConfig'
 
 const MEMORY_ROOT = 'chat-memory'
 const MEMORY_STORE_FILE = `${MEMORY_ROOT}/memory-store.json`
@@ -606,7 +618,7 @@ async function requestOpenAiCompatibleJson({ baseUrl, apiKey, path, body, signal
       if (resp.status === 404 && url !== candidates[candidates.length - 1]) continue
       if (!resp.ok) {
         const text = await resp.text()
-        throw new Error(text || `HTTP ${resp.status}`)
+        throw new Error(`HTTP ${resp.status}: ${text || resp.statusText}\nURL: ${url}`)
       }
       return await resp.json()
     } catch (err) {
@@ -740,17 +752,57 @@ async function requestMemoryExtraction({ userText, assistantText, systemPrompt, 
 
   if (!baseUrl || !apiKey) throw new Error('memory extraction provider credentials are incomplete')
 
-  const json = await requestOpenAiCompatibleJson({
-    baseUrl,
-    apiKey,
-    path: '/chat/completions',
-    body: {
-      model,
-      messages: body.messages,
-      temperature: 0.2
-    }
+  const chatBody = {
+    model,
+    messages: body.messages,
+    temperature: 0.2
+  }
+  const configuredApiMode = normalizeProviderApiMode(provider.apiMode)
+  const automaticApiFallback = allowsAutomaticApiFallback(configuredApiMode)
+  const initialApiMode = resolveChatApiMode({
+    configuredMode: configuredApiMode,
+    preferResponses: shouldPreferResponsesApiForModel(model)
   })
-  const raw = String(json?.choices?.[0]?.message?.content || '').trim()
+
+  const requestByMode = async (mode) => {
+    if (mode === 'responses') {
+      return requestOpenAiCompatibleJson({
+        baseUrl,
+        apiKey,
+        path: '/responses',
+        body: buildResponsesRequestBodyFromChatBody(chatBody, { stream: false })
+      })
+    }
+    return requestOpenAiCompatibleJson({
+      baseUrl,
+      apiKey,
+      path: '/chat/completions',
+      body: chatBody
+    })
+  }
+
+  let usedApiMode = initialApiMode
+  let json = null
+  try {
+    json = await requestByMode(initialApiMode)
+  } catch (err) {
+    const errorText = String(err?.message || err || '')
+    const fallbackMode =
+      initialApiMode === 'responses' && shouldFallbackResponsesToChatCompletions(errorText)
+        ? 'chat-completions'
+        : initialApiMode === 'chat-completions' && shouldFallbackChatCompletionsToResponses(errorText)
+          ? 'responses'
+          : ''
+    if (!automaticApiFallback || !fallbackMode) throw err
+    usedApiMode = fallbackMode
+    json = await requestByMode(fallbackMode)
+  }
+
+  const raw = String(
+    usedApiMode === 'responses'
+      ? extractAssistantTextFromPayload(json)
+      : json?.choices?.[0]?.message?.content || ''
+  ).trim()
   const parsed = safeParseJsonArray(raw)
   return parsed.ok ? parsed.value : []
 }

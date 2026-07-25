@@ -1,4 +1,13 @@
-export const AGENT_REASONING_EFFORT_OPTIONS = ['auto', 'low', 'medium', 'high']
+export const AGENT_REASONING_EFFORT_OPTIONS = [
+  'auto',
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max'
+]
 
 function normalizeOptionalNumber(value, options = {}) {
   if (value === '' || value === null || value === undefined) return null

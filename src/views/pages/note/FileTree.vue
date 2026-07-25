@@ -32,6 +32,14 @@
         刷新目录
       </n-tooltip>
     </div>
+    <n-input
+      v-model:value="searchQuery"
+      class="note-tree__search"
+      size="small"
+      clearable
+      placeholder="搜索笔记和文件夹"
+      @contextmenu.stop
+    />
 
     <n-alert v-if="runtimeIssue" type="warning" style="margin-bottom: 8px;">
       {{ runtimeIssue }}
@@ -53,6 +61,8 @@
         expand-on-click
         ellipsis
         :data="treeData"
+        :pattern="searchQuery"
+        :show-irrelevant-nodes="false"
         :allow-drop="allowTreeDrop"
         :node-props="nodeProps"
         v-model:expanded-keys="expandedKeys"
@@ -221,6 +231,7 @@ const loadedPaths = new Set();
 const treeNodeIndex = new Map();
 const refreshing = ref(false);
 const runtimeIssue = ref('');
+const searchQuery = ref('');
 const noteSecurity = computed(() => normalizeNoteSecurityConfig(noteConfig.value?.noteSecurity));
 let pendingRefreshRequested = false;
 let pendingRefreshSilent = true;
@@ -2455,6 +2466,11 @@ defineExpose({
   display: flex;
   flex: 0 0 auto;
   justify-content: flex-end;
+  margin-bottom: 10px;
+}
+
+.note-tree__search {
+  flex: 0 0 auto;
   margin-bottom: 10px;
 }
 

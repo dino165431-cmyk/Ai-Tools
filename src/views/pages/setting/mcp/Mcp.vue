@@ -10,11 +10,11 @@
       <n-flex justify="space-between" align="center">
         <n-flex align="center">
           <n-icon :component="BareMetalServer02" size="20" :depth="1" />
-          <span style="font-weight: 500;">MCP 服务器管理</span>
+          <span style="font-weight: 500;">扩展工具</span>
         </n-flex>
         <n-flex align="center">
           <n-button tertiary size="small" @click="openAddModal">
-            新增 MCP 服务器
+            连接 MCP 服务
           </n-button>
         </n-flex>
       </n-flex>
@@ -29,6 +29,7 @@
         size="small"
         class="settings-grid-card"
         :style="cardStyle"
+        :title="getMcpCardHint(mcp)"
         @click="handleCardClick(mcp)"
       >
         <n-flex vertical>
@@ -71,10 +72,13 @@
             </n-flex>
           </n-flex>
           <n-text depth="3" style="font-size: 12px;">
-            类型：{{ mcp.transportType || '未知' }}
+            接入方式：{{ getTransportLabel(mcp.transportType) }}
           </n-text>
           <n-flex align="center" wrap :size="6" style="margin-top: 6px;">
             <n-tag v-if="mcp.builtin" size="small" type="info" bordered>内置</n-tag>
+            <n-tag v-if="mcp.transportType === 'builtinShell'" size="small" type="warning" bordered>
+              逐命令审批
+            </n-tag>
             <n-tag v-if="mcp.disabled" size="small" bordered>已禁用</n-tag>
             <n-tag v-if="mcp.allowTools && mcp.allowTools.length" size="small" type="warning" bordered>
               工具：{{ mcp.allowTools.length }}
@@ -83,6 +87,13 @@
               工具：全部
             </n-tag>
           </n-flex>
+          <n-text
+            v-if="mcp.transportType === 'builtinShell'"
+            depth="3"
+            class="settings-grid-card__hint"
+          >
+            工作目录固定在所选数据目录；新命令执行前会先请求确认。
+          </n-text>
         </n-flex>
       </n-card>
     </n-flex>
@@ -178,10 +189,10 @@
           </n-form-item>
         </template>
 
-        <!-- SSE 特有字段 -->
-        <template v-else-if="editFormData.transportType === 'sse'">
+        <!-- Streamable HTTP 特有字段 -->
+        <template v-else-if="editFormData.transportType === 'streamableHttp'">
           <n-form-item label="URL" path="url" required>
-            <n-input v-model:value="editFormData.url" placeholder="例如：https://example.com/sse（填写 SSE 订阅地址）" />
+            <n-input v-model:value="editFormData.url" placeholder="例如：https://api.example.com/mcp（填写 MCP 接入地址）" />
           </n-form-item>
 
           <n-form-item label="请求头">
@@ -201,91 +212,10 @@
           </n-form-item>
 
           <n-form-item label="超时（ms）">
-            <n-input-number v-model:value="editFormData.timeout" :min="0" placeholder="例如：30000" />
-          </n-form-item>
-
-          <n-form-item label="连接时 Ping">
-            <n-switch v-model:value="editFormData.pingOnConnect" />
-          </n-form-item>
-
-          <n-form-item label="最大总超时（ms）">
-            <n-input-number v-model:value="editFormData.maxTotalTimeout" :min="0" placeholder="例如：120000" />
-          </n-form-item>
-        </template>
-
-        <!-- Streamable HTTP 特有字段 -->
-        <template v-else-if="editFormData.transportType === 'streamableHttp'">
-          <n-form-item label="URL" path="url" required>
-            <n-input v-model:value="editFormData.url" placeholder="例如：https://api.example.com/mcp（填写 MCP 接入地址）" />
-          </n-form-item>
-
-          <n-form-item label="方法">
-            <n-select
-              v-model:value="editFormData.method"
-              :options="methodOptions"
-              placeholder="HTTP 方法"
-            />
-          </n-form-item>
-
-          <n-form-item label="请求头">
-            <n-dynamic-input
-              v-model:value="headerPairs"
-              :on-create="() => ({ key: '', value: '' })"
-              #="{ index, value }"
-            >
-              <n-flex :wrap="false" style="width: 100%;">
-                <n-input v-model:value="value.key" placeholder="Header 名称，例如 Authorization" />
-                <n-input v-model:value="value.value" placeholder="值，例如 Bearer xxx" />
-                <n-button text title="移除 SSE 请求头" @click="removeHeader(index)">
-                  <n-icon :component="Minus" />
-                </n-button>
-              </n-flex>
-            </n-dynamic-input>
-          </n-form-item>
-
-          <n-form-item label="流式">
-            <n-switch v-model:value="editFormData.stream" />
-          </n-form-item>
-
-          <n-form-item label="超时（ms）">
             <n-input-number v-model:value="editFormData.timeout" :min="0" placeholder="例如：45000" />
           </n-form-item>
         </template>
 
-        <!-- 普通 HTTP 特有字段 -->
-        <template v-else-if="editFormData.transportType === 'http'">
-          <n-form-item label="URL" path="url" required>
-            <n-input v-model:value="editFormData.url" placeholder="例如：https://api.example.com/mcp（普通 MCP 接入地址）" />
-          </n-form-item>
-
-          <n-form-item label="方法">
-            <n-select
-              v-model:value="editFormData.method"
-              :options="methodOptions"
-              placeholder="HTTP 方法"
-            />
-          </n-form-item>
-
-          <n-form-item label="请求头">
-            <n-dynamic-input
-              v-model:value="headerPairs"
-              :on-create="() => ({ key: '', value: '' })"
-              #="{ index, value }"
-            >
-              <n-flex :wrap="false" style="width: 100%;">
-                <n-input v-model:value="value.key" placeholder="Header 名称，例如 Authorization" />
-                <n-input v-model:value="value.value" placeholder="值，例如 Bearer xxx" />
-                <n-button text title="移除自定义请求头" @click="removeHeader(index)">
-                  <n-icon :component="Minus" />
-                </n-button>
-              </n-flex>
-            </n-dynamic-input>
-          </n-form-item>
-
-          <n-form-item label="超时（ms）">
-            <n-input-number v-model:value="editFormData.timeout" :min="0" placeholder="例如：30000" />
-          </n-form-item>
-        </template>
       </n-form>
 
       <template #footer>
@@ -659,7 +589,8 @@ const theme = getTheme()
 
 // ---------- 卡片样式 ----------
 const cardStyle = computed(() => ({
-  width: 'calc((100% - 32px) / 3)',
+  width: 'min(100%, 312px)',
+  flex: '1 1 280px',
   marginBottom: '0',
   cursor: 'pointer'
 }))
@@ -668,6 +599,30 @@ const mcps = getMcpServers()
 
 const dialog = useDialog()
 const message = useMessage()
+
+const transportLabelMap = Object.freeze({
+  stdio: '本地命令（Stdio）',
+  sse: '旧版 SSE（需迁移）',
+  streamableHttp: 'Streamable HTTP',
+  http: '旧版 HTTP（需迁移）',
+  builtinNotes: '内置笔记',
+  builtinConfig: '内置配置',
+  builtinSessions: '内置会话',
+  builtinAgents: '内置智能体',
+  builtinShell: '内置 Bash'
+})
+
+function getTransportLabel(transportType) {
+  const value = String(transportType || '').trim()
+  return transportLabelMap[value] || value || '未知'
+}
+
+function getMcpCardHint(mcp) {
+  if (mcp?.transportType === 'builtinShell') {
+    return '打开工具详情。Bash 使用所选数据目录作为工作边界，每条新命令都需要确认。'
+  }
+  return mcp?.builtin ? '打开内置工具详情' : '点击编辑连接；右上角按钮可管理工具'
+}
 
 async function withTransientClient(serverConfig, handler) {
   let client = null
@@ -714,21 +669,14 @@ const currentEditId = ref(null)
 const editFormRef = ref(null)
 const editSaving = ref(false)
 
-// 传输类型选项（新增 http）
+// MCP 当前稳定传输只开放本地 Stdio 与远程 Streamable HTTP。
 const transportOptions = [
   { label: 'Stdio（本地命令）', value: 'stdio' },
-  { label: 'SSE（Server-Sent Events）', value: 'sse' },
-  { label: 'Streamable HTTP（流式）', value: 'streamableHttp' },
-  { label: 'HTTP（简单）', value: 'http' }
-]
-
-// HTTP 方法选项
-const methodOptions = [
-  { label: 'POST', value: 'POST' }
+  { label: 'Streamable HTTP（远程服务）', value: 'streamableHttp' }
 ]
 
 const transportGeneralTips = Object.freeze([
-  '切换传输类型后，保存前要一次性补齐新类型的必填字段；不要依赖旧字段自动兼容。',
+  '本地服务选 Stdio；远程服务选 Streamable HTTP。旧版 SSE / 简单 HTTP 配置在编辑时会引导迁移。',
   'args 会按字符串数组保存；env / headers 会按对象保存，空键会被忽略。'
 ])
 
@@ -741,27 +689,11 @@ const transportGuideMap = Object.freeze({
       'env 用键值对对象表示；cwd 可选，通常指向 MCP 服务运行目录。'
     ]
   },
-  sse: {
-    title: 'SSE 填写规则',
-    lines: [
-      'url 填 SSE 订阅地址，不是官网首页或普通接口地址。',
-      'headers 用对象表示；如果需要鉴权，通常在这里填 Authorization 等请求头。',
-      'pingOnConnect 只用于服务端不会立即返回 endpoint/session 时的补探测；maxTotalTimeout 是建连总超时。'
-    ]
-  },
   streamableHttp: {
     title: 'Streamable HTTP 填写规则',
     lines: [
       'url 填 MCP 接入地址，不要写成无关的业务接口地址。',
-      'method 当前固定 POST；stream 只对该传输类型生效。',
-      'headers 用对象表示；如需鉴权，在这里配置。'
-    ]
-  },
-  http: {
-    title: 'HTTP 填写规则',
-    lines: [
-      '适用于简单非流式 HTTP MCP 接入地址。',
-      'url 填 MCP 接入地址；method 当前固定 POST。',
+      '协议会自动使用 POST 请求，并在服务端返回事件流时自动读取流式结果。',
       'headers 用对象表示；如需鉴权，在这里配置。'
     ]
   }
@@ -778,14 +710,9 @@ const editFormData = reactive({
   env: {},
   cwd: '',
   timeout: null,
-  // sse / streamableHttp / http
+  // streamableHttp
   url: '',
-  headers: {},
-  pingOnConnect: false,
-  maxTotalTimeout: null,
-  // streamableHttp only
-  method: 'POST',
-  stream: false
+  headers: {}
 })
 
 // 用于编辑的键值对辅助数组
@@ -809,10 +736,6 @@ function onTransportTypeChange() {
   editFormData.cwd = ''
   editFormData.url = ''
   editFormData.headers = {}
-  editFormData.pingOnConnect = false
-  editFormData.maxTotalTimeout = null
-  editFormData.method = 'POST'
-  editFormData.stream = false
   envPairs.value = []
   headerPairs.value = []
 }
@@ -844,7 +767,8 @@ function openEditModal(mcp) {
   currentEditId.value = mcp._id
 
   editFormData.name = mcp.name || ''
-  editFormData.transportType = mcp.transportType || 'stdio'
+  const legacyRemoteTransport = mcp.transportType === 'sse' || mcp.transportType === 'http'
+  editFormData.transportType = legacyRemoteTransport ? 'streamableHttp' : (mcp.transportType || 'stdio')
   editFormData.disabled = mcp.disabled || false
 
   if (mcp.transportType === 'stdio') {
@@ -854,30 +778,18 @@ function openEditModal(mcp) {
     editFormData.cwd = mcp.cwd || ''
     editFormData.timeout = mcp.timeout || null
     envPairs.value = Object.entries(editFormData.env).map(([key, value]) => ({ key, value }))
-  } else if (mcp.transportType === 'sse') {
+  } else if (mcp.transportType === 'streamableHttp' || legacyRemoteTransport) {
     editFormData.url = mcp.url || ''
     editFormData.headers = mcp.headers || {}
-    editFormData.timeout = mcp.timeout || null
-    editFormData.pingOnConnect = mcp.pingOnConnect || false
-    editFormData.maxTotalTimeout = mcp.maxTotalTimeout || null
-    headerPairs.value = Object.entries(editFormData.headers).map(([key, value]) => ({ key, value }))
-  } else if (mcp.transportType === 'streamableHttp') {
-    editFormData.url = mcp.url || ''
-    editFormData.headers = mcp.headers || {}
-    editFormData.method = 'POST'
-    editFormData.stream = mcp.stream || false
-    editFormData.timeout = mcp.timeout || null
-    headerPairs.value = Object.entries(editFormData.headers).map(([key, value]) => ({ key, value }))
-  } else if (mcp.transportType === 'http') {   // 新增 http 分支
-    editFormData.url = mcp.url || ''
-    editFormData.headers = mcp.headers || {}
-    editFormData.method = 'POST'
     editFormData.timeout = mcp.timeout || null
     headerPairs.value = Object.entries(editFormData.headers).map(([key, value]) => ({ key, value }))
   }
 
   editFormRef.value?.restoreValidation()
   showEditModal.value = true
+  if (legacyRemoteTransport) {
+    message.warning('该连接使用旧版传输，已切换为 Streamable HTTP；请确认 MCP endpoint 后保存。')
+  }
 }
 
 function resetEditForm() {
@@ -891,10 +803,6 @@ function resetEditForm() {
   editFormData.timeout = null
   editFormData.url = ''
   editFormData.headers = {}
-  editFormData.pingOnConnect = false
-  editFormData.maxTotalTimeout = null
-  editFormData.method = 'POST'
-  editFormData.stream = false
   envPairs.value = []
   headerPairs.value = []
 }
@@ -919,7 +827,7 @@ async function handleEditSave() {
       message.warning('STDIO（标准输入输出）传输方式必须填写命令')
       return
     }
-    if ((editFormData.transportType === 'sse' || editFormData.transportType === 'streamableHttp' || editFormData.transportType === 'http') && !editFormData.url) {
+    if (editFormData.transportType === 'streamableHttp' && !editFormData.url) {
       message.warning('该传输类型必须填写链接地址')
       return
     }
@@ -942,16 +850,6 @@ async function handleEditSave() {
         baseData.env = envObj
         if (editFormData.cwd) baseData.cwd = editFormData.cwd
         if (editFormData.timeout) baseData.timeout = editFormData.timeout
-      } else if (editFormData.transportType === 'sse') {
-        const headersObj = {}
-        headerPairs.value.forEach(pair => {
-          if (pair.key) headersObj[pair.key] = pair.value
-        })
-        baseData.url = editFormData.url
-        baseData.headers = headersObj
-        if (editFormData.timeout) baseData.timeout = editFormData.timeout
-        baseData.pingOnConnect = editFormData.pingOnConnect
-        if (editFormData.maxTotalTimeout) baseData.maxTotalTimeout = editFormData.maxTotalTimeout
       } else if (editFormData.transportType === 'streamableHttp') {
         const headersObj = {}
         headerPairs.value.forEach(pair => {
@@ -959,17 +857,6 @@ async function handleEditSave() {
         })
         baseData.url = editFormData.url
         baseData.headers = headersObj
-        baseData.method = editFormData.method
-        baseData.stream = editFormData.stream
-        if (editFormData.timeout) baseData.timeout = editFormData.timeout
-      } else if (editFormData.transportType === 'http') {   // 新增 http 保存逻辑
-        const headersObj = {}
-        headerPairs.value.forEach(pair => {
-          if (pair.key) headersObj[pair.key] = pair.value
-        })
-        baseData.url = editFormData.url
-        baseData.headers = headersObj
-        baseData.method = editFormData.method
         if (editFormData.timeout) baseData.timeout = editFormData.timeout
       }
 
@@ -1042,10 +929,45 @@ const selectedResourceUri = ref(null)
 const readingResource = ref(false)
 const resourceResult = ref(null)
 
+function getToolPermissionBadge(tool) {
+  const annotations =
+    tool?.annotations && typeof tool.annotations === 'object' && !Array.isArray(tool.annotations)
+      ? tool.annotations
+      : {}
+  if (annotations.destructiveHint === true || annotations.readOnlyHint === false) {
+    return { label: '会修改', type: 'warning' }
+  }
+  if (annotations.readOnlyHint === true) {
+    return { label: '只读', type: 'success' }
+  }
+
+  const transportType = String(currentMcpForTool.value?.transportType || '')
+  const toolName = String(tool?.name || '')
+  if (transportType === 'builtinShell') return { label: '执行命令', type: 'error' }
+  if (transportType === 'builtinConfig') {
+    const readOnly = toolName === 'config_get_system_time' || toolName.startsWith('config_list_')
+    return readOnly ? { label: '只读', type: 'success' } : { label: '会修改', type: 'warning' }
+  }
+  if (transportType === 'builtinNotes') {
+    const readOnly = /^(notes_(list|read|search|get|stat|recent))/.test(toolName)
+    return readOnly ? { label: '只读', type: 'success' } : { label: '会修改', type: 'warning' }
+  }
+  return { label: '未声明', type: 'default' }
+}
+
 // 工具表格列定义
 const toolColumns = [
   { title: '名称', key: 'name', width: 250 },
   { title: '描述', key: 'description', ellipsis: { tooltip: true } },
+  {
+    title: '权限提示',
+    key: 'permission',
+    width: 100,
+    render(row) {
+      const badge = getToolPermissionBadge(row)
+      return h(NTag, { size: 'small', type: badge.type, bordered: true }, { default: () => badge.label })
+    }
+  },
   {
     title: '启用',
     key: 'enabled',
@@ -1785,6 +1707,12 @@ watch(selectedResourceUri, () => {
 
 .settings-grid-card {
   animation: settings-card-enter 240ms ease;
+}
+
+.settings-grid-card__hint {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .n-card {

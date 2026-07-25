@@ -340,15 +340,11 @@ function normalizeMcpServerFields(item) {
   if ('command' in out) out.command = cleanString(out.command)
   if ('cwd' in out) out.cwd = cleanString(out.cwd)
   if ('url' in out) out.url = cleanString(out.url)
-  if ('method' in out) out.method = 'POST'
   if ('timeout' in out) out.timeout = Number.isFinite(Number(out.timeout)) ? Math.max(1000, Math.floor(Number(out.timeout))) : undefined
-  if ('maxTotalTimeout' in out) {
-    out.maxTotalTimeout = Number.isFinite(Number(out.maxTotalTimeout))
-      ? Math.max(1000, Math.floor(Number(out.maxTotalTimeout)))
-      : undefined
-  }
-  if ('pingOnConnect' in out) out.pingOnConnect = !!out.pingOnConnect
-  if ('stream' in out) out.stream = !!out.stream
+  delete out.method
+  delete out.maxTotalTimeout
+  delete out.pingOnConnect
+  delete out.stream
   if ('allowTools' in out) out.allowTools = normalizeStringList(out.allowTools)
   if ('args' in out) out.args = normalizeStringList(out.args)
   if ('env' in out) out.env = normalizeStringKeyedObject(out.env)
@@ -362,7 +358,19 @@ function normalizeProviderFields(item) {
   if ('name' in out) out.name = cleanString(out.name)
   if ('baseurl' in out) out.baseurl = cleanString(out.baseurl)
   if ('apikey' in out) out.apikey = cleanString(out.apikey)
+  if ('apiMode' in out) {
+    const mode = cleanString(out.apiMode).toLowerCase().replace(/[_\s]+/g, '-')
+    out.apiMode = mode === 'responses' || mode === 'chat-completions' ? mode : 'auto'
+  }
   if ('selectModels' in out) out.selectModels = normalizeStringList(out.selectModels)
+  if ('modelTypes' in out) {
+    const allowedTypes = new Set(['chat', 'image-generation', 'video-generation', 'embedding'])
+    out.modelTypes = Object.fromEntries(
+      Object.entries(isPlainObject(out.modelTypes) ? out.modelTypes : {})
+        .map(([model, type]) => [cleanString(model), cleanString(type).toLowerCase().replace(/[_\s]+/g, '-')])
+        .filter(([model, type]) => model && allowedTypes.has(type))
+    )
+  }
   return out
 }
 
@@ -405,7 +413,7 @@ function sanitizePatchObject(patchRaw) {
 function assertAllowedCustomTransportType(transportType) {
   const tt = cleanString(transportType)
   if (!tt) throw new Error('transportType 必填')
-  const allowed = new Set(['stdio', 'sse', 'streamableHttp', 'http'])
+  const allowed = new Set(['stdio', 'streamableHttp'])
   if (!allowed.has(tt)) throw new Error(`transportType 不支持：${tt}`)
   return tt
 }
@@ -414,7 +422,7 @@ const CONFIG_LIST_FIRST_NOTE = '未知 _id 时先调用对应的 list 工具。'
 const CONFIG_ADD_FULL_OBJECT_NOTE = '新增时字段直接放在顶层，使用完整对象；不要再包一层 patch。'
 const CONFIG_UPDATE_PATCH_NOTE = '更新时顶层只能传 {id, patch}；真正要改的字段必须全部放在 patch 内，不要把 patch 字段平铺到顶层。'
 const CONFIG_MASKED_VALUE_NOTE = 'list 接口返回的 "***" 只是脱敏占位，不要原样写回敏感字段。'
-const MCP_TRANSPORT_SWITCH_NOTE = '若修改 transportType，请在同一次 patch 中补齐新传输的必填字段：stdio 需要 command，sse/http/streamableHttp 需要 url。'
+const MCP_TRANSPORT_SWITCH_NOTE = '若修改 transportType，请在同一次 patch 中补齐新传输的必填字段：stdio 需要 command，streamableHttp 需要 url。'
 const TIMED_TASK_TRIGGER_NOTE = 'trigger 推荐传完整对象；若改 trigger.type，要同时补齐该类型要求的 date/time/intervalSeconds/weekdays/monthDays。'
 
 const STRING_ARRAY_SCHEMA = { type: 'array', items: { type: 'string' } }
@@ -426,7 +434,7 @@ const MCP_SERVER_FIELDS = {
   name: { type: 'string', description: '服务名称。建议可读且唯一。' },
   transportType: {
     type: 'string',
-    enum: ['stdio', 'sse', 'streamableHttp', 'http'],
+    enum: ['stdio', 'streamableHttp'],
     description: '传输类型。新增时必填；更新若切换类型，要在同一次 patch 中补齐新类型必填字段。'
   },
   disabled: { type: 'boolean', description: '是否禁用。true 表示保留配置但不启用。' },
@@ -451,25 +459,11 @@ const MCP_SERVER_FIELDS = {
   cwd: { type: 'string', description: '仅 stdio 使用。工作目录，可选。通常填 MCP 服务的运行目录。' },
   url: {
     type: 'string',
-    description: '仅 sse/http/streamableHttp 使用。SSE 填订阅地址；streamableHttp/http 填 MCP endpoint。'
+    description: '仅 streamableHttp 使用，填写 MCP endpoint。'
   },
   headers: {
     ...STRING_OBJECT_SCHEMA,
     description: '仅 HTTP 类 transport 使用。必须是对象，例如 {"Authorization":"Bearer ..."}；更新时空对象 {} 表示清空。' + CONFIG_MASKED_VALUE_NOTE
-  },
-  pingOnConnect: {
-    type: 'boolean',
-    description: '仅 SSE 使用。当服务端不会立即返回 endpoint/session 信息时，可开启额外连通性探测；不是通用 keepalive。'
-  },
-  maxTotalTimeout: { type: 'integer', description: '仅 SSE 使用。连接建立总超时（毫秒）。' },
-  method: {
-    type: 'string',
-    enum: ['POST'],
-    description: '仅 http / streamableHttp 使用。当前固定 POST；不要传 GET。'
-  },
-  stream: {
-    type: 'boolean',
-    description: '仅 streamableHttp 使用。兼容字段，表示期望流式响应。'
   }
 }
 
@@ -541,7 +535,20 @@ const PROVIDER_FIELDS = {
   name: { type: 'string', description: '服务商名称。' },
   baseurl: { type: 'string', description: '接口基地址，例如 https://api.openai.com/v1。' },
   apikey: { type: 'string', description: 'API Key。敏感字段；更新时不要把 "***" 原样传回。' },
-  selectModels: { ...STRING_ARRAY_SCHEMA, description: '可选；启用的模型名数组。' }
+  apiMode: {
+    type: 'string',
+    enum: ['auto', 'responses', 'chat-completions'],
+    description: '对话接口类型。auto 自动探测；responses 固定使用 Responses API；chat-completions 固定使用 Chat Completions API。'
+  },
+  selectModels: { ...STRING_ARRAY_SCHEMA, description: '可选；启用的模型名数组。' },
+  modelTypes: {
+    type: 'object',
+    additionalProperties: {
+      type: 'string',
+      enum: ['chat', 'image-generation', 'video-generation', 'embedding']
+    },
+    description: '可选；按模型 ID 指定用途。未配置的模型继续自动识别。'
+  }
 }
 
 const TIMED_TASK_TRIGGER_FIELDS = {
@@ -616,7 +623,7 @@ const TOOLS = [
   },
   {
     name: 'config_add_mcp_server',
-    description: '新增 MCP 服务配置（不允许覆盖内置）。' + CONFIG_ADD_FULL_OBJECT_NOTE + ' transportType 决定需要哪些字段：stdio 需要 command；sse/http/streamableHttp 需要 url。',
+    description: '新增 MCP 服务配置（不允许覆盖内置）。' + CONFIG_ADD_FULL_OBJECT_NOTE + ' transportType 只支持 stdio 与 streamableHttp：stdio 需要 command；streamableHttp 需要 url。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -659,7 +666,7 @@ const TOOLS = [
   // Skills
   {
     name: 'config_list_skills',
-    description: '列出技能配置摘要。返回 _id、name、description、sourceType、sourcePath、entryFile、triggers、mcp 等基础信息，可用于区分标准目录 Skill 与旧版内联 Skill，并为后续 update/delete 定位目标。',
+    description: '列出技能配置摘要。返回 _id、name、description、sourceType、sourcePath、entryFile、triggers、mcp 等基础信息；目录 Skill 的 sourcePath 指向当前数据目录中的托管副本。',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false }
   },
   {
@@ -677,7 +684,7 @@ const TOOLS = [
   },
   {
     name: 'config_import_skill_directory',
-    description: '从本地现有 skill 目录导入技能登记（不复制文件）。path 必须是绝对路径，且目录内必须存在 SKILL.md。可选传 overwrite、triggers、mcp 作为导入后的绑定信息。',
+    description: '从本地现有 skill 目录导入，并复制到当前数据目录中的托管区。path 必须是绝对路径，且目录内必须存在 SKILL.md。可选传 overwrite、triggers、mcp 作为导入后的绑定信息。',
     inputSchema: {
       type: 'object',
       properties: SKILL_IMPORT_FIELDS,
@@ -687,7 +694,7 @@ const TOOLS = [
   },
   {
     name: 'config_import_skill_file',
-    description: '从本地 SKILL.md 文件导入技能登记（不复制文件）。path 必须是绝对路径，且文件名必须是 SKILL.md。可选传 overwrite、triggers、mcp 作为导入后的绑定信息。',
+    description: '从本地 SKILL.md 导入完整技能目录，并复制到当前数据目录中的托管区。path 必须是绝对路径，且文件名必须是 SKILL.md。可选传 overwrite、triggers、mcp 作为导入后的绑定信息。',
     inputSchema: {
       type: 'object',
       properties: SKILL_IMPORT_FIELDS,
@@ -961,16 +968,12 @@ class BuiltinConfigMcpClient {
         env: normalizeStringKeyedObject(params.env),
         cwd: params.cwd,
         url: params.url,
-        headers: normalizeStringKeyedObject(params.headers),
-        pingOnConnect: !!params.pingOnConnect,
-        maxTotalTimeout: params.maxTotalTimeout,
-        method: params.method,
-        stream: !!params.stream
+        headers: normalizeStringKeyedObject(params.headers)
       })
       if (transportType === 'stdio') {
         if (!cleanString(item.command)) throw new Error('command 必填（stdio）')
       } else {
-        if (!cleanString(item.url)) throw new Error('url 必填（http/sse/streamableHttp）')
+        if (!cleanString(item.url)) throw new Error('url 必填（streamableHttp）')
       }
       globalConfig.addMcpServer(item)
       return { ok: true, id }
@@ -1031,7 +1034,7 @@ class BuiltinConfigMcpClient {
       if (finalTransportType === 'stdio') {
         if (!cleanString(final.command)) throw new Error('command 必填（stdio）')
       } else {
-        if (!cleanString(final.url)) throw new Error('url 必填（http/sse/streamableHttp）')
+        if (!cleanString(final.url)) throw new Error('url 必填（streamableHttp）')
       }
       globalConfig.updateMcpServer(id, patch)
       return { ok: true, id }
@@ -1225,7 +1228,9 @@ class BuiltinConfigMcpClient {
         name: cleanString(params.name) || id,
         baseurl: params.baseurl,
         apikey: params.apikey,
-        selectModels: params.selectModels
+        apiMode: params.apiMode,
+        selectModels: params.selectModels,
+        modelTypes: params.modelTypes
       })
       if (!item.baseurl) throw new Error('baseurl 必填')
       if (!item.apikey) throw new Error('apikey 必填')

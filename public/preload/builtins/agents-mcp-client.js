@@ -1,13 +1,23 @@
 const globalConfig = require('../utils/global-config')
 const contentIndex = require('../utils/content-index')
-const { consumeJsonEventStream } = require('../utils/stream-json-events')
+const usageStatistics = require('../utils/usage-statistics')
+const { streamProviderChatCompletion } = require('../utils/provider-chat-runtime')
 
 const BUILTIN_AGENTS_MCP_SERVER_ID = 'builtin_agents_mcp'
 const UTOOLS_AI_PROVIDER_ID = 'builtin_provider_utools_ai'
 const UTOOLS_AI_PROVIDER_TYPE = 'utools-ai'
 const BUILTIN_AGENTS_TRACE_EVENT = 'builtin-agents-trace'
 
-const AGENT_REASONING_EFFORT_OPTIONS = ['auto', 'low', 'medium', 'high']
+const AGENT_REASONING_EFFORT_OPTIONS = [
+  'auto',
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max'
+]
 const TOOL_APPROVAL_MODES = ['auto', 'manual', 'readonly', 'deny']
 const MAX_TRACE_ITEMS = 120
 const MAX_EXCERPT_CHARS = 1200
@@ -241,185 +251,6 @@ function appendTrace(trace, phase, payload = {}) {
   }
 }
 
-function normalizeBaseUrl(url) {
-  const raw = cleanString(url)
-  if (!raw) return ''
-
-  const noQuery = raw.split('#')[0].split('?')[0]
-  let base = noQuery.replace(/\/+$/, '')
-
-  base = base
-    .replace(/\/v1\/chat\/completions$/i, '/v1')
-    .replace(/\/chat\/completions$/i, '')
-    .replace(/\/v1\/completions$/i, '/v1')
-    .replace(/\/completions$/i, '')
-    .replace(/\/v1\/models$/i, '/v1')
-    .replace(/\/models$/i, '')
-
-  return base.replace(/\/+$/, '')
-}
-
-async function requestChatCompletionsResponse({ baseUrl, apiKey, body, signal }) {
-  const base = normalizeBaseUrl(baseUrl)
-  const candidates = [`${base}/chat/completions`]
-  if (!/\/v1$/i.test(base)) candidates.push(`${base}/v1/chat/completions`)
-
-  let response = null
-  let usedUrl = candidates[0]
-  let lastNetworkError = null
-
-  for (const url of candidates) {
-    usedUrl = url
-    try {
-      response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`
-        },
-        body: JSON.stringify(body),
-        signal
-      })
-      if (response.status === 404 && url !== candidates[candidates.length - 1]) continue
-      break
-    } catch (err) {
-      lastNetworkError = err
-      if (url !== candidates[candidates.length - 1]) continue
-      throw err
-    }
-  }
-
-  if (!response) throw lastNetworkError || new Error('Request failed: no response')
-
-  if (!response.ok) {
-    const rawText = await response.text()
-    const parsed = safeJsonParse(rawText)
-    const detail = parsed.ok
-      ? parsed.value?.error?.message || stableStringify(parsed.value)
-      : rawText
-    throw new Error(`Request failed (HTTP ${response.status}): ${detail || response.statusText}\nURL: ${usedUrl}`)
-  }
-
-  return { response, usedUrl }
-}
-
-async function postChatCompletions({ baseUrl, apiKey, body, signal }) {
-  const { response } = await requestChatCompletionsResponse({ baseUrl, apiKey, body, signal })
-  return response.json()
-}
-
-async function streamChatCompletions({ baseUrl, apiKey, body, signal, runState, onDelta }) {
-  const { response: resp, usedUrl } = await requestChatCompletionsResponse({ baseUrl, apiKey, body, signal })
-
-  let content = ''
-  let reasoning = ''
-  let finishReason = null
-  const toolCallsByIndex = new Map()
-
-  const throwIfStreamingAborted = () => {
-    throwIfAborted(runState)
-    if (signal?.aborted) throw makeAbortError()
-  }
-
-  const finalize = () => ({
-    content,
-    reasoning,
-    toolCalls: Array.from(toolCallsByIndex.values()),
-    finishReason: finishReason || 'stop'
-  })
-
-  const applyJson = (json) => {
-    throwIfStreamingAborted()
-    if (!json || typeof json !== 'object') return
-
-    if (json?.error) {
-      const errText = json?.error?.message || stableStringify(json.error)
-      throw new Error(`Request failed: ${errText}\nURL: ${usedUrl}`)
-    }
-
-    const choice = json?.choices?.[0] || {}
-    const delta = choice.delta || {}
-    const msg = choice.message || {}
-
-    if (choice.finish_reason) finishReason = choice.finish_reason
-
-    const deltaContent = delta.content ?? delta.text
-    if (deltaContent != null) {
-      const deltaText = toText(deltaContent)
-      if (deltaText) {
-        content += deltaText
-        onDelta?.({ type: 'content', delta: deltaText, content })
-      }
-    } else if (msg?.content != null) {
-      const next = toText(msg.content)
-      const deltaText = content && next.startsWith(content) ? next.slice(content.length) : next
-      content = next
-      if (deltaText) onDelta?.({ type: 'content', delta: deltaText, content })
-    } else if (choice?.text != null) {
-      const deltaText = toText(choice.text)
-      if (deltaText) {
-        content += deltaText
-        onDelta?.({ type: 'content', delta: deltaText, content })
-      }
-    } else if (json?.content != null || json?.text != null) {
-      const deltaText = toText(json.content ?? json.text)
-      if (deltaText) {
-        content += deltaText
-        onDelta?.({ type: 'content', delta: deltaText, content })
-      }
-    }
-
-    const deltaReasoning = delta.reasoning ?? delta.reasoning_content ?? delta.thinking ?? delta.thought
-    const msgReasoning = msg.reasoning ?? msg.reasoning_content ?? msg.thinking ?? msg.thought
-    if (deltaReasoning != null) {
-      const deltaText = toText(deltaReasoning)
-      if (deltaText) {
-        reasoning += deltaText
-        onDelta?.({ type: 'reasoning', delta: deltaText, reasoning })
-      }
-    } else if (msgReasoning != null) {
-      const next = toText(msgReasoning)
-      const deltaText = reasoning && next.startsWith(reasoning) ? next.slice(reasoning.length) : next
-      reasoning = next
-      if (deltaText) onDelta?.({ type: 'reasoning', delta: deltaText, reasoning })
-    }
-
-    const deltaToolCalls = delta.tool_calls
-    if (Array.isArray(deltaToolCalls)) {
-      deltaToolCalls.forEach((tc) => {
-        const index = tc.index ?? 0
-        const prev = toolCallsByIndex.get(index) || { id: '', type: 'function', function: { name: '', arguments: '' } }
-        if (tc.id) prev.id = tc.id
-        if (tc.type) prev.type = tc.type
-        if (tc.function?.name) prev.function.name = tc.function.name
-        if (tc.function?.arguments) prev.function.arguments += tc.function.arguments
-        toolCallsByIndex.set(index, prev)
-      })
-      onDelta?.({ type: 'tool_calls', toolCalls: Array.from(toolCallsByIndex.values()) })
-    } else if (Array.isArray(msg?.tool_calls)) {
-      msg.tool_calls.forEach((tc, index) => {
-        toolCallsByIndex.set(tc.index ?? index, {
-          id: tc.id || '',
-          type: tc.type || 'function',
-          function: {
-            name: tc.function?.name || '',
-            arguments: tc.function?.arguments || ''
-          }
-        })
-      })
-      if (toolCallsByIndex.size) onDelta?.({ type: 'tool_calls', toolCalls: Array.from(toolCallsByIndex.values()) })
-    }
-  }
-
-  await consumeJsonEventStream({
-    response: resp,
-    signal,
-    isAborted: () => !!runState?.aborted,
-    onJson: applyJson
-  })
-  return finalize()
-}
-
 function mergeStreamingText(previous, incoming) {
   const next = toText(incoming)
   if (!next) {
@@ -462,34 +293,66 @@ function buildRequestMessages({ systemPrompt, apiMessages, compatToolCallIdAsFc 
         return { ...toolCall, id: `fc_${id.slice('call_'.length)}`, call_id: callId }
       })
     }
+    if (compatToolCallIdAsFc && cloned.role === 'tool') {
+      const toolCallId = cleanString(cloned.tool_call_id)
+      const callId = cleanString(cloned.call_id) || toolCallId
+      if (toolCallId.startsWith('call_')) cloned.tool_call_id = `fc_${toolCallId.slice('call_'.length)}`
+      if (callId) cloned.call_id = callId
+    }
     messages.push(cloned)
   })
 
   return messages
 }
 
-function normalizeToolCalls(msg) {
-  const toolCalls = Array.isArray(msg?.tool_calls) ? msg.tool_calls : []
-  if (!toolCalls.length) return []
-
-  return toolCalls
-    .map((toolCall) => {
-      const fnName = cleanString(toolCall?.function?.name)
-      const fnArgs =
-        typeof toolCall?.function?.arguments === 'string'
-          ? toolCall.function.arguments
-          : stableStringify(toolCall?.function?.arguments || {})
-      if (!fnName) return null
+function normalizeAssistantToolCalls(toolCalls) {
+  return (Array.isArray(toolCalls) ? toolCalls : [])
+    .map((toolCall, index) => {
+      const name = cleanString(toolCall?.function?.name)
+      if (!name) return null
+      const id = cleanString(toolCall?.id) || `call_${newId(`tool_${index + 1}`)}`
+      const callId = cleanString(toolCall?.call_id || toolCall?.callId)
       return {
-        id: cleanString(toolCall?.id) || `call_${newId('tool')}`,
+        id,
         type: toolCall?.type || 'function',
+        ...(callId ? { call_id: callId } : {}),
         function: {
-          name: fnName,
-          arguments: fnArgs || '{}'
+          name,
+          arguments: typeof toolCall?.function?.arguments === 'string'
+            ? toolCall.function.arguments
+            : stableStringify(toolCall?.function?.arguments || {})
         }
       }
     })
     .filter(Boolean)
+}
+
+function createToolResultMessage(toolCall, content) {
+  const id = cleanString(toolCall?.id)
+  const callId = cleanString(toolCall?.call_id || toolCall?.callId)
+  return {
+    role: 'tool',
+    tool_call_id: id || callId,
+    ...(callId ? { call_id: callId } : {}),
+    content: String(content || '')
+  }
+}
+
+async function recordAgentModelUsage({ profile, result, trace }) {
+  if (!result?.usage || typeof result.usage !== 'object') return
+  try {
+    await usageStatistics.recordUsage({
+      usage: result.usage,
+      providerId: profile.providerId,
+      model: profile.model,
+      endpoint: result.endpoint
+    })
+  } catch (error) {
+    appendTrace(trace, 'usage.record_failed', {
+      title: 'Failed to record model usage',
+      error: error?.message || String(error)
+    })
+  }
 }
 
 function getHostGlobal() {
@@ -863,6 +726,30 @@ function buildProviderToolDescription(server, tool, definition) {
   return `${base} (original inputSchema is not an object; call with {"input": ...})`
 }
 
+function getMcpToolApprovalPolicy(server, tool) {
+  const transportType = cleanString(server?.transportType)
+  if (transportType === 'builtinShell') {
+    return { forceApproval: true, approvalKind: 'shell' }
+  }
+
+  const annotations = isPlainObject(tool?.annotations) ? tool.annotations : {}
+  if (annotations.destructiveHint === true || annotations.readOnlyHint === false) {
+    return { forceApproval: true, approvalKind: 'tool' }
+  }
+
+  const toolName = cleanString(tool?.name)
+  if (transportType === 'builtinConfig') {
+    const readOnly = toolName === 'config_get_system_time' || toolName.startsWith('config_list_')
+    return { forceApproval: !readOnly, approvalKind: 'tool' }
+  }
+  if (transportType === 'builtinNotes') {
+    const readOnly = /^(notes_(list|read|search|get|stat|recent))/.test(toolName)
+    return { forceApproval: !readOnly, approvalKind: 'tool' }
+  }
+
+  return { forceApproval: false, approvalKind: 'tool' }
+}
+
 function getSkillDescription(skill) {
   return cleanString(skill?.description || skill?.cache?.summary || skill?.summary || '')
 }
@@ -1131,6 +1018,10 @@ async function resolveExecutionProfile({ config, agent, trace }) {
 
   const model = cleanString(agent?.model || chatConfig.defaultModel || providerModels[0] || '')
   if (!model) throw new Error('Model is not configured on Agent or defaults')
+  const modelType = cleanString(provider?.modelTypes?.[model]).toLowerCase() || 'auto'
+  if (['embedding', 'image-generation', 'video-generation'].includes(modelType)) {
+    throw new Error(`Model "${model}" is configured as ${modelType} and cannot run a text Agent`)
+  }
 
   const prompt = getSystemPromptById(prompts, agent?.prompt)
   const basePromptText = prompt ? cleanString(prompt.content) : cleanString(chatConfig.defaultSystemPrompt)
@@ -1160,6 +1051,7 @@ async function resolveExecutionProfile({ config, agent, trace }) {
     provider,
     providerId,
     model,
+    modelType,
     prompt,
     systemPrompt,
     skillIds,
@@ -1216,11 +1108,12 @@ function filterAllowedMcpTools(server, list) {
 function isReadOnlyToolName(toolName) {
   const name = cleanString(toolName).toLowerCase()
   if (!name) return false
-  return /^(get|list|read|search|find|query|inspect|describe|discover|fetch|lookup|preview|stat|status)/.test(name)
+  return /(^|[_:./-])(get|list|read|search|find|query|inspect|describe|discover|fetch|lookup|preview|stat|status|recent)([_:./-]|$)/.test(name)
 }
 
 function shouldAllowToolCallByApprovalMode(runState, mapping) {
   const mode = normalizeToolApprovalMode(runState?.toolApprovalMode)
+  if (mapping?.forceApproval === true) return { allowed: true, mode: 'manual', requiresPrompt: true }
   if (mode === 'auto') return { allowed: true, mode }
   if (mode === 'manual') return { allowed: true, mode, requiresPrompt: true }
   if (mode === 'deny') {
@@ -1294,7 +1187,9 @@ async function requestBuiltinAgentsToolApproval({ mapping, argsText, trace, runS
       serverName,
       toolName,
       argsText,
-      reasoningText
+      reasoningText,
+      forceApproval: mapping?.forceApproval === true,
+      approvalKind: mapping?.approvalKind === 'shell' ? 'shell' : 'tool'
     })
 
     if (!ok) finish(false)
@@ -1320,11 +1215,15 @@ async function buildMcpToolsBundle(servers, trace, runState) {
       if (!toolName) continue
       const definition = buildProviderToolDefinition(tool?.inputSchema)
       const functionName = makeToolFunctionName(server._id, toolName)
+      const approvalPolicy = getMcpToolApprovalPolicy(server, tool)
       map.set(functionName, {
         server,
         serverId: server._id,
         serverName: server.name || server._id,
         toolName,
+        forceApproval: approvalPolicy.forceApproval,
+        approvalKind: approvalPolicy.approvalKind,
+        annotations: isPlainObject(tool?.annotations) ? tool.annotations : null,
         requiresWrappedInput: !!definition.wrapped,
         unwrapArgs: definition.unwrapArgs
       })
@@ -1606,7 +1505,7 @@ async function runAgentWithUtoolsAi({ profile, task, trace, runState, maxRounds 
       throwIfAborted(runState)
       const assistantContent = toText(result?.content)
       const reasoningContent = extractReasoningText(result)
-      const toolCalls = Array.isArray(result?.toolCalls) ? result.toolCalls : []
+      const toolCalls = normalizeAssistantToolCalls(result?.toolCalls)
 
       appendTrace(trace, 'model.response', {
         title: `Model response: round ${round + 1}`,
@@ -1630,7 +1529,6 @@ async function runAgentWithUtoolsAi({ profile, task, trace, runState, maxRounds 
       if (!toolCalls.length) {
         finalContent = assistantContent
         finalReasoning = reasoningContent
-        finalRounds = round + 1
         return {
           content: assistantContent,
           reasoning: reasoningContent,
@@ -1662,11 +1560,7 @@ async function runAgentWithUtoolsAi({ profile, task, trace, runState, maxRounds 
           argsText: stableStringify(argsObj || {}),
           content: String(exec?.content || '')
         })
-        apiMessages.push({
-          role: 'tool',
-          tool_call_id: toolCall.id,
-          content: String(exec?.content || '')
-        })
+        apiMessages.push(createToolResultMessage(toolCall, exec?.content))
       }
     }
 
@@ -1705,6 +1599,7 @@ async function runAgentWithOpenAICompatible({ profile, task, trace, runState, ma
       title: `Model request: ${profile.provider?.name || profile.providerId} / ${profile.model}`,
       provider_id: profile.providerId,
       model: profile.model,
+      api_mode: cleanString(profile.provider?.apiMode) || 'auto',
       round: round + 1,
       tool_count: tools.length
     })
@@ -1712,28 +1607,29 @@ async function runAgentWithOpenAICompatible({ profile, task, trace, runState, ma
 
     const controller = new AbortController()
     runState.setRequest({ abort() { controller.abort() } })
-    const body = {
-      model: profile.model,
-      stream: true,
-      messages: buildRequestMessages({
-        systemPrompt: profile.systemPrompt,
-        apiMessages,
-        compatToolCallIdAsFc: compatFcToolCallId
-      }),
-      ...(tools.length ? { tools, tool_choice: 'auto' } : {}),
-      ...requestOverrides
-    }
 
     let json = null
     try {
       for (let attempt = 0; attempt < 3; attempt += 1) {
+        const body = {
+          model: profile.model,
+          stream: true,
+          messages: buildRequestMessages({
+            systemPrompt: profile.systemPrompt,
+            apiMessages,
+            compatToolCallIdAsFc: compatFcToolCallId
+          }),
+          ...(tools.length ? { tools, tool_choice: 'auto' } : {}),
+          ...requestOverrides
+        }
         try {
-          json = await streamChatCompletions({
+          json = await streamProviderChatCompletion({
             baseUrl,
             apiKey,
+            apiMode: profile.provider?.apiMode,
             body,
             signal: controller.signal,
-            runState,
+            isAborted: () => !!runState?.aborted,
             onDelta(evt) {
               if (evt?.type !== 'content' && evt?.type !== 'reasoning') return
               dispatchBuiltinAgentsLiveUpdate(runState?.traceStreamId, {
@@ -1759,14 +1655,16 @@ async function runAgentWithOpenAICompatible({ profile, task, trace, runState, ma
     }
 
     throwIfAborted(runState)
+    await recordAgentModelUsage({ profile, result: json, trace })
     const assistantContent = toText(json?.content)
     const reasoningContent = extractReasoningText(json)
-    const toolCalls = Array.isArray(json?.toolCalls) ? json.toolCalls : []
+    const toolCalls = normalizeAssistantToolCalls(json?.toolCalls)
 
     appendTrace(trace, 'model.response', {
       title: `Model response: round ${round + 1}`,
       provider_id: profile.providerId,
       model: profile.model,
+      endpoint: cleanString(json?.endpoint),
       round: round + 1,
       tool_call_count: toolCalls.length,
       content_excerpt: truncateText(assistantContent, MAX_EXCERPT_CHARS),
@@ -1810,11 +1708,7 @@ async function runAgentWithOpenAICompatible({ profile, task, trace, runState, ma
       const argsObj = argsParsed.ok && isPlainObject(argsParsed.value) ? argsParsed.value : {}
       const exec = await executeMcpToolCall({ mapping, argsObj, trace, runState })
       throwIfAborted(runState)
-      apiMessages.push({
-        role: 'tool',
-        tool_call_id: toolCall.id,
-        content: String(exec?.content || '')
-      })
+      apiMessages.push(createToolResultMessage(toolCall, exec?.content))
     }
   }
 
@@ -1892,6 +1786,8 @@ function buildAgentRunResponse({ ok, status, agent, profile, content, reasoning,
           provider_id: profile.providerId,
           provider_name: cleanString(profile.provider?.name || profile.providerId),
           model: profile.model,
+          model_type: profile.modelType || 'auto',
+          api_mode: cleanString(profile.provider?.apiMode) || 'auto',
           prompt_id: cleanString(profile.prompt?._id),
           prompt_name: cleanString(profile.prompt?.name || profile.prompt?._id),
           skill_ids: profile.skillIds,

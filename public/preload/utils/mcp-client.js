@@ -4,10 +4,9 @@ const DEFAULT_PROTOCOL_VERSIONS = [
   '2025-11-25',
   '2025-06-18',
   '2025-03-26',
-  '2024-11-05',
-  // legacy / non-standard
-  '0.1.0'
+  '2024-11-05'
 ];
+const MAX_LIST_PAGES = 100;
 
 function uniqueStrings(list) {
   const out = [];
@@ -369,6 +368,10 @@ function extractListItems(response, key) {
   return [];
 }
 
+function extractNextCursor(response) {
+  return cleanString(response?.nextCursor || response?.result?.nextCursor);
+}
+
 function normalizePromptArguments(args) {
   if (args === undefined || args === null) return undefined;
   if (args && typeof args === 'object' && !Array.isArray(args) && Object.keys(args).length === 0) return undefined;
@@ -523,8 +526,7 @@ class BaseMCPClient {
   }
 
   async listTools() {
-    const response = await this.sendRequest('tools/list');
-    return extractListItems(response, 'tools');
+    return this._listAll('tools/list', 'tools');
   }
 
   async callTool(toolName, args) {
@@ -536,8 +538,7 @@ class BaseMCPClient {
   }
 
   async listPrompts() {
-    const response = await this.sendRequest('prompts/list');
-    return extractListItems(response, 'prompts');
+    return this._listAll('prompts/list', 'prompts');
   }
 
   async getPrompt(promptName, args) {
@@ -551,8 +552,28 @@ class BaseMCPClient {
   }
 
   async listResources() {
-    const response = await this.sendRequest('resources/list');
-    return extractListItems(response, 'resources');
+    return this._listAll('resources/list', 'resources');
+  }
+
+  async _listAll(method, key) {
+    const items = [];
+    const seenCursors = new Set();
+    let cursor = '';
+
+    for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
+      const response = await this.sendRequest(method, cursor ? { cursor } : undefined);
+      items.push(...extractListItems(response, key));
+
+      const nextCursor = extractNextCursor(response);
+      if (!nextCursor) return items;
+      if (seenCursors.has(nextCursor)) {
+        throw new Error(`MCP ${method} returned a repeated pagination cursor`);
+      }
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+    }
+
+    throw new Error(`MCP ${method} exceeded ${MAX_LIST_PAGES} pages`);
   }
 
   async readResource(uri) {
@@ -1147,6 +1168,10 @@ function createMCPClient(serverConfig) {
       const createBuiltinAgentsMcpClient = require('../builtins/agents-mcp-client')
       return createBuiltinAgentsMcpClient(serverConfig)
     }
+    case 'builtinShell': {
+      const createBuiltinShellMcpClient = require('../builtins/shell-mcp-client')
+      return createBuiltinShellMcpClient(serverConfig)
+    }
     case 'stdio':
       return new StdioClient(serverConfig);
     case 'sse':
@@ -1162,6 +1187,7 @@ function createMCPClient(serverConfig) {
 
 module.exports = createMCPClient;
 module.exports._test = {
+  BaseMCPClient,
   BaseHTTPClient,
   SimpleHTTPClient,
   SSEClient,

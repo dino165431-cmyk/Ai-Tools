@@ -41,6 +41,7 @@ const BUILTIN_MCP_SERVER_ID = 'builtin_notes_mcp'
 const BUILTIN_CONFIG_MCP_SERVER_ID = 'builtin_config_mcp'
 const BUILTIN_SESSIONS_MCP_SERVER_ID = 'builtin_sessions_mcp'
 const BUILTIN_AGENTS_MCP_SERVER_ID = 'builtin_agents_mcp'
+const BUILTIN_SHELL_MCP_SERVER_ID = 'builtin_shell_mcp'
 const BUILTIN_SKILL_ID = 'builtin_skill_notes'
 const BUILTIN_CONFIG_SKILL_ID = 'builtin_skill_config'
 const BUILTIN_SESSIONS_SKILL_ID = 'builtin_skill_sessions'
@@ -49,7 +50,7 @@ const BUILTIN_PROMPT_ID = 'builtin_prompt_notes'
 const BUILTIN_AGENT_ID = 'builtin_agent_notes'
 const BUILTIN_PROVIDER_ID = 'builtin_provider_utools_ai'
 
-const BUILTIN_MCP_SERVER_IDS = [BUILTIN_MCP_SERVER_ID, BUILTIN_CONFIG_MCP_SERVER_ID, BUILTIN_SESSIONS_MCP_SERVER_ID, BUILTIN_AGENTS_MCP_SERVER_ID]
+const BUILTIN_MCP_SERVER_IDS = [BUILTIN_MCP_SERVER_ID, BUILTIN_CONFIG_MCP_SERVER_ID, BUILTIN_SESSIONS_MCP_SERVER_ID, BUILTIN_AGENTS_MCP_SERVER_ID, BUILTIN_SHELL_MCP_SERVER_ID]
 const BUILTIN_SKILL_IDS = [BUILTIN_SKILL_ID, BUILTIN_CONFIG_SKILL_ID, BUILTIN_SESSIONS_SKILL_ID, BUILTIN_AGENT_ORCHESTRATION_SKILL_ID]
 const BUILTIN_PROMPT_IDS = [BUILTIN_PROMPT_ID]
 const BUILTIN_AGENT_IDS = [BUILTIN_AGENT_ID]
@@ -155,7 +156,7 @@ function buildBuiltinConfigSkill() {
             '- `config_add_*` 直接传完整对象；`config_update_*` 顶层只能传 `{ id, patch }`，不要把 patch 里的字段平铺到顶层。',
             '- 标准 Skill 导入优先：如果用户给的是 skill 目录或 `SKILL.md`，优先使用 `config_import_skill_directory` / `config_import_skill_file`。',
             '- 只有旧版内联 Skill，或用户明确要把规则直接存进配置时，才使用 `config_add_skill` / `config_update_skill`。',
-            '- 目录型 Skill 只登记 `sourcePath`、`entryFile`、`mcp`、`triggers` 等元数据，不复制实际文件。',
+            '- 标准目录 Skill 导入后会复制到当前数据目录的托管区；`sourcePath` 指向托管副本，原始路径仅用于用户主动刷新。',
             '- 敏感字段如 `apikey`、`env`、`headers` 不要回显；列表里的 `***` 只是脱敏占位，不能原样写回。',
             '- 修改 `transportType` 或 `trigger.type` 时，要在同一个 patch 里补齐新类型所需字段。',
             '',
@@ -453,6 +454,19 @@ function normalizeCloudConfig(raw) {
         endpoint: typeof src.endpoint === 'string' ? src.endpoint.trim() : '',
         forcePathStyle: typeof src.forcePathStyle === 'boolean' ? src.forcePathStyle : null,
         autoSyncEnabled: src.autoSyncEnabled === true || src.autoBackupEnabled === true || src.autoRestoreEnabled === true
+    }
+}
+
+function buildBuiltinShellMcpServer() {
+    return {
+        _id: BUILTIN_SHELL_MCP_SERVER_ID,
+        name: 'Bash 工具箱（需审批）',
+        transportType: 'builtinShell',
+        disabled: false,
+        keepAlive: true,
+        timeout: 120000,
+        allowTools: [],
+        builtin: true
     }
 }
 
@@ -998,7 +1012,16 @@ function mergeConfigSecurity(current, patch) {
     })
 }
 
-const AGENT_REASONING_EFFORT_OPTIONS = new Set(['auto', 'low', 'medium', 'high'])
+const AGENT_REASONING_EFFORT_OPTIONS = new Set([
+    'auto',
+    'none',
+    'minimal',
+    'low',
+    'medium',
+    'high',
+    'xhigh',
+    'max'
+])
 
 function normalizeOptionalNumber(value, options = {}) {
     if (value === '' || value === null || value === undefined) return null
@@ -1276,6 +1299,28 @@ function extractSkillFrontmatter(text) {
     }
 }
 
+function validateStandardSkillFrontmatter(frontmatter, skillRoot) {
+    const meta = frontmatter && typeof frontmatter === 'object' ? frontmatter : {}
+    const name = String(meta.name || '').trim()
+    const description = String(meta.description || '').trim()
+    const folderName = path.basename(skillRoot)
+
+    if (!name) throw new Error('SKILL.md frontmatter 缺少必填字段 name')
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name) || name.length > 64) {
+        throw new Error('SKILL.md name 必须为 1-64 位小写字母、数字或单连字符')
+    }
+    if (name !== folderName) throw new Error(`SKILL.md name 必须与目录名一致：${folderName}`)
+    if (!description) throw new Error('SKILL.md frontmatter 缺少必填字段 description')
+    if (description.length > 1024) throw new Error('SKILL.md description 不能超过 1024 个字符')
+    if (meta.compatibility != null && String(meta.compatibility).trim().length > 500) {
+        throw new Error('SKILL.md compatibility 不能超过 500 个字符')
+    }
+    if (meta['allowed-tools'] != null && typeof meta['allowed-tools'] !== 'string') {
+        throw new Error('SKILL.md allowed-tools 必须是空格分隔的字符串')
+    }
+    return { name, description }
+}
+
 function summarizeSkillMarkdown(text) {
     const lines = String(text || '')
         .replace(/\r\n/g, '\n')
@@ -1312,9 +1357,18 @@ const SKILL_SCRIPT_MANIFEST_PATH = 'scripts/manifest.json'
 const RUNNABLE_SKILL_SCRIPT_EXTENSIONS = new Set(['.js', '.cjs', '.mjs', '.py', '.ps1', '.sh', '.bash'])
 const SKILL_SCRIPT_HELPER_SEGMENTS = new Set(['lib', 'libs', 'utils', 'common', 'shared', 'helpers', 'helper', 'vendor', 'internal', 'tests', 'fixtures'])
 const SKILL_SCRIPT_HELPER_BASENAMES = new Set(['__init__', 'util', 'utils', 'common', 'shared', 'helper', 'helpers', 'base', 'types', 'constants'])
+const MANAGED_SKILLS_RELATIVE_PATH = path.join('.ai-tools-settings', 'skills')
+const MAX_MANAGED_SKILL_FILES = 50000
 
 function normalizeSkillPathForMatch(filePath) {
     return String(filePath || '').trim().replace(/\\/g, '/').replace(/^\/+/, '')
+}
+
+function isPathInside(rootPath, candidatePath) {
+    const root = path.resolve(String(rootPath || ''))
+    const candidate = path.resolve(String(candidatePath || ''))
+    const relative = path.relative(root, candidate)
+    return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
 }
 
 function isRunnableSkillScriptPath(filePath) {
@@ -1618,7 +1672,8 @@ class GlobalConfig {
                 [BUILTIN_MCP_SERVER_ID]: buildBuiltinMcpServer(),
                 [BUILTIN_CONFIG_MCP_SERVER_ID]: buildBuiltinConfigMcpServer(),
                 [BUILTIN_SESSIONS_MCP_SERVER_ID]: buildBuiltinSessionsMcpServer(),
-                [BUILTIN_AGENTS_MCP_SERVER_ID]: buildBuiltinAgentsMcpServer()
+                [BUILTIN_AGENTS_MCP_SERVER_ID]: buildBuiltinAgentsMcpServer(),
+                [BUILTIN_SHELL_MCP_SERVER_ID]: buildBuiltinShellMcpServer()
             },
             timedTask: {},
             dataStorageRoot: getDefaultUserDataRoot(),
@@ -1634,6 +1689,7 @@ class GlobalConfig {
         const builtinConfigMcp = buildBuiltinConfigMcpServer()
         const builtinSessionsMcp = buildBuiltinSessionsMcpServer()
         const builtinAgentsMcp = buildBuiltinAgentsMcpServer()
+        const builtinShellMcp = buildBuiltinShellMcpServer()
         const builtinSkill = buildBuiltinSkill()
         const builtinConfigSkill = buildBuiltinConfigSkill()
         const builtinSessionsSkill = buildBuiltinSessionsSkill()
@@ -1790,6 +1846,10 @@ class GlobalConfig {
             return fs.existsSync(filePath)
         } catch {
             return false
+        }
+        if (!safeJsonEquals(config.mcpServers[BUILTIN_SHELL_MCP_SERVER_ID], builtinShellMcp)) {
+            config.mcpServers[BUILTIN_SHELL_MCP_SERVER_ID] = this._clone(builtinShellMcp)
+            changed = true
         }
     }
 
@@ -2473,10 +2533,162 @@ class GlobalConfig {
         const list = Object.values(config?.skills || {})
         return list.find((skill) => {
             if (!skill || skill.builtin) return false
-            const current = typeof skill.sourcePath === 'string' ? skill.sourcePath.trim() : ''
-            if (!current) return false
-            return path.resolve(current) === target
+            const candidates = [
+                skill.sourcePath,
+                skill?.install?.originalSourcePath
+            ]
+                .map((value) => typeof value === 'string' ? value.trim() : '')
+                .filter(Boolean)
+            return candidates.some((candidate) => path.resolve(candidate) === target)
         }) || null
+    }
+
+    _getManagedSkillsRoot(config) {
+        const dataRoot = this._ensureWritableDataStorageRoot(config)
+        const managedRoot = path.resolve(dataRoot, MANAGED_SKILLS_RELATIVE_PATH)
+        if (!isPathInside(dataRoot, managedRoot)) {
+            throw new Error('managed skills root escaped dataStorageRoot')
+        }
+        fs.mkdirSync(managedRoot, { recursive: true })
+        return managedRoot
+    }
+
+    _assertManagedSkillSourceTree(sourceRoot) {
+        const root = this._ensureAbsoluteDirectory(sourceRoot, 'sourcePath')
+        const stack = [root]
+        let fileCount = 0
+
+        while (stack.length) {
+            const current = stack.pop()
+            const entries = fs.readdirSync(current, { withFileTypes: true })
+            for (const entry of entries) {
+                if (entry.name === '.git' || entry.name === 'node_modules') continue
+                const abs = path.join(current, entry.name)
+                const stat = fs.lstatSync(abs)
+                if (stat.isSymbolicLink()) {
+                    throw new Error(`skill import does not allow symbolic links: ${path.relative(root, abs)}`)
+                }
+                fileCount += 1
+                if (fileCount > MAX_MANAGED_SKILL_FILES) {
+                    throw new Error(`skill directory contains more than ${MAX_MANAGED_SKILL_FILES} entries`)
+                }
+                if (stat.isDirectory()) stack.push(abs)
+            }
+        }
+    }
+
+    _copySkillDirectoryToManagedRoot(config, sourceRoot, skillId, skillName) {
+        const source = this._ensureAbsoluteDirectory(sourceRoot, 'sourcePath')
+        const managedRoot = this._getManagedSkillsRoot(config)
+        if (isPathInside(managedRoot, source)) return source
+
+        this._assertManagedSkillSourceTree(source)
+
+        const safeSkillId = String(skillId || '').trim()
+        if (!/^[A-Za-z0-9_-]+$/.test(safeSkillId)) {
+            throw new Error('skill id contains characters that cannot be used in a managed path')
+        }
+        const safeSkillName = String(skillName || '').trim()
+        if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(safeSkillName)) {
+            throw new Error('skill name contains characters that cannot be used in a managed path')
+        }
+
+        const version = `${Date.now().toString(36)}-${hashString(`${source}:${process.pid}:${process.hrtime.bigint()}`)}`
+        const skillVersionsRoot = path.resolve(managedRoot, safeSkillId)
+        const versionRoot = path.resolve(skillVersionsRoot, version)
+        const target = path.resolve(versionRoot, safeSkillName)
+        if (!isPathInside(managedRoot, target)) {
+            throw new Error('managed skill target escaped dataStorageRoot')
+        }
+
+        fs.mkdirSync(versionRoot, { recursive: true })
+        try {
+            fs.cpSync(source, target, {
+                recursive: true,
+                errorOnExist: true,
+                filter: (sourcePath) => {
+                    if (path.resolve(sourcePath) === source) return true
+                    const name = path.basename(sourcePath)
+                    return name !== '.git' && name !== 'node_modules'
+                }
+            })
+            return target
+        } catch (error) {
+            if (isPathInside(skillVersionsRoot, versionRoot)) {
+                fs.rmSync(versionRoot, { recursive: true, force: true })
+            }
+            throw error
+        }
+    }
+
+    _isManagedSkillPath(config, sourcePath) {
+        const source = typeof sourcePath === 'string' ? sourcePath.trim() : ''
+        if (!source) return false
+        return isPathInside(this._getManagedSkillsRoot(config), source)
+    }
+
+    _ensureManagedSkillForUse(skill) {
+        if (!skill || skill.builtin || String(skill.sourceType || '').trim() !== 'directory') return skill
+        const config = this._getRaw()
+        if (this._isManagedSkillPath(config, skill.sourcePath)) return skill
+        return this.refreshSkillFromSource(skill._id)
+    }
+
+    _buildSkillRuntimeEnvironment(dataRoot, skill, skillRoot, scriptPath) {
+        const safeSkillId = String(skill?._id || 'skill').replace(/[^A-Za-z0-9_-]/g, '_')
+        const runtimeRoot = path.resolve(dataRoot, '.ai-tools-settings', 'runtime', 'skills', safeSkillId)
+        const tempRoot = path.join(runtimeRoot, 'tmp')
+        const configRoot = path.join(runtimeRoot, 'config')
+        const cacheRoot = path.join(runtimeRoot, 'cache')
+        const dataHome = path.join(runtimeRoot, 'data')
+        ;[runtimeRoot, tempRoot, configRoot, cacheRoot, dataHome].forEach((dir) => {
+            if (!isPathInside(dataRoot, dir)) throw new Error('skill runtime path escaped dataStorageRoot')
+            fs.mkdirSync(dir, { recursive: true })
+        })
+
+        const env = {}
+        ;[
+            'PATH',
+            'Path',
+            'PATHEXT',
+            'SystemRoot',
+            'SYSTEMROOT',
+            'WINDIR',
+            'ComSpec',
+            'COMSPEC',
+            'LANG',
+            'LC_ALL',
+            'TERM',
+            'NUMBER_OF_PROCESSORS',
+            'PROCESSOR_ARCHITECTURE'
+        ].forEach((key) => {
+            if (process.env[key] !== undefined) env[key] = process.env[key]
+        })
+
+        return {
+            ...env,
+            HOME: runtimeRoot,
+            USERPROFILE: runtimeRoot,
+            APPDATA: configRoot,
+            LOCALAPPDATA: dataHome,
+            TMP: tempRoot,
+            TEMP: tempRoot,
+            TMPDIR: tempRoot,
+            XDG_CONFIG_HOME: configRoot,
+            XDG_CACHE_HOME: cacheRoot,
+            XDG_DATA_HOME: dataHome,
+            AI_TOOLS_DATA_ROOT: dataRoot,
+            AI_TOOLS_SKILL_ID: String(skill?._id || ''),
+            AI_TOOLS_SKILL_NAME: String(skill?.name || ''),
+            AI_TOOLS_SKILL_ROOT: skillRoot,
+            AI_TOOLS_SKILL_ENTRY_FILE: String(skill?.entryFile || 'SKILL.md'),
+            AI_TOOLS_SKILL_SCRIPT_PATH: scriptPath,
+            SKILL_ID: String(skill?._id || ''),
+            SKILL_NAME: String(skill?.name || ''),
+            SKILL_ROOT: skillRoot,
+            SKILL_ENTRY_FILE: String(skill?.entryFile || 'SKILL.md'),
+            SKILL_SCRIPT_PATH: scriptPath
+        }
     }
 
     _shouldHydrateDirectorySkillCache(skill) {
@@ -2536,9 +2748,10 @@ class GlobalConfig {
 
         const text = fs.readFileSync(entryAbs, 'utf-8')
         const { frontmatter, body } = extractSkillFrontmatter(text)
-        const skillName = String(frontmatter?.name || path.basename(skillRoot)).trim() || path.basename(skillRoot)
+        const standardMeta = validateStandardSkillFrontmatter(frontmatter, skillRoot)
+        const skillName = standardMeta.name
         const summary = summarizeSkillMarkdown(body)
-        const description = String(frontmatter?.description || summary || '').trim()
+        const description = standardMeta.description
         const existing = options.existing && typeof options.existing === 'object' ? options.existing : null
         const suggestedId = String(options.id || existing?._id || '').trim()
         const baseId = `skill_${slugify(skillName)}`
@@ -2965,8 +3178,18 @@ class GlobalConfig {
             throw new Error('builtin skill cannot be replaced')
         }
 
-        const record = this._buildDirectorySkillRecord(absRoot, {
+        const sourceRecord = this._buildDirectorySkillRecord(absRoot, {
             id: options.id,
+            existing
+        })
+        const conflict = config.skills[sourceRecord._id]
+        if (conflict && (!existing || conflict._id !== existing._id) && !options.overwrite) {
+            throw new Error(`skill id already exists: ${sourceRecord._id}`)
+        }
+
+        const managedRoot = this._copySkillDirectoryToManagedRoot(config, absRoot, sourceRecord._id, sourceRecord.name)
+        const record = this._buildDirectorySkillRecord(managedRoot, {
+            id: sourceRecord._id,
             existing
         })
         const bindings = this._normalizeDirectorySkillBindings(existing, options)
@@ -2977,22 +3200,27 @@ class GlobalConfig {
             record.install = {
                 ...(record.install && typeof record.install === 'object' ? record.install : {}),
                 ...options.install,
+                managed: true,
+                originalSourcePath: absRoot,
                 ...(resolvedSource.discovered && resolvedSource.requested ? { selectedPath: resolvedSource.requested } : {})
             }
         } else if (!record.install || typeof record.install !== 'object') {
             record.install = {
                 type: 'directory',
                 importedAt: new Date().toISOString(),
+                managed: true,
+                originalSourcePath: absRoot,
                 ...(resolvedSource.discovered && resolvedSource.requested ? { selectedPath: resolvedSource.requested } : {})
             }
-        } else if (resolvedSource.discovered && resolvedSource.requested) {
+        } else {
             record.install = {
                 ...record.install,
-                selectedPath: resolvedSource.requested
+                managed: true,
+                originalSourcePath: absRoot,
+                ...(resolvedSource.discovered && resolvedSource.requested ? { selectedPath: resolvedSource.requested } : {})
             }
         }
 
-        const conflict = config.skills[record._id]
         if (conflict && (!existing || conflict._id !== existing._id)) {
             if (!options.overwrite) {
                 throw new Error(`skill id already exists: ${record._id}`)
@@ -3032,7 +3260,12 @@ class GlobalConfig {
         if (existing.builtin) return this._clone(existing)
         if (String(existing.sourceType || '').trim() !== 'directory') return this._clone(existing)
 
-        return this.importSkillDirectory(existing.sourcePath, {
+        const originalSourcePath = typeof existing?.install?.originalSourcePath === 'string'
+            ? existing.install.originalSourcePath.trim()
+            : ''
+        const refreshSource = originalSourcePath || existing.sourcePath
+
+        return this.importSkillDirectory(refreshSource, {
             id: skillId,
             overwrite: true,
             mcp: existing.mcp,
@@ -3051,7 +3284,7 @@ class GlobalConfig {
     readSkillFile(id, filePath = 'SKILL.md') {
         const skillId = typeof id === 'string' ? id.trim() : ''
         if (!skillId) throw new Error('skill id cannot be empty')
-        const skill = this.getSkill(skillId)
+        let skill = this.getSkill(skillId)
 
         if (String(skill?.sourceType || '').trim() !== 'directory') {
             const inner = this._normalizeSkillInnerPath(filePath)
@@ -3064,6 +3297,7 @@ class GlobalConfig {
             }
         }
 
+        skill = this._ensureManagedSkillForUse(skill)
         const skillRoot = this._ensureAbsoluteDirectory(skill.sourcePath, 'sourcePath')
         const resolved = this._resolveSkillFileAbs(skillRoot, filePath || skill.entryFile || 'SKILL.md')
         if (!fs.existsSync(resolved.abs)) throw new Error(`skill file not found: ${resolved.inner}`)
@@ -3091,11 +3325,12 @@ class GlobalConfig {
         const skillId = typeof id === 'string' ? id.trim() : ''
         if (!skillId) throw new Error('skill id cannot be empty')
 
-        const skill = this.getSkill(skillId)
+        let skill = this.getSkill(skillId)
         if (String(skill?.sourceType || '').trim() !== 'directory') {
             throw new Error('inline skill does not support script execution')
         }
 
+        skill = this._ensureManagedSkillForUse(skill)
         const skillRoot = this._ensureAbsoluteDirectory(skill.sourcePath, 'sourcePath')
         const fileIndex = this._scanSkillDirectoryFiles(skillRoot)
         const { scriptCatalog } = this._loadSkillScriptCatalog(skillRoot, fileIndex)
@@ -3147,6 +3382,12 @@ class GlobalConfig {
         const stdinText = options.input === undefined || options.input === null
             ? ''
             : String(options.input)
+        const runtimeConfig = this._getRaw()
+        const dataRoot = this._ensureWritableDataStorageRoot(runtimeConfig)
+        if (!this._isManagedSkillPath(runtimeConfig, skillRoot)) {
+            throw new Error('skill scripts can only run from the managed skills directory under dataStorageRoot')
+        }
+        const runtimeEnv = this._buildSkillRuntimeEnvironment(dataRoot, skill, skillRoot, resolved.inner)
 
         const runExecFile = (command, args) => {
             return new Promise((resolve, reject) => {
@@ -3155,19 +3396,7 @@ class GlobalConfig {
                     args,
                     {
                         cwd: execCwd,
-                        env: {
-                            ...process.env,
-                            AI_TOOLS_SKILL_ID: skillId,
-                            AI_TOOLS_SKILL_NAME: String(skill?.name || ''),
-                            AI_TOOLS_SKILL_ROOT: skillRoot,
-                            AI_TOOLS_SKILL_ENTRY_FILE: String(skill?.entryFile || 'SKILL.md'),
-                            AI_TOOLS_SKILL_SCRIPT_PATH: resolved.inner,
-                            SKILL_ID: skillId,
-                            SKILL_NAME: String(skill?.name || ''),
-                            SKILL_ROOT: skillRoot,
-                            SKILL_ENTRY_FILE: String(skill?.entryFile || 'SKILL.md'),
-                            SKILL_SCRIPT_PATH: resolved.inner
-                        },
+                        env: runtimeEnv,
                         windowsHide: true,
                         timeout: timeoutMs,
                         maxBuffer: 8 * 1024 * 1024
@@ -3611,6 +3840,29 @@ class GlobalConfig {
     }
 
     // ---------- mcpServers 操作 ----------
+    _normalizeCustomMcpServerRecord(item) {
+        const record = this._isPlainObject(item) ? { ...item } : {}
+        const transportType = String(record.transportType || '').trim()
+        if (transportType === 'stdio') {
+            delete record.url
+            delete record.headers
+            delete record.method
+            delete record.stream
+            delete record.pingOnConnect
+            delete record.maxTotalTimeout
+        } else if (transportType === 'streamableHttp') {
+            delete record.command
+            delete record.args
+            delete record.env
+            delete record.cwd
+            delete record.method
+            delete record.stream
+            delete record.pingOnConnect
+            delete record.maxTotalTimeout
+        }
+        return record
+    }
+
     getMcpServer(id) {
         const config = this._getRaw();
         if (!config.mcpServers[id]) throw new Error('MCP server not found');
@@ -3623,7 +3875,11 @@ class GlobalConfig {
         if (config.mcpServers[item._id]) {
             throw new Error(`MCP server with id ${item._id} already exists`);
         }
-        config.mcpServers[item._id] = item;
+        const transportType = String(item?.transportType || '').trim()
+        if (!['stdio', 'streamableHttp'].includes(transportType)) {
+            throw new Error(`Unsupported custom MCP transport type: ${transportType || '(empty)'}`)
+        }
+        config.mcpServers[item._id] = this._normalizeCustomMcpServerRecord(item);
         this._save(config);
         return config.mcpServers;
     }
@@ -3632,7 +3888,12 @@ class GlobalConfig {
         if (BUILTIN_MCP_SERVER_IDS.includes(id)) throw new Error('内置 MCP 不可修改');
         const config = this._getRaw();
         if (!config.mcpServers[id]) throw new Error('MCP server not found');
-        config.mcpServers[id] = { ...config.mcpServers[id], ...updatedFields };
+        const merged = { ...config.mcpServers[id], ...updatedFields }
+        const transportType = String(merged.transportType || '').trim()
+        if (!['stdio', 'streamableHttp'].includes(transportType)) {
+            throw new Error(`旧版 MCP 传输 ${transportType || '(empty)'} 需要先迁移为 streamableHttp`)
+        }
+        config.mcpServers[id] = this._normalizeCustomMcpServerRecord(merged);
         this._save(config);
         return config.mcpServers;
     }

@@ -1,6 +1,7 @@
 ﻿import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 
@@ -51,6 +52,7 @@ function getLocalWebSearchConfigPath() {
 function resetConfigStorage() {
   storage.delete('global-config')
   fs.rmSync(path.dirname(getLocalNotebookRuntimeConfigPath()), { recursive: true, force: true })
+  fs.rmSync(path.join(globalThis.utools.getPath('userData'), '.ai-tools-settings'), { recursive: true, force: true })
 }
 
 function createSkillFixture(t, {
@@ -71,7 +73,7 @@ function createSkillFixture(t, {
 
   const frontmatter = [
     '---',
-    `name: ${skillName}`,
+    `name: ${folderName}`,
     'description: |',
     ...descriptionLines.map((line) => `  ${line}`),
     '---',
@@ -489,7 +491,15 @@ test('config import skill file preserves multiline description and source metada
 
   assert.equal(imported.ok, true)
   assert.equal(imported.item.sourceType, 'directory')
-  assert.equal(path.resolve(imported.item.sourcePath), path.resolve(skillDir))
+  assert.equal(
+    path.resolve(imported.item.sourcePath).startsWith(
+      path.resolve(globalThis.utools.getPath('userData'), '.ai-tools-settings', 'skills')
+    ),
+    true
+  )
+  assert.notEqual(path.resolve(imported.item.sourcePath), path.resolve(skillDir))
+  assert.equal(path.resolve(globalConfig.getSkill(imported.id).install.originalSourcePath), path.resolve(skillDir))
+  assert.equal(fs.readFileSync(path.join(imported.item.sourcePath, 'SKILL.md'), 'utf8').includes('第二行描述'), true)
   assert.equal(imported.item.entryFile, 'SKILL.md')
   assert.equal(imported.item.description, '第一行描述\n第二行描述\n第三行描述')
 
@@ -498,9 +508,27 @@ test('config import skill file preserves multiline description and source metada
 
   assert.ok(item)
   assert.equal(item.sourceType, 'directory')
-  assert.equal(path.resolve(item.sourcePath), path.resolve(skillDir))
+  assert.equal(path.resolve(item.sourcePath), path.resolve(imported.item.sourcePath))
   assert.equal(item.entryFile, 'SKILL.md')
   assert.equal(item.description, '第一行描述\n第二行描述\n第三行描述')
+})
+
+test('directory skill import enforces the current Agent Skills frontmatter contract', (t) => {
+  resetConfigStorage()
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-invalid-skill-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const skillDir = path.join(root, 'valid-folder')
+  fs.mkdirSync(skillDir, { recursive: true })
+  fs.writeFileSync(
+    path.join(skillDir, 'SKILL.md'),
+    ['---', 'name: Invalid Display Name', 'description: test', '---', '', '# Invalid'].join('\n'),
+    'utf8'
+  )
+
+  assert.throws(
+    () => globalConfig.importSkillDirectory(skillDir),
+    /name 必须为 1-64 位小写字母/
+  )
 })
 test('runSkillScript executes JavaScript files under imported skill scripts', async (t) => {
   resetConfigStorage()
@@ -522,7 +550,8 @@ test('runSkillScript executes JavaScript files under imported skill scripts', as
       '    env: {',
       "      skillId: process.env.AI_TOOLS_SKILL_ID,",
       "      skillRoot: String(process.env.AI_TOOLS_SKILL_ROOT || '').replace(/\\\\/g, '/'),",
-      "      scriptPath: process.env.AI_TOOLS_SKILL_SCRIPT_PATH",
+      "      scriptPath: process.env.AI_TOOLS_SKILL_SCRIPT_PATH,",
+      "      inheritedSecret: process.env.AI_TOOLS_TEST_SECRET",
       '    }',
       '  }))',
       '})'
@@ -530,11 +559,17 @@ test('runSkillScript executes JavaScript files under imported skill scripts', as
   })
 
   const imported = globalConfig.importSkillDirectory(skillDir)
-  const result = await globalConfig.runSkillScript(imported._id, 'scripts/run.js', {
-    args: ['--target', 'demo'],
-    input: 'hello from stdin',
-    timeout_ms: 5000
-  })
+  process.env.AI_TOOLS_TEST_SECRET = 'must-not-leak'
+  t.after(() => delete process.env.AI_TOOLS_TEST_SECRET)
+  const result = await globalConfig.runSkillScript(
+    imported._id,
+    'scripts/run.js',
+    {
+      args: ['--target', 'demo'],
+      input: 'hello from stdin',
+      timeout_ms: 5000
+    }
+  )
 
   assert.equal(result.ok, true)
   assert.equal(result.sourceType, 'directory')
@@ -542,11 +577,12 @@ test('runSkillScript executes JavaScript files under imported skill scripts', as
   assert.equal(result.outputType, 'json')
   assert.deepEqual(result.output.args, ['--target', 'demo'])
   assert.equal(result.output.input, 'hello from stdin')
-  assert.equal(path.resolve(result.cwd), path.resolve(skillDir))
-  assert.equal(result.output.cwd, path.resolve(skillDir).replace(/\\/g, '/'))
+  assert.equal(path.resolve(result.cwd), path.resolve(imported.sourcePath))
+  assert.equal(result.output.cwd, path.resolve(imported.sourcePath).replace(/\\/g, '/'))
   assert.equal(result.output.env.skillId, imported._id)
-  assert.equal(result.output.env.skillRoot, path.resolve(skillDir).replace(/\\/g, '/'))
+  assert.equal(result.output.env.skillRoot, path.resolve(imported.sourcePath).replace(/\\/g, '/'))
   assert.equal(result.output.env.scriptPath, 'scripts/run.js')
+  assert.equal(result.output.env.inheritedSecret, undefined)
 })
 
 test('directory skill caches script manifest metadata and supports auto-selecting the only runnable script', async (t) => {

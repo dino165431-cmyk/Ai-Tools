@@ -5,7 +5,7 @@ import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
 const createMCPClient = require('../public/preload/utils/mcp-client.js')
-const { StdioClient } = createMCPClient._test
+const { BaseMCPClient, StdioClient } = createMCPClient._test
 
 function makeSilentLogger() {
   return {
@@ -204,6 +204,59 @@ function attachMockStdioProcess(client, proc) {
     client.proc = null
   })
 }
+
+test('base MCP client follows pagination cursors for list endpoints', async () => {
+  class PaginatedClient extends BaseMCPClient {
+    constructor() {
+      super({ logger: makeSilentLogger() })
+      this.initialized = true
+      this.calls = []
+    }
+
+    async sendRequest(method, params) {
+      this.calls.push({ method, params })
+      if (!params?.cursor) {
+        return {
+          tools: [{ name: 'first' }],
+          nextCursor: 'page-2'
+        }
+      }
+      return {
+        tools: [{ name: 'second' }]
+      }
+    }
+  }
+
+  const client = new PaginatedClient()
+  const tools = await client.listTools()
+
+  assert.deepEqual(tools.map((tool) => tool.name), ['first', 'second'])
+  assert.deepEqual(client.calls, [
+    { method: 'tools/list', params: undefined },
+    { method: 'tools/list', params: { cursor: 'page-2' } }
+  ])
+})
+
+test('base MCP client rejects repeated pagination cursors', async () => {
+  class RepeatedCursorClient extends BaseMCPClient {
+    constructor() {
+      super({ logger: makeSilentLogger() })
+      this.initialized = true
+    }
+
+    async sendRequest() {
+      return {
+        prompts: [],
+        nextCursor: 'same'
+      }
+    }
+  }
+
+  await assert.rejects(
+    () => new RepeatedCursorClient().listPrompts(),
+    /repeated pagination cursor/
+  )
+})
 
 test('stdio transport initializes and calls tools', async () => {
   const client = new StdioClient({ timeout: 2000, logger: makeSilentLogger() })

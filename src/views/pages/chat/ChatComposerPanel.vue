@@ -331,23 +331,26 @@
             刷新 MCP 工具列表
           </n-tooltip>
 
-          <n-tooltip trigger="hover">
-            <template #trigger>
+          <n-dropdown
+            trigger="click"
+            placement="top-start"
+            :options="thinkingEffortOptions"
+            :disabled="busy"
+            @select="emit('set-thinking-effort', $event)"
+          >
               <n-button
                 size="small"
                 tertiary
                 circle
                 :type="thinkingEffortButtonType"
                 :disabled="busy"
-                @click="emit('cycle-thinking-effort')"
+                :title="`思考等级：${thinkingEffortLabel}（点击选择）`"
               >
                 <template #icon>
                   <n-icon :component="SpeedometerOutline" size="12" />
                 </template>
               </n-button>
-            </template>
-            思考等级：{{ thinkingEffortLabel }}（点击切换）
-          </n-tooltip>
+          </n-dropdown>
 
           <n-popover
             v-if="mediaGenerationPresetGroups.length"
@@ -493,7 +496,7 @@
 
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
-import { NButton, NCard, NFlex, NIcon, NInput, NPopover, NTag, NText, NTooltip } from 'naive-ui'
+import { NButton, NCard, NDropdown, NFlex, NIcon, NInput, NPopover, NTag, NText, NTooltip } from 'naive-ui'
 import { SkillLevelIntermediate, BareMetalServer02 } from '@vicons/carbon'
 import { Trash, Magento } from '@vicons/fa'
 import { Prompt as PromptIcon } from '@vicons/tabler'
@@ -516,6 +519,17 @@ import {
 
 import ChatPendingAttachments from './ChatPendingAttachments.vue'
 import ChatMediaGenerationParamsPopover from './ChatMediaGenerationParamsPopover.vue'
+
+const thinkingEffortOptions = [
+  { label: '自动（跟随模型）', key: 'auto' },
+  { label: '关闭', key: 'none' },
+  { label: '极低', key: 'minimal' },
+  { label: '低', key: 'low' },
+  { label: '中', key: 'medium' },
+  { label: '高', key: 'high' },
+  { label: '很高', key: 'xhigh' },
+  { label: '最高', key: 'max' }
+]
 
 const props = defineProps({
   attachAccept: {
@@ -755,7 +769,6 @@ const emit = defineEmits([
   'cycle-tool-mode',
   'open-context-window-modal',
   'refresh-active-mcp-tools',
-  'cycle-thinking-effort',
   'cycle-image-generation-mode',
   'cycle-video-generation-mode',
   'apply-media-preset',

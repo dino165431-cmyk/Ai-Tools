@@ -26,8 +26,8 @@
       </n-flex>
 
       <n-text depth="3" style="display: block; margin-top: 10px; font-size: 12px;">
-        标准目录技能只登记来源目录与绑定信息，实际文件仍保留在原目录。配置中只保存
-        `sourcePath`、`entryFile`、`mcp`、`triggers` 等元数据，不复制技能文件。
+        标准目录技能会复制到当前数据目录的托管区运行；原目录只作为导入与手动刷新的来源，
+        避免技能运行依赖数据目录之外的文件。
       </n-text>
     </n-card>
 
@@ -64,7 +64,7 @@
                 v-if="isDirectorySkill(skill) && !skill.builtin"
                 text
                 size="small"
-                title="从源目录刷新"
+                title="从原始导入目录刷新托管副本"
                 @click.stop="handleRefresh(skill)"
               >
                 刷新
@@ -104,7 +104,7 @@
             :line-clamp="1"
             class="settings-card__meta"
           >
-            来源：{{ skill.sourcePath }}
+            托管：{{ skill.sourcePath }}
           </n-ellipsis>
 
           <n-text
@@ -139,8 +139,8 @@
           type="info"
           style="margin-bottom: 12px;"
         >
-          目录技能的名称、描述和正文都来自源目录中的 `SKILL.md`。这里仅编辑本插件自己的绑定信息，
-          例如 MCP 与触发词；如果要修改名称或描述，请直接编辑源目录中的 `SKILL.md`。
+          目录技能的名称、描述和正文来自托管副本中的 `SKILL.md`。这里仅编辑 MCP 与触发词等绑定；
+          在原始目录修改后，可点击刷新重新导入托管副本。
         </n-alert>
 
         <n-form-item label="名称">
@@ -161,7 +161,7 @@
           />
         </n-form-item>
 
-        <n-form-item v-if="editingDirectorySkill" label="来源目录">
+        <n-form-item v-if="editingDirectorySkill" label="托管目录">
           <n-input :value="formData.sourcePath" disabled />
         </n-form-item>
 
@@ -266,7 +266,7 @@
             tertiary
             @click="handleRefresh(currentSkill)"
           >
-            从源目录刷新
+            刷新托管副本
           </n-button>
           <span v-else />
 
@@ -521,6 +521,7 @@ function buildImportInfo(skill) {
   if (install?.type === 'file') lines.push('导入方式：从 SKILL.md 导入')
   else if (install?.type === 'directory') lines.push('导入方式：从目录导入')
 
+  if (install?.originalSourcePath) lines.push(`原始目录：${install.originalSourcePath}`)
   if (install?.selectedPath) lines.push(`选择路径：${install.selectedPath}`)
   if (install?.filePath) lines.push(`原始 SKILL.md：${install.filePath}`)
   if (cache?.refreshedAt) lines.push(`最近刷新：${cache.refreshedAt}`)
@@ -716,7 +717,7 @@ function confirmDelete(skill) {
   dialog.warning({
     title: '确认删除',
     content: isDirectorySkill(skill)
-      ? `删除后只会移除本插件中的技能记录，不会删除原目录文件。\n\n确定删除“${skill.name || skill._id}”吗？`
+      ? `删除后只会移除技能记录，不会删除原始目录或数据目录中的托管副本。\n\n确定删除“${skill.name || skill._id}”吗？`
       : `确定删除“${skill.name || skill._id}”吗？`,
     positiveText: '删除',
     negativeText: '取消',

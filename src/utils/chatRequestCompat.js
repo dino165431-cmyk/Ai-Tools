@@ -91,6 +91,46 @@ function normalizeMessageRole(role) {
   return String(role || '').trim().toLowerCase()
 }
 
+export function normalizeAssistantToolCalls(toolCalls = [], options = {}) {
+  const createFallbackId = typeof options?.createFallbackId === 'function'
+    ? options.createFallbackId
+    : (index) => `call_${index + 1}`
+
+  return (Array.isArray(toolCalls) ? toolCalls : []).map((toolCall, index) => {
+    const source = toolCall && typeof toolCall === 'object' ? toolCall : {}
+    const id = String(source.id || '').trim() || String(createFallbackId(index) || '').trim() || `call_${index + 1}`
+    const callId = String(source.call_id || source.callId || '').trim()
+    let args = source.function?.arguments
+    if (typeof args !== 'string') {
+      try {
+        args = JSON.stringify(args || {})
+      } catch {
+        args = String(args || '')
+      }
+    }
+    return {
+      id,
+      type: source.type || 'function',
+      ...(callId ? { call_id: callId } : {}),
+      function: {
+        name: String(source.function?.name || ''),
+        arguments: args
+      }
+    }
+  })
+}
+
+export function createToolResultApiMessage(toolCall, content = '') {
+  const id = String(toolCall?.id || '').trim()
+  const callId = String(toolCall?.call_id || toolCall?.callId || '').trim()
+  return {
+    role: 'tool',
+    tool_call_id: id || callId,
+    ...(callId ? { call_id: callId } : {}),
+    content: String(content || '')
+  }
+}
+
 function normalizeToolCallIdForRequest(id, compatToolCallIdAsFc = false) {
   const text = String(id || '').trim()
   if (!text) return ''

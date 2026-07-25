@@ -389,7 +389,18 @@ const advancedExpanded = ref(false)
 const isBuiltinEdit = computed(() => modalMode.value === 'edit' && currentEditBuiltin.value)
 
 const reasoningEffortOptions = AGENT_REASONING_EFFORT_OPTIONS.map((value) => ({
-  label: value === 'auto' ? 'auto（跟随接口默认）' : value,
+  label:
+    value === 'auto'
+      ? 'auto（跟随接口默认）'
+      : value === 'none'
+        ? 'none（关闭推理）'
+        : value === 'minimal'
+          ? 'minimal（极低）'
+          : value === 'xhigh'
+            ? 'xhigh（很高）'
+            : value === 'max'
+              ? 'max（最高）'
+              : value,
   value
 }))
 

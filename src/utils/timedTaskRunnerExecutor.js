@@ -12,10 +12,26 @@ import {
   normalizeAgentModelParams
 } from '@/utils/agentModelParams'
 import {
+  createToolResultApiMessage,
+  normalizeAssistantToolCalls,
   sanitizeRequestToolMessages,
   shouldIncludeReasoningContent,
   shouldRetryWithReasoningContent
 } from '@/utils/chatRequestCompat'
+import {
+  applyResponsesStreamEvent,
+  buildResponsesRequestBodyFromChatBody,
+  createResponsesStreamAccumulator,
+  finalizeResponsesStreamAccumulator,
+  shouldFallbackChatCompletionsToResponses,
+  shouldFallbackResponsesToChatCompletions,
+  shouldPreferResponsesApiForModel
+} from '@/utils/openaiResponsesCompat'
+import {
+  allowsAutomaticApiFallback,
+  normalizeProviderApiMode,
+  resolveChatApiMode
+} from '@/utils/providerModelConfig'
 import { buildSkillFileIndexLines, getSkillDescription, isDirectorySkill } from '@/utils/skillUtils'
 import {
   buildUtoolsAiMessages,
@@ -101,6 +117,8 @@ function normalizeBaseUrl(url) {
     .replace(/\/chat\/completions$/i, '')
     .replace(/\/v1\/completions$/i, '/v1')
     .replace(/\/completions$/i, '')
+    .replace(/\/v1\/responses$/i, '/v1')
+    .replace(/\/responses$/i, '')
     .replace(/\/v1\/models$/i, '/v1')
     .replace(/\/models$/i, '')
 
@@ -131,6 +149,22 @@ function toText(val) {
     return stableStringify(val)
   }
   return String(val)
+}
+
+async function recordTimedTaskUsage({ usage, providerId, model, endpoint }) {
+  if (!usage || typeof usage !== 'object') return
+  const recorder = window?.aiToolsApi?.usage?.recordUsage
+  if (typeof recorder !== 'function') return
+  try {
+    await recorder({
+      usage,
+      providerId: String(providerId || ''),
+      model: String(model || ''),
+      endpoint: String(endpoint || '')
+    })
+  } catch (error) {
+    console.warn('记录定时任务模型用量失败：', error)
+  }
 }
 
 async function postChatCompletions({ baseUrl, apiKey, body, signal }) {
@@ -180,6 +214,74 @@ async function postChatCompletions({ baseUrl, apiKey, body, signal }) {
   }
 
   return await resp.json()
+}
+
+async function postResponses({ baseUrl, apiKey, body, signal }) {
+  const base = normalizeBaseUrl(baseUrl)
+  const candidates = [`${base}/responses`]
+  if (!/\/v1$/.test(base)) candidates.push(`${base}/v1/responses`)
+
+  let resp = null
+  let usedUrl = candidates[0]
+  let lastNetworkError = null
+
+  for (const url of candidates) {
+    usedUrl = url
+    try {
+      resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`
+        },
+        body: JSON.stringify(buildResponsesRequestBodyFromChatBody(body, { stream: false })),
+        signal
+      })
+      if (resp.status === 404 && url !== candidates[candidates.length - 1]) continue
+      break
+    } catch (err) {
+      lastNetworkError = err
+      if (url !== candidates[candidates.length - 1]) continue
+      throw err
+    }
+  }
+
+  if (!resp) throw lastNetworkError || new Error('Responses 请求失败：未获取到响应')
+  if (!resp.ok) {
+    const responseText = await resp.text()
+    const parsed = safeJsonParse(responseText)
+    const detail = parsed.ok
+      ? parsed.value?.error?.message || stableStringify(parsed.value)
+      : responseText
+    throw new Error(`Responses 请求失败（HTTP ${resp.status}）：${detail || resp.statusText}\nURL：${usedUrl}`)
+  }
+  return await resp.json()
+}
+
+async function postProviderChatCompletion({ provider, baseUrl, apiKey, body, signal }) {
+  const configuredApiMode = normalizeProviderApiMode(provider?.apiMode)
+  const automaticApiFallback = allowsAutomaticApiFallback(configuredApiMode)
+  const initialApiMode = resolveChatApiMode({
+    configuredMode: configuredApiMode,
+    preferResponses: shouldPreferResponsesApiForModel(body?.model)
+  })
+  const requestByMode = (mode) => mode === 'responses'
+    ? postResponses({ baseUrl, apiKey, body, signal })
+    : postChatCompletions({ baseUrl, apiKey, body, signal })
+
+  try {
+    return { apiMode: initialApiMode, json: await requestByMode(initialApiMode) }
+  } catch (err) {
+    const errorText = String(err?.message || err || '')
+    const fallbackMode =
+      initialApiMode === 'responses' && shouldFallbackResponsesToChatCompletions(errorText)
+        ? 'chat-completions'
+        : initialApiMode === 'chat-completions' && shouldFallbackChatCompletionsToResponses(errorText)
+          ? 'responses'
+          : ''
+    if (!automaticApiFallback || !fallbackMode) throw err
+    return { apiMode: fallbackMode, json: await requestByMode(fallbackMode) }
+  }
 }
 
 function makeToolFunctionName(serverId, toolName) {
@@ -469,6 +571,10 @@ async function resolveExecutionProfile(task) {
   }
   const model = String(agent.model || fallbackModel || providerModels[0] || '').trim()
   if (!model) throw new Error('未配置模型：请在 Agent 或默认模型中设置')
+  const modelType = String(provider?.modelTypes?.[model] || 'auto').trim().toLowerCase()
+  if (['embedding', 'image-generation', 'video-generation'].includes(modelType)) {
+    throw new Error(`模型“${model}”用途为 ${modelType}，不能用于定时对话任务`)
+  }
 
   const prompt = agent.prompt ? getPromptById(agent.prompt) : null
   const basePromptText = prompt ? String(prompt.content || '').trim() : fallbackSystemPrompt
@@ -507,7 +613,7 @@ async function resolveExecutionProfile(task) {
     thinkingEffort: reasoningEffort
   }
 
-  return { agent, provider, model, modelParams, systemPrompt, state, activeMcpServers }
+  return { agent, provider, model, modelType, modelParams, systemPrompt, state, activeMcpServers }
 }
 
 function buildRequestMessages({ systemPrompt, apiMessages, compatToolCallIdAsFc }) {
@@ -553,18 +659,9 @@ function buildRequestMessages({ systemPrompt, apiMessages, compatToolCallIdAsFc 
 function normalizeToolCalls(msg) {
   const toolCalls = Array.isArray(msg?.tool_calls) ? msg.tool_calls : []
   if (toolCalls.length) {
-    return toolCalls
-      .map((tc) => {
-        const id = typeof tc.id === 'string' && tc.id ? tc.id : `call_${newId()}`
-        return {
-          id,
-          type: tc.type || 'function',
-          function: {
-            name: tc.function?.name || '',
-            arguments: tc.function?.arguments || ''
-          }
-        }
-      })
+    return normalizeAssistantToolCalls(toolCalls, {
+      createFallbackId: () => `call_${newId()}`
+    })
       .filter((tc) => tc.function?.name)
   }
 
@@ -848,40 +945,45 @@ export async function runTimedTaskOnce(task, options = {}) {
   try {
     const maxRounds = 60
     for (let round = 0; round < maxRounds; round++) {
-      const reqMessages = buildRequestMessages({ systemPrompt, apiMessages, compatToolCallIdAsFc: compatFcToolCallId })
-      const needsReasoningContent = shouldIncludeReasoningContent({
-        baseUrl,
-        model,
-        forceReasoningContent,
-        apiMessages
-      })
-      const normalizedReqMessages = reqMessages.map((message) => {
-        if (!message || typeof message !== 'object') return message
-        if (message.role !== 'assistant') return message
-        const cloned = { ...message }
-        if (needsReasoningContent) {
-          const rc = cloned.reasoning_content ?? cloned.reasoning ?? cloned.thinking ?? cloned.thought ?? ''
-          cloned.reasoning_content = typeof rc === 'string' ? rc : stableStringify(rc)
-        } else {
-          delete cloned.reasoning_content
-          delete cloned.reasoning
-          delete cloned.thinking
-          delete cloned.thought
-        }
-        return cloned
-      })
-      const body = {
-        model,
-        stream: false,
-        messages: normalizedReqMessages,
-        ...(tools.length ? { tools, tool_choice: 'auto' } : {}),
-        ...requestOverrides
-      }
-
-      let json = null
+      let completion = null
       for (let attempt = 0; attempt < 3; attempt++) {
+        const reqMessages = buildRequestMessages({ systemPrompt, apiMessages, compatToolCallIdAsFc: compatFcToolCallId })
+        const needsReasoningContent = shouldIncludeReasoningContent({
+          baseUrl,
+          model,
+          forceReasoningContent,
+          apiMessages
+        })
+        const normalizedReqMessages = reqMessages.map((message) => {
+          if (!message || typeof message !== 'object') return message
+          if (message.role !== 'assistant') return message
+          const cloned = { ...message }
+          if (needsReasoningContent) {
+            const rc = cloned.reasoning_content ?? cloned.reasoning ?? cloned.thinking ?? cloned.thought ?? ''
+            cloned.reasoning_content = typeof rc === 'string' ? rc : stableStringify(rc)
+          } else {
+            delete cloned.reasoning_content
+            delete cloned.reasoning
+            delete cloned.thinking
+            delete cloned.thought
+          }
+          return cloned
+        })
+        const body = {
+          model,
+          stream: false,
+          messages: normalizedReqMessages,
+          ...(tools.length ? { tools, tool_choice: 'auto' } : {}),
+          ...requestOverrides
+        }
         try {
-          json = await postChatCompletions({ baseUrl, apiKey, body, signal: controller.signal })
+          completion = await postProviderChatCompletion({
+            provider,
+            baseUrl,
+            apiKey,
+            body,
+            signal: controller.signal
+          })
           break
         } catch (err) {
           const errText = String(err?.message || err || '')
@@ -896,10 +998,28 @@ export async function runTimedTaskOnce(task, options = {}) {
           throw err
         }
       }
-      if (!json) throw new Error('请求失败：已达到重试次数上限')
+      if (!completion?.json) throw new Error('请求失败：已达到重试次数上限')
 
-      const choice = json?.choices?.[0] || {}
-      const msg = choice.message || {}
+      const json = completion.json
+      await recordTimedTaskUsage({
+        usage: json?.usage || json?.response?.usage,
+        providerId: provider?._id,
+        model,
+        endpoint: completion.apiMode
+      })
+      let choice = json?.choices?.[0] || {}
+      let msg = choice.message || {}
+      if (completion.apiMode === 'responses') {
+        const responsesState = createResponsesStreamAccumulator()
+        applyResponsesStreamEvent(responsesState, json)
+        const responsesResult = finalizeResponsesStreamAccumulator(responsesState)
+        msg = {
+          content: responsesResult.content || extractAssistantTextFromPayload(json),
+          reasoning_content: responsesResult.reasoning,
+          tool_calls: responsesResult.toolCalls
+        }
+        choice = { message: msg }
+      }
 
       const assistantContent = toText(msg.content ?? choice.text ?? json.content ?? json.text) || extractAssistantTextFromPayload(json)
       const assistantReasoning = toText(msg.reasoning_content ?? msg.reasoning ?? json.reasoning_content ?? json.reasoning)
@@ -942,12 +1062,12 @@ export async function runTimedTaskOnce(task, options = {}) {
         if (!mapping) {
           const errorText = `未找到工具映射：${fn}`
           updateTimedTaskToolMessage(toolMessage, { status: 'error', serverName: '未知', toolName: fn || '', errorText })
-          apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: errorText })
+          apiMessages.push(createToolResultApiMessage(tc, errorText))
           continue
         }
 
         const exec = await executeMcpToolCall({ toolCall: tc, mapping, argsObj })
-        apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: String(exec?.content || '') })
+        apiMessages.push(createToolResultApiMessage(tc, exec?.content))
 
         updateTimedTaskToolMessage(toolMessage, {
           status: 'success',

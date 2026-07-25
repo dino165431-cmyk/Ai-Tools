@@ -54,6 +54,9 @@
             <n-tag size="small" bordered>
               模型 {{ (provider.selectModels || []).length }}
             </n-tag>
+            <n-tag v-if="!provider.builtin" size="small" type="info" bordered>
+              {{ getProviderApiModeLabel(provider.apiMode) }}
+            </n-tag>
           </n-flex>
 
           <n-text depth="3" style="margin-top: 8px; font-size: 12px; word-break: break-all;">
@@ -131,6 +134,18 @@
             show-password-toggle
             placeholder="请输入 API 密钥"
           />
+        </n-form-item>
+        <n-form-item label="对话接口" path="apiMode">
+          <n-flex vertical :size="4" style="width: 100%;">
+            <n-select
+              v-model:value="formData.apiMode"
+              :options="PROVIDER_API_MODE_OPTIONS"
+              placeholder="自动选择"
+            />
+            <n-text depth="3" style="font-size: 12px;">
+              自动选择会按模型和接口响应探测；显式选择后，聊天只调用对应接口，不会跨接口回退。
+            </n-text>
+          </n-flex>
         </n-form-item>
         <n-form-item label="模型" label-placement="top" :show-feedback="false">
           <n-flex vertical style="width: 100%;">
@@ -219,6 +234,7 @@ import {
   NIcon,
   NButton,
   NInput,
+  NSelect,
   NText,
   NTag,
   NModal,
@@ -248,6 +264,15 @@ import {
   deleteProvider,
   getTheme
 } from '@/utils/configListener'
+import {
+  getProviderApiModeLabel,
+  getProviderModelType,
+  normalizeProviderApiMode,
+  normalizeProviderModelType,
+  normalizeProviderModelTypes,
+  PROVIDER_API_MODE_OPTIONS,
+  PROVIDER_MODEL_TYPE_OPTIONS
+} from '@/utils/providerModelConfig'
 
 const cardStyle = computed(() => ({
   width: 'calc((100% - 32px) / 3)',
@@ -280,7 +305,9 @@ const formData = reactive({
   name: '',
   baseurl: '',
   apikey: '',
-  selectModels: []
+  apiMode: 'auto',
+  selectModels: [],
+  modelTypes: {}
 })
 
 const availableModels = ref([])
@@ -300,6 +327,22 @@ const modelColumns = [
     ellipsis: { tooltip: true },
     render(row) {
       return row.owned_by || '-'
+    }
+  },
+  {
+    title: '模型用途',
+    key: 'modelType',
+    width: 142,
+    render(row) {
+      const isSelected = formData.selectModels.includes(row.id)
+      return h(NSelect, {
+        value: getProviderModelType(formData, row.id),
+        options: PROVIDER_MODEL_TYPE_OPTIONS,
+        size: 'small',
+        disabled: !isSelected,
+        title: isSelected ? '指定后会覆盖按模型名称自动识别的结果' : '请先启用该模型',
+        'onUpdate:value': (value) => setModelType(row.id, value)
+      })
     }
   },
   {
@@ -414,9 +457,22 @@ function getProviderSummary(provider) {
 function toggleModel(modelId, isSelected) {
   if (isSelected) {
     formData.selectModels = formData.selectModels.filter((id) => id !== modelId)
+    const nextModelTypes = { ...formData.modelTypes }
+    delete nextModelTypes[modelId]
+    formData.modelTypes = nextModelTypes
   } else {
     formData.selectModels.push(modelId)
   }
+}
+
+function setModelType(modelId, value) {
+  const id = String(modelId || '').trim()
+  if (!id) return
+  const type = normalizeProviderModelType(value)
+  const nextModelTypes = { ...formData.modelTypes }
+  if (type === 'auto') delete nextModelTypes[id]
+  else nextModelTypes[id] = type
+  formData.modelTypes = nextModelTypes
 }
 
 function confirmPruneMissingModels() {
@@ -443,6 +499,9 @@ function confirmPruneMissingModels() {
       const validIds = availableModelIds.value
       const before = formData.selectModels.length
       formData.selectModels = formData.selectModels.filter((id) => validIds.has(String(id || '').trim()))
+      formData.modelTypes = Object.fromEntries(
+        Object.entries(formData.modelTypes || {}).filter(([id]) => validIds.has(String(id || '').trim()))
+      )
       const removed = before - formData.selectModels.length
       message.success(`已清理 ${removed} 个失效模型，保存后生效`)
     }
@@ -461,6 +520,8 @@ function normalizeBaseUrl(url) {
     .replace(/\/chat\/completions$/i, '')
     .replace(/\/v1\/completions$/i, '/v1')
     .replace(/\/completions$/i, '')
+    .replace(/\/v1\/responses$/i, '/v1')
+    .replace(/\/responses$/i, '')
     .replace(/\/v1\/models$/i, '/v1')
     .replace(/\/models$/i, '')
 
@@ -630,7 +691,9 @@ function resetCustomForm() {
   formData.name = ''
   formData.baseurl = ''
   formData.apikey = ''
+  formData.apiMode = 'auto'
   formData.selectModels = []
+  formData.modelTypes = {}
   availableModels.value = []
   modelFilterKeyword.value = ''
 }
@@ -661,7 +724,9 @@ async function openEditModal(provider) {
   formData.name = provider.name || ''
   formData.baseurl = provider.baseurl || ''
   formData.apikey = provider.apikey || ''
+  formData.apiMode = normalizeProviderApiMode(provider.apiMode)
   formData.selectModels = provider.selectModels ? [...provider.selectModels] : []
+  formData.modelTypes = normalizeProviderModelTypes(provider.modelTypes)
   if (formData.baseurl && formData.apikey) {
     refreshModels()
   } else {
@@ -684,9 +749,11 @@ function handleSave() {
     try {
       const providerData = {
         name: String(formData.name || '').trim(),
-        baseurl: formData.baseurl,
+        baseurl: normalizeBaseUrl(formData.baseurl),
         apikey: formData.apikey,
-        selectModels: formData.selectModels
+        apiMode: normalizeProviderApiMode(formData.apiMode),
+        selectModels: formData.selectModels,
+        modelTypes: normalizeProviderModelTypes(formData.modelTypes)
       }
 
       const safeData = JSON.parse(JSON.stringify(providerData))

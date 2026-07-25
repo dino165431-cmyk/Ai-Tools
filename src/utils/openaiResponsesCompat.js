@@ -40,6 +40,10 @@ export function shouldFallbackChatCompletionsToResponses(errorText) {
     lower.includes('use the responses endpoint') ||
     lower.includes('not supported in chat completions') ||
     lower.includes('not supported with chat completions') ||
+    (lower.includes('function calling') && lower.includes('responses')) ||
+    (lower.includes('tool calling') && lower.includes('responses')) ||
+    (lower.includes('tools') && lower.includes('only') && lower.includes('/responses')) ||
+    (lower.includes('tool_choice') && lower.includes('responses')) ||
     lower.includes('unsupported parameter') && lower.includes('messages') ||
     lower.includes('unsupported value') && lower.includes('chat.completions')
   )
@@ -50,6 +54,8 @@ export function shouldFallbackResponsesToChatCompletions(errorText) {
   if (!lower) return false
   return (
     lower.includes('http 404') ||
+    lower.includes('http 405') ||
+    lower.includes('http 501') ||
     lower.includes('cannot post') && lower.includes('/responses') ||
     lower.includes('no such route') && lower.includes('/responses') ||
     lower.includes('unknown endpoint') && lower.includes('/responses') ||
@@ -272,18 +278,23 @@ export function createResponsesStreamAccumulator() {
     reasoning: '',
     finishReason: null,
     toolCallsByKey: new Map(),
-    payloads: []
+    payloads: [],
+    usage: null
   }
 }
 
 function upsertResponsesFunctionCall(state, item = {}) {
   const name = normalizeString(item.name)
-  const callId = normalizeString(item.call_id || item.callId || item.id)
-  const key = normalizeString(item.id || callId || item.output_index || item.item_id || item.itemId)
+  const itemId = normalizeString(item.id || item.item_id || item.itemId)
+  const explicitCallId = normalizeString(item.call_id || item.callId)
+  // Responses 标准中 item.id（通常为 fc_...）和 call_id（call_...）是两个不同标识。
+  // 仅对没有 fc_ item id 的非标准兼容响应使用 id 兜底，避免把两者错误合并。
+  const callId = explicitCallId || (itemId && !itemId.startsWith('fc_') ? itemId : '')
+  const key = normalizeString(itemId || callId || item.output_index)
   if (!key && !name) return null
 
   const prev = state.toolCallsByKey.get(key || callId || name) || {
-    id: normalizeString(item.id) || sanitizeFunctionCallId(callId || key || name),
+    id: itemId || sanitizeFunctionCallId(callId || key || name),
     type: 'function',
     call_id: callId,
     function: {
@@ -292,7 +303,7 @@ function upsertResponsesFunctionCall(state, item = {}) {
     }
   }
 
-  if (item.id) prev.id = normalizeString(item.id)
+  if (itemId) prev.id = itemId
   if (callId) prev.call_id = callId
   if (name) prev.function.name = name
   if (typeof item.arguments === 'string') prev.function.arguments = item.arguments
@@ -314,6 +325,8 @@ export function applyResponsesStreamEvent(state, json) {
   const events = []
   if (!json || typeof json !== 'object') return events
   acc.payloads.push(json)
+  const responseUsage = json?.response?.usage || json?.usage
+  if (responseUsage && typeof responseUsage === 'object') acc.usage = responseUsage
 
   const type = normalizeString(json.type || json.event).toLowerCase()
 
@@ -336,6 +349,8 @@ export function applyResponsesStreamEvent(state, json) {
   if (type.endsWith('function_call_arguments.delta')) {
     const toolCall = upsertResponsesFunctionCall(acc, {
       id: json.item_id || json.itemId,
+      call_id: json.call_id || json.callId,
+      name: json.name,
       output_index: json.output_index,
       delta: json.delta
     })
@@ -345,6 +360,8 @@ export function applyResponsesStreamEvent(state, json) {
   if (type.endsWith('function_call_arguments.done')) {
     const toolCall = upsertResponsesFunctionCall(acc, {
       id: json.item_id || json.itemId,
+      call_id: json.call_id || json.callId,
+      name: json.name,
       output_index: json.output_index,
       arguments: typeof json.arguments === 'string' ? json.arguments : stableStringify(json.arguments || {})
     })
@@ -371,6 +388,7 @@ export function finalizeResponsesStreamAccumulator(state) {
     reasoning: acc.reasoning,
     toolCalls: Array.from(acc.toolCallsByKey.values()),
     finishReason: acc.finishReason || 'stop',
+    usage: acc.usage,
     payloads: acc.payloads.slice()
   }
 }

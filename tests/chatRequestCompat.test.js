@@ -2,12 +2,31 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  createToolResultApiMessage,
   hasAssistantReasoningContent,
   isDeepSeekReasonerModel,
+  normalizeAssistantToolCalls,
   sanitizeRequestToolMessages,
   shouldIncludeReasoningContent,
   shouldRetryWithReasoningContent
 } from '../src/utils/chatRequestCompat.js'
+
+test('tool history helpers preserve distinct Responses item id and call_id', () => {
+  const [toolCall] = normalizeAssistantToolCalls([
+    {
+      id: 'fc_lookup',
+      call_id: 'call_lookup',
+      type: 'function',
+      function: { name: 'notes_read', arguments: '{"path":"demo.md"}' }
+    }
+  ])
+  const toolResult = createToolResultApiMessage(toolCall, 'note body')
+
+  assert.equal(toolCall.id, 'fc_lookup')
+  assert.equal(toolCall.call_id, 'call_lookup')
+  assert.equal(toolResult.tool_call_id, 'fc_lookup')
+  assert.equal(toolResult.call_id, 'call_lookup')
+})
 
 test('isDeepSeekReasonerModel recognizes DeepSeek reasoner variants', () => {
   assert.equal(isDeepSeekReasonerModel('deepseek-reasoner'), true)

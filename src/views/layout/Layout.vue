@@ -35,7 +35,7 @@
 </template>
 
 <script setup>
-import { NSpace, NLayout, NLayoutSider, NMenu } from 'naive-ui'
+import { NSpace, NLayout, NLayoutSider, NMenu, NTooltip } from 'naive-ui'
 import { h, computed, watch } from 'vue'
 import { NIcon } from 'naive-ui'
 import { useRouter, useRoute } from 'vue-router'
@@ -53,6 +53,20 @@ function renderIcon(icon) {
   return () => h(NIcon, null, { default: () => h(icon) })
 }
 
+function renderMenuLabel(route) {
+  const label = route.meta?.label || route.name || route.path
+  const description = String(route.meta?.description || '').trim()
+  if (!description) return label
+  return () => h(
+    NTooltip,
+    { placement: 'right', delay: 450 },
+    {
+      trigger: () => h('span', label),
+      default: () => description
+    }
+  )
+}
+
 function isRouteVisible(route) {
   if (route?.meta?.requiresMemoryEnabled === true) {
     return chatConfig.value?.memory?.enabled === true
@@ -65,7 +79,7 @@ function transformRoutesToMenu(routes) {
   for (const route of routes) {
     if (route.meta?.menu && isRouteVisible(route)) {
       const menuItem = {
-        label: route.meta.label || route.name || route.path,
+        label: renderMenuLabel(route),
         key: route.name,
         icon: route.meta.icon ? renderIcon(route.meta.icon) : undefined,
         disabled: route.meta.disabled || false,
@@ -103,15 +117,10 @@ function resolveEnterRoute(enterCode) {
   return enterRouteMap[normalizedCode] || ''
 }
 
-const ENTER_ROUTE_MAP = Object.freeze({
-  Ai: 'chat',
-  'Ai Tools': 'chat'
-})
-
 watch(
   utoolsEnterData,
   (val) => {
-    const target = ENTER_ROUTE_MAP[val?.code] || resolveEnterRoute(val?.code)
+    const target = resolveEnterRoute(val?.code)
     if (!target || route.name === target) return
     router.replace({ name: target })
   },

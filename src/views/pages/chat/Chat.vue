@@ -436,6 +436,87 @@
       </div>
     </div>
 
+    <transition name="tool-approval">
+      <section
+        v-if="activeToolApproval"
+        class="tool-approval-card"
+        role="alertdialog"
+        aria-live="assertive"
+        aria-label="工具调用审批"
+      >
+        <div class="tool-approval-card__header">
+          <div class="tool-approval-card__title-wrap">
+            <span class="tool-approval-card__icon">
+              <n-icon :component="ShieldOutline" size="18" />
+            </span>
+            <div class="tool-approval-card__title-copy">
+              <strong>{{ activeToolApproval.titleText }}</strong>
+              <span>
+                {{ activeToolApproval.serverName }} / {{ activeToolApproval.toolName }}
+              </span>
+            </div>
+          </div>
+          <n-flex align="center" :size="6">
+            <n-tag size="small" type="warning" :bordered="false">等待确认</n-tag>
+            <n-tag v-if="pendingToolApprovalCount > 1" size="small" :bordered="false">
+              队列 {{ pendingToolApprovalCount }}
+            </n-tag>
+          </n-flex>
+        </div>
+
+        <div class="tool-approval-card__meta">
+          <span v-if="activeToolApproval.sessionTitle">
+            会话：{{ activeToolApproval.sessionTitle }}
+          </span>
+          <span v-for="line in activeToolApproval.extraLines" :key="line">{{ line }}</span>
+        </div>
+
+        <div v-if="activeToolApproval.approvalKind === 'shell'" class="tool-approval-card__command">
+          <div class="tool-approval-card__command-label">
+            <span>Bash 命令</span>
+            <code>cwd: {{ activeToolApproval.cwdText }}</code>
+          </div>
+          <pre>{{ activeToolApproval.commandText || '（空命令）' }}</pre>
+        </div>
+
+        <details v-else class="tool-approval-card__details" open>
+          <summary>{{ activeToolApproval.approvalKind === 'execution' ? '查看待执行脚本与参数' : '查看调用参数' }}</summary>
+          <pre>{{ activeToolApproval.argsText }}</pre>
+        </details>
+
+        <details
+          v-if="activeToolApproval.approvalKind === 'shell' || activeToolApproval.reasoningText"
+          class="tool-approval-card__details"
+        >
+          <summary>{{ activeToolApproval.reasoningText ? '查看模型说明与完整参数' : '查看完整参数' }}</summary>
+          <div v-if="activeToolApproval.reasoningText" class="tool-approval-card__reasoning">
+            {{ activeToolApproval.reasoningText }}
+          </div>
+          <pre>{{ activeToolApproval.argsText }}</pre>
+        </details>
+
+        <div class="tool-approval-card__footer">
+          <n-text depth="3" class="tool-approval-card__scope">
+            {{ activeToolApproval.scopeHint }}
+          </n-text>
+          <n-flex justify="end" wrap :size="8">
+            <n-button size="small" @click="resolveActiveToolApproval('deny')">拒绝</n-button>
+            <n-button size="small" secondary type="primary" @click="resolveActiveToolApproval('once')">
+              允许一次
+            </n-button>
+            <n-button
+              v-if="activeToolApproval.canRemember"
+              size="small"
+              type="primary"
+              @click="resolveActiveToolApproval('session')"
+            >
+              {{ activeToolApproval.rememberText }}
+            </n-button>
+          </n-flex>
+        </div>
+      </section>
+    </transition>
+
     <ChatComposerPanel
       ref="composerPanelRef"
       :theme="theme"
@@ -518,7 +599,6 @@
       @cycle-tool-mode="cycleToolMode"
       @open-context-window-modal="openContextWindowModal"
       @refresh-active-mcp-tools="refreshActiveMcpTools"
-      @cycle-thinking-effort="cycleThinkingEffort"
       @cycle-image-generation-mode="cycleImageGenerationMode"
       @cycle-video-generation-mode="cycleVideoGenerationMode"
       @apply-media-preset="applyMediaGenerationPreset"
@@ -1045,7 +1125,7 @@
 </template>
 
 <script setup>
- import { computed, defineAsyncComponent, ref, reactive, watch, nextTick, h, onMounted, onActivated, onDeactivated, onBeforeUnmount } from 'vue'
+import { computed, defineAsyncComponent, ref, shallowRef, reactive, watch, nextTick, onMounted, onActivated, onDeactivated, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   NCard,
@@ -1170,7 +1250,9 @@ import {
 import {
   calculateHistoryContextCharBudget,
   calculateReservedRequestChars,
+  createToolResultApiMessage,
   estimateToolDefinitionsChars,
+  normalizeAssistantToolCalls,
   sanitizeRequestToolMessages,
   shouldIncludeReasoningContent,
   shouldRetryWithReasoningContent
@@ -1195,6 +1277,12 @@ import {
   shouldRetryWithoutParallelToolCalls,
   shouldRetryResponsesWithoutStreaming
 } from '@/utils/openaiResponsesCompat.js'
+import {
+  allowsAutomaticApiFallback,
+  getProviderModelType,
+  normalizeProviderApiMode,
+  resolveChatApiMode
+} from '@/utils/providerModelConfig.js'
 import {
   collectImageGenerationRevisedPrompts,
   extractImageOutputEntries,
@@ -1307,6 +1395,11 @@ import {
 import { stringifyToolResultForModel as stringifyToolResultForLlm } from '@/utils/toolResultForModel'
 import { consumeJsonEventStream } from '@/utils/streamJsonEvents'
 import { buildMcpArgsFromForm, normalizeMcpPromptArgumentDefinitions, resetMcpArgFormData } from '@/utils/mcpArgumentForm'
+import {
+  buildSessionToolApprovalKey,
+  normalizeShellApprovalCommand,
+  normalizeToolApprovalArgs
+} from '@/utils/toolApprovalPolicy'
 import ChatAssistantMedia from './ChatAssistantMedia.vue'
 import ChatComposerPanel from './ChatComposerPanel.vue'
 import ChatToolMessage from './ChatToolMessage.vue'
@@ -1326,6 +1419,25 @@ const McpArgumentForm = defineAsyncComponent({
 const dialog = useDialog()
 const message = useMessage()
 const router = useRouter()
+const sessionApprovedToolKeys = new Set()
+const pendingToolApprovals = shallowRef([])
+const activeToolApproval = computed(() => pendingToolApprovals.value[0] || null)
+const pendingToolApprovalCount = computed(() => pendingToolApprovals.value.length)
+
+function clearSessionApprovedTools(sessionId) {
+  const target = String(sessionId || '').trim()
+  if (!target) return
+  for (const key of sessionApprovedToolKeys) {
+    try {
+      const parsed = JSON.parse(key)
+      if (Array.isArray(parsed) && String(parsed[0] || '') === target) {
+        sessionApprovedToolKeys.delete(key)
+      }
+    } catch {
+      sessionApprovedToolKeys.delete(key)
+    }
+  }
+}
 
 const theme = getTheme()
 const utoolsEnterData = useUtoolsEnterData()
@@ -1584,7 +1696,7 @@ function createMemorySessionRecord(options = {}) {
     chatRunCount: Number(options.chatRunCount || 0) || 0,
     activeRequestAbortState: options.activeRequestAbortState || null,
     pendingApprovalRequests: [],
-    approvalDialogActive: false,
+    approvalPromptActive: false,
     autoManaged: options.autoManaged === true
   }
 }
@@ -1683,6 +1795,7 @@ function syncSessionTreeSelectionForRecord(record) {
 function removeMemorySessionById(id) {
   const target = String(id || '').trim()
   if (!target) return false
+  clearSessionApprovedTools(target)
   const existing = getMemorySessionById(target)
   if (existing?.memoryCandidateFlushTimer) {
     try {
@@ -2225,7 +2338,7 @@ const initialMemorySession = createMemorySessionRecord({
 memorySessions.value = [initialMemorySession]
 activeMemorySessionId.value = initialMemorySession.id
 
-const thinkingEffort = ref('auto') // auto | low | medium | high
+const thinkingEffort = ref('auto')
 const imageGenerationMode = ref('auto') // auto | on | off
 const videoGenerationMode = ref('auto') // auto | on | off
 const imageGenerationParamsEnabled = ref(false)
@@ -5176,9 +5289,13 @@ const chatSetupSummaryItems = computed(() => {
 
 const thinkingEffortLabel = computed(() => {
   const v = String(thinkingEffort.value || 'auto')
+  if (v === 'none') return '关闭'
+  if (v === 'minimal') return '极低'
   if (v === 'low') return '低'
   if (v === 'medium') return '中'
   if (v === 'high') return '高'
+  if (v === 'xhigh') return '很高'
+  if (v === 'max') return '最高'
   return '自动'
 })
 
@@ -6279,9 +6396,17 @@ function enqueueMemorySessionApprovalRequest(record, request) {
   const next = {
     requestId,
     serverName: String(request.serverName || '').trim(),
+    serverId: String(request.serverId || '').trim(),
     toolName: String(request.toolName || '').trim(),
     argsText: String(request.argsText || '{}').trim() || '{}',
     reasoningText: String(request.reasoningText || '').trim(),
+    approvalKind:
+      request.approvalKind === 'shell'
+        ? 'shell'
+        : request.approvalKind === 'execution'
+          ? 'execution'
+          : 'tool',
+    approvalKey: String(request.approvalKey || '').trim(),
     streamId: String(request.streamId || '').trim(),
     agentName: String(request.agentName || '').trim(),
     extraLines: Array.isArray(request.extraLines) ? request.extraLines.map((line) => String(line || '').trim()).filter(Boolean) : [],
@@ -6304,12 +6429,12 @@ function removeMemorySessionApprovalRequest(record, requestId) {
 }
 
 async function flushMemorySessionApprovalQueue(record) {
-  if (!record || !isMemorySessionActive(record) || record.approvalDialogActive === true) return false
+  if (!record || !isMemorySessionActive(record) || record.approvalPromptActive === true) return false
   const queue = Array.isArray(record.pendingApprovalRequests) ? record.pendingApprovalRequests : []
   const nextRequest = queue[0]
   if (!nextRequest) return false
 
-  record.approvalDialogActive = true
+  record.approvalPromptActive = true
   try {
     const approved = await confirmToolCall({
       serverName: nextRequest.serverName,
@@ -6318,13 +6443,21 @@ async function flushMemorySessionApprovalQueue(record) {
       reasoningText: nextRequest.reasoningText,
       abortState: createAbortAwareDialogStateFromController(getMemorySessionById(record.id)?.activeRequestAbortState || abortController.value || null),
       titleText: '确认子 Agent 工具调用',
-      extraLines: nextRequest.extraLines
+      extraLines: nextRequest.extraLines,
+      sessionId: record.id,
+      sessionTitle: resolveMemorySessionTitle(record),
+      approvalKind: nextRequest.approvalKind,
+      rememberText: nextRequest.approvalKind === 'shell' ? '本会话允许相同命令' : '本会话允许此工具',
+      onRememberForSession:
+        nextRequest.approvalKey
+          ? () => sessionApprovedToolKeys.add(nextRequest.approvalKey)
+          : null
     })
     removeMemorySessionApprovalRequest(record, nextRequest.requestId)
     dispatchBuiltinAgentsToolApprovalResponse(nextRequest.requestId, approved)
     if (approved === null) return true
   } finally {
-    record.approvalDialogActive = false
+    record.approvalPromptActive = false
   }
 
   if (getMemorySessionPendingApprovalCount(record) > 0) {
@@ -6629,7 +6762,8 @@ async function handleBuiltinAgentsToolApprovalRequest(event) {
   const requestId = String(detail.requestId || '').trim()
   if (!requestId) return
 
-  const serverName = String(detail.serverName || detail.serverId || '').trim() || '未知'
+  const serverId = String(detail.serverId || '').trim()
+  const serverName = String(detail.serverName || serverId || '').trim() || '未知'
   const toolName = String(detail.toolName || '').trim() || 'unknown'
   const argsText = String(detail.argsText || '{}').trim() || '{}'
   const reasoningText = String(detail.reasoningText || '').trim()
@@ -6638,22 +6772,49 @@ async function handleBuiltinAgentsToolApprovalRequest(event) {
 
   const streamId = String(detail.streamId || detail.traceStreamId || detail.trace_stream_id || '').trim()
   const relatedToolMessage = streamId ? resolveActiveAgentRunToolMessage(streamId) : null
-  const autoApproved =
+  const targetRecord = relatedToolMessage ? getMemorySessionForToolMessage(relatedToolMessage) : getActiveMemorySession()
+  const matchedServer = (activeMcpServers.value || []).find((item) => {
+    const id = String(item?._id || '').trim()
+    const name = String(item?.name || '').trim()
+    return (serverId && id === serverId) || (!serverId && name && name === serverName)
+  })
+  const approvalKind =
+    detail.approvalKind === 'shell' ||
+    String(matchedServer?.transportType || '').trim() === 'builtinShell'
+      ? 'shell'
+      : 'tool'
+  const forceApproval =
+    detail.forceApproval === true ||
+    approvalKind === 'shell'
+  const approvalKey = buildSessionToolApprovalKey({
+    sessionId: String(targetRecord?.id || 'chat'),
+    serverId,
+    serverName,
+    toolName,
+    approvalKind,
+    argsText
+  })
+  const inheritedAutoApproval =
     typeof relatedToolMessage?.toolAutoApproved === 'boolean'
       ? relatedToolMessage.toolAutoApproved
       : shouldAutoApproveToolExecution(relatedToolMessage?.toolAbortState || abortController.value || null)
+  const autoApproved =
+    sessionApprovedToolKeys.has(approvalKey) ||
+    (!forceApproval && inheritedAutoApproval)
 
   let approved = null
   if (autoApproved) {
     approved = true
   } else {
-    const targetRecord = relatedToolMessage ? getMemorySessionForToolMessage(relatedToolMessage) : getActiveMemorySession()
     enqueueMemorySessionApprovalRequest(targetRecord, {
       requestId,
+      serverId,
       serverName,
       toolName,
       argsText,
       reasoningText,
+      approvalKind,
+      approvalKey,
       streamId,
       agentName,
       extraLines
@@ -9705,6 +9866,7 @@ function resetChatRuntimeState() {
   pendingAttachments.value = []
   abortController.value = null
   const record = getActiveMemorySession()
+  clearSessionApprovedTools(record?.id)
   const now = Date.now()
   clearMemoryCandidateFlushTimer(record)
   record.messages = session.messages
@@ -9726,7 +9888,7 @@ function resetChatRuntimeState() {
   record.chatRunCount = 0
   record.activeRequestAbortState = null
   record.pendingApprovalRequests = []
-  record.approvalDialogActive = false
+  record.approvalPromptActive = false
   record.autoManaged = false
   record.state = applyDefaultChatState()
   record.updatedAt = now
@@ -10230,7 +10392,7 @@ function applyLoadedChatState(state) {
   }
 
   const effort = String(hydratedState.thinkingEffort || '').trim()
-  if (effort === 'auto' || effort === 'low' || effort === 'medium' || effort === 'high') {
+  if (['auto', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(effort)) {
     thinkingEffort.value = effort
   }
 
@@ -10616,6 +10778,8 @@ function stop() {
 }
 
 onBeforeUnmount(() => {
+  cancelPendingToolApprovals()
+  sessionApprovedToolKeys.clear()
   try {
     if (pendingBuiltinAgentsEventsFlushTimer) {
       window.clearTimeout(pendingBuiltinAgentsEventsFlushTimer)
@@ -10821,10 +10985,21 @@ function getRequestConfigOrHint() {
 
   const imageMode = normalizeImageGenerationMode(imageGenerationMode.value)
   const videoMode = normalizeImageGenerationMode(videoGenerationMode.value)
+  const apiMode = normalizeProviderApiMode(provider.apiMode)
+  const modelType = getProviderModelType(provider, model)
+  if (modelType === 'embedding') {
+    message.warning('当前模型被标记为向量模型，不能用于聊天。请切换模型或在服务商设置中调整模型用途。')
+    showModelModal.value = true
+    return null
+  }
   const useManualImageGeneration = imageMode === 'on'
-  const useAutoImageGeneration = imageMode === 'auto' && isLikelyImageGenerationModel(model)
+  const useAutoImageGeneration =
+    imageMode === 'auto' &&
+    (modelType === 'image-generation' || (modelType === 'auto' && isLikelyImageGenerationModel(model)))
   const useManualVideoGeneration = videoMode === 'on'
-  const useAutoVideoGeneration = videoMode === 'auto' && isLikelyVideoGenerationModel(model)
+  const useAutoVideoGeneration =
+    videoMode === 'auto' &&
+    (modelType === 'video-generation' || (modelType === 'auto' && isLikelyVideoGenerationModel(model)))
   const requestMode =
     useManualVideoGeneration
       ? 'video-generation'
@@ -10848,7 +11023,9 @@ function getRequestConfigOrHint() {
     providerKind: 'openai-compatible',
     baseUrl,
     apiKey,
+    apiMode,
     model,
+    modelType,
     requestMode,
     imageGenerationPlaceholderMode: useManualImageGeneration ? 'image' : 'text',
     videoGenerationPlaceholderMode: useManualVideoGeneration ? 'video' : 'text',
@@ -10906,9 +11083,24 @@ function formatApproxChars(value) {
   return String(num)
 }
 
+function recordModelUsage(usage, { model = '', endpoint = '' } = {}) {
+  if (!usage || typeof usage !== 'object') return
+  const recorder = window?.aiToolsApi?.usage?.recordUsage
+  if (typeof recorder !== 'function') return
+  void recorder({
+    usage,
+    providerId: String(selectedProviderId.value || ''),
+    model: String(model || ''),
+    endpoint: String(endpoint || '')
+  }).catch((error) => {
+    console.warn('记录模型用量失败：', error)
+  })
+}
+
 async function runChatRounds({
   baseUrl,
   apiKey,
+  apiMode = 'auto',
   model,
   signal,
   setCurrentAssistantDisplay,
@@ -10925,7 +11117,7 @@ async function runChatRounds({
   const refreshToolsBundleIfNeeded = async () => {
     if (lastToolsKey) return
     const key = getCurrentToolsKey()
-    const bundle = await buildToolsBundleV2({ abortState })
+    const bundle = await buildToolsBundle({ abortState })
     tools = Array.isArray(bundle?.tools) ? bundle.tools : []
     toolMap = bundle?.map instanceof Map ? bundle.map : new Map()
     lastToolsKey = key
@@ -10933,7 +11125,9 @@ async function runChatRounds({
 
   throwIfAborted(abortState)
   await refreshToolsBundleIfNeeded()
-  const maxRounds = 150
+  // Keep runaway tool loops bounded. A normal tool workflow usually completes
+  // within a handful of rounds; 32 still leaves room for complex agent runs.
+  const maxRounds = 32
   let omitReasoningEffort = false
   let forceReasoningContent = false
   let imagesFallbackToText = false
@@ -11006,6 +11200,7 @@ async function runChatRounds({
         result = await streamChatCompletion({
           baseUrl,
           apiKey,
+          apiMode,
           body: attemptBody,
           signal,
           onDelta,
@@ -11064,6 +11259,7 @@ async function runChatRounds({
       throw new Error('请求失败：已达到重试次数上限')
     }
     throwIfAborted(abortState)
+    recordModelUsage(result?.usage, { model, endpoint: result?.endpoint || apiMode || 'auto' })
 
     if (result?.content && !assistantDisplay.content && !typewriterStates.has(assistantDisplay.id)) {
       prepareAssistantDisplayForTextResponse(assistantDisplay)
@@ -11097,17 +11293,8 @@ async function runChatRounds({
     }
     maybeScheduleScrollToBottomForRun(abortState)
 
-    const toolCalls = Array.isArray(result.toolCalls) ? result.toolCalls : []
-    const normalizedToolCalls = toolCalls.map((tc) => {
-      const id = typeof tc.id === 'string' && tc.id ? tc.id : `call_${newId()}`
-      return {
-        id,
-        type: tc.type || 'function',
-        function: {
-          name: tc.function?.name || '',
-          arguments: tc.function?.arguments || ''
-        }
-      }
+    const normalizedToolCalls = normalizeAssistantToolCalls(result?.toolCalls, {
+      createFallbackId: () => `call_${newId()}`
     })
 
     targetSession.apiMessages.push({
@@ -11152,11 +11339,7 @@ async function runChatRounds({
       const toolCall = normalizedToolCalls[index]
       const exec = toolExecResults[index]
       throwIfAborted(abortState)
-      targetSession.apiMessages.push({
-        role: 'tool',
-        tool_call_id: toolCall.id,
-        content: String(exec?.content || '')
-      })
+      targetSession.apiMessages.push(createToolResultApiMessage(toolCall, exec?.content))
       const latestUserPrompt = getLatestRealUserPromptText(targetSession.apiMessages)
       const shouldAttachToolImages =
         String(exec?.toolName || '').trim() === 'notes_read' ||
@@ -11206,7 +11389,7 @@ async function runUtoolsAiChatRound({ model, setCurrentAssistantDisplay, setAbor
 
   const targetSession = getRunSessionTarget(abortState)
   throwIfAborted(abortState)
-  const bundle = await buildToolsBundleV2({ abortState })
+  const bundle = await buildToolsBundle({ abortState })
   const tools = Array.isArray(bundle?.tools) ? bundle.tools : []
   const toolMap = bundle?.map instanceof Map ? bundle.map : new Map()
   const assistantSegments = []
@@ -12730,6 +12913,7 @@ const CHAT_REQUEST_TIMEOUT_MS = 36000000
 
 async function runChatSession({
   providerKind = 'openai-compatible',
+  apiMode = 'auto',
   requestMode = 'chat',
   imageGenerationPlaceholderMode = 'text',
   videoGenerationPlaceholderMode = 'text',
@@ -12846,6 +13030,7 @@ async function runChatSession({
           await runChatRounds({
             baseUrl,
             apiKey,
+            apiMode,
             model,
             signal: requestHandle.signal,
             assistantPlaceholderMode: imageGenerationPlaceholderMode,
@@ -12882,6 +13067,7 @@ async function runChatSession({
           await runChatRounds({
             baseUrl,
             apiKey,
+            apiMode,
             model,
             signal: requestHandle.signal,
             assistantPlaceholderMode: videoGenerationPlaceholderMode,
@@ -12897,6 +13083,7 @@ async function runChatSession({
         await runChatRounds({
           baseUrl,
           apiKey,
+          apiMode,
           model,
           signal: requestHandle.signal,
           supportsVision,
@@ -13322,13 +13509,6 @@ async function refreshActiveMcpTools() {
   } finally {
     refreshingMcpTools.value = false
   }
-}
-
-function cycleThinkingEffort() {
-  const order = ['auto', 'low', 'medium', 'high']
-  const current = String(thinkingEffort.value || 'auto')
-  const idx = order.indexOf(current)
-  thinkingEffort.value = order[(idx + 1 + order.length) % order.length]
 }
 
 function normalizeImageGenerationMode(value) {
@@ -14136,7 +14316,7 @@ function getHistoryContextCharBudget(options = {}) {
 async function getCurrentTurnAttachmentCharBudget(providerKind = 'openai-compatible', options = {}) {
   let tools = []
   try {
-    const bundle = await buildToolsBundleV2({ sessionTarget: options?.sessionTarget || null })
+    const bundle = await buildToolsBundle({ sessionTarget: options?.sessionTarget || null })
     tools = Array.isArray(bundle?.tools) ? bundle.tools : []
   } catch {
     tools = []
@@ -15726,101 +15906,51 @@ function buildProviderToolDescription(server, tool, definition) {
   return `${base} (the original inputSchema top level is not an object; call it with {"input": ...})`
 }
 
-async function buildToolsBundle(options = {}) {
-  const abortState = options.abortState || null
-  const targetSession = options.sessionTarget || getRunSessionTarget(abortState)
-  const functionMap = new Map()
-  const tools = []
-
-  // 内置工具：按需启用 agent 预设技能，并自动挂载对应 MCP
-  const agentSet = agentSkillIdSet.value
-  const hasAgentSkillsSelected = selectedSkillObjects.value.some((s) => {
-    const id = s?._id
-    return !!id && agentSet.has(id)
-  })
-  if (hasAgentSkillsSelected) {
-    functionMap.set('use_skill', { type: 'internal', internal: 'use_skill', serverName: 'Skill', toolName: 'use_skill' })
-    tools.push({
-      type: 'function',
-      function: {
-        name: 'use_skill',
-        description:
-          'Enable one of the already-selected skills. Prefer the skill id shown in the system prompt. After enabling, the full skill content will be injected into the system prompt.',
-        parameters: {
-          type: 'object',
-          properties: {
-            id: { type: 'string', description: '技能 _id，强烈推荐，来自技能块中的 id' },
-            name: { type: 'string', description: '技能名称，兜底字段，不区分大小写，可能重名' },
-            skill_id: { type: 'string', description: 'Alias of id for compatibility' },
-            skill_name: { type: 'string', description: 'Alias of name for compatibility' }
-          },
-          additionalProperties: false
-        }
-      }
-    })
-  }
-
-  const servers = activeMcpServers.value.filter((s) => !s.disabled)
-
-  for (const server of servers) {
-    let client = null
-    let pooled = false
-    try {
-      ;({ client, pooled } = getOrCreateMCPClient(server))
-      if (!client?.listTools) {
-        throw new Error('MCP 客户端不可用（createMCPClient 未注入）')
-      }
-
-      const listTimeoutMs = Number(server?.timeout) || 10000
-      const list = await withTimeout(client.listTools(), listTimeoutMs, `获取 MCP 工具列表：${server.name || server._id}`)
-      releaseMCPClient(server, client)
-      client = null
-
-      const allow = Array.isArray(server.allowTools) ? server.allowTools : []
-      const enabledNames = allow.length ? new Set(allow) : null
-
-      ;(list || [])
-        .filter((t) => (enabledNames ? enabledNames.has(t.name) : true))
-        .forEach((t) => {
-          const fnName = makeToolFunctionName(server._id, t.name)
-          const toolDef = buildProviderToolDefinition(t.inputSchema)
-          functionMap.set(fnName, {
-            serverId: server._id,
-            toolName: t.name,
-            serverName: server.name || server._id,
-            unwrapArgs: toolDef.unwrapArgs
-          })
-
-          tools.push({
-            type: 'function',
-            function: {
-              name: fnName,
-              description: buildProviderToolDescription(server, t, toolDef),
-              parameters: toolDef.parameters
-            }
-          })
-        })
-    } catch (err) {
-      try {
-        if (pooled && server?._id) closePooledMCPClient(server._id)
-        else client?.close?.()
-      } catch {
-        // ignore
-      }
-      targetSession.messages.push(
-        createDisplayMessage(
-          'tool',
-          `### MCP 工具加载失败\n- 服务：**${server.name || server._id}**\n- 错误：${err.message || String(err)}`,
-          { toolMeta: `${server.name || server._id} / MCP` }
-        )
-      )
+function getMcpToolApprovalPolicy(server, tool) {
+  const transportType = String(server?.transportType || '').trim()
+  if (transportType === 'builtinShell') {
+    return {
+      forceApproval: true,
+      approvalKind: 'shell'
     }
   }
 
-  return { tools, map: functionMap }
+  const annotations =
+    tool?.annotations && typeof tool.annotations === 'object' && !Array.isArray(tool.annotations)
+      ? tool.annotations
+      : {}
+  if (annotations.destructiveHint === true || annotations.readOnlyHint === false) {
+    return {
+      forceApproval: true,
+      approvalKind: 'tool'
+    }
+  }
+
+  const toolName = String(tool?.name || '').trim()
+  if (transportType === 'builtinConfig') {
+    const readOnly =
+      toolName === 'config_get_system_time' ||
+      toolName.startsWith('config_list_')
+    return {
+      forceApproval: !readOnly,
+      approvalKind: 'tool'
+    }
+  }
+  if (transportType === 'builtinNotes') {
+    const readOnly = /^(notes_(list|read|search|get|stat|recent))/.test(toolName)
+    return {
+      forceApproval: !readOnly,
+      approvalKind: 'tool'
+    }
+  }
+
+  return {
+    forceApproval: false,
+    approvalKind: 'tool'
+  }
 }
 
-async function buildToolsBundleV2(options = {}) {
+async function buildToolsBundle(options = {}) {
   const abortState = options.abortState || null
   const targetSession = options.sessionTarget || getRunSessionTarget(abortState)
   const functionMap = new Map()
@@ -15920,7 +16050,8 @@ async function buildToolsBundleV2(options = {}) {
         type: 'internal',
         internal: 'run_skill_script',
         serverName: 'Skill',
-        toolName: 'run_skill_script'
+        toolName: 'run_skill_script',
+        approvalKind: 'execution'
       })
 
       tools.push({
@@ -16050,10 +16181,16 @@ async function buildToolsBundleV2(options = {}) {
       if (!t?.name) continue
       const fnName = makeToolFunctionName(server._id, t.name)
       const toolDef = buildProviderToolDefinition(t.inputSchema)
+      const approvalPolicy = getMcpToolApprovalPolicy(server, t)
       functionMap.set(fnName, {
+        type: 'mcp',
         serverId: server._id,
         toolName: t.name,
         serverName: server.name || server._id,
+        transportType: server.transportType,
+        forceApproval: approvalPolicy.forceApproval,
+        approvalKind: approvalPolicy.approvalKind,
+        annotations: t.annotations || null,
         unwrapArgs: toolDef.unwrapArgs
       })
 
@@ -16128,6 +16265,7 @@ async function streamResponsesCompletion({ baseUrl, apiKey, body, signal, onDelt
     const state = createResponsesStreamAccumulator()
     applyResponsesStreamEvent(state, parsedResponse.value)
     const result = finalizeResponsesStreamAccumulator(state)
+    result.endpoint = 'responses'
     result.payloads = [parsedResponse.value]
     if (!String(result.content || '').trim()) {
       result.content = extractAssistantTextFromPayload(parsedResponse.value)
@@ -16151,6 +16289,7 @@ async function streamResponsesCompletion({ baseUrl, apiKey, body, signal, onDelt
   })
 
   const result = finalizeResponsesStreamAccumulator(state)
+  result.endpoint = 'responses'
   if (!String(result.content || '').trim() && result.payloads.length) {
     result.content = extractAssistantTextFromPayloads(result.payloads)
   }
@@ -16167,7 +16306,7 @@ async function streamResponsesCompletionWithFallback(args) {
   }
 }
 
-async function streamChatCompletion({ baseUrl, apiKey, body, signal, onDelta, abortState = null }) {
+async function streamChatCompletion({ baseUrl, apiKey, apiMode = 'auto', body, signal, onDelta, abortState = null }) {
   const base = normalizeBaseUrl(baseUrl)
   const candidates = [`${base}/chat/completions`]
   if (!/\/v1$/.test(base)) candidates.push(`${base}/v1/chat/completions`)
@@ -16175,12 +16314,19 @@ async function streamChatCompletion({ baseUrl, apiKey, body, signal, onDelta, ab
     if (abortState?.aborted || signal?.aborted) throw createAbortError()
   }
 
-  if (shouldPreferResponsesApiForModel(body?.model)) {
+  const configuredApiMode = normalizeProviderApiMode(apiMode)
+  const automaticApiFallback = allowsAutomaticApiFallback(configuredApiMode)
+  const initialApiMode = resolveChatApiMode({
+    configuredMode: configuredApiMode,
+    preferResponses: shouldPreferResponsesApiForModel(body?.model)
+  })
+
+  if (initialApiMode === 'responses') {
     try {
       return await streamResponsesCompletionWithFallback({ baseUrl, apiKey, body, signal, onDelta, abortState })
     } catch (err) {
       if (isAbortError(err) || abortState?.aborted || signal?.aborted) throw createAbortError()
-      if (!shouldFallbackResponsesToChatCompletions(err?.message || err)) throw err
+      if (!automaticApiFallback || !shouldFallbackResponsesToChatCompletions(err?.message || err)) throw err
     }
   }
 
@@ -16221,7 +16367,7 @@ async function streamChatCompletion({ baseUrl, apiKey, body, signal, onDelta, ab
     const errJson = parsedResponse.ok ? parsedResponse.value : null
     const detail = errJson?.error?.message || (parsedResponse.ok ? stableStringify(errJson) : responseText)
     const errorText = `请求失败（HTTP ${resp.status}）：${detail || resp.statusText}\nURL：${usedUrl}`
-    if (shouldFallbackChatCompletionsToResponses(errorText)) {
+    if (automaticApiFallback && shouldFallbackChatCompletionsToResponses(errorText)) {
       return await streamResponsesCompletionWithFallback({ baseUrl, apiKey, body, signal, onDelta, abortState })
     }
     throw new Error(errorText)
@@ -16242,6 +16388,7 @@ async function streamChatCompletion({ baseUrl, apiKey, body, signal, onDelta, ab
   let content = ''
   let reasoning = ''
   let finishReason = null
+  let usage = null
   const toolCallsByIndex = new Map()
   const payloadSnapshots = []
 
@@ -16250,6 +16397,8 @@ async function streamChatCompletion({ baseUrl, apiKey, body, signal, onDelta, ab
     reasoning,
     toolCalls: Array.from(toolCallsByIndex.values()),
     finishReason: finishReason || 'stop',
+    usage,
+    endpoint: 'chat-completions',
     payloads: payloadSnapshots.slice()
   })
 
@@ -16257,6 +16406,8 @@ async function streamChatCompletion({ baseUrl, apiKey, body, signal, onDelta, ab
     throwIfStreamingAborted()
     if (!json || typeof json !== 'object') return
     payloadSnapshots.push(json)
+    const responseUsage = json?.usage || json?.response?.usage
+    if (responseUsage && typeof responseUsage === 'object') usage = responseUsage
 
     if (json?.error) {
       const errText = json?.error?.message || stableStringify(json.error)
@@ -16311,12 +16462,14 @@ async function streamChatCompletion({ baseUrl, apiKey, body, signal, onDelta, ab
       if (deltaText) onDelta?.({ type: 'reasoning', delta: deltaText, reasoning })
     }
 
+    const legacyFunctionCall = delta.function_call || msg.function_call
     const deltaToolCalls = delta.tool_calls
     if (Array.isArray(deltaToolCalls)) {
       deltaToolCalls.forEach((tc) => {
         const index = tc.index ?? 0
         const prev = toolCallsByIndex.get(index) || { id: '', type: 'function', function: { name: '', arguments: '' } }
         if (tc.id) prev.id = tc.id
+        if (tc.call_id || tc.callId) prev.call_id = tc.call_id || tc.callId
         if (tc.type) prev.type = tc.type
         if (tc.function?.name) prev.function.name = tc.function.name
         if (tc.function?.arguments) prev.function.arguments += tc.function.arguments
@@ -16330,6 +16483,7 @@ async function streamChatCompletion({ baseUrl, apiKey, body, signal, onDelta, ab
         toolCallsByIndex.set(index, {
           id: tc.id || '',
           type: tc.type || 'function',
+          ...((tc.call_id || tc.callId) ? { call_id: tc.call_id || tc.callId } : {}),
           function: {
             name: tc.function?.name || '',
             arguments: tc.function?.arguments || ''
@@ -16337,6 +16491,22 @@ async function streamChatCompletion({ baseUrl, apiKey, body, signal, onDelta, ab
         })
       })
       if (toolCallsByIndex.size) onDelta?.({ type: 'tool_calls', toolCalls: Array.from(toolCallsByIndex.values()) })
+    } else if (legacyFunctionCall && typeof legacyFunctionCall === 'object') {
+      const prev = toolCallsByIndex.get(0) || {
+        id: `call_legacy_${Date.now().toString(16)}`,
+        type: 'function',
+        function: { name: '', arguments: '' }
+      }
+      if (legacyFunctionCall.name) prev.function.name = legacyFunctionCall.name
+      if (legacyFunctionCall.arguments) {
+        if (msg.function_call === legacyFunctionCall) {
+          prev.function.arguments = legacyFunctionCall.arguments
+        } else {
+          prev.function.arguments += legacyFunctionCall.arguments
+        }
+      }
+      toolCallsByIndex.set(0, prev)
+      onDelta?.({ type: 'tool_calls', toolCalls: Array.from(toolCallsByIndex.values()) })
     }
   }
 
@@ -16389,57 +16559,112 @@ async function confirmToolCall({
   reasoningText,
   abortState = null,
   titleText = '确认工具调用',
-  extraLines = []
+  extraLines = [],
+  sessionId = '',
+  sessionTitle = '',
+  approvalKind = 'tool',
+  rememberText = '本会话允许此工具',
+  onRememberForSession = null
 }) {
   throwIfAborted(abortState)
+  const normalizedKind =
+    approvalKind === 'shell'
+      ? 'shell'
+      : approvalKind === 'execution'
+        ? 'execution'
+        : 'tool'
+  const normalizedArgsText = String(argsText || '{}').trim() || '{}'
+  const normalizedArgs = normalizeToolApprovalArgs(null, normalizedArgsText)
+  const shellCommand = normalizeShellApprovalCommand(normalizedArgs, normalizedArgsText)
+
   return await new Promise((resolve) => {
     let settled = false
     let unregisterAbort = null
-    const finish = (value) => {
+    const requestId = `tool_approval_${newId()}`
+    const finish = (value, rememberForSession = false) => {
       if (settled) return
       settled = true
+      pendingToolApprovals.value = pendingToolApprovals.value.filter((item) => item.id !== requestId)
       try {
         unregisterAbort?.()
       } catch {
         // ignore
       }
+      if (rememberForSession && typeof onRememberForSession === 'function') {
+        try {
+          onRememberForSession()
+        } catch {
+          // Approval remains valid for this call even if the in-memory remember callback fails.
+        }
+      }
       resolve(value)
     }
-    const dialogReactive = dialog.warning({
-      title: titleText,
-      maskClosable: false,
-      closable: false,
-      content: () =>
-        h('div', { style: { maxWidth: '900px' } }, [
-          h('div', { style: { marginBottom: '8px' } }, [
-            h('div', null, `服务：${serverName}`),
-            h('div', null, `工具：${toolName}`),
-            ...(Array.isArray(extraLines) ? extraLines.map((line) => h('div', null, String(line || '').trim())) : [])
-          ]),
-          reasoningText
-            ? h('div', { style: { marginBottom: '8px' } }, [
-                h('div', { style: { fontWeight: '600' } }, '思考（模型提供）：'),
-                h('pre', { style: { margin: 0, whiteSpace: 'pre-wrap' } }, reasoningText)
-              ])
-            : null,
-          h('div', { style: { fontWeight: '600' } }, '参数：'),
-          h('pre', { style: { margin: 0, whiteSpace: 'pre-wrap' } }, argsText)
-        ]),
-      positiveText: '同意',
-      negativeText: '拒绝',
-      onPositiveClick: () => finish(true),
-      onNegativeClick: () => finish(false),
-      onClose: () => finish(false)
-    })
-    unregisterAbort = abortState?.onAbort?.(() => {
+
+    pendingToolApprovals.value = [
+      ...pendingToolApprovals.value,
+      {
+        id: requestId,
+        serverName: String(serverName || '未知').trim() || '未知',
+        toolName: String(toolName || 'unknown').trim() || 'unknown',
+        argsText: normalizedArgsText,
+        reasoningText: String(reasoningText || '').trim(),
+        titleText: String(titleText || '确认工具调用').trim() || '确认工具调用',
+        extraLines: Array.isArray(extraLines)
+          ? extraLines.map((line) => String(line || '').trim()).filter(Boolean)
+          : [],
+        sessionId: String(sessionId || '').trim(),
+        sessionTitle: String(sessionTitle || '').trim(),
+        approvalKind: normalizedKind,
+        commandText: normalizedKind === 'shell' ? shellCommand.command : '',
+        cwdText: normalizedKind === 'shell' ? shellCommand.cwd : '',
+        canRemember: typeof onRememberForSession === 'function',
+        rememberText: String(rememberText || '').trim() || '本会话允许此工具',
+        scopeHint:
+          normalizedKind === 'shell'
+            ? '会话内允许只匹配当前 cwd 和完全相同的命令；其他 Bash 命令仍会再次询问。'
+            : normalizedKind === 'execution'
+              ? '会话内允许只匹配当前技能、脚本和完全相同的参数；其他代码执行仍会再次询问。'
+              : '会话内允许只对当前会话中的此工具生效。',
+        settle(decision) {
+          if (decision === 'session') {
+            finish(true, true)
+            return
+          }
+          if (decision === 'once') {
+            finish(true, false)
+            return
+          }
+          if (decision === 'deny') {
+            finish(false, false)
+            return
+          }
+          finish(null, false)
+        }
+      }
+    ]
+
+    const abortCleanup = abortState?.onAbort?.(() => {
+      finish(null)
+    }) || null
+    if (settled) {
       try {
-        dialogReactive?.destroy?.()
+        abortCleanup?.()
       } catch {
         // ignore
       }
-      finish(null)
-    }) || null
+    } else {
+      unregisterAbort = abortCleanup
+    }
   })
+}
+
+function resolveActiveToolApproval(decision) {
+  activeToolApproval.value?.settle?.(decision)
+}
+
+function cancelPendingToolApprovals() {
+  const pending = [...pendingToolApprovals.value]
+  pending.forEach((request) => request?.settle?.('abort'))
 }
 
 function resolveSelectedSkillTarget({ idCandidate = '', nameCandidate = '' } = {}) {
@@ -16791,12 +17016,95 @@ function normalizeToolCallExecutionContext(toolCall, toolMap) {
   }
 }
 
+function resolveToolApprovalTarget(context = {}) {
+  const mapping = context.mapping || {}
+  let serverId = String(mapping.serverId || '').trim()
+  let serverName = String(mapping.serverName || context.serverName || '').trim() || '未知'
+  let toolName = String(mapping.toolName || context.toolName || '').trim() || 'unknown'
+  let argsObj = context.argsObj && typeof context.argsObj === 'object' ? context.argsObj : {}
+  let argsText = String(context.argsText || '{}').trim() || '{}'
+  let server = serverId ? activeMcpServers.value.find((item) => String(item?._id || '') === serverId) : null
+
+  if (mapping?.type === 'internal' && mapping.internal === 'mcp_call') {
+    const wrapperArgs = argsObj
+    const serverIdCandidate = String(wrapperArgs?.server_id ?? wrapperArgs?.serverId ?? wrapperArgs?.id ?? '').trim()
+    const serverNameCandidate = String(wrapperArgs?.server_name ?? wrapperArgs?.serverName ?? wrapperArgs?.server ?? '').trim()
+    server = resolveActiveMcpServer({ idCandidate: serverIdCandidate, nameCandidate: serverNameCandidate })
+    serverId = String(server?._id || serverIdCandidate).trim()
+    serverName = String(server?.name || server?._id || serverNameCandidate || serverName).trim() || '未知'
+    toolName = String(wrapperArgs?.tool || toolName).trim() || 'unknown'
+    if (Object.prototype.hasOwnProperty.call(wrapperArgs, 'args')) {
+      argsObj = wrapperArgs.args
+    } else if (Object.prototype.hasOwnProperty.call(wrapperArgs, 'arguments')) {
+      argsObj = wrapperArgs.arguments
+    } else {
+      argsObj = {}
+    }
+    argsText = stableStringify(argsObj)
+  } else if (typeof mapping?.unwrapArgs === 'function') {
+    try {
+      argsObj = mapping.unwrapArgs(argsObj)
+      argsText = stableStringify(argsObj)
+    } catch {
+      // Keep the original model arguments for approval display if unwrapping fails.
+    }
+  }
+
+  let resolvedTool = null
+  if (server && toolName) {
+    const cachedTools = mcpListToolsCache.get(getMcpToolsCacheKey(server))?.tools
+    if (Array.isArray(cachedTools)) {
+      resolvedTool = cachedTools.find((tool) => String(tool?.name || '').trim() === toolName) || null
+    }
+  }
+  const resolvedPolicy = getMcpToolApprovalPolicy(server, resolvedTool)
+  const configuredApprovalKind = String(mapping.approvalKind || resolvedPolicy.approvalKind || '').trim()
+  const isShell =
+    configuredApprovalKind === 'shell' ||
+    String(mapping.transportType || server?.transportType || '').trim() === 'builtinShell'
+  const approvalKind =
+    isShell
+      ? 'shell'
+      : configuredApprovalKind === 'execution'
+        ? 'execution'
+        : 'tool'
+  const forceApproval =
+    isShell ||
+    configuredApprovalKind === 'execution' ||
+    mapping.forceApproval === true ||
+    resolvedPolicy.forceApproval === true
+
+  return {
+    server,
+    serverId,
+    serverName,
+    toolName,
+    argsObj,
+    argsText: String(argsText || '{}').trim() || '{}',
+    approvalKind,
+    forceApproval
+  }
+}
+
 async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, abortState = null) {
   const targetSession = getRunSessionTarget(abortState)
   const targetRecord = getRunRecord(abortState) || getActiveMemorySession()
   throwIfAborted(abortState)
   const context = normalizeToolCallExecutionContext(toolCall, toolMap)
-  const autoApproved = shouldAutoApproveToolExecution(abortState)
+  const approvalTarget = resolveToolApprovalTarget(context)
+  const requiresExplicitApproval = approvalTarget.forceApproval === true
+  const approvalKey = buildSessionToolApprovalKey({
+    sessionId: String(targetRecord?.id || 'chat'),
+    serverId: approvalTarget.serverId,
+    serverName: approvalTarget.serverName,
+    toolName: approvalTarget.toolName,
+    approvalKind: approvalTarget.approvalKind,
+    args: approvalTarget.argsObj,
+    argsText: approvalTarget.argsText
+  })
+  const autoApproved =
+    sessionApprovedToolKeys.has(approvalKey) ||
+    (!requiresExplicitApproval && shouldAutoApproveToolExecution(abortState))
 
   const pendingToolMessage = createPendingToolExecutionMessage({
     serverName: context.serverName,
@@ -16828,11 +17136,21 @@ async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, ab
 
   if (!autoApproved) {
     const ok = await confirmToolCall({
-      serverName: context.serverName,
-      toolName: context.toolName,
-      argsText: context.argsText,
+      serverName: approvalTarget.serverName,
+      toolName: approvalTarget.toolName,
+      argsText: approvalTarget.argsText,
       reasoningText: lastReasoningText,
-      abortState
+      abortState,
+      sessionId: String(targetRecord?.id || 'chat'),
+      sessionTitle: resolveMemorySessionTitle(targetRecord),
+      approvalKind: approvalTarget.approvalKind,
+      rememberText:
+        approvalTarget.approvalKind === 'shell'
+          ? '本会话允许相同命令'
+          : approvalTarget.approvalKind === 'execution'
+            ? '本会话允许相同脚本调用'
+            : '本会话允许此工具',
+      onRememberForSession: () => sessionApprovedToolKeys.add(approvalKey)
     })
     if (ok === null) throw createAbortError()
     throwIfAborted(abortState)
@@ -18267,6 +18585,183 @@ watch(
   max-height: 100%;
   position: relative;
   overflow: visible;
+}
+
+.tool-approval-card {
+  width: calc(100% - 24px);
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  margin: 10px 12px 0;
+  padding: 13px 14px;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  border-radius: 15px;
+  background:
+    linear-gradient(135deg, rgba(255, 251, 235, 0.98), rgba(255, 255, 255, 0.98));
+  box-shadow: 0 10px 28px rgba(120, 53, 15, 0.1);
+}
+
+.chat-page.dark .tool-approval-card {
+  border-color: rgba(251, 191, 36, 0.34);
+  background:
+    linear-gradient(135deg, rgba(69, 26, 3, 0.88), rgba(15, 23, 42, 0.97));
+  box-shadow: 0 12px 30px rgba(2, 6, 23, 0.34);
+}
+
+.tool-approval-card__header,
+.tool-approval-card__footer,
+.tool-approval-card__command-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tool-approval-card__title-wrap {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.tool-approval-card__icon {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 11px;
+  color: rgb(180, 83, 9);
+  background: rgba(245, 158, 11, 0.16);
+}
+
+.chat-page.dark .tool-approval-card__icon {
+  color: rgb(253, 224, 71);
+  background: rgba(245, 158, 11, 0.18);
+}
+
+.tool-approval-card__title-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tool-approval-card__title-copy strong {
+  font-size: 14px;
+}
+
+.tool-approval-card__title-copy span,
+.tool-approval-card__meta,
+.tool-approval-card__scope {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.tool-approval-card__title-copy span {
+  opacity: 0.72;
+  overflow-wrap: anywhere;
+}
+
+.tool-approval-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 9px 0;
+  opacity: 0.74;
+}
+
+.tool-approval-card__command,
+.tool-approval-card__details {
+  border: 1px solid rgba(120, 53, 15, 0.14);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.chat-page.dark .tool-approval-card__command,
+.chat-page.dark .tool-approval-card__details {
+  border-color: rgba(251, 191, 36, 0.18);
+  background: rgba(2, 6, 23, 0.34);
+}
+
+.tool-approval-card__command-label {
+  padding: 8px 10px 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.tool-approval-card__command-label code {
+  max-width: 60%;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.72;
+}
+
+.tool-approval-card pre {
+  max-height: 140px;
+  margin: 0;
+  padding: 9px 10px;
+  overflow: auto;
+  font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tool-approval-card__details {
+  margin-top: 8px;
+}
+
+.tool-approval-card__details summary {
+  padding: 8px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  user-select: none;
+}
+
+.tool-approval-card__reasoning {
+  max-height: 100px;
+  padding: 0 10px 8px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  opacity: 0.8;
+}
+
+.tool-approval-card__footer {
+  align-items: flex-end;
+  margin-top: 10px;
+}
+
+.tool-approval-card__scope {
+  max-width: 56%;
+}
+
+.tool-approval-enter-active,
+.tool-approval-leave-active {
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.tool-approval-enter-from,
+.tool-approval-leave-to {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+@media (max-width: 720px) {
+  .tool-approval-card__header,
+  .tool-approval-card__footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .tool-approval-card__scope {
+    max-width: none;
+  }
 }
 
 .chat-messages {
