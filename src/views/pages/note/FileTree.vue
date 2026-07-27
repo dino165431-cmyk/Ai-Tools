@@ -40,6 +40,7 @@
       placeholder="搜索笔记和文件夹"
       @contextmenu.stop
     />
+    <n-text depth="3" class="note-tree__meta">{{ treeCountSummary }}</n-text>
 
     <n-alert v-if="runtimeIssue" type="warning" style="margin-bottom: 8px;">
       {{ runtimeIssue }}
@@ -160,6 +161,7 @@ import {
   NIcon,
   NTree,
   NDropdown,
+  NText,
   useMessage,
   useDialog,
   NInput,
@@ -233,6 +235,37 @@ const refreshing = ref(false);
 const runtimeIssue = ref('');
 const searchQuery = ref('');
 const noteSecurity = computed(() => normalizeNoteSecurityConfig(noteConfig.value?.noteSecurity));
+const treeStats = computed(() => {
+  let folderCount = 0;
+  let markdownCount = 0;
+  let notebookCount = 0;
+
+  const visit = (nodes) => {
+    (Array.isArray(nodes) ? nodes : []).forEach((node) => {
+      if (!node) return;
+      if (node.isLeaf) {
+        if (getNodeNoteType(node) === 'notebook') notebookCount += 1;
+        else markdownCount += 1;
+        return;
+      }
+      folderCount += 1;
+      visit(node.children);
+    });
+  };
+
+  visit(treeData.value);
+  return {
+    folderCount,
+    markdownCount,
+    notebookCount,
+    noteCount: markdownCount + notebookCount
+  };
+});
+const treeCountSummary = computed(() => {
+  const stats = treeStats.value;
+  const base = `文件夹 ${stats.folderCount} · 笔记 ${stats.noteCount}（Markdown ${stats.markdownCount} / Notebook ${stats.notebookCount}）`;
+  return searchQuery.value ? `${base} · 搜索覆盖完整目录` : base;
+});
 let pendingRefreshRequested = false;
 let pendingRefreshSilent = true;
 let refreshPromise = null;
@@ -398,6 +431,28 @@ function sortNoteTreeChildren(children = []) {
   });
 }
 
+function replaceLoadedPathsUnderBase(basePath, nextLoadedPaths) {
+  const normalizedBase = normalizeNoteTreePath(basePath);
+  if (!normalizedBase) return;
+  for (const existing of [...loadedPaths]) {
+    if (existing === normalizedBase || String(existing || '').startsWith(`${normalizedBase}/`)) {
+      loadedPaths.delete(existing);
+    }
+  }
+  for (const item of nextLoadedPaths || []) {
+    const normalized = normalizeNoteTreePath(item);
+    if (normalized) loadedPaths.add(normalized);
+  }
+}
+
+function pruneTreeStateToExistingNodes() {
+  const allowRoot = (key) => key === 'note' || treeNodeIndex.has(key);
+  expandedKeys.value = expandedKeys.value.filter(allowRoot);
+  folderExpandedKeys.value = folderExpandedKeys.value.filter(allowRoot);
+  selectedKeys.value = selectedKeys.value.filter(allowRoot);
+  selectedFolderKeys.value = selectedFolderKeys.value.filter(allowRoot);
+}
+
 function pruneNestedPaths(paths, options = {}) {
   const normalized = Array.from(new Set((Array.isArray(paths) ? paths : [])
     .map((item) => normalizeNoteTreePath(item))
@@ -517,10 +572,16 @@ async function buildExternalTreeNode(entryPath) {
   if (isDirectory) {
     const dirName = String(fileName || '').trim();
     if (dirName === 'assets' || dirName.endsWith('.assets')) return null;
-  } else if (!isSupportedNotePath(fileName)) {
-    return null;
+    const loadedPathCollector = new Set();
+    const children = await scanDirectoryChildren(normalized, loadedPathCollector);
+    return {
+      ...createNoteTreeNode(normalized, true),
+      children,
+      loadedPathCollector
+    };
   }
-  return createNoteTreeNode(normalized, isDirectory);
+  if (!isSupportedNotePath(fileName)) return null;
+  return createNoteTreeNode(normalized, false);
 }
 
 async function applyExternalAddedPath(entryPath) {
@@ -532,8 +593,8 @@ async function applyExternalAddedPath(entryPath) {
   if (!node) return false;
   const inserted = upsertTreeNode(parentPath, node);
   if (!inserted) return false;
-  if (!node.isLeaf && (expandedKeys.value.includes(normalized) || folderExpandedKeys.value.includes(normalized))) {
-    await loadDirectory(normalized, inserted);
+  if (node.loadedPathCollector instanceof Set) {
+    replaceLoadedPathsUnderBase(normalized, node.loadedPathCollector);
   }
   return true;
 }
@@ -598,8 +659,6 @@ async function refreshTreeBranch(targetPath, force = false) {
 
   const node = findNodeByKey(normalized);
   if (!node) return false;
-  if (!force && !loadedPaths.has(normalized)) return false;
-
   await loadDirectory(normalized, node);
   return true;
 }
@@ -626,20 +685,9 @@ async function refreshTree(options = {}) {
       loadedPaths.clear();
       runtimeIssue.value = '';
       await loadDirectory('note', null);
-
-      const allExpanded = Array.from(new Set([...keepExpanded, ...keepFolderExpanded]));
-      const sortedExpanded = allExpanded
-        .filter((k) => typeof k === 'string' && k)
-        .sort((a, b) => a.split('/').length - b.split('/').length);
-      runtimeIssue.value = '';
-
-      for (const key of sortedExpanded) {
-        if (loadedPaths.has(key)) continue;
-        const node = findNodeByKey(key);
-        if (node && node.children && node.children.length === 0) {
-          await loadDirectory(key, node);
-        }
-      }
+      expandedKeys.value = keepExpanded;
+      folderExpandedKeys.value = keepFolderExpanded;
+      pruneTreeStateToExistingNodes();
 
       if (!silent) {
         message.success('目录已刷新');
@@ -711,33 +759,8 @@ function findNodeByKey(key) {
 // 加载目录
 async function loadDirectory(relativePath, parentNode) {
   try {
-    const entries = await listDirectory(relativePath);
-    const scanned = await Promise.all(
-      entries.map(async (entry) => {
-        const statInfo = await stat(entry);
-        const isDirectory = statInfo.isDirectory();
-        const fileName = entry.split('/').pop();
-        if (isDirectory) {
-          const n = String(fileName || '').trim();
-          if (n === 'assets' || n.endsWith('.assets')) return null;
-        }
-        if (!isDirectory && !isSupportedNotePath(fileName)) return null;
-        const noteType = !isDirectory ? getNoteTypeByPath(entry) : null;
-        const label = isDirectory ? fileName : stripNoteExtension(fileName);
-        return {
-          key: entry,
-          label,
-          isLeaf: !isDirectory,
-          ...(noteType ? { noteType } : {}),
-          children: isDirectory ? [] : undefined
-        };
-      })
-    );
-    const children = scanned.filter(Boolean);
-    children.sort((a, b) => {
-      if (a.isLeaf === b.isLeaf) return a.label.localeCompare(b.label);
-      return a.isLeaf ? 1 : -1;
-    });
+    const nextLoadedPaths = new Set();
+    const children = await scanDirectoryChildren(relativePath, nextLoadedPaths);
 
     if (parentNode === null) {
       treeData.value = children;
@@ -745,12 +768,43 @@ async function loadDirectory(relativePath, parentNode) {
       parentNode.children = children;
     }
     rebuildTreeNodeIndex();
-    loadedPaths.add(relativePath);
+    replaceLoadedPathsUnderBase(relativePath, nextLoadedPaths);
+    pruneTreeStateToExistingNodes();
   } catch (err) {
     const errorText = describeFileOperationsError(err, '笔记目录');
     runtimeIssue.value = errorText;
     message.error('加载目录失败：' + errorText);
   }
+}
+
+async function scanDirectoryChildren(relativePath, loadedPathCollector = new Set()) {
+  loadedPathCollector.add(relativePath);
+  const entries = await listDirectory(relativePath);
+  const scanned = await Promise.all(
+    entries.map(async (entry) => {
+      const statInfo = await stat(entry);
+      const isDirectory = statInfo.isDirectory();
+      const fileName = entry.split('/').pop();
+      if (isDirectory) {
+        const n = String(fileName || '').trim();
+        if (n === 'assets' || n.endsWith('.assets')) return null;
+        return {
+          key: entry,
+          label: fileName,
+          isLeaf: false,
+          children: await scanDirectoryChildren(entry, loadedPathCollector)
+        };
+      }
+      if (!isSupportedNotePath(fileName)) return null;
+      return {
+        key: entry,
+        label: stripNoteExtension(fileName),
+        isLeaf: true,
+        noteType: getNoteTypeByPath(entry)
+      };
+    })
+  );
+  return sortNoteTreeChildren(scanned.filter(Boolean));
 }
 
 // 主树节点属性
@@ -2472,6 +2526,12 @@ defineExpose({
 .note-tree__search {
   flex: 0 0 auto;
   margin-bottom: 10px;
+}
+
+.note-tree__meta {
+  margin-bottom: 10px;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .note-tree__refresh {

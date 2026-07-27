@@ -7,145 +7,40 @@
           align="center"
           :class="['chat-page', theme, { 'is-compact': isCompactChatLayout, 'is-dense': isDenseChatLayout }]"
         >
-    <n-card hoverable class="chat-header-card">
-      <n-flex justify="space-between" align="center" wrap :size="12">
-        <n-flex align="center" :size="8">
-          <n-icon :component="ChatMultiple24Filled" size="20" :depth="1" />
-          <span style="font-weight: 500;">聊天</span>
-        </n-flex>
-
-        <n-flex align="center" wrap :size="8">
-          <n-tooltip trigger="hover">
-            <template #trigger>
-              <n-button size="small" tertiary circle @click="showModelModal = true">
-                <template #icon>
-                  <n-icon :component="FlowModelerReference" size="16" />
-                </template>
-              </n-button>
-            </template>
-            {{ modelTooltipText }}
-          </n-tooltip>
-
-          <n-tooltip trigger="hover">
-            <template #trigger>
-              <n-button size="small" tertiary circle @click="openSystemPromptModal">
-                <template #icon>
-                  <n-icon :component="PromptIcon" size="16" />
-                </template>
-              </n-button>
-            </template>
-            {{ systemTooltipText }}
-          </n-tooltip>
-
-          <n-tooltip trigger="hover">
-            <template #trigger>
-              <n-button size="small" tertiary circle :disabled="!session.messages.length" @click="openSaveSessionModal">
-                <template #icon>
-                  <n-icon :component="SaveOutline" size="16" />
-                </template>
-              </n-button>
-            </template>
-            保存会话
-          </n-tooltip>
-
-          <n-dropdown trigger="click" :options="memorySessionDropdownOptions" @select="handleMemorySessionSelect">
-            <n-tooltip trigger="hover">
-              <template #trigger>
-                <n-button size="small" tertiary title="新建会话">
-                  <template #icon>
-                    <n-icon :component="ChatMultiple24Filled" size="16" />
-                  </template>
-                  {{ runningMemorySessionCount || '新建' }}
-                </n-button>
-              </template>
-              新建会话；运行中的会话会显示在这里
-            </n-tooltip>
-          </n-dropdown>
-
-          <n-tooltip trigger="hover">
-            <template #trigger>
-              <n-button size="small" tertiary circle :disabled="!sessionMediaItemCount" @click="showMediaLibraryModal = true">
-                <template #icon>
-                  <n-icon :component="ImageOutline" size="16" />
-                </template>
-              </n-button>
-            </template>
-            媒体库（{{ sessionMediaItemCount }}）
-          </n-tooltip>
-        </n-flex>
-      </n-flex>
-
-      <n-flex align="center" wrap :size="6" style="margin-top: 10px;">
-        <n-tag v-if="selectedProvider" size="small" type="info" bordered>
-          服务商：{{ selectedProvider.name || selectedProvider._id }}
-        </n-tag>
-        <n-tag v-if="selectedModel" size="small" bordered>
-          模型：{{ selectedModel }}
-        </n-tag>
-        <n-tooltip v-if="selectedAgent" trigger="hover">
-          <template #trigger>
-            <n-tag size="small" type="success" bordered>
-              智能体：{{ selectedAgent.name || selectedAgent._id }}
-            </n-tag>
-          </template>
-          {{ selectedAgentHoverText }}
-        </n-tooltip>
-        <n-tag v-if="activePromptLabel" size="small" type="success" bordered>
-          提示词：{{ activePromptLabel }}
-        </n-tag>
-        <n-tooltip v-if="selectedSkillObjects.length" trigger="hover">
-          <template #trigger>
-            <n-tag size="small" type="warning" bordered>
-              技能：{{ selectedSkillObjects.length }}
-            </n-tag>
-          </template>
-          {{ selectedSkillsHoverText }}
-        </n-tooltip>
-        <n-tooltip v-if="activeMcpServers.length" trigger="hover">
-          <template #trigger>
-            <n-tag size="small" type="warning" bordered>
-              MCP：{{ activeMcpServers.length }}
-            </n-tag>
-          </template>
-          {{ activeMcpServersHoverText }}
-        </n-tooltip>
-        <n-tooltip v-if="activeMcpServers.length" trigger="hover">
-          <template #trigger>
-            <n-tag size="small" bordered>
-              工具：{{ mcpToolCountText }}
-            </n-tag>
-          </template>
-          {{ activeMcpToolsHoverText }}
-        </n-tooltip>
-        <n-tag v-if="activeMcpServers.length" size="small" bordered>
-          工具模式：{{ toolModeDisplayText }}
-        </n-tag>
-        <n-tooltip v-if="contextWindowSummaryTag" trigger="hover">
-          <template #trigger>
-            <n-tag
-              size="small"
-              bordered
-              :type="contextWindowSummaryTagType"
-            >
-              {{ contextWindowSummaryTag }}
-            </n-tag>
-          </template>
-          {{ contextWindowSummaryTooltipText }}
-        </n-tooltip>
-        <n-tag
-          v-if="activeSessionFilePath"
-          size="small"
-          type="primary"
-          bordered
-          closable
-          :title="activeSessionFilePath"
-          @close="closeActiveSession"
-        >
-          会话：{{ activeSessionTitle || getSessionTitleFromPath(activeSessionFilePath) }}
-        </n-tag>
-        <n-text v-if="effectiveHeaderHint" depth="3" style="font-size: 12px;">{{ effectiveHeaderHint }}</n-text>
-      </n-flex>
-    </n-card>
+    <ChatHeaderCard
+      :theme="theme"
+      :model-tooltip-text="modelTooltipText"
+      :system-tooltip-text="systemTooltipText"
+      :session-messages-length="session.messages.length"
+      :running-memory-session-count="runningMemorySessionCount"
+      :memory-session-dropdown-options="memorySessionDropdownOptions"
+      :session-media-item-count="sessionMediaItemCount"
+      :selected-provider="selectedProvider"
+      :selected-model="selectedModel"
+      :selected-agent="selectedAgent"
+      :selected-agent-hover-text="selectedAgentHoverText"
+      :active-prompt-label="activePromptLabel"
+      :selected-skill-count="selectedSkillObjects.length"
+      :selected-skills-hover-text="selectedSkillsHoverText"
+      :active-mcp-server-count="activeMcpServers.length"
+      :active-mcp-servers-hover-text="activeMcpServersHoverText"
+      :mcp-tool-count-text="mcpToolCountText"
+      :active-mcp-tools-hover-text="activeMcpToolsHoverText"
+      :tool-mode-display-text="toolModeDisplayText"
+      :context-window-summary-tag="contextWindowSummaryTag"
+      :context-window-summary-tag-type="contextWindowSummaryTagType"
+      :context-window-summary-tooltip-text="contextWindowSummaryTooltipText"
+      :active-session-file-path="activeSessionFilePath"
+      :active-session-display-title="activeSessionDisplayTitle"
+      :effective-header-hint="effectiveHeaderHint"
+      :chat-overview-items="chatOverviewItems"
+      @open-model-modal="showModelModal = true"
+      @open-system-prompt-modal="openSystemPromptModal"
+      @open-save-session-modal="openSaveSessionModal"
+      @select-memory-session="handleMemorySessionSelect"
+      @open-media-library="showMediaLibraryModal = true"
+      @close-active-session="closeActiveSession"
+    />
 
     <div class="chat-messages-shell">
       <n-card class="chat-messages" :bordered="false" content-style="padding: 0; height: 100%;">
@@ -606,99 +501,17 @@
       @send="send"
     />
 
-    <n-modal
+    <ChatMediaLibraryModal
       v-model:show="showMediaLibraryModal"
-      :mask-closable="true"
-      preset="card"
-      title="媒体库"
-      style="width: 920px; max-width: 95%;"
-    >
-      <n-flex vertical :size="12">
-        <n-flex align="center" justify="space-between" wrap :size="8">
-          <n-flex align="center" wrap :size="6">
-            <n-button size="tiny" :type="mediaLibraryFilter === 'all' ? 'primary' : 'default'" @click="mediaLibraryFilter = 'all'">
-              全部
-            </n-button>
-            <n-button size="tiny" :type="mediaLibraryFilter === 'image' ? 'primary' : 'default'" @click="mediaLibraryFilter = 'image'">
-              图片
-            </n-button>
-            <n-button size="tiny" :type="mediaLibraryFilter === 'video' ? 'primary' : 'default'" @click="mediaLibraryFilter = 'video'">
-              视频
-            </n-button>
-          </n-flex>
-          <n-text depth="3" style="font-size: 12px;">{{ filteredSessionMediaItems.length }} / {{ sessionMediaItemCount }}</n-text>
-        </n-flex>
-
-        <n-scrollbar style="max-height: 70vh;">
-          <div v-if="filteredSessionMediaItems.length" class="session-media-library-grid">
-            <div
-              v-for="item in filteredSessionMediaItems"
-              :key="item.key"
-              class="session-media-library-item"
-              @click.stop
-            >
-              <div class="session-media-library-item__preview">
-                <n-image
-                  v-if="item.kind === 'image'"
-                  :src="item.src"
-                  :alt="item.name"
-                  object-fit="cover"
-                  width="100%"
-                  :img-props="{ loading: 'lazy', decoding: 'async' }"
-                />
-                <video
-                  v-else
-                  class="session-media-library-item__video"
-                  :src="item.src"
-                  controls
-                  controlslist="nofullscreen"
-                  preload="metadata"
-                  playsinline
-                />
-              </div>
-              <div class="session-media-library-item__body">
-                <div class="session-media-library-item__title">{{ item.name }}</div>
-                <div v-if="item.meta" class="session-media-library-item__meta">{{ item.meta }}</div>
-                <div v-if="item.prompt" class="session-media-library-item__prompt">{{ item.prompt }}</div>
-                <n-flex align="center" justify="flex-end" :size="6" class="session-media-library-item__actions">
-                  <n-tooltip v-if="item.prompt" trigger="hover">
-                    <template #trigger>
-                      <n-button size="tiny" tertiary circle @click.stop="copyMediaPrompt(item)">
-                        <template #icon>
-                          <n-icon :component="CopyOutline" size="14" />
-                        </template>
-                      </n-button>
-                    </template>
-                    复制提示词
-                  </n-tooltip>
-                  <n-tooltip trigger="hover">
-                    <template #trigger>
-                      <n-button size="tiny" tertiary circle @click.stop="regenerateMedia(item.message, item.kind)">
-                        <template #icon>
-                          <n-icon :component="RefreshOutline" size="14" />
-                        </template>
-                      </n-button>
-                    </template>
-                    再次生成
-                  </n-tooltip>
-                  <n-tooltip trigger="hover">
-                    <template #trigger>
-                      <n-button size="tiny" tertiary circle @click.stop="item.kind === 'image' ? downloadChatImage(item.media) : downloadChatVideo(item.media)">
-                        <template #icon>
-                          <n-icon :component="DownloadOutline" size="14" />
-                        </template>
-                      </n-button>
-                    </template>
-                    下载
-                  </n-tooltip>
-                </n-flex>
-              </div>
-            </div>
-          </div>
-          <n-text v-else depth="3">当前会话还没有可展示的媒体结果</n-text>
-        </n-scrollbar>
-      </n-flex>
-    </n-modal>
+      v-model:filter="mediaLibraryFilter"
+      :theme="theme"
+      :items="filteredSessionMediaItems"
+      :total-count="sessionMediaItemCount"
+      @copy-prompt="copyMediaPrompt"
+      @regenerate-media="regenerateMedia"
+      @download-image="downloadChatImage"
+      @download-video="downloadChatVideo"
+    />
 
     <!-- 模型设置 -->
     <n-modal
@@ -1402,6 +1215,8 @@ import {
 } from '@/utils/toolApprovalPolicy'
 import ChatAssistantMedia from './ChatAssistantMedia.vue'
 import ChatComposerPanel from './ChatComposerPanel.vue'
+import ChatHeaderCard from './ChatHeaderCard.vue'
+import ChatMediaLibraryModal from './ChatMediaLibraryModal.vue'
 import ChatToolMessage from './ChatToolMessage.vue'
 import ChatUserAttachments from './ChatUserAttachments.vue'
 import SessionTree from './SessionTree.vue'
@@ -2372,7 +2187,7 @@ function syncChatResponsiveState() {
 }
 
 const layoutContentStyle = computed(() => {
-  const padding = isCompactChatLayout.value ? '8px' : '8px 44px 8px 8px'
+  const padding = isCompactChatLayout.value ? '8px' : isDenseChatLayout.value ? '8px 20px 8px 8px' : '8px 32px 8px 8px'
   return `padding: ${padding}; height: calc(var(--app-viewport-height) - (var(--app-shell-padding) * 2)); box-sizing: border-box; overflow: hidden;`
 })
 
@@ -5285,6 +5100,51 @@ const chatSetupSummaryItems = computed(() => {
   if (sessionTitle) items.push({ key: 'session', label: '会话', value: sessionTitle })
 
   return items
+})
+
+const chatOverviewItems = computed(() => {
+  const messages = Array.isArray(session.messages) ? session.messages : []
+  let userCount = 0
+  let assistantCount = 0
+  let toolCount = 0
+  for (const msg of messages) {
+    if (msg?.role === 'user') userCount += 1
+    else if (msg?.role === 'assistant') assistantCount += 1
+    else if (msg?.role === 'tool') toolCount += 1
+  }
+
+  const pendingCount = Array.isArray(pendingAttachments.value) ? pendingAttachments.value.length : 0
+  const activeRecord = getMemorySessionById(activeMemorySessionId.value)
+  const pendingApprovalCount = activeRecord ? getMemorySessionPendingApprovalCount(activeRecord) : 0
+  const activeStatusText = activeRecord
+    ? isMemorySessionRunning(activeRecord)
+      ? `运行中 ${Math.max(getMemorySessionRunningCount(activeRecord), getMemorySessionChatRunCount(activeRecord))}`
+      : pendingApprovalCount
+        ? `待批准 ${pendingApprovalCount}`
+        : messages.length
+          ? '空闲'
+          : '待开始'
+    : messages.length
+      ? '临时会话'
+      : '新会话'
+
+  const attachmentSummary = pendingCount
+    ? `待发送 ${pendingCount}`
+    : sessionMediaItemCount.value
+      ? `媒体 ${sessionMediaItemCount.value}`
+      : '无'
+
+  return [
+    { key: 'messages', label: '消息', value: `${messages.length} 条` },
+    { key: 'roles', label: '用户 / 助手', value: `${userCount} / ${assistantCount}` },
+    { key: 'tools', label: '工具消息', value: `${toolCount} 条` },
+    { key: 'attachments', label: '附件 / 媒体', value: attachmentSummary },
+    { key: 'status', label: '会话状态', value: activeStatusText },
+    { key: 'switches', label: '联网 / 工具', value: `${webSearchEnabled.value ? '联网开' : '联网关'} · ${autoApproveTools.value ? '自动批准' : '手动确认'}` }
+  ]
+})
+const activeSessionDisplayTitle = computed(() => {
+  return activeSessionTitle.value || getSessionTitleFromPath(activeSessionFilePath.value)
 })
 
 const thinkingEffortLabel = computed(() => {
@@ -18453,19 +18313,6 @@ watch(
   position: relative;
 }
 
-.chat-header-card {
-  width: 100%;
-  border-radius: 22px;
-  overflow: hidden;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.84));
-  box-shadow: 0 18px 38px rgba(15, 23, 42, 0.06);
-}
-
-.chat-page.dark .chat-header-card {
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0.82), rgba(15, 23, 42, 0.72));
-  box-shadow: 0 18px 38px rgba(2, 6, 23, 0.28);
-}
-
 .chat-empty-state {
   min-height: min(52vh, 420px);
   display: flex;
@@ -19801,85 +19648,6 @@ watch(
 
 .chat-item__content :deep(.md-editor-preview table) {
   display: block;
-}
-
-.session-media-library-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 12px;
-  padding-right: 6px;
-}
-
-.session-media-library-item {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  overflow: hidden;
-  border-radius: 8px;
-  border: 1px solid rgba(148, 163, 184, 0.22);
-  background: rgba(255, 255, 255, 0.72);
-}
-
-.chat-page.dark .session-media-library-item,
-:deep(.chat-page.dark) .session-media-library-item {
-  border-color: rgba(148, 163, 184, 0.18);
-  background: rgba(15, 23, 42, 0.52);
-}
-
-.session-media-library-item__preview {
-  width: 100%;
-  aspect-ratio: 16 / 10;
-  background: rgba(15, 23, 42, 0.06);
-  overflow: hidden;
-}
-
-.session-media-library-item__preview :deep(.n-image),
-.session-media-library-item__preview :deep(img),
-.session-media-library-item__video {
-  width: 100%;
-  height: 100%;
-  display: block;
-  object-fit: cover;
-}
-
-.session-media-library-item__body {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px;
-  min-width: 0;
-}
-
-.session-media-library-item__title {
-  font-size: 13px;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.session-media-library-item__meta,
-.session-media-library-item__prompt {
-  font-size: 12px;
-  line-height: 1.5;
-  color: rgba(71, 85, 105, 0.86);
-  word-break: break-word;
-}
-
-.chat-page.dark .session-media-library-item__meta,
-.chat-page.dark .session-media-library-item__prompt {
-  color: rgba(203, 213, 225, 0.82);
-}
-
-.session-media-library-item__prompt {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.session-media-library-item__actions {
-  margin-top: 2px;
 }
 
 @media (max-width: 960px) {
