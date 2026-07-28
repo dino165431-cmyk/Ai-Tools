@@ -133,7 +133,13 @@ export function createPreparedSkillToolExecutor(runtime) {
         throwIfAborted(abortState)
 
         const images = extractChatImagesFromToolResult(result)
-        const toolResultPayload = isAgentRunToolResult(result) ? deepCopyJson(result, null) : null
+        const resultKind = String(result?.kind || '').trim()
+        const toolResultPayload = (
+          isAgentRunToolResult(result) ||
+          resultKind.startsWith('sandbox_')
+        )
+          ? deepCopyJson(result, null)
+          : null
         const resultText = stringifyToolResultForLlm(result)
         const imageHint = images.length ? `- 图片：${images.length}（已在上方预览；base64/dataUrl 已省略）\n` : ''
         const displayText = formatToolResultDisplayContent(result, {

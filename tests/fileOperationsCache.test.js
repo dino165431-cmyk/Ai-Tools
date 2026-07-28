@@ -84,6 +84,23 @@ test('deleteItem clears cached file blobs for deleted files', async (t) => {
   assert.ok(revoked.includes(blobUrl))
 })
 
+test('cloud file scans keep sandbox workspaces local-only', async (t) => {
+  const { tempRoot } = setupFileOperationsTest(t)
+  createFixtureFile(tempRoot, 'note/demo.md', 'note')
+  createFixtureFile(tempRoot, '.ai-tools-sandbox/workspaces/chat-demo/output/result.md', 'sandbox')
+
+  const files = await fileOperations._getLocalFiles('')
+
+  assert.deepEqual(files, ['note/demo.md'])
+  assert.equal(
+    fileOperations._normalizeRemoteCloudKeys([
+      'note/demo.md',
+      '.ai-tools-sandbox/workspaces/chat-demo/output/result.md'
+    ]).join(','),
+    'note/demo.md'
+  )
+})
+
 test('deleteItem clears cached asset blobs for deleted directories', async (t) => {
   const { tempRoot, revoked } = setupFileOperationsTest(t)
   createFixtureFile(tempRoot, 'note/demo.md.assets/cover.png')
@@ -378,7 +395,8 @@ test('restoreFromCloud dispatches tree refresh events for restored roots', async
     listObjects: async () => [
       'note/demo.md',
       'chat-memory/memory-store.json',
-      'session/history/demo.json'
+      'session/history/demo.json',
+      '.ai-tools-sandbox/workspaces/chat-demo/output/private.txt'
     ],
     downloadFile: async (bucket, key, fullPath) => {
       fs.writeFileSync(fullPath, key)

@@ -1,13 +1,24 @@
 # Native action catalog
 
-`bash_run` accepts a command, an optional working directory relative to the configured data root, and a bounded timeout.
+## `bash_run`
 
-The runtime:
+Runs Bash inside one sandbox workspace. Accepts:
 
-- rejects working directories outside the data root;
-- selects an available Bash executable;
-- caps timeout and captured output;
-- returns exit code, stdout, stderr, timeout state, and resolved working directory;
-- requires approval for every invocation.
+- `command`: required Bash command;
+- `workspace_id`: optional workspace id, especially the id provided with a chat attachment;
+- `cwd`: optional directory relative to that workspace;
+- `timeout_ms`: bounded timeout.
 
-Use exact paths, avoid secret-bearing output, and treat a timeout or non-zero exit as a failed command even when partial stdout is available.
+Returns exit status, stdout/stderr, timeout state, workspace id, resolved relative working directory, and `changedFiles`. Each changed file includes a workspace-relative `path` and a data-root-relative `dataPath` used by the result UI.
+
+## `sandbox_import`
+
+Copies explicitly named absolute source file paths into `inbox/`. It only accepts regular files, rejects symlinks, applies per-file and batch size limits, never changes the sources, and returns imported file entries.
+
+## `sandbox_list`
+
+Lists regular non-symlink files in the workspace. Runtime metadata under `.runtime/` is hidden.
+
+## `sandbox_reset`
+
+Deletes a single validated workspace and recreates its empty `inbox/` and `output/` directories. Use only at the user's explicit request.

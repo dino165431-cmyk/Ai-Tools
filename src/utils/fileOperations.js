@@ -70,6 +70,10 @@ export function writeAbsoluteFile(filePath, data) {
     return callFileOpsAsync('writeAbsoluteFile', filePath, data);
 }
 
+export function importFilesToSandbox(workspaceId, files) {
+    return callFileOpsAsync('importFilesToSandbox', workspaceId, files);
+}
+
 export function readFile(relativePath, encoding) {
     return callFileOpsAsync('readFile', relativePath, encoding);
 }
@@ -92,6 +96,18 @@ export function stat(relativePath) {
 
 export function openInFileManager(relativePath) {
     return callFileOpsAsync('openInFileManager', relativePath);
+}
+
+export function openFile(relativePath) {
+    return callFileOpsAsync('openFile', relativePath);
+}
+
+export function showItemInFolder(relativePath) {
+    return callFileOpsAsync('showItemInFolder', relativePath);
+}
+
+export function saveFileAs(relativePath, options) {
+    return callFileOpsAsync('saveFileAs', relativePath, options);
 }
 
 export function resolvePath(relativePath) {

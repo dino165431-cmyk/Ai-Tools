@@ -14,7 +14,12 @@
       </n-button>
     </n-card>
   </div>
-  <div ref="editorContainerRef" v-else :class="['editor-container', { 'is-dark': theme === 'dark' }]">
+  <div
+    ref="editorContainerRef"
+    v-else
+    :class="['editor-container', { 'is-dark': theme === 'dark' }]"
+    @contextmenu="handleEditorAreaContextMenu"
+  >
     <div :class="['editor-shell', { 'is-catalog-collapsed': catalogCollapsed }]">
       <section class="editor-shell__main">
         <header class="editor-shell__header">
@@ -78,6 +83,66 @@
       </aside>
     </div>
   </div>
+  <n-dropdown
+    placement="bottom-start"
+    trigger="manual"
+    :show="editorContextMenu.show"
+    :x="editorContextMenu.x"
+    :y="editorContextMenu.y"
+    :options="editorContextMenuOptions"
+    @clickoutside="closeEditorContextMenu"
+    @select="handleEditorContextMenuSelect"
+  />
+  <n-modal
+    v-model:show="noteReferencePicker.show"
+    preset="card"
+    title="引用笔记"
+    style="width: 640px; max-width: 94vw;"
+    :bordered="false"
+  >
+    <div :class="['note-reference-picker', { 'is-dark': theme === 'dark' }]">
+      <n-input
+        v-model:value="noteReferencePicker.query"
+        autofocus
+        clearable
+        placeholder="搜索标题、正文或语义"
+        @keydown.enter.prevent="selectFirstNoteReference"
+      />
+      <div class="note-reference-picker__meta">
+        <span v-if="noteReferencePicker.loading">正在检索…</span>
+        <span v-else-if="noteReferencePicker.searchMode">
+          {{ noteReferencePicker.searchMode === 'hybrid' ? '混合检索' : '关键词检索' }}
+          · {{ noteReferencePicker.items.length }} 条结果
+        </span>
+        <span v-else>输入关键词后，可从内容索引中选择一篇笔记。</span>
+      </div>
+      <div v-if="noteReferencePicker.error" class="note-reference-picker__error">
+        {{ noteReferencePicker.error }}
+      </div>
+      <div v-else-if="noteReferencePicker.items.length" class="note-reference-picker__results">
+        <button
+          v-for="item in noteReferencePicker.items"
+          :key="item.path"
+          type="button"
+          class="note-reference-picker__item"
+          @click="insertSelectedNoteReference(item)"
+        >
+          <span class="note-reference-picker__title">{{ item.title || item.name || item.path }}</span>
+          <span class="note-reference-picker__path">{{ item.path }}</span>
+          <span v-if="item.preview" class="note-reference-picker__preview">{{ item.preview }}</span>
+        </button>
+      </div>
+      <div v-else-if="noteReferencePicker.query && !noteReferencePicker.loading" class="note-reference-picker__empty">
+        没有找到可引用的明文笔记。
+      </div>
+    </div>
+    <template #footer>
+      <div class="note-reference-picker__footer">
+        <span>在编辑区输入 <code>[[关键词</code> 也可以直接唤起检索。</span>
+        <n-button @click="noteReferencePicker.show = false">关闭</n-button>
+      </div>
+    </template>
+  </n-modal>
 </template>
 
 <script setup>
@@ -96,8 +161,14 @@ import {
 } from '@/utils/fileOperations';
 import LazyMarkdownEditor from '@/components/LazyMarkdownEditor.vue';
 import { FileTrayFullOutline, CreateOutline } from '@vicons/ionicons5';
-import { NIcon, NCard, NButton } from 'naive-ui';
+import { NIcon, NCard, NButton, NDropdown, NInput, NModal } from 'naive-ui';
 import { copyTextToClipboard } from '@/utils/clipboard';
+import { searchNotes } from '@/utils/contentSearch';
+import {
+  buildNoteReference,
+  extractTrailingNoteReferenceTrigger,
+  replaceNoteReferenceTrigger
+} from '@/utils/noteReference';
 import {
   createMarkdownDiagramDecorator,
   renderEchartsSvgForExport,
@@ -191,6 +262,23 @@ const catalogItems = ref([]);
 const catalogScrollElement = ref(null);
 const catalogCollapsed = ref(true);
 const activeCatalogKey = ref('');
+const editorContextMenu = ref({
+  show: false,
+  x: 0,
+  y: 0,
+  href: '',
+  selection: '',
+  source: 'editor'
+});
+const noteReferencePicker = ref({
+  show: false,
+  query: '',
+  loading: false,
+  error: '',
+  searchMode: '',
+  items: [],
+  trigger: null
+});
 const editorId = `note-editor-${Math.random().toString(36).slice(2, 10)}`;
 let lastHandledRenameToken = null;
 let cleanupTimeout = null;
@@ -199,6 +287,8 @@ let lastSavedContent = '';
 let saveQueue = Promise.resolve();
 let suppressContentWatcher = false;
 let htmlRefreshTimer = null;
+let noteReferenceSearchTimer = null;
+let noteReferenceSearchToken = 0;
 
 const noteTitle = computed(() => {
   if (!props.filePath) return '\u672a\u547d\u540d\u7b14\u8bb0';
@@ -246,6 +336,44 @@ const catalogFlatItems = computed(() => flattenCatalogItems(catalogItems.value))
 const catalogSummary = computed(() => {
   const count = catalogFlatItems.value.length;
   return count ? `${count} \u4e2a\u6807\u9898` : '\u6682\u65e0\u6807\u9898';
+});
+
+const editorContextMenuOptions = computed(() => {
+  const state = editorContextMenu.value;
+  const options = [];
+  if (state.href) {
+    const externalUrl = getSafeExternalUrl(state.href);
+    options.push({
+      label: externalUrl ? '在浏览器中打开链接' : '打开引用的笔记',
+      key: 'open-link'
+    });
+    options.push({ label: '复制链接', key: 'copy-link' });
+    options.push({ type: 'divider' });
+  }
+
+  options.push({ label: '搜索并引用笔记…', key: 'reference-note' });
+  options.push({
+    label: '复制选中内容',
+    key: 'copy-selection',
+    disabled: !state.selection
+  });
+  options.push({
+    label: '将选中内容设为引用块',
+    key: 'blockquote-selection',
+    disabled: !state.selection || state.source !== 'editor'
+  });
+  options.push({
+    label: '粘贴纯文本',
+    key: 'paste-text',
+    disabled: state.source !== 'editor' || typeof navigator?.clipboard?.readText !== 'function'
+  });
+  options.push({ type: 'divider' });
+  options.push({
+    label: '复制当前笔记 Markdown 链接',
+    key: 'copy-current-note-link',
+    disabled: !props.filePath
+  });
+  return options;
 });
 
 function isProtectedNote() {
@@ -327,6 +455,215 @@ function copyToClipboard(text) {
     onSuccess: () => message.success('\u5df2\u590d\u5236\u5230\u526a\u8d34\u677f'),
     onError: (err) => message.error('\u590d\u5236\u5931\u8d25\uff1a' + (err?.message || String(err)))
   });
+}
+
+function closeEditorContextMenu() {
+  editorContextMenu.value.show = false;
+}
+
+function getContextSelection(target) {
+  if (target?.closest?.('.md-editor-preview')) {
+    const selection = window.getSelection?.();
+    const text = String(selection?.toString?.() || '');
+    if (text) return { text, source: 'preview' };
+  }
+  return {
+    text: String(editorRef.value?.getSelectedText?.() || ''),
+    source: 'editor'
+  };
+}
+
+function showEditorContextMenu(event, options = {}) {
+  const selection = getContextSelection(event?.target);
+  editorContextMenu.value = {
+    show: false,
+    x: Number(event?.clientX) || 0,
+    y: Number(event?.clientY) || 0,
+    href: String(options.href || '').trim(),
+    selection: selection.text,
+    source: selection.source
+  };
+  window.setTimeout(() => {
+    editorContextMenu.value.show = true;
+  }, 0);
+}
+
+function handleEditorAreaContextMenu(event) {
+  const link = event.target?.closest?.('a');
+  if (link && editorContainerRef.value?.contains(link)) {
+    const href = String(link.getAttribute('href') || '').trim();
+    if (!href) return;
+    event.preventDefault();
+    event.stopPropagation();
+    showEditorContextMenu(event, { href });
+    return;
+  }
+
+  const inEditor = !!event.target?.closest?.('.md-editor-input-wrapper, .md-editor-preview');
+  if (!inEditor) return;
+  event.preventDefault();
+  event.stopPropagation();
+  showEditorContextMenu(event);
+}
+
+async function copyContextLink(href) {
+  const externalUrl = getSafeExternalUrl(href);
+  if (externalUrl?.protocol === 'mailto:') {
+    return copyToClipboard(safeDecodeURIComponent(externalUrl.pathname));
+  }
+  if (externalUrl) return copyToClipboard(externalUrl.toString());
+
+  try {
+    const noteAbsPath = await resolveNoteAbsPathFromHref(href);
+    const noteHref = noteAbsPath ? buildNoteHrefFromPath(noteAbsPath) : '';
+    return copyToClipboard(noteHref || href);
+  } catch {
+    return copyToClipboard(href);
+  }
+}
+
+async function openContextLink(href) {
+  if (getSafeExternalUrl(href)) {
+    safeOpenExternal(href);
+    return;
+  }
+  if (await openNoteFromHref(href)) return;
+  message.warning('无法打开该链接');
+}
+
+function insertEditorText(targetValue) {
+  const text = String(targetValue || '');
+  if (!text) return;
+  editorRef.value?.insert?.(() => ({
+    targetValue: text,
+    select: false,
+    deviationStart: 0,
+    deviationEnd: 0
+  }));
+}
+
+function openNoteReferencePicker(options = {}) {
+  const query = String(options.query || '').trim();
+  noteReferencePicker.value.trigger = options.trigger || null;
+  noteReferencePicker.value.query = query;
+  noteReferencePicker.value.error = '';
+  noteReferencePicker.value.items = [];
+  noteReferencePicker.value.searchMode = '';
+  noteReferencePicker.value.show = true;
+}
+
+async function handleEditorContextMenuSelect(key) {
+  const state = { ...editorContextMenu.value };
+  closeEditorContextMenu();
+
+  if (key === 'open-link') {
+    await openContextLink(state.href);
+    return;
+  }
+  if (key === 'copy-link') {
+    await copyContextLink(state.href);
+    return;
+  }
+  if (key === 'reference-note') {
+    openNoteReferencePicker();
+    return;
+  }
+  if (key === 'copy-selection') {
+    await copyToClipboard(state.selection);
+    return;
+  }
+  if (key === 'blockquote-selection') {
+    const quoted = String(state.selection || '')
+      .split(/\r?\n/)
+      .map((line) => `> ${line}`)
+      .join('\n');
+    insertEditorText(quoted);
+    return;
+  }
+  if (key === 'paste-text') {
+    try {
+      insertEditorText(await navigator.clipboard.readText());
+    } catch (error) {
+      message.error(`读取剪贴板失败：${error?.message || String(error)}`);
+    }
+    return;
+  }
+  if (key === 'copy-current-note-link') {
+    const href = buildNoteHrefFromPath(props.filePath);
+    if (!href) {
+      message.warning('无法生成当前笔记链接');
+      return;
+    }
+    await copyToClipboard(`[${noteTitle.value}](${href})`);
+  }
+}
+
+function clearNoteReferenceSearchTimer() {
+  if (!noteReferenceSearchTimer) return;
+  clearTimeout(noteReferenceSearchTimer);
+  noteReferenceSearchTimer = null;
+}
+
+async function runNoteReferenceSearch() {
+  const query = String(noteReferencePicker.value.query || '').trim();
+  if (!noteReferencePicker.value.show || !query) {
+    noteReferencePicker.value.loading = false;
+    noteReferencePicker.value.items = [];
+    noteReferencePicker.value.searchMode = '';
+    noteReferencePicker.value.error = '';
+    return;
+  }
+
+  const token = ++noteReferenceSearchToken;
+  noteReferencePicker.value.loading = true;
+  noteReferencePicker.value.error = '';
+  try {
+    const result = await searchNotes({ query, limit: 30 });
+    if (token !== noteReferenceSearchToken || !noteReferencePicker.value.show) return;
+    noteReferencePicker.value.items = Array.isArray(result?.items) ? result.items : [];
+    noteReferencePicker.value.searchMode = String(result?.searchMode || 'keyword');
+  } catch (error) {
+    if (token !== noteReferenceSearchToken) return;
+    noteReferencePicker.value.items = [];
+    noteReferencePicker.value.searchMode = '';
+    noteReferencePicker.value.error = error?.message || String(error);
+  } finally {
+    if (token === noteReferenceSearchToken) noteReferencePicker.value.loading = false;
+  }
+}
+
+function scheduleNoteReferenceSearch() {
+  clearNoteReferenceSearchTimer();
+  noteReferenceSearchTimer = window.setTimeout(() => {
+    noteReferenceSearchTimer = null;
+    void runNoteReferenceSearch();
+  }, 180);
+}
+
+function insertSelectedNoteReference(item) {
+  const reference = buildNoteReference(item);
+  if (!reference) {
+    message.warning('无法为该笔记生成引用链接');
+    return;
+  }
+
+  const trigger = noteReferencePicker.value.trigger;
+  const replacement = trigger
+    ? replaceNoteReferenceTrigger(content.value, trigger, item)
+    : null;
+  noteReferencePicker.value.show = false;
+  noteReferencePicker.value.trigger = null;
+  if (replacement) {
+    content.value = replacement.content;
+  } else {
+    insertEditorText(reference.markdown);
+  }
+  message.success('已插入笔记引用');
+}
+
+function selectFirstNoteReference() {
+  const first = noteReferencePicker.value.items[0];
+  if (first) insertSelectedNoteReference(first);
 }
 
 function getNoteAssetsInfo(noteFilePath) {
@@ -1466,6 +1803,29 @@ watch(content, (newContent) => {
   }, 500);
 });
 
+watch(content, (newContent) => {
+  if (suppressContentWatcher || !props.filePath || noteReferencePicker.value.show) return;
+  const trigger = extractTrailingNoteReferenceTrigger(newContent);
+  if (!trigger?.query) return;
+  openNoteReferencePicker({
+    query: trigger.query,
+    trigger
+  });
+});
+
+watch(
+  () => [noteReferencePicker.value.show, noteReferencePicker.value.query],
+  ([show]) => {
+    if (!show) {
+      clearNoteReferenceSearchTimer();
+      noteReferenceSearchToken += 1;
+      noteReferencePicker.value.loading = false;
+      return;
+    }
+    scheduleNoteReferenceSearch();
+  }
+);
+
 // ---------- 切换文档时处理 ----------
 let previewRefreshScheduled = false;
 let previewLinkRoot = null;
@@ -1559,6 +1919,8 @@ watch(() => props.filePath, async (newPath, oldPath) => {
 }, { immediate: true });
 
 onUnmounted(() => {
+  clearNoteReferenceSearchTimer();
+  closeEditorContextMenu();
   if (saveTimeout) {
     clearTimeout(saveTimeout);
     saveTimeout = null;
@@ -2141,27 +2503,7 @@ function handlePreviewLinkContextMenu(e) {
 
   e.preventDefault();
   e.stopPropagation();
-
-  const externalUrl = getSafeExternalUrl(href);
-  if (externalUrl?.protocol === 'mailto:') {
-    copyToClipboard(safeDecodeURIComponent(externalUrl.pathname));
-    return;
-  }
-  if (externalUrl?.protocol === 'http:' || externalUrl?.protocol === 'https:') {
-    copyToClipboard(externalUrl.toString());
-    return;
-  }
-
-  resolveNoteAbsPathFromHref(href)
-    .then((noteAbsPath) => {
-      if (!noteAbsPath) {
-        copyToClipboard(href);
-        return;
-      }
-      const noteHref = buildNoteHrefFromPath(noteAbsPath);
-      copyToClipboard(noteHref || href);
-    })
-    .catch(() => copyToClipboard(href));
+  showEditorContextMenu(e, { href });
 }
 
 function previewHasDiagramHosts(preview) {
@@ -2240,6 +2582,116 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.note-reference-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.note-reference-picker__meta {
+  min-height: 18px;
+  color: rgba(71, 85, 105, 0.78);
+  font-size: 12px;
+}
+
+.note-reference-picker.is-dark .note-reference-picker__meta {
+  color: rgba(203, 213, 225, 0.72);
+}
+
+.note-reference-picker__error {
+  color: #d03050;
+  font-size: 12px;
+}
+
+.note-reference-picker__results {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: min(52vh, 460px);
+  overflow: auto;
+}
+
+.note-reference-picker__item {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.65fr) minmax(160px, 1fr);
+  gap: 4px 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.86);
+  color: #0f172a;
+  text-align: left;
+  cursor: pointer;
+}
+
+.note-reference-picker__item:hover {
+  border-color: rgba(37, 99, 235, 0.3);
+  background: rgba(239, 246, 255, 0.94);
+}
+
+.note-reference-picker.is-dark .note-reference-picker__item {
+  border-color: rgba(148, 163, 184, 0.16);
+  background: rgba(15, 23, 42, 0.68);
+  color: #e2e8f0;
+}
+
+.note-reference-picker.is-dark .note-reference-picker__item:hover {
+  border-color: rgba(56, 189, 248, 0.3);
+  background: rgba(12, 74, 110, 0.36);
+}
+
+.note-reference-picker__title {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-reference-picker__path {
+  overflow: hidden;
+  color: rgba(71, 85, 105, 0.72);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-reference-picker.is-dark .note-reference-picker__path {
+  color: rgba(203, 213, 225, 0.68);
+}
+
+.note-reference-picker__preview {
+  grid-column: 1 / -1;
+  display: -webkit-box;
+  overflow: hidden;
+  color: rgba(51, 65, 85, 0.82);
+  font-size: 12px;
+  line-height: 1.5;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.note-reference-picker.is-dark .note-reference-picker__preview {
+  color: rgba(203, 213, 225, 0.78);
+}
+
+.note-reference-picker__empty {
+  padding: 28px 12px;
+  color: rgba(71, 85, 105, 0.76);
+  text-align: center;
+}
+
+.note-reference-picker__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: rgba(71, 85, 105, 0.76);
+  font-size: 12px;
+}
+
 .welcome-container {
   display: flex;
   justify-content: center;

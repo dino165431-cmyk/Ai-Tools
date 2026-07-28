@@ -2,7 +2,18 @@ const path = require('path')
 const fsSync = require('fs')
 const { spawn } = require('child_process')
 
-const globalConfig = require('../../utils/global-config')
+const {
+  DEFAULT_WORKSPACE_ID,
+  normalizeWorkspaceId,
+  normalizeSandboxRelativePath,
+  ensureWorkspace,
+  resolveWorkspacePath,
+  copyExternalFilesToWorkspace,
+  walkWorkspaceFiles,
+  snapshotWorkspace,
+  collectChangedFiles,
+  resetWorkspace
+} = require('../../utils/sandbox-workspace')
 
 const MAX_OUTPUT_CHARS = 20000
 const DEFAULT_TIMEOUT_MS = 30000
@@ -20,44 +31,39 @@ function realpathExisting(targetPath) {
 function assertDirectory(targetPath, label) {
   let stat = null
   try {
-    stat = fsSync.statSync(targetPath)
+    stat = fsSync.lstatSync(targetPath)
   } catch {
     throw new Error(`${label}不存在或不可访问`)
   }
+  if (stat.isSymbolicLink()) throw new Error(`${label}不能是符号链接`)
   if (!stat.isDirectory()) throw new Error(`${label}必须是目录`)
 }
 
 function isPathInside(root, target) {
   const relative = path.relative(root, target)
-  return !relative.startsWith('..') && !path.isAbsolute(relative)
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
 }
 
-function resolveDataRoot() {
-  const configured = cleanString(globalConfig.getDataStorageRoot?.())
-  if (!configured || !path.isAbsolute(configured)) {
-    throw new Error('用户数据目录未配置，无法启动 Bash 工具箱')
-  }
-  const resolved = path.resolve(configured)
-  assertDirectory(resolved, '用户数据目录')
-  return realpathExisting(resolved)
-}
-
-function resolveWorkingDirectory(relativePath = '.') {
-  const root = resolveDataRoot()
+async function resolveWorkingDirectory(relativePath = '.', workspaceId = DEFAULT_WORKSPACE_ID) {
+  const workspace = await ensureWorkspace(workspaceId)
   const requested = cleanString(relativePath) || '.'
-  if (path.isAbsolute(requested)) throw new Error('cwd 必须是用户数据目录内的相对路径')
-
-  const resolved = path.resolve(root, requested)
-  if (!isPathInside(root, resolved)) {
-    throw new Error('cwd 不能离开用户选择的数据目录')
-  }
+  const safeRelativePath = requested === '.'
+    ? ''
+    : normalizeSandboxRelativePath(requested, { allowEmpty: true })
+  const resolved = resolveWorkspacePath(workspace.workspaceId, safeRelativePath)
   assertDirectory(resolved, 'cwd')
   const realCwd = realpathExisting(resolved)
-  if (!isPathInside(root, realCwd)) {
-    throw new Error('cwd 不能通过符号链接离开用户选择的数据目录')
+  const realRoot = realpathExisting(workspace.workspaceRoot)
+  if (!isPathInside(realRoot, realCwd)) {
+    throw new Error('cwd 不能通过符号链接离开命令沙盒')
   }
-  const relative = path.relative(root, realCwd)
-  return { root, cwd: realCwd, relative: relative || '.' }
+  const relative = path.relative(realRoot, realCwd).replace(/\\/g, '/')
+  return {
+    workspaceId: workspace.workspaceId,
+    root: realRoot,
+    cwd: realCwd,
+    relative: relative || '.'
+  }
 }
 
 function clampTimeout(value) {
@@ -75,11 +81,11 @@ function validateCommandBoundary(command) {
     { pattern: /(^|[\s"'=])[a-z]:[\\/]/i, reason: '命令不能使用绝对磁盘路径' },
     { pattern: /(^|[\s"'=])\/[a-z](?:[\\/]|$)/i, reason: '命令不能使用 MSYS 绝对磁盘路径' },
     { pattern: /(^|[\s"'=])\/(?=$|[\s;&|])/i, reason: '命令不能访问文件系统根目录' },
-    { pattern: /(?:file):\/\//i, reason: '命令不能使用文件 URL 访问数据目录外的文件' },
+    { pattern: /(?:file):\/\//i, reason: '命令不能使用文件 URL 访问沙盒外部文件' },
     { pattern: /(^|[\s"'=])(?:\\\\|\/\/)[^/\\]/, reason: '命令不能使用网络或 UNC 路径' },
-    { pattern: /(^|[\s"'=])\/(?:bin|boot|dev|etc|home|opt|proc|root|run|sys|tmp|usr|var)(?:[\\/]|$)/i, reason: '命令不能访问数据目录外的系统路径' },
-    { pattern: /\$(?:HOME|USERPROFILE|HOMEDRIVE|HOMEPATH|OLDPWD)\b|\%(?:USERPROFILE|HOMEDRIVE|HOMEPATH|CD)\%/i, reason: '命令不能引用数据目录外的位置变量' },
-    { pattern: /(^|[;&|]\s*)(?:cmd|powershell|pwsh|wsl)(?:\.exe)?\b/i, reason: '命令不能委托给可绕过目录边界的系统 Shell' }
+    { pattern: /(^|[\s"'=])\/(?:bin|boot|dev|etc|home|opt|proc|root|run|sys|tmp|usr|var)(?:[\\/]|$)/i, reason: '命令不能访问沙盒外的系统路径' },
+    { pattern: /\$(?:HOME|USERPROFILE|HOMEDRIVE|HOMEPATH|OLDPWD)\b|\%(?:USERPROFILE|HOMEDRIVE|HOMEPATH|CD)\%/i, reason: '命令不能引用沙盒外的位置变量' },
+    { pattern: /(^|[;&|]\s*)(?:cmd|powershell|pwsh|wsl)(?:\.exe)?\b/i, reason: '命令不能委托给可绕过沙盒边界的系统 Shell' }
   ]
   const hit = blocked.find((rule) => rule.pattern.test(text))
   if (hit) throw new Error(hit.reason)
@@ -114,12 +120,18 @@ function appendLimited(state, chunk) {
   if (state.text.length >= MAX_OUTPUT_CHARS) state.truncated = true
 }
 
-function runBash(command, options = {}) {
+async function runBash(command, options = {}) {
   const safeCommand = validateCommandBoundary(command)
-  const { root, cwd, relative } = resolveWorkingDirectory(options.cwd)
+  const workspaceId = normalizeWorkspaceId(options.workspaceId)
+  const {
+    root,
+    cwd,
+    relative
+  } = await resolveWorkingDirectory(options.cwd, workspaceId)
   const timeoutMs = clampTimeout(options.timeoutMs)
-  const tempDirectory = path.join(root, '.ai-tools-settings', 'tmp', 'bash')
+  const tempDirectory = path.join(root, '.runtime', 'tmp')
   fsSync.mkdirSync(tempDirectory, { recursive: true })
+  const beforeFiles = await snapshotWorkspace(workspaceId)
 
   return new Promise((resolve, reject) => {
     const stdout = { text: '', truncated: false }
@@ -136,15 +148,33 @@ function runBash(command, options = {}) {
         USERPROFILE: root,
         TEMP: tempDirectory,
         TMP: tempDirectory,
-        XDG_CONFIG_HOME: path.join(root, '.ai-tools-settings', 'shell-config'),
+        XDG_CONFIG_HOME: path.join(root, '.runtime', 'config'),
         GIT_CONFIG_NOSYSTEM: '1',
-        GIT_CONFIG_GLOBAL: path.join(root, '.ai-tools-settings', 'shell-config', 'gitconfig'),
+        GIT_CONFIG_GLOBAL: path.join(root, '.runtime', 'config', 'gitconfig'),
         LANG: process.env.LANG || 'C.UTF-8',
-        AI_TOOLS_DATA_ROOT: root
+        AI_TOOLS_SANDBOX: '1',
+        AI_TOOLS_SANDBOX_WORKSPACE: workspaceId
       }
     })
 
+    let settled = false
     let timedOut = false
+    const finish = async (result) => {
+      if (settled) return
+      settled = true
+      try {
+        const afterFiles = await snapshotWorkspace(workspaceId)
+        resolve({
+          kind: 'sandbox_shell_result',
+          workspaceId,
+          ...result,
+          changedFiles: collectChangedFiles(beforeFiles, afterFiles)
+        })
+      } catch (error) {
+        reject(error)
+      }
+    }
+
     const timer = setTimeout(() => {
       timedOut = true
       child.kill()
@@ -154,11 +184,13 @@ function runBash(command, options = {}) {
     child.stderr?.on('data', (chunk) => appendLimited(stderr, chunk))
     child.once('error', (error) => {
       clearTimeout(timer)
+      if (settled) return
+      settled = true
       reject(error)
     })
     child.once('close', (code, signal) => {
       clearTimeout(timer)
-      resolve({
+      void finish({
         ok: !timedOut && code === 0,
         exitCode: Number.isInteger(code) ? code : null,
         signal: signal || null,
@@ -176,15 +208,59 @@ function runBash(command, options = {}) {
 const ACTIONS = Object.freeze([
   {
     name: 'bash_run',
-    description: 'Run a Bash command inside the user-selected AI Tools data directory. This tool always requires explicit approval.',
+    description: 'Run a Bash command inside an isolated AI Tools workspace. Files outside the workspace are unavailable unless explicitly imported.',
     inputSchema: {
       type: 'object',
       properties: {
-        command: { type: 'string', description: 'Bash command to execute.' },
-        cwd: { type: 'string', description: 'Working directory relative to the user data directory. Default: .' },
+        command: { type: 'string', description: 'Bash command to execute inside the workspace.' },
+        workspace_id: { type: 'string', description: 'Workspace id returned with imported attachments. Default: default.' },
+        cwd: { type: 'string', description: 'Working directory relative to the sandbox workspace. Default: .' },
         timeout_ms: { type: 'integer', minimum: 1000, maximum: MAX_TIMEOUT_MS }
       },
       required: ['command'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'sandbox_import',
+    description: 'Copy explicitly named external files into the sandbox inbox. This action never moves or modifies the source files.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workspace_id: { type: 'string', description: 'Sandbox workspace id. Default: default.' },
+        source_paths: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 20,
+          items: { type: 'string' },
+          description: 'Absolute paths of regular files the user explicitly asked to import.'
+        }
+      },
+      required: ['source_paths'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'sandbox_list',
+    description: 'List regular files currently available in a sandbox workspace.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workspace_id: { type: 'string', description: 'Sandbox workspace id. Default: default.' },
+        path: { type: 'string', description: 'Optional path relative to the workspace.' },
+        recursive: { type: 'boolean', description: 'List nested files. Default: true.' }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'sandbox_reset',
+    description: 'Delete all files in one sandbox workspace and recreate an empty inbox/output structure.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workspace_id: { type: 'string', description: 'Sandbox workspace id. Default: default.' }
+      },
       additionalProperties: false
     }
   }
@@ -196,13 +272,36 @@ class BuiltinShellSkillRuntime {
   }
 
   async runAction(toolName, args = {}) {
-    if (cleanString(toolName) !== 'bash_run') throw new Error(`Unknown action: ${toolName}`)
-    const command = cleanString(args.command)
-    if (!command) throw new Error('command is required')
-    return runBash(command, {
-      cwd: args.cwd,
-      timeoutMs: args.timeout_ms
-    })
+    const action = cleanString(toolName)
+    const workspaceId = normalizeWorkspaceId(args.workspace_id)
+
+    if (action === 'bash_run') {
+      const command = cleanString(args.command)
+      if (!command) throw new Error('command is required')
+      return runBash(command, {
+        workspaceId,
+        cwd: args.cwd,
+        timeoutMs: args.timeout_ms
+      })
+    }
+    if (action === 'sandbox_import') {
+      return copyExternalFilesToWorkspace(workspaceId, args.source_paths)
+    }
+    if (action === 'sandbox_list') {
+      const files = await walkWorkspaceFiles(workspaceId, {
+        path: args.path,
+        recursive: args.recursive !== false
+      })
+      return {
+        kind: 'sandbox_list_result',
+        workspaceId,
+        files
+      }
+    }
+    if (action === 'sandbox_reset') {
+      return resetWorkspace(workspaceId)
+    }
+    throw new Error(`Unknown action: ${toolName}`)
   }
 
   async close() {}

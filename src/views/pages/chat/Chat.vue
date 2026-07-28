@@ -957,6 +957,16 @@
         />
       </n-layout-sider>
     </n-layout>
+    <n-dropdown
+      placement="bottom-start"
+      trigger="manual"
+      :show="chatLinkContextMenu.show"
+      :x="chatLinkContextMenu.x"
+      :y="chatLinkContextMenu.y"
+      :options="chatLinkContextMenuOptions"
+      @clickoutside="closeChatLinkContextMenu"
+      @select="handleChatLinkContextMenuSelect"
+    />
   </n-space>
 </template>
 
@@ -1176,7 +1186,17 @@ import {
   INLINE_COMMAND_DEFINITIONS,
   INLINE_COMMAND_KIND_LABELS
 } from '@/utils/chatInlinePicker'
-import { createDirectory, deleteItem, exists, listDirectory, moveItem, resolvePath, stat, writeFile } from '@/utils/fileOperations'
+import {
+  createDirectory,
+  deleteItem,
+  exists,
+  importFilesToSandbox,
+  listDirectory,
+  moveItem,
+  resolvePath,
+  stat,
+  writeFile
+} from '@/utils/fileOperations'
 import { requestOpenNoteFile } from '@/utils/noteOpenBridge'
 import { buildNoteHrefFromPath, resolveNoteAbsPathFromHref, safeDecodeURIComponent } from '@/utils/notePathUtils'
 import { getSafeExternalUrl, safeOpenExternal } from '@/utils/safeOpenExternal'
@@ -4688,8 +4708,26 @@ function copyUserMessage(msg) {
 }
 
 let chatPreviewLinkRoot = null
+const chatLinkContextMenu = ref({
+  show: false,
+  x: 0,
+  y: 0,
+  href: ''
+})
+const chatLinkContextMenuOptions = computed(() => {
+  const href = String(chatLinkContextMenu.value.href || '').trim()
+  const externalUrl = getSafeExternalUrl(href)
+  return [
+    {
+      label: externalUrl ? '在浏览器中打开链接' : '打开引用的笔记',
+      key: 'open'
+    },
+    { label: '复制链接', key: 'copy' }
+  ]
+})
 
 function cleanupChatPreviewLinkHandlers() {
+  closeChatLinkContextMenu()
   if (!chatPreviewLinkRoot) return
   chatPreviewLinkRoot.removeEventListener('click', handleChatPreviewLinkClick)
   chatPreviewLinkRoot.removeEventListener('contextmenu', handleChatPreviewLinkContextMenu)
@@ -4748,28 +4786,59 @@ function handleChatPreviewLinkContextMenu(e) {
 
   e.preventDefault()
   e.stopPropagation()
+  chatLinkContextMenu.value = {
+    show: false,
+    x: e.clientX,
+    y: e.clientY,
+    href
+  }
+  window.setTimeout(() => {
+    chatLinkContextMenu.value.show = true
+  }, 0)
+}
 
+function closeChatLinkContextMenu() {
+  chatLinkContextMenu.value.show = false
+}
+
+async function copyChatContextLink(href) {
   const externalUrl = getSafeExternalUrl(href)
   if (externalUrl?.protocol === 'mailto:') {
     copyToClipboard(safeDecodeURIComponent(externalUrl.pathname))
     return
   }
-
-  if (externalUrl?.protocol === 'http:' || externalUrl?.protocol === 'https:') {
+  if (externalUrl) {
     copyToClipboard(externalUrl.toString())
     return
   }
 
-  resolveChatNoteAbsPathFromHref(href)
-    .then((noteAbsPath) => {
-      if (!noteAbsPath) {
-        copyToClipboard(href)
-        return
-      }
-      const noteHref = buildNoteHrefFromPath(noteAbsPath)
-      copyToClipboard(noteHref || href)
-    })
-    .catch(() => copyToClipboard(href))
+  try {
+    const noteAbsPath = await resolveChatNoteAbsPathFromHref(href)
+    const noteHref = noteAbsPath ? buildNoteHrefFromPath(noteAbsPath) : ''
+    copyToClipboard(noteHref || href)
+  } catch {
+    copyToClipboard(href)
+  }
+}
+
+async function handleChatLinkContextMenuSelect(key) {
+  const href = String(chatLinkContextMenu.value.href || '').trim()
+  closeChatLinkContextMenu()
+  if (!href) return
+
+  if (key === 'copy') {
+    await copyChatContextLink(href)
+    return
+  }
+  if (key === 'open') {
+    if (getSafeExternalUrl(href)) {
+      safeOpenExternal(href)
+      return
+    }
+    if (!(await openChatNoteFromHref(href))) {
+      message.warning('无法打开该链接')
+    }
+  }
 }
 
 function ensureFilenameExt(nameRaw, mime) {
@@ -12681,6 +12750,36 @@ async function prepareUserApiMessage({
     await Promise.all(list.map((a) => ensureAttachmentParsed(a)))
   }
 
+  const sandboxWorkspaceId = `chat-${String(sessionTarget?.id || activeMemorySessionId.value || 'default')}`
+    .replace(/[^a-zA-Z0-9._-]/g, '-')
+    .slice(0, 80)
+  const unstagedAttachments = list.filter((attachment) =>
+    attachment?.file &&
+    typeof attachment.file.arrayBuffer === 'function' &&
+    !String(attachment?.sandboxPath || '').trim()
+  )
+  if (unstagedAttachments.length) {
+    try {
+      const imported = await importFilesToSandbox(
+        sandboxWorkspaceId,
+        await Promise.all(unstagedAttachments.map(async (attachment) => ({
+          name: attachment.name || attachment.file?.name || 'attachment',
+          data: new Uint8Array(await attachment.file.arrayBuffer())
+        })))
+      )
+      const entries = Array.isArray(imported?.imported) ? imported.imported : []
+      unstagedAttachments.forEach((attachment, index) => {
+        const entry = entries[index]
+        if (!entry?.path) return
+        attachment.sandboxWorkspaceId = imported.workspaceId || sandboxWorkspaceId
+        attachment.sandboxPath = entry.path
+        attachment.sandboxDataPath = entry.dataPath || ''
+      })
+    } catch (error) {
+      console.warn('stage chat attachments in sandbox failed:', error)
+    }
+  }
+
   try {
     list.forEach((a) => {
       if (a && typeof a === 'object') a.file = null
@@ -12694,24 +12793,27 @@ async function prepareUserApiMessage({
   const imageAttachments = []
 
   for (const a of list) {
+    const sandboxDescriptor = a?.sandboxPath
+      ? `\n沙盒工作区：${a.sandboxWorkspaceId || sandboxWorkspaceId}\n沙盒文件：${a.sandboxPath}`
+      : ''
     if (a.status === 'ready' && a.kind === 'image' && a.dataUrl) {
       imageAttachments.push(a)
       if (!imageAttachmentsAsMediaReferences) {
         const metaText = String(a.text || '').trim() || `附件：${a.name}\n图片元数据不可用`
-        attachmentContextBlocksForVision.push(`${metaText}\n（图片已随消息发送）`)
-        attachmentContextBlocksTextOnly.push(`${metaText}\n（当前提供商不会直接接收图片二进制，模型只能看到这些元数据）`)
+        attachmentContextBlocksForVision.push(`${metaText}\n（图片已随消息发送）${sandboxDescriptor}`)
+        attachmentContextBlocksTextOnly.push(`${metaText}\n（当前提供商不会直接接收图片二进制，模型只能看到这些元数据）${sandboxDescriptor}`)
       }
       continue
     }
     if (a.status === 'ready') {
       const attachmentText = String(a.text || '').trim()
-      const block = `附件：${a.name}\n${attachmentText || '（内容为空）'}`
+      const block = `附件：${a.name}\n${attachmentText || '（内容为空）'}${sandboxDescriptor}`
       attachmentContextBlocksForVision.push(block)
       attachmentContextBlocksTextOnly.push(block)
       continue
     }
     if (a.status === 'error') {
-      const block = `附件：${a.name}\n（解析失败：${a.error || '未知错误'}）`
+      const block = `附件：${a.name}\n（解析失败：${a.error || '未知错误'}）${sandboxDescriptor}`
       attachmentContextBlocksForVision.push(block)
       attachmentContextBlocksTextOnly.push(block)
     }

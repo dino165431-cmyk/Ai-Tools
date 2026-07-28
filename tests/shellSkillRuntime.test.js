@@ -21,3 +21,13 @@ test('shell Skill runtime rejects obvious data-directory escapes', () => {
   assert.throws(() => validate('powershell Get-ChildItem C:\\'), /绝对磁盘路径|系统 Shell/)
   assert.throws(() => validate('cat $HOME/.ssh/config'), /位置变量/)
 })
+
+test('shell Skill runtime exposes explicit sandbox lifecycle actions', () => {
+  assert.deepEqual(
+    createShellSkillRuntime.ACTIONS.map((action) => action.name),
+    ['bash_run', 'sandbox_import', 'sandbox_list', 'sandbox_reset']
+  )
+  const bashAction = createShellSkillRuntime.ACTIONS[0]
+  assert.ok(bashAction.inputSchema.properties.workspace_id)
+  assert.match(bashAction.description, /isolated/i)
+})

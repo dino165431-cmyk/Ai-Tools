@@ -13,6 +13,7 @@ const CLOUD_AUTO_POLL_INTERVAL_MS = 60 * 1000
 const CLOUD_AUTO_REQUIRED_KEYS = ['region', 'accessKeyId', 'secretAccessKey', 'bucket']
 const CLOUD_DELETE_QUEUE_STORAGE_KEY = 'ai-tools-cloud-delete-queue-v1'
 const CLOUD_DELETE_SYNC_ROOTS = ['note', 'session']
+const LOCAL_ONLY_DATA_ROOTS = new Set(['.ai-tools-sandbox'])
 const EXTERNAL_WATCH_DEBOUNCE_MS = 500
 const EXTERNAL_WATCH_RESCAN_DEBOUNCE_MS = 250
 const EXTERNAL_WATCH_POLL_INTERVAL_MS = 2000
@@ -157,6 +158,13 @@ class FileOperations {
         return String(relativePath || '').trim().replace(/\\/g, '/').replace(/^\/+/, '')
     }
 
+    _isLocalOnlyDataPath(relativePath) {
+        const normalized = this._normalizeRelativePath(relativePath)
+        if (!normalized) return false
+        const root = normalized.split('/').filter(Boolean)[0]
+        return LOCAL_ONLY_DATA_ROOTS.has(root)
+    }
+
     _isCloudDeleteTrackedPath(relativePath) {
         const normalized = this._normalizeRelativePath(relativePath)
         if (!normalized) return false
@@ -250,7 +258,7 @@ class FileOperations {
     _normalizeRemoteCloudKeys(remoteFiles) {
         return (Array.isArray(remoteFiles) ? remoteFiles : [])
             .map((key) => this._normalizeRelativePath(key))
-            .filter((key) => key && !key.endsWith('/'))
+            .filter((key) => key && !key.endsWith('/') && !this._isLocalOnlyDataPath(key))
     }
 
     async _listRemoteCloudFiles(s3, bucket) {
@@ -1342,8 +1350,9 @@ class FileOperations {
 
         let remoteFiles = []
         try {
-            remoteFiles = (await this._retryOperation(() => s3.listObjects(bucket)))
-                .filter((key) => String(key || '').trim() && !String(key).endsWith('/'))
+            remoteFiles = this._normalizeRemoteCloudKeys(
+                await this._retryOperation(() => s3.listObjects(bucket))
+            )
         } catch (err) {
             console.warn?.('[Cloud auto decision] remote file scan failed:', err)
             return { timestamp: 0, path: '', total: 0 }
@@ -1453,12 +1462,14 @@ class FileOperations {
     }
 
     async _getLocalFiles(relativePath = '') {
+        if (this._isLocalOnlyDataPath(relativePath)) return []
         const fullPath = this._resolvePath(relativePath)
         try {
             const entries = await fs.readdir(fullPath, { withFileTypes: true })
             const files = []
             for (const entry of entries) {
                 const relEntryPath = path.join(relativePath, entry.name).replace(/\\/g, '/')
+                if (this._isLocalOnlyDataPath(relEntryPath)) continue
                 if (entry.isFile()) {
                     files.push(relEntryPath)
                 } else if (entry.isDirectory()) {
@@ -1502,6 +1513,79 @@ class FileOperations {
         await fs.mkdir(path.dirname(outputPath), { recursive: true })
         await fs.writeFile(outputPath, data)
         return outputPath
+    }
+
+    async importFilesToSandbox(workspaceId, files = []) {
+        const sandboxWorkspace = require('./sandbox-workspace')
+        return sandboxWorkspace.importWorkspaceFiles(workspaceId, files)
+    }
+
+    async _resolveExportableFile(relativePath) {
+        const fullPath = this._resolvePath(relativePath)
+        const statInfo = await fs.lstat(fullPath)
+        if (statInfo.isSymbolicLink() || !statInfo.isFile()) {
+            throw new Error('只能操作数据目录内的普通文件，不能操作目录或符号链接')
+        }
+
+        const rootAbs = await fs.realpath(this._getDataStorageRootAbs())
+        const realPath = await fs.realpath(fullPath)
+        const relative = path.relative(rootAbs, realPath)
+        if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+            throw new Error('文件路径不能通过符号链接离开数据目录')
+        }
+        return realPath
+    }
+
+    async saveFileAs(relativePath, options = {}) {
+        const sourcePath = await this._resolveExportableFile(relativePath)
+        const suggestedName = String(options?.suggestedName || path.basename(sourcePath)).trim()
+            .replace(/[\u0000-\u001f<>:"/\\|?*]/g, '_')
+            .replace(/[.\s]+$/g, '') || path.basename(sourcePath)
+        const showSaveDialog = globalThis?.utools?.showSaveDialog
+        if (typeof showSaveDialog !== 'function') {
+            throw new Error('当前环境不支持选择文件保存位置')
+        }
+
+        const targetPath = showSaveDialog({
+            title: String(options?.title || '保存沙盒结果文件'),
+            defaultPath: suggestedName,
+            buttonLabel: '保存',
+            properties: ['showOverwriteConfirmation', 'createDirectory']
+        })
+        if (!targetPath) return { canceled: true, filePath: '' }
+        if (path.resolve(targetPath) === path.resolve(sourcePath)) {
+            return { canceled: false, filePath: sourcePath }
+        }
+        await fs.mkdir(path.dirname(targetPath), { recursive: true })
+        await fs.copyFile(sourcePath, targetPath)
+        return { canceled: false, filePath: targetPath }
+    }
+
+    async openFile(relativePath) {
+        const fullPath = await this._resolveExportableFile(relativePath)
+        if (typeof globalThis?.utools?.shellOpenPath === 'function') {
+            globalThis.utools.shellOpenPath(fullPath)
+            return true
+        }
+        if (electronShell?.openPath) {
+            const err = await electronShell.openPath(fullPath)
+            if (err) throw new Error(err)
+            return true
+        }
+        throw new Error('当前环境不支持使用系统默认程序打开文件')
+    }
+
+    async showItemInFolder(relativePath) {
+        const fullPath = await this._resolveExportableFile(relativePath)
+        if (typeof globalThis?.utools?.shellShowItemInFolder === 'function') {
+            globalThis.utools.shellShowItemInFolder(fullPath)
+            return true
+        }
+        if (electronShell?.showItemInFolder) {
+            electronShell.showItemInFolder(fullPath)
+            return true
+        }
+        return this.openInFileManager(relativePath)
     }
 
     _shouldRetryDeleteError(err) {
@@ -1720,11 +1804,9 @@ class FileOperations {
     async _restoreFromCloudInternal(progressCallback) {
         const s3 = this._getS3Client()
         const bucket = globalConfig.getCloudConfig().bucket
-        const remoteFiles = (await this._retryOperation(() => s3.listObjects(bucket)))
-            .filter((key) => String(key || '').trim() && !String(key).endsWith('/'))
-        const normalizedRemoteFiles = remoteFiles
-            .map((key) => this._normalizeRelativePath(key))
-            .filter(Boolean)
+        const normalizedRemoteFiles = this._normalizeRemoteCloudKeys(
+            await this._retryOperation(() => s3.listObjects(bucket))
+        )
         const total = normalizedRemoteFiles.length
         let completed = 0
         const changedRoots = new Set()
@@ -1755,7 +1837,9 @@ class FileOperations {
         const s3 = this._getS3Client()
         const bucket = globalConfig.getCloudConfig().bucket
         const localFiles = await this._getLocalFiles('')
-        const remoteFiles = await this._retryOperation(() => s3.listObjects(bucket))
+        const remoteFiles = this._normalizeRemoteCloudKeys(
+            await this._retryOperation(() => s3.listObjects(bucket))
+        )
 
         const localSet = new Set(localFiles)
         const toUpload = localFiles

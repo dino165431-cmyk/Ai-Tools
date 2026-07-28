@@ -45,6 +45,49 @@
         @step-expand="actions.scheduleScrollToBottom"
       />
       <div
+        v-else-if="sandboxToolPayload"
+        :class="['tool-message__sandbox', { 'is-dark': theme === 'dark' }]"
+      >
+        <div class="tool-message__sandbox-header">
+          <div>
+            <div class="tool-message__sandbox-title">命令沙盒</div>
+            <div class="tool-message__sandbox-meta">
+              <span>工作区：{{ sandboxToolPayload.workspaceId || 'default' }}</span>
+              <span v-if="sandboxToolPayload.cwd">目录：{{ sandboxToolPayload.cwd }}</span>
+              <span v-if="Number.isInteger(sandboxToolPayload.exitCode)">
+                退出码：{{ sandboxToolPayload.exitCode }}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="sandboxFiles.length" class="tool-message__sandbox-files">
+          <div class="tool-message__sandbox-section-title">本次结果文件</div>
+          <button
+            v-for="file in sandboxFiles"
+            :key="file.dataPath || file.path"
+            type="button"
+            class="tool-message__sandbox-file"
+            title="单击打开；右键查看更多操作"
+            @click.stop="openSandboxFile(file)"
+            @contextmenu.prevent.stop="showSandboxFileMenu($event, file)"
+          >
+            <span class="tool-message__sandbox-file-name">{{ file.name || file.path }}</span>
+            <span class="tool-message__sandbox-file-path">{{ file.path }}</span>
+            <span class="tool-message__sandbox-file-size">{{ formatFileSize(file.size) }}</span>
+          </button>
+        </div>
+        <div v-else class="tool-message__sandbox-empty">
+          本次操作没有返回新增或修改后的文件。
+        </div>
+
+        <details v-if="sandboxToolPayload.stdout || sandboxToolPayload.stderr" class="tool-message__sandbox-log">
+          <summary>查看命令输出</summary>
+          <pre v-if="sandboxToolPayload.stdout">{{ sandboxToolPayload.stdout }}</pre>
+          <pre v-if="sandboxToolPayload.stderr" class="is-stderr">{{ sandboxToolPayload.stderr }}</pre>
+        </details>
+      </div>
+      <div
         v-else-if="webToolPayload"
         :class="['tool-message__web', { 'is-dark': theme === 'dark' }]"
       >
@@ -144,16 +187,28 @@
         <pre v-else class="chat-plain chat-plain--deferred">{{ msg.content }}</pre>
       </template>
     </div>
+    <n-dropdown
+      placement="bottom-start"
+      trigger="manual"
+      :show="sandboxFileMenu.show"
+      :x="sandboxFileMenu.x"
+      :y="sandboxFileMenu.y"
+      :options="sandboxFileMenuOptions"
+      @clickoutside="closeSandboxFileMenu"
+      @select="handleSandboxFileMenuSelect"
+    />
   </div>
 </template>
 
 <script setup>
-import { computed } from 'vue'
-import { NIcon, NImage, NImageGroup } from 'naive-ui'
+import { computed, ref } from 'vue'
+import { NDropdown, NIcon, NImage, NImageGroup, useMessage } from 'naive-ui'
 import LazyMarkdownPreview from '@/components/LazyMarkdownPreview.vue'
 import { CHAT_CODE_AUTO_FOLD_THRESHOLD } from '@/utils/chatMarkdownPreview'
 import { ChevronDownOutline, ChevronUpOutline } from '@vicons/ionicons5'
 import ChatAgentRunFlow from './ChatAgentRunFlow.vue'
+import { openFile, saveFileAs, showItemInFolder } from '@/utils/fileOperations'
+import { copyTextToClipboard } from '@/utils/clipboard'
 
 const props = defineProps({
   msg: {
@@ -175,6 +230,7 @@ const props = defineProps({
 })
 
 const toolImages = computed(() => (Array.isArray(props.msg?.images) ? props.msg.images : []))
+const message = useMessage()
 const previewableImages = computed(() =>
   toolImages.value.filter((img) => String(img?.src || '').trim())
 )
@@ -208,10 +264,105 @@ const webReadExcerpt = computed(() => {
     ? props.helpers.truncateInlineText(text, 1800)
     : text.slice(0, 1800)
 })
+const sandboxToolPayload = computed(() => {
+  const payload = props.msg?.toolResultPayload
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null
+  const kind = String(payload.kind || '').trim()
+  return kind.startsWith('sandbox_') ? payload : null
+})
+const sandboxFiles = computed(() => {
+  const payload = sandboxToolPayload.value
+  const files = payload?.changedFiles || payload?.imported || payload?.files
+  return (Array.isArray(files) ? files : []).filter((file) =>
+    file &&
+    String(file.path || '').trim() &&
+    String(file.dataPath || '').trim()
+  )
+})
+const sandboxFileMenu = ref({
+  show: false,
+  x: 0,
+  y: 0,
+  file: null
+})
+const sandboxFileMenuOptions = [
+  { label: '打开文件', key: 'open' },
+  { label: '在文件夹中显示', key: 'show-in-folder' },
+  { label: '另存为…', key: 'save-as' },
+  { type: 'divider' },
+  { label: '复制沙盒相对路径', key: 'copy-path' }
+]
 
 function toolImageTitle(img, index) {
   const name = String(img?.name || '').trim() || `image-${index + 1}`
   return name
+}
+
+function formatFileSize(value) {
+  const size = Math.max(0, Number(value) || 0)
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function closeSandboxFileMenu() {
+  sandboxFileMenu.value.show = false
+}
+
+function showSandboxFileMenu(event, file) {
+  sandboxFileMenu.value = {
+    show: false,
+    x: event.clientX,
+    y: event.clientY,
+    file
+  }
+  window.setTimeout(() => {
+    sandboxFileMenu.value.show = true
+  }, 0)
+}
+
+async function openSandboxFile(file) {
+  const dataPath = String(file?.dataPath || '').trim()
+  if (!dataPath) return
+  try {
+    await openFile(dataPath)
+  } catch (error) {
+    message.error(`打开文件失败：${error?.message || String(error)}`)
+  }
+}
+
+async function handleSandboxFileMenuSelect(key) {
+  const file = sandboxFileMenu.value.file
+  closeSandboxFileMenu()
+  const dataPath = String(file?.dataPath || '').trim()
+  if (!dataPath) return
+
+  try {
+    if (key === 'open') {
+      await openFile(dataPath)
+      return
+    }
+    if (key === 'show-in-folder') {
+      await showItemInFolder(dataPath)
+      return
+    }
+    if (key === 'save-as') {
+      const result = await saveFileAs(dataPath, {
+        suggestedName: file?.name || 'sandbox-output'
+      })
+      if (!result?.canceled) message.success('文件已保存')
+      return
+    }
+    if (key === 'copy-path') {
+      await copyTextToClipboard(String(file?.path || dataPath), {
+        onSuccess: () => message.success('已复制沙盒相对路径'),
+        onUnsupported: () => message.warning('当前环境不支持剪贴板复制'),
+        onError: (error) => message.error(`复制失败：${error?.message || String(error)}`)
+      })
+    }
+  } catch (error) {
+    message.error(`文件操作失败：${error?.message || String(error)}`)
+  }
 }
 </script>
 
@@ -314,6 +465,132 @@ function toolImageTitle(img, index) {
 
 .tool-message__body {
   margin-top: 8px;
+}
+
+.tool-message__sandbox {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid rgba(16, 185, 129, 0.18);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(236, 253, 245, 0.9), rgba(248, 250, 252, 0.92));
+}
+
+.tool-message__sandbox.is-dark {
+  border-color: rgba(52, 211, 153, 0.2);
+  background: linear-gradient(180deg, rgba(6, 78, 59, 0.36), rgba(15, 23, 42, 0.72));
+}
+
+.tool-message__sandbox-title,
+.tool-message__sandbox-section-title {
+  color: rgba(15, 23, 42, 0.88);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.tool-message__sandbox.is-dark .tool-message__sandbox-title,
+.tool-message__sandbox.is-dark .tool-message__sandbox-section-title {
+  color: rgba(226, 232, 240, 0.94);
+}
+
+.tool-message__sandbox-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-top: 4px;
+  color: rgba(71, 85, 105, 0.82);
+  font-size: 11px;
+}
+
+.tool-message__sandbox.is-dark .tool-message__sandbox-meta {
+  color: rgba(203, 213, 225, 0.76);
+}
+
+.tool-message__sandbox-files {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tool-message__sandbox-file {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.7fr) minmax(160px, 1.3fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid rgba(16, 185, 129, 0.14);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.76);
+  color: rgba(15, 23, 42, 0.84);
+  text-align: left;
+  cursor: pointer;
+}
+
+.tool-message__sandbox-file:hover {
+  border-color: rgba(16, 185, 129, 0.32);
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.tool-message__sandbox.is-dark .tool-message__sandbox-file {
+  border-color: rgba(52, 211, 153, 0.16);
+  background: rgba(15, 23, 42, 0.52);
+  color: rgba(226, 232, 240, 0.9);
+}
+
+.tool-message__sandbox-file-name {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-message__sandbox-file-path {
+  overflow: hidden;
+  opacity: 0.7;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-message__sandbox-file-size {
+  opacity: 0.64;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.tool-message__sandbox-empty {
+  color: rgba(71, 85, 105, 0.8);
+  font-size: 12px;
+}
+
+.tool-message__sandbox.is-dark .tool-message__sandbox-empty {
+  color: rgba(203, 213, 225, 0.72);
+}
+
+.tool-message__sandbox-log summary {
+  color: rgba(71, 85, 105, 0.82);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.tool-message__sandbox-log pre {
+  max-height: 260px;
+  margin: 8px 0 0;
+  overflow: auto;
+  padding: 9px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.06);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.tool-message__sandbox-log pre.is-stderr {
+  color: rgb(190, 18, 60);
 }
 
 .tool-message__web {

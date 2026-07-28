@@ -87,7 +87,7 @@ function buildBuiltinPrompt() {
     return {
         _id: BUILTIN_PROMPT_ID,
         name: 'Ai Tools 助手（内置）',
-        description: 'Ai Tools 内置助手系统提示词：按需加载内置 Skill，并通过 Skill 原生 actions 管理笔记、超级笔记、配置、会话、智能体和数据目录命令。',
+        description: 'Ai Tools 内置助手系统提示词：按需加载内置 Skill，并通过 Skill 原生 actions 管理笔记、超级笔记、配置、会话、智能体和沙盒命令工作区。',
         type: 'system',
         content: [
             '你是 Ai Tools 插件内置助手。使用内置 Skill 的原生 actions 读取和修改真实数据；Action 通过 skill_discover 按需发现并通过 skill_call 调用，外部 MCP 只用于用户配置的第三方工具。',
@@ -111,7 +111,7 @@ function buildBuiltinPrompt() {
             '- 会话：`sessions_*` 检索与读取历史会话和定时任务日志。',
             '- 配置：`config_*` 管理外部 MCP、Skills、Prompts、Agents、Providers 和定时任务。',
             '- 编排：`agents_list` / `agent_run`。',
-            '- 命令：`bash_run`，始终需要明确审批。',
+            '- 命令沙盒：`bash_run` / `sandbox_import` / `sandbox_list` / `sandbox_reset`，始终需要明确审批。聊天附件会先复制到对应沙盒工作区，命令只应使用返回的工作区 id 和相对路径。',
             '',
             '配置规范：',
             '- 标准 Skill 导入优先：如果用户提供的是 skill 目录或 `SKILL.md`，优先使用 `config_import_skill_directory` / `config_import_skill_file`。',

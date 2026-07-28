@@ -101,11 +101,11 @@ const DEFINITIONS = Object.freeze([
   Object.freeze({
     id: BUILTIN_SKILL_IDS.shell,
     directory: 'run-data-shell',
-    name: '数据目录命令执行（内置）',
+    name: '沙盒命令工作区（内置）',
     triggers: Object.freeze({
-      keywords: Object.freeze(['bash', 'shell', '命令行', '终端', '执行命令', '运行脚本', '数据目录'])
+      keywords: Object.freeze(['bash', 'shell', '命令行', '终端', '执行命令', '运行脚本', '沙盒', '修改文件'])
     }),
-    actionNames: Object.freeze(['bash_run'])
+    actionNames: Object.freeze(['bash_run', 'sandbox_import', 'sandbox_list', 'sandbox_reset'])
   })
 ])
 
@@ -306,7 +306,8 @@ function normalizeActionSpec(skillId, action) {
     name === 'config_get_system_time' ||
     name.startsWith('config_list_') ||
     /^(notes_(list|read|search)|notebook_read)/.test(name)
-  const isShell = skillId === BUILTIN_SKILL_IDS.shell
+  const isSandboxAction = skillId === BUILTIN_SKILL_IDS.shell
+  const isShell = isSandboxAction && name === 'bash_run'
   const isExecution =
     isShell ||
     name === 'agent_run' ||
@@ -321,10 +322,11 @@ function normalizeActionSpec(skillId, action) {
       destructiveHint:
         source.annotations?.destructiveHint === true ||
         name.endsWith('_delete') ||
+        name === 'sandbox_reset' ||
         name === 'notes_delete' ||
         name === 'notebook_delete_cell'
     },
-    forceApproval: isShell || isExecution || !readOnly,
+    forceApproval: isSandboxAction || isExecution || !readOnly,
     approvalKind: isShell ? 'shell' : isExecution ? 'execution' : 'tool'
   }
 }
