@@ -1,12 +1,12 @@
-﻿import test from 'node:test'
+import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import vm from 'node:vm'
 import { createRequire } from 'node:module'
 
-function loadAgentsClientFactory(overrides = {}) {
-  const filePath = path.resolve('public/preload/builtins/agents-mcp-client.js')
+function loadAgentsSkillRuntimeFactory(overrides = {}) {
+  const filePath = path.resolve('public/preload/builtin-skills/orchestrate-agents/runtime.js')
   const source = fs.readFileSync(filePath, 'utf8')
   const require = createRequire(import.meta.url)
   const module = { exports: {} }
@@ -34,12 +34,21 @@ function loadAgentsClientFactory(overrides = {}) {
     module,
     exports: module.exports,
     require(specifier) {
-      if (specifier === '../utils/global-config') return mockGlobalConfig
-      if (specifier === '../utils/content-index') return mockContentIndex
-      if (specifier === '../utils/stream-json-events') {
+      if (specifier === '../../utils/global-config') return mockGlobalConfig
+      if (specifier === '../../utils/content-index') return mockContentIndex
+      if (specifier === '../../utils/usage-statistics') {
+        return { recordUsage() {} }
+      }
+      if (specifier === '../../utils/provider-chat-runtime') {
+        return { streamProviderChatCompletion: async () => ({ content: '' }) }
+      }
+      if (specifier === '../../utils/stream-json-events') {
         return {
           consumeJsonEventStream: async () => {}
         }
+      }
+      if (specifier === '../action-gateway') {
+        return require(path.resolve('public/preload/builtin-skills/action-gateway.js'))
       }
       return require(specifier)
     },
@@ -64,7 +73,7 @@ function loadAgentsClientFactory(overrides = {}) {
 
 test('agents_list surfaces indexed search mode and semantic flags', async () => {
   let ensuredKind = ''
-  const createBuiltinAgentsMcpClient = loadAgentsClientFactory({
+  const createBuiltinAgentsSkillRuntime = loadAgentsSkillRuntimeFactory({
     globalConfig: {
       getConfig() {
         return {
@@ -136,8 +145,8 @@ test('agents_list surfaces indexed search mode and semantic flags', async () => 
     }
   })
 
-  const client = createBuiltinAgentsMcpClient({})
-  const result = await client.callTool('agents_list', { query: '发布回滚' })
+  const runtime = createBuiltinAgentsSkillRuntime({})
+  const result = await runtime.runAction('agents_list', { query: '发布回滚' })
 
   assert.equal(ensuredKind, 'agent')
   assert.equal(result.kind, 'agents_list')

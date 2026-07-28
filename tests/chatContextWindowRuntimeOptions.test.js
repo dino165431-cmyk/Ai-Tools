@@ -21,6 +21,8 @@ test('normalizeChatContextWindowConfig fills missing custom limits from the acti
     maxTurns: 48,
     keepRecentTurnsFull: 16,
     maxMessages: 320,
+    maxTokensExpanded: 100000,
+    maxTokensCompact: 80000,
     maxCharsExpanded: 400000,
     maxCharsCompact: 320000,
     autoCompactTriggerPercent: 80
@@ -124,6 +126,49 @@ test('resolveChatContextWindowBudgetPlan keeps expanded budget below the trigger
   assert.equal(plan.mode, 'expanded')
   assert.equal(plan.autoCompactActive, false)
   assert.equal(plan.baseChars, 128000)
+})
+
+test('resolveChatContextWindowBudgetPlan prefers reported input token calibration', () => {
+  const plan = resolveChatContextWindowBudgetPlan(
+    {
+      preset: 'custom',
+      maxTokensExpanded: 100000,
+      maxTokensCompact: 80000,
+      maxCharsExpanded: 400000,
+      maxCharsCompact: 320000,
+      autoCompactTriggerPercent: 80
+    },
+    {
+      reservedChars: 20000,
+      sourceChars: 180000,
+      reportedInputTokens: 50000,
+      reportedRequestChars: 100000
+    }
+  )
+
+  assert.equal(plan.budgetUnit, 'token')
+  assert.equal(plan.telemetryAvailable, true)
+  assert.equal(plan.tokensPerChar, 0.5)
+  assert.equal(plan.totalEstimatedTokens, 100000)
+  assert.equal(plan.mode, 'compact')
+  assert.equal(plan.baseTokens, 80000)
+  assert.equal(plan.historyTokensBudget, 70000)
+  assert.equal(plan.historyCharsBudget, 140000)
+})
+
+test('resolveChatContextWindowBudgetPlan keeps character fallback when usage is unavailable', () => {
+  const plan = resolveChatContextWindowBudgetPlan(
+    { preset: 'balanced' },
+    {
+      reservedChars: 70000,
+      sourceChars: 260000
+    }
+  )
+
+  assert.equal(plan.budgetUnit, 'char')
+  assert.equal(plan.telemetryAvailable, false)
+  assert.equal(plan.totalEstimatedTokens, 0)
+  assert.equal(plan.historyCharsBudget, 250000)
 })
 
 test('calculateContextSummaryTriggerChars uses history budget directly without re-subtracting reserved chars', () => {

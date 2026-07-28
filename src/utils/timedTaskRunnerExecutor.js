@@ -46,6 +46,19 @@ import { stringifyToolResultForModel } from '@/utils/toolResultForModel'
 import { createDirectory, exists, writeFile } from '@/utils/fileOperations'
 import { getOrCreateMCPClient, releaseMCPClient, closePooledMCPClient } from '@/utils/mcpClient'
 import { isSystemPrompt } from '@/utils/promptConfig'
+import {
+  buildSkillToolsBundle,
+  createBuiltinSkillActionCatalog,
+  discoverBuiltinSkillActions,
+  resolveBuiltinSkillCall
+} from '@/utils/chatSkillTooling'
+import {
+  evaluateToolApproval,
+  normalizeUnattendedToolApprovalMode,
+  resolveMcpToolApprovalPolicy,
+  TOOL_APPROVAL_MODE_FULL,
+  TOOL_APPROVAL_MODE_SAFE
+} from '@/utils/toolApprovalPolicy'
 
 const SESSION_ROOT = 'session'
 const TIMED_TASK_DIR_NAME = '定时任务'
@@ -57,6 +70,18 @@ const promptsRef = getPrompts()
 const skillsRef = getSkills()
 const mcpServersRef = getMcpServers()
 const chatConfigRef = getChatConfig()
+
+function getBuiltinSkillsApi() {
+  return globalThis?.aiToolsApi?.dangerous?.skills || null
+}
+
+const builtinSkillActionCatalog = createBuiltinSkillActionCatalog((skillId) => {
+  const api = getBuiltinSkillsApi()
+  if (typeof api?.listActions !== 'function') {
+    throw new Error('preload 未注入内置 Skill 动作 API')
+  }
+  return api.listActions(skillId)
+})
 
 function stableStringify(obj, spaces = 2) {
   try {
@@ -160,7 +185,8 @@ async function recordTimedTaskUsage({ usage, providerId, model, endpoint }) {
       usage,
       providerId: String(providerId || ''),
       model: String(model || ''),
-      endpoint: String(endpoint || '')
+      endpoint: String(endpoint || ''),
+      purpose: 'timed-task'
     })
   } catch (error) {
     console.warn('记录定时任务模型用量失败：', error)
@@ -419,6 +445,7 @@ async function buildMcpToolsBundle(servers) {
         serverId: server._id,
         toolName: t.name,
         serverName: server.name || server._id,
+        ...resolveMcpToolApprovalPolicy(t),
         unwrapArgs: toolDef.unwrapArgs
       })
 
@@ -436,23 +463,18 @@ async function buildMcpToolsBundle(servers) {
   return { tools, map }
 }
 
-function legacyBuildSkillsPromptText(skillObjects) {
-  const blocks = []
-  ;(Array.isArray(skillObjects) ? skillObjects : []).forEach((s) => {
-    if (!s || !s._id) return
-    const name = s.name || s._id
-    const desc = String(s.description || '').trim()
-    const content = String(s.content || '').trim()
-    const mcpIds = Array.isArray(s.mcp) ? s.mcp.map((x) => String(x || '').trim()).filter(Boolean) : []
-
-    if (!desc && !content && !mcpIds.length) return
-    const parts = [`## 技能：${name}（id：\`${s._id}\`）`]
-    if (mcpIds.length) parts.push(`MCP：${mcpIds.map((x) => `\`${x}\``).join('、')}`)
-    if (desc) parts.push(`描述：${desc}`)
-    if (content) parts.push(content)
-    blocks.push(parts.join('\n'))
+async function buildTimedTaskToolsBundle(profile) {
+  const mcpBundle = await buildMcpToolsBundle(profile?.activeMcpServers)
+  const skillBundle = buildSkillToolsBundle({
+    selectedSkills: profile?.skillObjects,
+    agentSkillIds: profile?.agentSkillIds,
+    includeLifecycleTools: false,
+    includeResourceTools: false
   })
-  return blocks.join('\n\n').trim()
+  return {
+    tools: [...mcpBundle.tools, ...skillBundle.tools],
+    map: new Map([...mcpBundle.map, ...skillBundle.map])
+  }
 }
 
 async function buildSkillsPromptText(skillObjects) {
@@ -590,6 +612,10 @@ async function resolveExecutionProfile(task) {
     .filter((s) => s && s._id && !s.disabled)
   const modelParams = normalizeAgentModelParams(agent.modelParams)
   const reasoningEffort = modelParams.reasoningEffort || 'auto'
+  const toolApprovalMode = normalizeUnattendedToolApprovalMode(
+    task?.options?.toolApprovalMode,
+    TOOL_APPROVAL_MODE_SAFE
+  )
 
   const systemPrompt = await buildSystemPrompt({ basePromptText, skillObjects })
 
@@ -606,14 +632,27 @@ async function resolveExecutionProfile(task) {
     agentSkillIds,
     activatedAgentSkillIds: agentSkillIds,
     manualMcpIds,
-    autoApproveTools: true,
+    toolApprovalMode,
+    autoApproveTools: toolApprovalMode === TOOL_APPROVAL_MODE_FULL,
     autoActivateAgentSkills: false,
     toolMode: 'expanded',
     effectiveToolMode: 'expanded',
     thinkingEffort: reasoningEffort
   }
 
-  return { agent, provider, model, modelType, modelParams, systemPrompt, state, activeMcpServers }
+  return {
+    agent,
+    provider,
+    model,
+    modelType,
+    modelParams,
+    systemPrompt,
+    state,
+    toolApprovalMode,
+    skillObjects,
+    agentSkillIds,
+    activeMcpServers
+  }
 }
 
 function buildRequestMessages({ systemPrompt, apiMessages, compatToolCallIdAsFc }) {
@@ -719,7 +758,106 @@ async function executeMcpToolCall({ toolCall, mapping, argsObj }) {
   }
 }
 
-async function invokeTimedTaskUtoolsAiTool({ name, argsObj, map, displayMessages }) {
+async function executeBuiltinSkillToolCall({ profile, mapping, argsObj }) {
+  if (mapping?.internal === 'skill_discover') {
+    try {
+      const result = await discoverBuiltinSkillActions({
+        selectedSkills: profile?.skillObjects,
+        catalog: builtinSkillActionCatalog,
+        args: argsObj
+      })
+      return {
+        ok: result?.ok !== false,
+        content: stableStringify(result),
+        serverName: 'Skill',
+        toolName: 'skill_discover'
+      }
+    } catch (err) {
+      return { ok: false, content: `错误：${err?.message || String(err)}` }
+    }
+  }
+
+  if (mapping?.internal === 'skill_call') {
+    let resolved = null
+    try {
+      resolved = await resolveBuiltinSkillCall({
+        selectedSkills: profile?.skillObjects,
+        catalog: builtinSkillActionCatalog,
+        args: argsObj,
+        isSkillLoaded: () => true
+      })
+      if (!resolved?.ok) {
+        return { ok: false, content: stableStringify(resolved) }
+      }
+      const permission = evaluateToolApproval({
+        mode: profile?.toolApprovalMode,
+        forceApproval: resolved.mapping?.forceApproval === true,
+        interactive: false
+      })
+      if (permission.action !== 'allow') {
+        return {
+          ok: false,
+          blocked: true,
+          content: `定时任务工具权限已阻止：${resolved.mapping?.serverName || resolved.mapping?.serverId || 'Skill'} / ${resolved.mapping?.toolName || 'unknown'}。如确认可信，请将该任务的工具权限改为“全部自动”。`,
+          serverName: resolved.mapping?.serverName,
+          toolName: resolved.mapping?.toolName
+        }
+      }
+      const api = getBuiltinSkillsApi()
+      if (typeof api?.runAction !== 'function') {
+        throw new Error('preload 未注入内置 Skill 动作 API')
+      }
+      const isAgentRun =
+        String(resolved.mapping.skillId || '').trim() === 'builtin_skill_agent_orchestration' &&
+        String(resolved.mapping.toolName || '').trim() === 'agent_run'
+      const runtimeArgs = isAgentRun
+        ? {
+            ...(resolved.args && typeof resolved.args === 'object' ? resolved.args : {}),
+            __tool_approval_mode: profile?.toolApprovalMode,
+            tool_approval_mode: profile?.toolApprovalMode
+          }
+        : resolved.args
+      const result = await Promise.resolve(
+        api.runAction(resolved.mapping.skillId, resolved.mapping.toolName, runtimeArgs)
+      )
+      return {
+        ok: result?.ok !== false,
+        content: stringifyToolResultForModel(result),
+        serverName: resolved.mapping.serverName,
+        toolName: resolved.mapping.toolName
+      }
+    } catch (err) {
+      return { ok: false, content: `错误：${err?.message || String(err)}` }
+    }
+  }
+
+  return { ok: false, content: `未知 Skill 工具：${mapping?.internal || '(empty)'}` }
+}
+
+async function executeTimedTaskToolCall({ profile, toolCall, mapping, argsObj }) {
+  const permission = evaluateToolApproval({
+    mode: profile?.toolApprovalMode,
+    forceApproval: mapping?.forceApproval === true,
+    interactive: false
+  })
+  if (permission.action !== 'allow') {
+    return {
+      ok: false,
+      blocked: true,
+      content: `定时任务工具权限已阻止：${mapping?.serverName || mapping?.serverId || '未知'} / ${mapping?.toolName || 'unknown'}。如确认可信，请将该任务的工具权限改为“全部自动”。`
+    }
+  }
+
+  if (mapping?.type === 'internal' && (
+    mapping.internal === 'skill_discover' ||
+    mapping.internal === 'skill_call'
+  )) {
+    return executeBuiltinSkillToolCall({ profile, mapping, argsObj })
+  }
+  return executeMcpToolCall({ toolCall, mapping, argsObj })
+}
+
+async function invokeTimedTaskUtoolsAiTool({ profile, name, argsObj, map, displayMessages }) {
   const mapping = map.get(name)
   const argsText = stableStringify(argsObj || {})
   const toolMessage = createDisplayMessage(
@@ -736,7 +874,8 @@ async function invokeTimedTaskUtoolsAiTool({ name, argsObj, map, displayMessages
     return errorText
   }
 
-  const exec = await executeMcpToolCall({
+  const exec = await executeTimedTaskToolCall({
+    profile,
     toolCall: {
       id: `utools_call_${newId()}`,
       type: 'function',
@@ -751,10 +890,11 @@ async function invokeTimedTaskUtoolsAiTool({ name, argsObj, map, displayMessages
 
   const resultText = String(exec?.content || '')
   updateTimedTaskToolMessage(toolMessage, {
-    status: 'success',
-    serverName: mapping.serverName,
-    toolName: mapping.toolName,
-    resultText
+    status: exec?.ok === false ? 'error' : 'success',
+    serverName: exec?.serverName || mapping.serverName,
+    toolName: exec?.toolName || mapping.toolName,
+    resultText,
+    errorText: exec?.ok === false ? resultText : ''
   })
 
   const parsed = safeJsonParse(resultText)
@@ -766,10 +906,10 @@ async function runTimedTaskWithUtoolsAi({ profile, model, systemPrompt, displayM
     throw new Error('当前环境不支持 uTools 官方 AI')
   }
 
-  const { tools, map } = await buildMcpToolsBundle(profile.activeMcpServers)
+  const { tools, map } = await buildTimedTaskToolsBundle(profile)
   const unregisterToolFns = registerUtoolsAiToolFunctions({
     tools,
-    invokeTool: (name, argsObj) => invokeTimedTaskUtoolsAiTool({ name, argsObj, map, displayMessages })
+    invokeTool: (name, argsObj) => invokeTimedTaskUtoolsAiTool({ profile, name, argsObj, map, displayMessages })
   })
 
   let timedOut = false
@@ -934,7 +1074,7 @@ export async function runTimedTaskOnce(task, options = {}) {
     return finalizePayload()
   }
 
-  const { tools, map } = await buildMcpToolsBundle(profile.activeMcpServers)
+  const { tools, map } = await buildTimedTaskToolsBundle(profile)
 
   const controller = new AbortController()
   const timeoutTimer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
@@ -1066,14 +1206,15 @@ export async function runTimedTaskOnce(task, options = {}) {
           continue
         }
 
-        const exec = await executeMcpToolCall({ toolCall: tc, mapping, argsObj })
+        const exec = await executeTimedTaskToolCall({ profile, toolCall: tc, mapping, argsObj })
         apiMessages.push(createToolResultApiMessage(tc, exec?.content))
 
         updateTimedTaskToolMessage(toolMessage, {
-          status: 'success',
+          status: exec?.ok === false ? 'error' : 'success',
           serverName: mapping.serverName,
           toolName: mapping.toolName,
-          resultText: String(exec?.content || '')
+          resultText: String(exec?.content || ''),
+          errorText: exec?.ok === false ? String(exec?.content || '') : ''
         })
       }
     }

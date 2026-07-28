@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="超级笔记">
+  <rect width="64" height="64" rx="16" fill="#6D5DFB"/>
+  <path d="M18 14h22l8 8v28H18z" fill="#fff" opacity=".96"/>
+  <path d="M40 14v10h8M24 31h18M24 38h18M24 45h11" fill="none" stroke="#6D5DFB" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="18" cy="19" r="3" fill="#C7BFFF"/>
+  <circle cx="18" cy="32" r="3" fill="#C7BFFF"/>
+  <circle cx="18" cy="45" r="3" fill="#C7BFFF"/>
+</svg>

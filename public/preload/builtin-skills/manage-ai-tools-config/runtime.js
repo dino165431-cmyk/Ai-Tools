@@ -1,6 +1,6 @@
 const crypto = require('crypto')
 
-const globalConfig = require('../utils/global-config')
+const globalConfig = require('../../utils/global-config')
 
 function randomId(prefix) {
   const p = String(prefix || 'cfg').trim() || 'cfg'
@@ -337,6 +337,8 @@ function normalizeMcpServerFields(item) {
   const tt = cleanString(out.transportType)
   if (tt) out.transportType = tt
   if ('name' in out) out.name = cleanString(out.name)
+  if ('icon' in out) out.icon = cleanString(out.icon)
+  if ('brandColor' in out) out.brandColor = cleanString(out.brandColor)
   if ('command' in out) out.command = cleanString(out.command)
   if ('cwd' in out) out.cwd = cleanString(out.cwd)
   if ('url' in out) out.url = cleanString(out.url)
@@ -432,6 +434,8 @@ const TARGET_ID_SCHEMA = { type: 'string', description: '目标条目的 _id。�
 
 const MCP_SERVER_FIELDS = {
   name: { type: 'string', description: '服务名称。建议可读且唯一。' },
+  icon: { type: 'string', description: '可选图标。支持 1-8 个字符、HTTP(S) 图片 URL 或 image data URL。' },
+  brandColor: { type: 'string', pattern: '^#[0-9A-Fa-f]{6}$', description: '可选品牌色，格式为 #RRGGBB。' },
   transportType: {
     type: 'string',
     enum: ['stdio', 'streamableHttp'],
@@ -608,13 +612,18 @@ const TIMED_TASK_FIELDS = {
     type: 'object',
     description: '可选；任务选项对象。',
     properties: {
-      autoSaveSession: { type: 'boolean', description: '是否自动保存会话；默认 true。' }
+      autoSaveSession: { type: 'boolean', description: '是否自动保存会话；默认 true。' },
+      toolApprovalMode: {
+        type: 'string',
+        enum: ['full'],
+        description: '定时任务固定为 full：所有工具调用自动执行，不等待人工审批。'
+      }
     },
     additionalProperties: false
   }
 }
 
-const TOOLS = [
+const ACTIONS = [
   // MCP servers
   {
     name: 'config_list_mcp_servers',
@@ -636,7 +645,7 @@ const TOOLS = [
   },
   {
     name: 'config_update_mcp_server',
-    description: '修改 MCP 服务配置（不允许修改内置）。' + CONFIG_LIST_FIRST_NOTE + CONFIG_UPDATE_PATCH_NOTE + CONFIG_MASKED_VALUE_NOTE + MCP_TRANSPORT_SWITCH_NOTE,
+    description: '修改外部 MCP 服务配置。' + CONFIG_LIST_FIRST_NOTE + CONFIG_UPDATE_PATCH_NOTE + CONFIG_MASKED_VALUE_NOTE + MCP_TRANSPORT_SWITCH_NOTE,
     inputSchema: {
       type: 'object',
       properties: {
@@ -654,7 +663,7 @@ const TOOLS = [
   },
   {
     name: 'config_delete_mcp_server',
-    description: '删除 MCP 服务配置（不允许删除内置）。' + CONFIG_LIST_FIRST_NOTE + ' 删除只传 {id}。',
+    description: '删除外部 MCP 服务配置。' + CONFIG_LIST_FIRST_NOTE + ' 删除只传 {id}。',
     inputSchema: {
       type: 'object',
       properties: { id: TARGET_ID_SCHEMA },
@@ -931,12 +940,12 @@ const TOOLS = [
   }
 ]
 
-class BuiltinConfigMcpClient {
-  async listTools() {
-    return TOOLS
+class BuiltinConfigSkillRuntime {
+  async listActions() {
+    return ACTIONS
   }
 
-  async callTool(toolName, args) {
+  async runAction(toolName, args) {
     const name = cleanString(toolName)
     const params = args && typeof args === 'object' && !Array.isArray(args) ? args : {}
 
@@ -958,6 +967,8 @@ class BuiltinConfigMcpClient {
       const item = normalizeMcpServerFields({
         _id: id,
         name: cleanString(params.name) || id,
+        icon: params.icon,
+        brandColor: params.brandColor,
         transportType,
         disabled: !!params.disabled,
         keepAlive: !!params.keepAlive,
@@ -1306,7 +1317,7 @@ class BuiltinConfigMcpClient {
       }
 
       const optionsRaw = isPlainObject(params.options) ? params.options : {}
-      const options = { ...optionsRaw }
+      const options = { ...optionsRaw, toolApprovalMode: 'full' }
       if ('autoSaveSession' in options) options.autoSaveSession = !!options.autoSaveSession
 
       const item = {
@@ -1359,7 +1370,7 @@ class BuiltinConfigMcpClient {
         patch.skillIds = normalizeStringList(patch.skillIds)
       }
       if ('options' in patch) {
-        const options = isPlainObject(patch.options) ? { ...patch.options } : {}
+        const options = isPlainObject(patch.options) ? { ...patch.options, toolApprovalMode: 'full' } : { toolApprovalMode: 'full' }
         if ('autoSaveSession' in options) options.autoSaveSession = !!options.autoSaveSession
         patch.options = options
       }
@@ -1436,7 +1447,7 @@ class BuiltinConfigMcpClient {
       }
     }
 
-    throw new Error(`Unknown tool: ${name}`)
+    throw new Error(`Unknown action: ${name}`)
   }
 
   async listPrompts() {
@@ -1450,6 +1461,8 @@ class BuiltinConfigMcpClient {
   close() {}
 }
 
-module.exports = function createBuiltinConfigMcpClient() {
-  return new BuiltinConfigMcpClient()
+module.exports = function createBuiltinConfigSkillRuntime() {
+  return new BuiltinConfigSkillRuntime()
 }
+
+module.exports.ACTIONS = ACTIONS

@@ -128,7 +128,7 @@
                       :modelValue="msg.content"
                       previewTheme="github"
                       :theme="theme"
-                      :deferBlockLayout="false"
+                      :deferBlockLayout="shouldDeferHeavyChatBlockLayout(msg)"
                       :streaming="msg.streaming"
                       :stream-throttle-ms="CHAT_STREAM_RENDER_THROTTLE_MS"
                       :code-foldable="true"
@@ -138,6 +138,9 @@
                   </template>
 
                   <template v-else-if="msg.role === 'user'">
+                    <n-tag v-if="msg.guidance" size="tiny" type="info" class="chat-user-guidance-tag">
+                      引导
+                    </n-tag>
                     <n-input
                       v-if="msg.editing"
                       v-model:value="msg.editDraft"
@@ -155,7 +158,7 @@
                       :modelValue="msg.content"
                       previewTheme="github"
                       :theme="theme"
-                      :deferBlockLayout="false"
+                      :deferBlockLayout="shouldDeferHeavyChatBlockLayout(msg)"
                       :streaming="msg.streaming"
                       :stream-throttle-ms="CHAT_STREAM_RENDER_THROTTLE_MS"
                       :code-foldable="true"
@@ -207,7 +210,7 @@
                       :modelValue="msg.content"
                       previewTheme="github"
                       :theme="theme"
-                      :deferBlockLayout="false"
+                      :deferBlockLayout="shouldDeferHeavyChatBlockLayout(msg)"
                       :streaming="msg.streaming"
                       :stream-throttle-ms="CHAT_STREAM_RENDER_THROTTLE_MS"
                       :code-foldable="true"
@@ -454,6 +457,9 @@
       :session-messages-length="session.messages.length"
       :web-search-enabled="webSearchEnabled"
       :auto-approve-tools="autoApproveTools"
+      :tool-approval-mode="toolApprovalMode"
+      :tool-approval-mode-label="toolApprovalModeLabel"
+      :tool-approval-mode-options="chatToolApprovalModeOptions"
       :auto-activate-agent-skills="autoActivateAgentSkills"
       :tool-mode-display-text="toolModeDisplayText"
       :context-window-preset-label="contextWindowPresetLabel"
@@ -464,6 +470,7 @@
       :video-generation-button-type="videoGenerationButtonType"
       :media-generation-preset-options="mediaGenerationPresetOptions"
       :can-send="canSend"
+      :queued-inputs="activeQueuedInputs"
       :footer-hint="footerHint"
       @update:input-value="input = $event"
       @file-change="handleFileInputChange"
@@ -489,7 +496,7 @@
       @insert-inline-command-trigger="insertInlineCommandTrigger"
       @open-file-picker="openFilePicker"
       @toggle-web-search="toggleWebSearch"
-      @toggle-auto-approve-tools="toggleAutoApproveTools"
+      @set-tool-approval-mode="setToolApprovalMode"
       @toggle-auto-activate-agent-skills="toggleAutoActivateAgentSkills"
       @cycle-tool-mode="cycleToolMode"
       @open-context-window-modal="openContextWindowModal"
@@ -498,6 +505,8 @@
       @cycle-video-generation-mode="cycleVideoGenerationMode"
       @apply-media-preset="applyMediaGenerationPreset"
       @stop="stop"
+      @steer="steerCurrentRun"
+      @remove-queued-input="removeQueuedInput"
       @send="send"
     />
 
@@ -669,12 +678,24 @@
             <n-form-item label="最大消息数">
               <n-input-number v-model:value="contextWindowDraft.maxMessages" :min="8" :max="1000" style="width: 180px;" />
             </n-form-item>
+            <n-form-item label="展开 Token">
+              <n-input-number v-model:value="contextWindowDraft.maxTokensExpanded" :min="1000" :max="4000000" :step="1000" style="width: 180px;" />
+            </n-form-item>
+            <n-form-item label="精简 Token">
+              <n-input-number v-model:value="contextWindowDraft.maxTokensCompact" :min="1000" :max="4000000" :step="1000" style="width: 180px;" />
+            </n-form-item>
             <n-form-item label="展开模式字符">
               <n-input-number v-model:value="contextWindowDraft.maxCharsExpanded" :min="4000" :max="4200000" :step="10000" style="width: 180px;" />
             </n-form-item>
             <n-form-item label="精简模式字符">
               <n-input-number v-model:value="contextWindowDraft.maxCharsCompact" :min="6000" :max="4200000" :step="10000" style="width: 180px;" />
             </n-form-item>
+            <n-form-item label="自动压缩阈值">
+              <n-input-number v-model:value="contextWindowDraft.autoCompactTriggerPercent" :min="55" :max="95" :step="1" style="width: 180px;" />
+            </n-form-item>
+            <n-text depth="3" style="font-size: 12px;">
+              有输入 Token 统计时使用 Token 预算；否则自动使用字符预算。
+            </n-text>
           </template>
         </n-form>
 
@@ -885,22 +906,24 @@
 
       <template #footer>
         <n-flex justify="space-between" align="center" :size="12">
-          <n-tooltip trigger="hover">
-            <template #trigger>
-              <n-button
-                size="small"
-                tertiary
-                circle
-                :type="autoApproveTools ? 'primary' : 'default'"
-                @click="toggleAutoApproveTools"
-              >
-                <template #icon>
-                  <n-icon :component="autoApproveTools ? ShieldCheckmarkOutline : ShieldOutline" size="16" />
-                </template>
-              </n-button>
-            </template>
-            自动批准工具调用：{{ autoApproveTools ? '开' : '关' }}
-          </n-tooltip>
+          <n-dropdown
+            trigger="click"
+            placement="top-start"
+            :options="chatToolApprovalModeOptions"
+            @select="setToolApprovalMode"
+          >
+            <n-button
+              size="small"
+              tertiary
+              circle
+              :type="toolApprovalModeButtonType"
+              :title="`工具调用控制：${toolApprovalModeLabel}`"
+            >
+              <template #icon>
+                <n-icon :component="toolApprovalMode === TOOL_APPROVAL_MODE_MANUAL ? ShieldOutline : ShieldCheckmarkOutline" size="16" />
+              </template>
+            </n-button>
+          </n-dropdown>
           <n-flex justify="flex-end" :size="12">
             <n-button @click="showMcpModal = false">取消</n-button>
             <n-button type="primary" @click="applyMcpModal">
@@ -938,7 +961,7 @@
 </template>
 
 <script setup>
-import { computed, defineAsyncComponent, ref, shallowRef, reactive, watch, nextTick, onMounted, onActivated, onDeactivated, onBeforeUnmount } from 'vue'
+import { computed, defineAsyncComponent, ref, reactive, watch, nextTick, onMounted, onActivated, onDeactivated, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   NCard,
@@ -955,8 +978,6 @@ import {
   NText,
   NTag,
   NScrollbar,
-  NImage,
-  NImageGroup,
   NModal,
   NForm,
   NFormItem,
@@ -970,20 +991,12 @@ import {
 import LazyMarkdownPreview from '@/components/LazyMarkdownPreview.vue'
 import { ensureMarkdownPreviewRuntime } from '@/utils/mdEditorRuntime'
 import { ChatMultiple24Filled } from '@vicons/fluent'
-import { FlowModelerReference, SkillLevelIntermediate, BareMetalServer02 } from '@vicons/carbon'
-import { Magento } from '@vicons/fa'
-import { Prompt as PromptIcon } from '@vicons/tabler'
 import {
-  SendOutline,
-  StopCircleOutline,
   ArrowDownOutline,
   ShieldCheckmarkOutline,
   ShieldOutline,
-  AttachOutline,
   ImageOutline,
-  VideocamOutline,
   DocumentTextOutline,
-  SpeedometerOutline,
   StarOutline,
   Star,
   ChevronDownOutline,
@@ -993,21 +1006,19 @@ import {
   ChatbubbleEllipsesOutline,
   HardwareChipOutline,
   CopyOutline,
-  DownloadOutline,
   CloseOutline,
   PauseCircleOutline,
   RefreshOutline,
   PencilOutline,
-  CheckmarkOutline,
-  SaveOutline
+  CheckmarkOutline
 } from '@vicons/ionicons5'
 
 import { useUtoolsEnterData } from '@/utils/utoolsListener.js'
 import { getOrCreateMCPClient, getMcpPrompt, releaseMCPClient, closePooledMCPClient, closeAllPooledMCPClients } from '@/utils/mcpClient'
-import { getTheme, getAgents, getProviders, getPrompts, getSkills, getMcpServers, getChatConfig, readSkillFile as readSkillRegistryFile, runSkillScript as runSkillRegistryScript, updateChatConfig } from '@/utils/configListener'
+import { getTheme, getAgents, getProviders, getPrompts, getSkills, getMcpServers, getChatConfig, readSkillFile as readSkillRegistryFile, updateChatConfig } from '@/utils/configListener'
 import { buildRequestOverridesFromAgentModelParams, getAgentReasoningEffortOverride, normalizeAgentModelParams } from '@/utils/agentModelParams'
 import { parseAttachmentTextWithFallback, resetAttachmentTextParserWorker } from '@/utils/attachmentTextParser'
-import { buildSkillFileIndexLines, buildSkillScriptCatalogLines, getSkillDescription, getSkillFileIndex, getSkillScriptCatalog, isDirectorySkill, isRunnableSkillScriptPath } from '@/utils/skillUtils'
+import { getSkillFileIndex, getSkillScriptCatalog, isDirectorySkill, isRunnableSkillScriptPath } from '@/utils/skillUtils'
 import {
   buildUtoolsAiMessages,
   canUseUtoolsAi,
@@ -1019,7 +1030,6 @@ import {
   registerUtoolsAiToolFunctions
 } from '@/utils/utoolsAiProvider'
 import {
-  AGENT_SKILL_LAZY_LOAD_GUIDANCE_LINES,
   buildBasePromptSelectionState,
   buildMergedChatState,
   buildCustomSystemPromptState,
@@ -1031,6 +1041,17 @@ import {
   resolveSystemPromptModalApplyState,
   shouldClearBasePromptSelectionImmediately,
 } from '@/utils/chatPromptTooling'
+import {
+  buildSkillToolsBundle,
+  buildSkillsPromptText as buildProgressiveSkillsPromptText,
+  collectDerivedMcpIds,
+  createBuiltinSkillActionCatalog,
+  listSelectedSkillsBrief as listSelectedSkillsBriefFromList,
+  pickSkillsByTriggers,
+  resolveBuiltinSkillCall,
+  resolveSelectedSkillTarget as resolveSelectedSkillTargetFromList,
+  selectSkillsByIds
+} from '@/utils/chatSkillTooling'
 import {
   buildPromptVariableValues,
   extractPromptVariables,
@@ -1061,40 +1082,25 @@ import {
   shouldSummarizeContextWindow
 } from '@/utils/chatContextWindow'
 import {
-  calculateHistoryContextCharBudget,
   calculateReservedRequestChars,
   createToolResultApiMessage,
   estimateToolDefinitionsChars,
   normalizeAssistantToolCalls,
-  sanitizeRequestToolMessages,
   shouldIncludeReasoningContent,
   shouldRetryWithReasoningContent
 } from '@/utils/chatRequestCompat'
 import { resolveChatSessionCreatedTimeMs } from '@/utils/chatSessionCreatedTime.js'
 import {
   buildMemoryInjection,
-  estimateMemoryCandidatePriority,
   enqueueMemoryCandidate,
   flushMemoryCandidates,
   normalizeMemoryCandidateQueue
 } from '@/utils/chatMemory'
 import { isChatMemoryEnabled } from '@/utils/chatMemoryConfig'
+import { shouldRetryWithoutParallelToolCalls } from '@/utils/openaiResponsesCompat.js'
 import {
-  applyResponsesStreamEvent,
-  buildResponsesRequestBodyFromChatBody,
-  createResponsesStreamAccumulator,
-  finalizeResponsesStreamAccumulator,
-  shouldFallbackChatCompletionsToResponses,
-  shouldFallbackResponsesToChatCompletions,
-  shouldPreferResponsesApiForModel,
-  shouldRetryWithoutParallelToolCalls,
-  shouldRetryResponsesWithoutStreaming
-} from '@/utils/openaiResponsesCompat.js'
-import {
-  allowsAutomaticApiFallback,
   getProviderModelType,
-  normalizeProviderApiMode,
-  resolveChatApiMode
+  normalizeProviderApiMode
 } from '@/utils/providerModelConfig.js'
 import {
   collectImageGenerationRevisedPrompts,
@@ -1106,10 +1112,6 @@ import {
   isLikelyVideoGenerationModel
 } from '@/utils/chatImageGeneration.js'
 import {
-  buildImageMetaLine,
-  formatMediaElapsed,
-  formatAttachmentSize,
-  getImageKindLabel,
   imageMetaLabel,
   normalizeMediaDimension,
   videoMetaLabel
@@ -1119,9 +1121,7 @@ import {
   applyMediaGenerationPresetToInput
 } from '@/utils/chatMediaPresets.js'
 import {
-  buildImageGenerationManualRequestOptions,
   buildMediaGenerationManualRequestOptions,
-  buildVideoGenerationManualRequestOptions,
   createDefaultImageGenerationParams,
   createDefaultVideoGenerationParams,
   normalizeImageGenerationParams,
@@ -1176,9 +1176,9 @@ import {
   INLINE_COMMAND_DEFINITIONS,
   INLINE_COMMAND_KIND_LABELS
 } from '@/utils/chatInlinePicker'
-import { createDirectory, deleteItem, exists, listDirectory, moveItem, readFile, resolvePath, stat, writeFile } from '@/utils/fileOperations'
+import { createDirectory, deleteItem, exists, listDirectory, moveItem, resolvePath, stat, writeFile } from '@/utils/fileOperations'
 import { requestOpenNoteFile } from '@/utils/noteOpenBridge'
-import { buildNoteHrefFromPath, resolveNoteAbsPathFromHref, safeDecodeURIComponent, splitMarkdownLinkDestination } from '@/utils/notePathUtils'
+import { buildNoteHrefFromPath, resolveNoteAbsPathFromHref, safeDecodeURIComponent } from '@/utils/notePathUtils'
 import { getSafeExternalUrl, safeOpenExternal } from '@/utils/safeOpenExternal'
 import {
   contentHasUserAttachments,
@@ -1187,32 +1187,98 @@ import {
 } from '@/utils/chatUserMessageContent'
 import {
   buildToolVisionUserMessage,
-  buildVisionFallbackTextFromContent,
   messageContentHasImageUrl,
   shouldAutoAttachToolImagesForVision,
   shouldFallbackVisionInputToText
 } from '@/utils/toolVisionContext'
-import {
-  formatToolResultDisplayContent,
-  isAgentRunToolResult
-} from '@/utils/chatToolDisplay'
+import { isAgentRunToolResult } from '@/utils/chatToolDisplay'
 import { getAgentRunMessageStatus, isAgentRunToolName, mergeAgentRunTraceEntries } from '@/utils/chatAgentRun'
 import { CHAT_CODE_AUTO_FOLD_THRESHOLD } from '@/utils/chatMarkdownPreview'
-import { resolveChatHeavyRenderTuning } from '@/utils/chatPerformance.js'
-import { extractAssistantTextFromPayload, extractAssistantTextFromPayloads } from '@/utils/chatAssistantResponse'
+import {
+  resolveChatHeavyRenderTuning,
+  resolveChatViewportCompensation,
+  shouldDeferChatHeavyBlockLayout
+} from '@/utils/chatPerformance.js'
+import {
+  ATTACH_ACCEPT,
+  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENT_TEXT_CHARS,
+  MAX_IMAGE_BYTES,
+  buildDisplayImagesFromReferenceAttachments as buildDisplayImagesFromReferences,
+  buildImageAttachmentSummary,
+  buildImageGenerationRequestOptionsWithReferences,
+  buildVideoGenerationRequestOptionsWithReferences,
+  clearAttachmentFileReferences,
+  fileToDataUrl,
+  getFileExt,
+  guessExtensionFromMime,
+  isConvertibleAttachmentExtension,
+  isDirectTextAttachmentExtension,
+  isImageAttachmentLike,
+  isSupportedAttachmentFile,
+  isTextAttachmentMime,
+  isWorkerParsedAttachmentExtension,
+  normalizeAttachmentName,
+  normalizeMediaReferenceImagesForRequest,
+  truncateAttachmentContextForRequest,
+  truncateInlineText,
+  truncateText
+} from '@/utils/chatAttachmentUtils'
+import {
+  assistantImagePromptLabel,
+  assistantImageTaskMetaLabel,
+  assistantImageTaskNote,
+  assistantImageTaskStatusLabel,
+  assistantImageTaskTagType,
+  assistantImageTaskTitle,
+  assistantImageTitle,
+  attachmentCardTitle,
+  attachmentMetaSummary,
+  attachmentStatusText,
+  countFileAttachments,
+  countImageAttachments,
+  imageInsightLabel,
+  isImageAttachment,
+  listDisplayAttachments,
+  mediaTaskProgressLabel
+} from '@/utils/chatMediaPresentation'
+import {
+  buildContextSummaryPrelude,
+  buildContextSummarySourceHash,
+  buildContextSummaryTurnSegments
+} from '@/utils/chatContextSummary'
+import { buildChatRequestMessages } from '@/utils/chatRequestMessages'
+import { createPreparedSkillToolExecutor } from '@/utils/chatPreparedSkillToolExecutor'
+import { createPreparedMcpToolExecutor } from '@/utils/chatPreparedMcpToolExecutor'
+import {
+  normalizeChatProviderBaseUrl as normalizeBaseUrl,
+  safeJsonParse,
+  stableStringify,
+  streamChatCompletion
+} from '@/utils/chatProviderStreaming'
 import {
   buildUtoolsEnterEventKey,
   isComposerCompositionKeydownEvent,
   shouldSubmitComposerKeydownEvent
 } from '@/utils/chatComposerInput'
-import { stringifyToolResultForModel as stringifyToolResultForLlm } from '@/utils/toolResultForModel'
-import { consumeJsonEventStream } from '@/utils/streamJsonEvents'
 import { buildMcpArgsFromForm, normalizeMcpPromptArgumentDefinitions, resetMcpArgFormData } from '@/utils/mcpArgumentForm'
 import {
   buildSessionToolApprovalKey,
-  normalizeShellApprovalCommand,
-  normalizeToolApprovalArgs
+  evaluateToolApproval,
+  getToolApprovalModeLabel,
+  normalizeSkillScriptApprovalArgs,
+  normalizeToolApprovalMode,
+  resolveMcpToolApprovalPolicy,
+  TOOL_APPROVAL_MODE_FULL,
+  TOOL_APPROVAL_MODE_MANUAL,
+  TOOL_APPROVAL_MODE_SAFE
 } from '@/utils/toolApprovalPolicy'
+import { createChatToolApprovalController } from '@/utils/chatToolApprovalController'
+import {
+  CHAT_RUN_INPUT_MODE_QUEUE,
+  CHAT_RUN_INPUT_MODE_STEER,
+  createChatRunInputQueue
+} from '@/utils/chatRunInputQueue'
 import ChatAssistantMedia from './ChatAssistantMedia.vue'
 import ChatComposerPanel from './ChatComposerPanel.vue'
 import ChatHeaderCard from './ChatHeaderCard.vue'
@@ -1234,25 +1300,19 @@ const McpArgumentForm = defineAsyncComponent({
 const dialog = useDialog()
 const message = useMessage()
 const router = useRouter()
-const sessionApprovedToolKeys = new Set()
-const pendingToolApprovals = shallowRef([])
-const activeToolApproval = computed(() => pendingToolApprovals.value[0] || null)
-const pendingToolApprovalCount = computed(() => pendingToolApprovals.value.length)
-
-function clearSessionApprovedTools(sessionId) {
-  const target = String(sessionId || '').trim()
-  if (!target) return
-  for (const key of sessionApprovedToolKeys) {
-    try {
-      const parsed = JSON.parse(key)
-      if (Array.isArray(parsed) && String(parsed[0] || '') === target) {
-        sessionApprovedToolKeys.delete(key)
-      }
-    } catch {
-      sessionApprovedToolKeys.delete(key)
-    }
-  }
-}
+const {
+  activeApproval: activeToolApproval,
+  approvedKeys: sessionApprovedToolKeys,
+  cancelPending: cancelPendingToolApprovals,
+  clearSession: clearSessionApprovedTools,
+  pendingApprovalCount: pendingToolApprovalCount,
+  pendingApprovals: pendingToolApprovals,
+  requestApproval: confirmToolCall,
+  resolveActive: resolveActiveToolApproval
+} = createChatToolApprovalController({
+  createId: newId,
+  throwIfAborted
+})
 
 const theme = getTheme()
 const utoolsEnterData = useUtoolsEnterData()
@@ -1371,13 +1431,44 @@ watch(
 const selectedSkillIds = ref([])
 const manualMcpIds = ref([])
 const webSearchEnabled = ref(false)
-const autoApproveTools = ref(true)
+const toolApprovalMode = ref(TOOL_APPROVAL_MODE_SAFE)
+const autoApproveTools = computed({
+  get: () => toolApprovalMode.value !== TOOL_APPROVAL_MODE_MANUAL,
+  set: (value) => {
+    toolApprovalMode.value = value === true
+      ? TOOL_APPROVAL_MODE_SAFE
+      : TOOL_APPROVAL_MODE_MANUAL
+  }
+})
+const chatToolApprovalModeOptions = [
+  {
+    label: '每次确认',
+    key: TOOL_APPROVAL_MODE_MANUAL
+  },
+  {
+    label: '低风险自动（推荐）',
+    key: TOOL_APPROVAL_MODE_SAFE
+  },
+  {
+    label: '全部自动（高风险）',
+    key: TOOL_APPROVAL_MODE_FULL
+  }
+]
+const toolApprovalModeLabel = computed(() => getToolApprovalModeLabel(toolApprovalMode.value))
+const toolApprovalModeButtonType = computed(() => (
+  toolApprovalMode.value === TOOL_APPROVAL_MODE_FULL
+    ? 'error'
+    : toolApprovalMode.value === TOOL_APPROVAL_MODE_SAFE
+      ? 'primary'
+      : 'default'
+))
 const autoActivateAgentSkills = ref(true)
 
-// 工具模式：
-// - auto：工具较少时展开，过多时自动回退到精简模式
-// - expanded：始终展开
-// - compact：仅暴露 mcp_discover + mcp_call，token 更少、更稳定
+// MCP 工具模式。内置 Skill 始终通过 skill_discover + skill_call 渐进披露，
+// 不再受这里的展开模式影响。
+// - auto：MCP 工具较少时展开，过多时自动回退到精简模式
+// - expanded：始终展开外部 MCP
+// - compact：外部 MCP 仅暴露 mcp_discover + mcp_call
 const toolMode = ref('auto') // auto | expanded | compact
 const effectiveToolMode = ref('expanded') // expanded | compact
 const refreshingMcpTools = ref(false)
@@ -1407,7 +1498,7 @@ const mcpPinnedToolHintsByServerId = new Map()
 const mcpPinnedToolHintsRevision = ref(0)
 const MCP_PINNED_TOOL_HINTS_MAX_PER_SERVER = 20
 
-// Agent 预设技能：默认只暴露名称与描述；需要完整规则内容时再用 use_skill 加载 content；MCP 会随 skill 选择自动挂载
+// Agent 预设技能：元数据常驻，SKILL.md、引用文件和原生 Action Schema 均按需加载。
 const agentSkillIds = ref([])
 const activatedAgentSkillIds = ref([])
 const loadedSkillContentById = reactive({})
@@ -1480,6 +1571,38 @@ function createEmptyContextSummaryState() {
   }
 }
 
+const chatRunInputQueue = createChatRunInputQueue({ createId: newId })
+const chatRunInputQueueRevision = ref(0)
+
+function touchChatRunInputQueue() {
+  chatRunInputQueueRevision.value += 1
+}
+
+function createEmptyContextTokenTelemetry() {
+  return {
+    inputTokens: 0,
+    requestChars: 0,
+    cachedTokens: 0,
+    providerId: '',
+    model: '',
+    endpoint: '',
+    updatedAt: 0
+  }
+}
+
+function normalizeContextTokenTelemetry(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {}
+  return {
+    inputTokens: Math.max(0, Math.floor(Number(source.inputTokens) || 0)),
+    requestChars: Math.max(0, Math.floor(Number(source.requestChars) || 0)),
+    cachedTokens: Math.max(0, Math.floor(Number(source.cachedTokens) || 0)),
+    providerId: String(source.providerId || ''),
+    model: String(source.model || ''),
+    endpoint: String(source.endpoint || ''),
+    updatedAt: Math.max(0, Math.floor(Number(source.updatedAt) || 0))
+  }
+}
+
 function createMemorySessionRecord(options = {}) {
   const now = Date.now()
   const id = String(options.id || '').trim() || `mem-${newId()}`
@@ -1503,7 +1626,15 @@ function createMemorySessionRecord(options = {}) {
     contextSummary: options.contextSummary && typeof options.contextSummary === 'object'
       ? deepCopyJson(options.contextSummary, {})
       : createEmptyContextSummaryState(),
-    autoApproveTools: options.autoApproveTools === true,
+    contextTokenTelemetry: normalizeContextTokenTelemetry(options.contextTokenTelemetry),
+    toolApprovalMode: normalizeToolApprovalMode(
+      options.toolApprovalMode,
+      options.autoApproveTools === false ? TOOL_APPROVAL_MODE_MANUAL : TOOL_APPROVAL_MODE_SAFE
+    ),
+    autoApproveTools: normalizeToolApprovalMode(
+      options.toolApprovalMode,
+      options.autoApproveTools === false ? TOOL_APPROVAL_MODE_MANUAL : TOOL_APPROVAL_MODE_SAFE
+    ) !== TOOL_APPROVAL_MODE_MANUAL,
     activeSessionFilePath: String(options.activeSessionFilePath || '').trim(),
     activeSessionTitle: String(options.activeSessionTitle || '').trim(),
     state: options.state && typeof options.state === 'object' ? deepCopyJson(options.state, {}) : null,
@@ -1611,6 +1742,8 @@ function removeMemorySessionById(id) {
   const target = String(id || '').trim()
   if (!target) return false
   clearSessionApprovedTools(target)
+  chatRunInputQueue.clear(target)
+  touchChatRunInputQueue()
   const existing = getMemorySessionById(target)
   if (existing?.memoryCandidateFlushTimer) {
     try {
@@ -1798,6 +1931,7 @@ function saveActiveMemorySessionDraft() {
   if (!record) return null
   record.messages = session.messages
   record.apiMessages = session.apiMessages
+  record.toolApprovalMode = toolApprovalMode.value
   record.autoApproveTools = autoApproveTools.value === true
   record.input = String(input.value || '')
   record.pendingAttachments = Array.isArray(pendingAttachments.value) ? pendingAttachments.value : []
@@ -1812,10 +1946,12 @@ function saveActiveMemorySessionDraft() {
 function restoreMemorySession(record, options = {}) {
   if (!record) return
   if (!options.skipSaveCurrent) saveActiveMemorySessionDraft()
+  toolApprovalMode.value = normalizeToolApprovalMode(
+    record.toolApprovalMode,
+    record.autoApproveTools === false ? TOOL_APPROVAL_MODE_MANUAL : TOOL_APPROVAL_MODE_SAFE
+  )
   const fallbackAutoApprove =
-    typeof record.autoApproveTools === 'boolean'
-      ? record.autoApproveTools === true
-      : autoApproveTools.value === true
+    toolApprovalMode.value !== TOOL_APPROVAL_MODE_MANUAL
   const normalizedMessages = normalizeLoadedDisplayMessages(
     backfillLoadedToolAutoApproved(record.messages, fallbackAutoApprove)
   )
@@ -1833,6 +1969,8 @@ function restoreMemorySession(record, options = {}) {
   activeSessionFilePath.value = String(record.activeSessionFilePath || '').trim()
   activeSessionTitle.value = String(record.activeSessionTitle || '').trim()
   if (record.state) applyLoadedChatState(record.state)
+  record.toolApprovalMode = toolApprovalMode.value
+  record.autoApproveTools = toolApprovalMode.value !== TOOL_APPROVAL_MODE_MANUAL
   if (record.memoryCandidates?.length) scheduleMemoryCandidateFlush(record, { delayMs: 3000 })
   else clearMemoryCandidateFlushTimer(record)
   resetComposerInput()
@@ -1841,6 +1979,7 @@ function restoreMemorySession(record, options = {}) {
   if (options.syncTreeSelection !== false) syncSessionTreeSelectionForRecord(record)
   scheduleRefreshUserAnchorMeta()
   void flushMemorySessionApprovalQueue(record)
+  scheduleQueuedInputDrain(record)
   if (!options.skipScroll) void nextTick(() => scrollToBottom({ force: true }))
 }
 
@@ -1936,6 +2075,7 @@ function resolveMemoryVisionRequestConfig(chatRequestConfig = null) {
       if (baseUrl && apiKey && model) {
         return {
           providerKind: 'openai-compatible',
+          providerId,
           baseUrl,
           apiKey,
           model,
@@ -1953,6 +2093,7 @@ function resolveMemoryVisionRequestConfig(chatRequestConfig = null) {
     if (baseUrl && apiKey && model && chatRequestConfig?.supportsVision !== false) {
       return {
         providerKind: 'openai-compatible',
+        providerId: String(chatRequestConfig?.providerId || selectedProviderId.value || '').trim(),
         baseUrl,
         apiKey,
         model,
@@ -2003,6 +2144,12 @@ async function buildAttachmentVisionRecallSummary(att, cfg) {
       signal: undefined,
       onDelta: null,
       abortState: null
+    })
+    recordModelUsage(result?.usage, {
+      providerId: requestCfg.providerId,
+      model,
+      endpoint: result?.endpoint || 'auto',
+      purpose: 'memory-vision'
     })
     return truncateInlineText(String(result?.content || '').trim(), 120)
   } catch {
@@ -2111,17 +2258,6 @@ function queueMemoryCandidateForRecord(record, payload = {}) {
   return result
 }
 
-function inferMemorySessionTitle(record) {
-  const explicitTitle = String(record?.activeSessionTitle || record?.title || '').trim()
-  if (explicitTitle && explicitTitle !== DEFAULT_MEMORY_SESSION_TITLE) return explicitTitle
-  const pathTitle = getSessionTitleFromPath(record?.activeSessionFilePath || '')
-  if (pathTitle) return pathTitle
-  const firstUser = (record?.messages || []).find((msg) => msg?.role === 'user')
-  const text = extractEditableUserTextFromContent(firstUser?.content ?? '')
-  const compact = extractAutoSessionTitle(text)
-  return compact || DEFAULT_MEMORY_SESSION_TITLE
-}
-
 function memorySessionOptionLabel(record) {
   const base = resolveMemorySessionTitle(record)
   const running = Math.max(getMemorySessionRunningCount(record), getMemorySessionChatRunCount(record))
@@ -2174,6 +2310,7 @@ const CHAT_RECENT_HEAVY_RENDER_COUNT = 24
 const CHAT_HEAVY_RENDER_SEED_COUNT = 32
 const CHAT_HEAVY_RENDER_WARM_BUFFER_EXTRA = 8
 const CHAT_SCROLL_COMPENSATION_SUSPEND_MS = 640
+const CHAT_SCROLL_COMPENSATION_MARK_MS = 96
 const CHAT_TOOL_COMPACT_MIN_MESSAGES = 120
 const CHAT_TOOL_COMPACT_MIN_TOOL_MESSAGES = 32
 const CHAT_TOOL_COMPACT_ITEM_FIXED_HEIGHT = 72
@@ -2255,313 +2392,9 @@ watch(isCompactChatLayout, (next, prev) => {
   if (next && !prev) sessionSiderCollapsed.value = true
 })
 
-const MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024
-// Cap current-turn attachment text to roughly the largest widely available long-context
-// models (~1M tokens, approximated here as ~4.2 chars per token).
-const MAX_ATTACHMENT_TEXT_CHARS = 4_200_000
-const MAX_IMAGE_BYTES = 6 * 1024 * 1024
 const INLINE_AGENT_SUGGESTION_LIMIT = 8
 const INLINE_COMMAND_SUGGESTION_LIMIT = 8
-const DIRECT_TEXT_ATTACHMENT_EXTENSIONS = new Set([
-  'txt',
-  'md',
-  'markdown',
-  'mdx',
-  'json',
-  'jsonc',
-  'jsonl',
-  'yaml',
-  'yml',
-  'toml',
-  'ini',
-  'cfg',
-  'conf',
-  'env',
-  'log',
-  'csv',
-  'tsv',
-  'xml',
-  'html',
-  'htm',
-  'css',
-  'scss',
-  'less',
-  'js',
-  'mjs',
-  'cjs',
-  'jsx',
-  'ts',
-  'mts',
-  'cts',
-  'tsx',
-  'vue',
-  'py',
-  'java',
-  'kt',
-  'kts',
-  'groovy',
-  'gradle',
-  'c',
-  'h',
-  'cc',
-  'cpp',
-  'cxx',
-  'hpp',
-  'hh',
-  'hxx',
-  'cs',
-  'go',
-  'rs',
-  'rb',
-  'php',
-  'swift',
-  'm',
-  'mm',
-  'scala',
-  'sh',
-  'bash',
-  'zsh',
-  'fish',
-  'ps1',
-  'bat',
-  'cmd',
-  'sql',
-  'r',
-  'lua',
-  'pl',
-  'pm',
-  'dart',
-  'proto',
-  'properties',
-  'gitignore',
-  'gitattributes',
-  'editorconfig'
-])
-const WORKER_PARSED_ATTACHMENT_EXTENSIONS = new Set(['pdf', 'docx', 'xls', 'xlsx', 'pptx'])
-const CONVERTIBLE_ATTACHMENT_EXTENSIONS = new Set(['doc', 'ppt'])
-const SUPPORTED_ATTACHMENT_EXTENSIONS = new Set([
-  ...DIRECT_TEXT_ATTACHMENT_EXTENSIONS,
-  ...WORKER_PARSED_ATTACHMENT_EXTENSIONS,
-  ...CONVERTIBLE_ATTACHMENT_EXTENSIONS
-])
-const TEXT_ATTACHMENT_MIME_TYPES = new Set([
-  'application/json',
-  'application/ld+json',
-  'application/geo+json',
-  'application/xml',
-  'application/rss+xml',
-  'application/atom+xml',
-  'application/xhtml+xml',
-  'application/yaml',
-  'application/x-yaml',
-  'application/toml',
-  'application/x-toml',
-  'application/javascript',
-  'application/x-javascript',
-  'application/typescript',
-  'application/sql',
-  'application/x-sh',
-  'application/x-httpd-php'
-])
-const MIME_EXTENSION_MAP = Object.freeze({
-  'image/png': 'png',
-  'image/jpeg': 'jpg',
-  'image/jpg': 'jpg',
-  'image/webp': 'webp',
-  'image/gif': 'gif',
-  'image/bmp': 'bmp',
-  'image/svg+xml': 'svg',
-  'text/plain': 'txt',
-  'text/markdown': 'md',
-  'text/x-markdown': 'md',
-  'text/html': 'html',
-  'text/css': 'css',
-  'text/javascript': 'js',
-  'text/typescript': 'ts',
-  'text/csv': 'csv',
-  'text/tab-separated-values': 'tsv',
-  'text/xml': 'xml',
-  'application/json': 'json',
-  'application/ld+json': 'jsonld',
-  'application/geo+json': 'json',
-  'application/javascript': 'js',
-  'application/x-javascript': 'js',
-  'application/typescript': 'ts',
-  'application/xml': 'xml',
-  'application/xhtml+xml': 'html',
-  'application/yaml': 'yaml',
-  'application/x-yaml': 'yaml',
-  'application/toml': 'toml',
-  'application/x-toml': 'toml',
-  'application/sql': 'sql',
-  'application/x-sh': 'sh',
-  'application/x-httpd-php': 'php',
-  'application/pdf': 'pdf'
-})
-const ATTACH_ACCEPT = ['image/*', ...Array.from(SUPPORTED_ATTACHMENT_EXTENSIONS).map((ext) => `.${ext}`)].join(',')
 const attachmentParseQueue = new Map()
-const IMAGE_ATTACHMENT_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'ico'])
-const SVG_TEXT_PREVIEW_MAX_CHARS = 240
-
-function getFileExt(name) {
-  const n = String(name || '')
-  const idx = n.lastIndexOf('.')
-  return idx === -1 ? '' : n.slice(idx + 1).toLowerCase()
-}
-
-function guessExtensionFromMime(mime) {
-  const normalizedMime = String(mime || '').trim().toLowerCase()
-  if (!normalizedMime) return ''
-  return MIME_EXTENSION_MAP[normalizedMime] || ''
-}
-
-function normalizeAttachmentName(file, options = {}) {
-  const preferredName = String(options.name || '').trim()
-  if (preferredName) return preferredName
-
-  const fileName = String(file?.name || '').trim()
-  if (fileName) return fileName
-
-  const ext = guessExtensionFromMime(file?.type)
-  if (ext) return `pasted-file.${ext}`
-  return 'pasted-file'
-}
-
-function truncateText(text, maxChars, suffix) {
-  const raw = String(text || '').trim()
-  if (!raw) return ''
-  if (!maxChars || raw.length <= maxChars) return raw
-  return `${raw.slice(0, maxChars)}\n\n${suffix || `(content truncated, total ${raw.length} chars)`}`
-}
-
-function truncateAttachmentContextForRequest(leadText, attachmentBlock, maxChars) {
-  const lead = String(leadText || '').trim()
-  const attachment = String(attachmentBlock || '').trim()
-  const combined = [lead, attachment].filter(Boolean).join('\n\n')
-  const limit = Number(maxChars)
-
-  if (!attachment || !Number.isFinite(limit) || limit <= 0 || combined.length <= limit) {
-    return combined
-  }
-
-  const suffix = `(attachment content truncated for current request budget, total ${combined.length} chars)`
-  if (!lead) {
-    return truncateText(attachment, limit, suffix)
-  }
-
-  const reserved = lead.length + suffix.length + 4
-  if (reserved >= limit) {
-    return truncateText(combined, limit, suffix)
-  }
-
-  const remaining = Math.max(0, limit - reserved)
-  const compactAttachment = attachment.slice(0, remaining).trimEnd()
-  return [lead, compactAttachment, suffix].filter(Boolean).join('\n\n')
-}
-
-function fileToDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result || ''))
-    reader.onerror = () => reject(reader.error || new Error('读取文件失败'))
-    reader.readAsDataURL(file)
-  })
-}
-
-function getMediaReferenceImageUrl(item) {
-  if (typeof item === 'string') return item.trim()
-  return String(item?.dataUrl || item?.src || item?.url || item?.image_url?.url || '').trim()
-}
-
-function normalizeMediaReferenceImagesForRequest(items = []) {
-  const seen = new Set()
-  const out = []
-  ;(Array.isArray(items) ? items : [items]).forEach((item, index) => {
-    const dataUrl = getMediaReferenceImageUrl(item)
-    if (!dataUrl || seen.has(dataUrl)) return
-    seen.add(dataUrl)
-    out.push({
-      dataUrl,
-      name: String(item?.name || item?.filename || `reference_${index + 1}.png`).trim() || `reference_${index + 1}.png`,
-      mime: String(item?.mime || item?.type || '').trim(),
-      size: Number(item?.size || 0),
-      width: Number(item?.width || 0),
-      height: Number(item?.height || 0),
-      metaLine: String(item?.metaLine || '').trim()
-    })
-  })
-  return out
-}
-
-function getReferenceImagesFromRequestOptions(options = {}) {
-  if (!options || typeof options !== 'object') return []
-  const candidates = [
-    options.referenceImages,
-    options.reference_images,
-    options.inputImages,
-    options.input_images,
-    options.input_reference,
-    options.inputReference
-  ]
-  for (const candidate of candidates) {
-    const refs = normalizeMediaReferenceImagesForRequest(candidate)
-    if (refs.length) return refs
-  }
-  return []
-}
-
-function mergeReferenceImagesIntoRequestOptions(options = {}, referenceImages = [], kind = 'image') {
-  const refs = normalizeMediaReferenceImagesForRequest(referenceImages)
-  const out = options && typeof options === 'object' ? { ...options } : {}
-  if (!refs.length) return out
-
-  out.referenceImages = refs
-  if (kind === 'video' && !out.input_reference && !out.inputReference) {
-    out.input_reference = refs.length === 1 ? refs[0] : refs
-  }
-  return out
-}
-
-function buildImageGenerationRequestOptionsWithReferences(requestOptionsOverride = null) {
-  const source = requestOptionsOverride && typeof requestOptionsOverride === 'object' ? requestOptionsOverride : {}
-  return mergeReferenceImagesIntoRequestOptions(
-    buildImageGenerationManualRequestOptions(source),
-    getReferenceImagesFromRequestOptions(source),
-    'image'
-  )
-}
-
-function buildVideoGenerationRequestOptionsWithReferences(requestOptionsOverride = null) {
-  const source = requestOptionsOverride && typeof requestOptionsOverride === 'object' ? requestOptionsOverride : {}
-  return mergeReferenceImagesIntoRequestOptions(
-    buildVideoGenerationManualRequestOptions(source),
-    getReferenceImagesFromRequestOptions(source),
-    'video'
-  )
-}
-
-function buildDisplayImagesFromReferenceAttachments(referenceImages = []) {
-  return normalizeMediaReferenceImagesForRequest(referenceImages).map((img) => ({
-    id: newId(),
-    src: img.dataUrl,
-    name: img.name || 'image',
-    mime: img.mime || '',
-    size: Number(img.size || 0),
-    width: Number(img.width || 0),
-    height: Number(img.height || 0),
-    metaLine: img.metaLine || ''
-  }))
-}
-
-function clearAttachmentFileReferences(attachments = []) {
-  try {
-    ;(Array.isArray(attachments) ? attachments : []).forEach((a) => {
-      if (a && typeof a === 'object') a.file = null
-    })
-  } catch {
-    // ignore
-  }
-}
 
 async function collectAttachmentMediaReferenceImages(attachments = [], userDisplay = null) {
   const list = Array.isArray(attachments) ? attachments : []
@@ -2578,168 +2411,9 @@ async function collectAttachmentMediaReferenceImages(attachments = [], userDispl
 
   const normalized = normalizeMediaReferenceImagesForRequest(refs)
   if (userDisplay && normalized.length && !(Array.isArray(userDisplay.images) && userDisplay.images.length)) {
-    userDisplay.images = buildDisplayImagesFromReferenceAttachments(normalized)
+    userDisplay.images = buildDisplayImagesFromReferences(normalized, newId)
   }
   return normalized
-}
-
-function truncateInlineText(text, maxChars = 160) {
-  const raw = String(text || '').replace(/\s+/g, ' ').trim()
-  if (!raw) return ''
-  if (!maxChars || raw.length <= maxChars) return raw
-  return `${raw.slice(0, maxChars)}...`
-}
-
-function isSvgAttachmentLike({ mime = '', ext = '' } = {}) {
-  const normalizedMime = String(mime || '').trim().toLowerCase()
-  const normalizedExt = String(ext || '').trim().toLowerCase()
-  return normalizedMime === 'image/svg+xml' || normalizedExt === 'svg'
-}
-
-function isImageAttachmentLike({ mime = '', ext = '', kind = '' } = {}) {
-  if (String(kind || '').trim().toLowerCase() === 'image') return true
-  const normalizedMime = String(mime || '').trim().toLowerCase()
-  const normalizedExt = String(ext || '').trim().toLowerCase()
-  if (normalizedMime.startsWith('image/')) return true
-  return IMAGE_ATTACHMENT_EXTENSIONS.has(normalizedExt)
-}
-
-function isDirectTextAttachmentExtension(ext) {
-  return DIRECT_TEXT_ATTACHMENT_EXTENSIONS.has(String(ext || '').trim().toLowerCase())
-}
-
-function isWorkerParsedAttachmentExtension(ext) {
-  return WORKER_PARSED_ATTACHMENT_EXTENSIONS.has(String(ext || '').trim().toLowerCase())
-}
-
-function isConvertibleAttachmentExtension(ext) {
-  return CONVERTIBLE_ATTACHMENT_EXTENSIONS.has(String(ext || '').trim().toLowerCase())
-}
-
-function isTextAttachmentMime(mime) {
-  const normalizedMime = String(mime || '').trim().toLowerCase()
-  if (!normalizedMime || normalizedMime === 'application/octet-stream') return false
-  if (normalizedMime.startsWith('text/')) return true
-  return TEXT_ATTACHMENT_MIME_TYPES.has(normalizedMime)
-}
-
-function isSupportedAttachmentFile(file) {
-  if (!file) return false
-  const mime = String(file?.type || '').trim().toLowerCase()
-  const ext = getFileExt(file?.name) || guessExtensionFromMime(mime)
-  if (isImageAttachmentLike({ mime, ext })) return true
-  if (SUPPORTED_ATTACHMENT_EXTENSIONS.has(ext)) return true
-  return !ext && isTextAttachmentMime(mime)
-}
-
-function parseSvgDimensionValue(raw) {
-  const text = String(raw || '').trim()
-  if (!text) return 0
-  const matched = text.match(/^([0-9]+(?:\.[0-9]+)?)/)
-  if (!matched) return 0
-  const value = Number(matched[1])
-  if (!Number.isFinite(value) || value <= 0) return 0
-  return Math.round(value)
-}
-
-function readImageDimensions(dataUrl) {
-  return new Promise((resolve) => {
-    const src = String(dataUrl || '').trim()
-    if (!src) {
-      resolve({ width: 0, height: 0 })
-      return
-    }
-
-    const img = new Image()
-    img.onload = () => {
-      resolve({
-        width: Number(img.naturalWidth || img.width || 0),
-        height: Number(img.naturalHeight || img.height || 0)
-      })
-    }
-    img.onerror = () => resolve({ width: 0, height: 0 })
-    img.src = src
-  })
-}
-
-async function readSvgAttachmentContext(file) {
-  try {
-    const raw = await file?.text?.()
-    const text = String(raw || '')
-    if (!text.trim()) return null
-
-    const parser = new DOMParser()
-    const doc = parser.parseFromString(text, 'image/svg+xml')
-    if (doc.querySelector('parsererror')) return null
-
-    const root =
-      doc.documentElement?.tagName?.toLowerCase() === 'svg'
-        ? doc.documentElement
-        : doc.querySelector?.('svg')
-    if (!root) return null
-
-    const title = truncateInlineText(root.querySelector?.('title')?.textContent || '', 120)
-    const desc = truncateInlineText(root.querySelector?.('desc')?.textContent || '', 180)
-
-    const textNodes = []
-    root.querySelectorAll?.('text, tspan')?.forEach((node) => {
-      const value = truncateInlineText(node?.textContent || '', 80)
-      if (value) textNodes.push(value)
-    })
-
-    const dedupedText = Array.from(new Set(textNodes))
-    const visibleText = truncateInlineText(dedupedText.join(' | '), SVG_TEXT_PREVIEW_MAX_CHARS)
-
-    return {
-      title,
-      desc,
-      visibleText,
-      width: parseSvgDimensionValue(root.getAttribute?.('width')),
-      height: parseSvgDimensionValue(root.getAttribute?.('height')),
-      viewBox: String(root.getAttribute?.('viewBox') || '').trim()
-    }
-  } catch {
-    return null
-  }
-}
-
-async function buildImageAttachmentSummary({ file, name, ext, mime, dataUrl }) {
-  const summary = []
-  const isSvg = isSvgAttachmentLike({ mime, ext })
-  const kind = isSvg ? 'SVG image' : 'image'
-  const svgContext = isSvg ? await readSvgAttachmentContext(file) : null
-
-  summary.push(`Attachment: ${name || 'image'}`)
-  summary.push(`Type: ${mime || getImageKindLabel({ mime, ext })}`)
-
-  const sizeText = formatAttachmentSize(file?.size)
-  if (sizeText) summary.push(`Size: ${sizeText}`)
-
-  const dimensions = await readImageDimensions(dataUrl)
-  const width = Number(dimensions.width || svgContext?.width || 0)
-  const height = Number(dimensions.height || svgContext?.height || 0)
-  if (width > 0 && height > 0) {
-    summary.push(`Dimensions: ${width} x ${height}`)
-  } else if (svgContext?.viewBox) {
-    summary.push(`ViewBox: ${svgContext.viewBox}`)
-  }
-
-  if (svgContext?.title) summary.push(`Title: ${svgContext.title}`)
-  if (svgContext?.desc) summary.push(`Description: ${svgContext.desc}`)
-  if (svgContext?.visibleText) summary.push(`Visible text: ${svgContext.visibleText}`)
-
-  const svgTextPreview = truncateInlineText(
-    [svgContext?.title, svgContext?.visibleText, svgContext?.desc].filter(Boolean).join(' | '),
-    SVG_TEXT_PREVIEW_MAX_CHARS
-  )
-
-  return {
-    text: `${kind} metadata\n${summary.join('\n')}`.trim(),
-    width,
-    height,
-    metaLine: buildImageMetaLine({ mime, ext, size: file?.size, width, height }),
-    svgTextPreview
-  }
 }
 
 function openFilePicker() {
@@ -2760,179 +2434,6 @@ function attachmentIcon(a) {
   const ext = String(a?.ext || '')
   if (isImageAttachmentLike({ mime, ext, kind: a?.kind })) return ImageOutline
   return DocumentTextOutline
-}
-
-function isImageAttachment(att) {
-  const mime = String(att?.mime || '')
-  const ext = String(att?.ext || '')
-  return isImageAttachmentLike({ mime, ext, kind: att?.kind })
-}
-
-function shouldShowAttachmentTag(att) {
-  if (!att) return false
-  if (!isImageAttachment(att)) return true
-  // 图片已在上方预览，仅在解析中或失败时显示标签
-  const status = String(att?.status || '')
-  return status && status !== 'ready'
-}
-
-function listDisplayAttachments(msg) {
-  const list = Array.isArray(msg?.attachments) ? msg.attachments : []
-  return list.filter((a) => shouldShowAttachmentTag(a))
-}
-
-function countImageAttachments(msg) {
-  const list = Array.isArray(msg?.attachments) ? msg.attachments : []
-  let count = 0
-  list.forEach((a) => {
-    if (isImageAttachment(a)) count += 1
-  })
-  const imagesLen = Array.isArray(msg?.images) ? msg.images.length : 0
-  return Math.max(count, imagesLen)
-}
-
-function countFileAttachments(msg) {
-  const list = Array.isArray(msg?.attachments) ? msg.attachments : []
-  let count = 0
-  list.forEach((a) => {
-    if (!isImageAttachment(a)) count += 1
-  })
-  return count
-}
-
-function attachmentStatusText(att) {
-  const status = String(att?.status || '')
-  if (status === 'processing') return '解析中'
-  if (status === 'error') return `解析失败：${att?.error || '未知错误'}`
-  return ''
-}
-
-function attachmentStatusLabel(att) {
-  const status = String(att?.status || '')
-  if (status === 'processing') return '解析中'
-  if (status === 'error') return '解析失败'
-  return ''
-}
-
-function attachmentTypeLabel(att) {
-  const ext = String(att?.ext || '').trim().toLowerCase()
-  if (ext) return ext === 'jpg' ? 'JPEG' : ext.toUpperCase()
-
-  const mime = String(att?.mime || '').trim().toLowerCase()
-  if (mime === 'application/pdf') return 'PDF'
-  if (mime.startsWith('text/')) return 'TEXT'
-  return 'FILE'
-}
-
-function attachmentMetaSummary(att) {
-  if (!att || typeof att !== 'object') return ''
-
-  const parts = []
-  const typeLabel = attachmentTypeLabel(att)
-  if (typeLabel) parts.push(typeLabel)
-
-  const sizeText = formatAttachmentSize(att?.size)
-  if (sizeText) parts.push(sizeText)
-
-  const statusText = attachmentStatusLabel(att)
-  if (statusText) parts.push(statusText)
-
-  return parts.join(' · ')
-}
-
-function attachmentCardTitle(att) {
-  const name = String(att?.name || '').trim()
-  if (String(att?.status || '') === 'error' && att?.error) {
-    return `${name}\n${att.error}`
-  }
-  return name
-}
-
-function imageInsightLabel(item) {
-  const text = truncateInlineText(item?.svgTextPreview || '', 140)
-  return text ? `SVG 文本：${text}` : ''
-}
-
-function assistantImageTitle(msg) {
-  const count = Array.isArray(msg?.images) ? msg.images.length : 0
-  if (count > 1) return `已生成 ${count} 张图片`
-  return '已生成 1 张图片'
-}
-
-function assistantImagePromptLabel(msg) {
-  const prompt = truncateInlineText(msg?.imagePrompt || '', 220)
-  if (!prompt) return ''
-  return `提示词：${prompt}`
-}
-
-function assistantImageTaskStatusLabel(msg) {
-  const status = String(msg?.imageTask?.stage || msg?.imageTask?.status || '').trim().toLowerCase()
-  if (status === 'submitting') return '提交中'
-  if (status === 'queued' || status === 'submitted' || status === 'pending' || status === 'accepted') return '已提交'
-  if (status === 'processing' || status === 'running' || status === 'in_progress') return '生成中'
-  if (status === 'completed' || status === 'succeeded' || status === 'success') return '已完成'
-  if (status === 'failed' || status === 'error' || status === 'cancelled') return '失败'
-  return status || '处理中'
-}
-
-function assistantImageTaskTagType(msg) {
-  const status = String(msg?.imageTask?.stage || msg?.imageTask?.status || '').trim().toLowerCase()
-  if (status === 'failed' || status === 'error' || status === 'cancelled') return 'error'
-  if (status === 'completed' || status === 'succeeded' || status === 'success') return 'success'
-  if (status === 'queued' || status === 'submitted' || status === 'pending' || status === 'accepted') return 'warning'
-  return 'info'
-}
-
-function assistantImageTaskTitle(msg) {
-  const label = assistantImageTaskStatusLabel(msg)
-  return `图片任务${label === '处理中' ? '' : ` · ${label}`}`.trim()
-}
-
-function assistantImageTaskMetaLabel(msg) {
-  const taskId = String(msg?.imageTask?.id || '').trim()
-  const endpoint = String(msg?.imageTask?.endpointKind || '').trim()
-  const parts = []
-  if (taskId) parts.push(`任务 ID：${taskId}`)
-  if (endpoint) parts.push(`接口：${endpoint}`)
-  const progress = mediaTaskProgressLabel(msg, 'image')
-  if (progress) parts.push(progress)
-  return parts.join(' · ')
-}
-
-function assistantImageTaskNote(msg) {
-  return String(msg?.imageTask?.note || '').trim()
-}
-
-function mediaTaskStageLabel(task, kind = 'image') {
-  const status = String(task?.stage || task?.status || '').trim().toLowerCase()
-  if (status === 'submitting') return '提交中'
-  if (['queued', 'submitted', 'pending', 'accepted'].includes(status)) return '排队中'
-  if (['processing', 'running', 'in_progress', 'polling'].includes(status)) return kind === 'video' ? '生成中' : '处理中'
-  if (status === 'fetching_result') return '拉取结果中'
-  if (['completed', 'succeeded', 'success'].includes(status)) return '已完成'
-  if (['failed', 'error', 'cancelled', 'canceled'].includes(status)) return '失败'
-  return status ? status : ''
-}
-
-function isTerminalMediaTaskStatus(status) {
-  const normalized = String(status || '').trim().toLowerCase()
-  return ['completed', 'succeeded', 'success', 'failed', 'error', 'cancelled', 'canceled'].includes(normalized)
-}
-
-function mediaTaskProgressLabel(messageLike, kind = 'image') {
-  const task = kind === 'video' ? messageLike?.videoTask : messageLike?.imageTask
-  if (!task) return ''
-
-  const parts = []
-  const stage = mediaTaskStageLabel(task, kind)
-  if (stage) parts.push(`阶段：${stage}`)
-
-  const startedAt = Number(task.startedAt || messageLike?.mediaRequest?.startedAt || 0)
-  if (startedAt > 0 && !isTerminalMediaTaskStatus(task.status)) {
-    parts.push(`已等待：${formatMediaElapsed(Date.now() - startedAt)}`)
-  }
-
-  return parts.join(' · ')
 }
 
 async function parseAttachment(att) {
@@ -3510,9 +3011,7 @@ const pendingFileAttachments = computed(() => {
 })
 
 const selectedSkillObjects = computed(() => {
-  const ids = selectedSkillIds.value || []
-  const all = skills.value || []
-  return ids.map((id) => all.find((s) => s._id === id)).filter(Boolean)
+  return selectSkillsByIds(selectedSkillIds.value, skills.value)
 })
 
 function formatDisplayNameWithId(entity) {
@@ -3678,72 +3177,7 @@ function buildActiveRequestOverrides(options = {}) {
   return overrides
 }
 
-function getSkillTriggers(skill) {
-  const t = skill?.triggers && typeof skill.triggers === 'object' ? skill.triggers : {}
-  return {
-    tags: normalizeStringList(t.tags),
-    keywords: normalizeStringList(t.keywords),
-    regex: normalizeStringList(t.regex),
-    intents: normalizeStringList(t.intents)
-  }
-}
-
-function normalizeRegexPattern(raw) {
-  const s = String(raw || '').trim()
-  if (!s) return null
-  const m = s.match(/^\/(.+)\/([a-z]*)$/i)
-  if (m) return { source: m[1], flags: m[2] || 'i' }
-  return { source: s, flags: 'i' }
-}
-
-function scoreSkillByTriggers(skill, textRaw) {
-  const id = skill?._id
-  const name = skill?.name || id || 'Skill'
-  const raw = String(textRaw || '')
-  const lower = raw.toLowerCase()
-  const triggers = getSkillTriggers(skill)
-  const hasAnyTrigger = triggers.keywords.length || triggers.regex.length || triggers.intents.length
-  if (!hasAnyTrigger) return { ok: false, id, name, score: 0, matched: [] }
-
-  let score = 0
-  const matched = []
-
-  triggers.keywords.forEach((kw) => {
-    const needle = String(kw || '').trim().toLowerCase()
-    if (!needle) return
-    if (lower.includes(needle)) {
-      score += 2
-      matched.push(`kw:${kw}`)
-    }
-  })
-
-  triggers.intents.forEach((it) => {
-    const needle = String(it || '').trim().toLowerCase()
-    if (!needle) return
-    if (lower.includes(needle)) {
-      score += 1
-      matched.push(`intent:${it}`)
-    }
-  })
-
-  triggers.regex.forEach((patternRaw) => {
-    const p = normalizeRegexPattern(patternRaw)
-    if (!p?.source) return
-    try {
-      const re = new RegExp(p.source, p.flags || 'i')
-      if (re.test(raw)) {
-        score += 3
-        matched.push(`re:${patternRaw}`)
-      }
-    } catch {
-      // ignore invalid regex
-    }
-  })
-
-  return { ok: true, id, name, score, matched }
-}
-
-function autoActivateAgentSkillsFromText(textRaw) {
+async function autoActivateAgentSkillsFromText(textRaw) {
   if (!autoActivateAgentSkills.value) return []
   const raw = String(textRaw || '').trim()
   if (!raw) return []
@@ -3755,25 +3189,20 @@ function autoActivateAgentSkillsFromText(textRaw) {
     return !!id && agentSet.has(id) && !activatedSet.has(id)
   })
 
-  const scored = candidates
-    .map((s) => scoreSkillByTriggers(s, raw))
-    .filter((x) => x.ok && x.id && x.score > 0)
-    .sort((a, b) => (b.score - a.score) || (b.matched.length - a.matched.length))
-
-  const picked = scored.filter((x) => x.score >= 2).slice(0, 2)
+  const picked = pickSkillsByTriggers(candidates, raw, { minimumScore: 2, limit: 2 })
   if (!picked.length) return []
 
   const prev = Array.isArray(activatedAgentSkillIds.value) ? activatedAgentSkillIds.value : []
   const next = new Set(prev)
   picked.forEach((x) => next.add(x.id))
   activatedAgentSkillIds.value = Array.from(next)
-  picked.forEach((x) => {
+  await Promise.all(picked.map(async (x) => {
     const skill = candidates.find((item) => String(item?._id || '').trim() === x.id)
     if (!isDirectorySkill(skill)) return
-    void loadSkillMainContent(x.id).catch((err) => {
+    await loadSkillMainContent(x.id).catch((err) => {
       console.warn('Failed to auto-load directory skill:', x.id, err)
     })
-  })
+  }))
 
   try {
     message.info(`已自动启用技能：${picked.map((x) => x.name).join('、')}`)
@@ -3785,11 +3214,7 @@ function autoActivateAgentSkillsFromText(textRaw) {
 }
 
 const derivedMcpIds = computed(() => {
-  const ids = new Set()
-  selectedSkillObjects.value.forEach((s) => {
-    normalizeStringList(s?.mcp).forEach((mcpId) => ids.add(mcpId))
-  })
-  return Array.from(ids)
+  return collectDerivedMcpIds(selectedSkillObjects.value)
 })
 
 const activeMcpIds = computed(() => {
@@ -3992,130 +3417,14 @@ const basePromptText = computed(() => {
   return String(p?.content || '').trim()
 })
 
-const legacySkillsPromptText = computed(() => {
-  const blocks = []
-  const agentSet = agentSkillIdSet.value
-  const loadedSet = loadedSkillIdSet.value
-  const mcpList = Array.isArray(mcpServers.value) ? mcpServers.value : []
-
-  const hasLazyUnloaded = selectedSkillObjects.value.some((s) => {
-    const id = s?._id
-    return !!id && agentSet.has(id) && !loadedSet.has(id)
-  })
-  if (hasLazyUnloaded) {
-    blocks.push(AGENT_SKILL_LAZY_LOAD_GUIDANCE_LINES.join('\n'))
-  }
-
-  selectedSkillObjects.value.forEach((s) => {
-    const id = s?._id
-    const name = s?.name || id || 'Skill'
-    const desc = String(s?.description || '').trim()
-    const rawContent = String(s?.content || '').trim()
-    const content = id && loadedSet.has(id) ? rawContent : ''
-
-    const isAgentSkill = !!id && agentSet.has(id)
-    const isLoaded = !!id && loadedSet.has(id)
-    const skillMcpIds = Array.isArray(s?.mcp) ? s.mcp.map((x) => String(x || '').trim()).filter(Boolean) : []
-    const skillMcpNames = skillMcpIds.map((mcpId) => mcpList.find((x) => x?._id === mcpId)?.name || mcpId)
-    const mcpHint = skillMcpNames.length ? skillMcpNames.map((n) => `\`${n}\``).join(', ') : '(none)'
-
-    if (!desc && !rawContent && !skillMcpIds.length) return
-
-    const title = id ? `## Skill: ${name} (id: \`${id}\`)` : `## Skill: ${name}`
-    const parts = [title]
-
-    if (isAgentSkill) {
-      const status = isLoaded ? 'Enabled' : 'Not enabled yet (call use_skill first)'
-      parts.push(`Status: ${status}`)
-    }
-
-    if (skillMcpIds.length) {
-      parts.push(`MCP: ${mcpHint}`)
-    }
-
-    if (desc) parts.push(`Description: ${desc}`)
-    if (!desc && !content && rawContent && isAgentSkill && !isLoaded) {
-      parts.push('Hint: this skill is not enabled yet. Use use_skill before requesting full content.')
-    }
-    if (content) parts.push(content)
-    blocks.push(parts.join('\n'))
-  })
-  return blocks.join('\n\n').trim()
-})
-
 const skillsPromptText = computed(() => {
-  const blocks = []
-  const agentSet = agentSkillIdSet.value
-  const loadedSet = loadedSkillIdSet.value
-  const mcpList = Array.isArray(mcpServers.value) ? mcpServers.value : []
-
-  const hasLazyUnloaded = selectedSkillObjects.value.some((skill) => {
-    const id = String(skill?._id || '').trim()
-    if (!id) return false
-    if (isDirectorySkill(skill)) return !loadedSet.has(id)
-    return agentSet.has(id) && !loadedSet.has(id)
+  return buildProgressiveSkillsPromptText({
+    selectedSkills: selectedSkillObjects.value,
+    agentSkillIds: agentSkillIds.value,
+    loadedSkillIds: loadedSkillIdSet.value,
+    mcpServers: mcpServers.value,
+    getLoadedSkillContent
   })
-  if (hasLazyUnloaded) {
-    blocks.push(AGENT_SKILL_LAZY_LOAD_GUIDANCE_LINES.join('\n'))
-  }
-
-  selectedSkillObjects.value.forEach((skill) => {
-    const id = String(skill?._id || '').trim()
-    const name = skill?.name || id || 'Skill'
-    const isDirectory = isDirectorySkill(skill)
-    const isAgentSkill = !!id && agentSet.has(id)
-    const isLoaded = !!id && loadedSet.has(id)
-    const desc = getSkillDescription(skill)
-    const rawContent = isDirectory ? '' : String(skill?.content || '').trim()
-    const content = id && isLoaded ? (isDirectory ? getLoadedSkillContent(id) : rawContent) : ''
-    const fileIndexLines = isDirectory ? buildSkillFileIndexLines(skill) : []
-    const scriptCatalogLines = isDirectory ? buildSkillScriptCatalogLines(skill) : []
-    const skillMcpIds = Array.isArray(skill?.mcp) ? skill.mcp.map((x) => String(x || '').trim()).filter(Boolean) : []
-    const skillMcpNames = skillMcpIds.map((mcpId) => mcpList.find((x) => x?._id === mcpId)?.name || mcpId)
-    const mcpHint = skillMcpNames.length ? skillMcpNames.map((item) => `\`${item}\``).join(', ') : '(none)'
-
-    if (!desc && !rawContent && !skillMcpIds.length && !fileIndexLines.length && !scriptCatalogLines.length) return
-
-    const title = id ? `## Skill: ${name} (id: \`${id}\`)` : `## Skill: ${name}`
-    const parts = [title]
-
-    if (isAgentSkill || isDirectory) {
-      const status = isLoaded
-        ? (isDirectory ? '已加载 SKILL.md' : '已启用')
-        : '尚未加载'
-      parts.push(`Status: ${status}`)
-    }
-
-    if (skillMcpIds.length) {
-      parts.push(`MCP: ${mcpHint}`)
-    }
-
-    if (desc) parts.push(`Description: ${desc}`)
-
-    if (fileIndexLines.length) {
-      parts.push(['Files:', ...fileIndexLines.map((line) => `- ${line}`)].join('\n'))
-    }
-
-    if (scriptCatalogLines.length) {
-      parts.push(['Scripts:', ...scriptCatalogLines.map((line) => `- ${line}`)].join('\n'))
-    }
-
-    if (!content && isDirectory) {
-      parts.push(
-        `Hint: load the skill first with use_skill({"id":"${id}"}) before reading full content or running scripts.`
-      )
-      if (scriptCatalogLines.length) {
-        parts.push('提示：标准技能通常会在 SKILL.md 和脚本头部注释里说明脚本用法。应用会列出 scripts/ 下可执行的文件，manifest 仅作为可选兼容扩展。如果只有一个可执行脚本，调用 run_skill_script 时可以省略 path。')
-      }
-    } else if (!desc && !content && rawContent && isAgentSkill && !isLoaded) {
-      parts.push('Hint: this skill is not enabled yet. Use use_skill before requesting full content.')
-    }
-
-    if (content) parts.push(content)
-    blocks.push(parts.join('\n'))
-  })
-
-  return blocks.join('\n\n').trim()
 })
 
 const mcpToolCatalogPromptText = computed(() => {
@@ -4448,18 +3757,59 @@ const effectiveContextWindowConfig = computed(() => {
 const contextWindowConfig = computed(() => effectiveContextWindowConfig.value)
 const contextWindowResolvedOptions = computed(() => resolveChatContextWindowOptions(effectiveContextWindowConfig.value))
 
+function getContextTokenTelemetry(record = null) {
+  const target = record && typeof record === 'object' ? record : getActiveMemorySession()
+  const telemetry = normalizeContextTokenTelemetry(target?.contextTokenTelemetry)
+  const useActiveSelection = isMemorySessionActive(target)
+  const expectedProviderId = String(
+    useActiveSelection ? selectedProviderId.value : target?.state?.selectedProviderId || ''
+  ).trim()
+  const expectedModel = String(
+    useActiveSelection ? selectedModel.value : target?.state?.selectedModel || ''
+  ).trim()
+  if (
+    (telemetry.providerId && expectedProviderId && telemetry.providerId !== expectedProviderId) ||
+    (telemetry.model && expectedModel && telemetry.model !== expectedModel)
+  ) {
+    return createEmptyContextTokenTelemetry()
+  }
+  return telemetry
+}
+
+function resolveContextEstimateSource(record, rawMessages) {
+  const list = Array.isArray(rawMessages) ? rawMessages : []
+  const summaryText = String(record?.contextSummary?.summaryText || '').trim()
+  const coveredMessageCount = Math.max(0, Math.floor(Number(record?.contextSummary?.coveredMessageCount || 0)))
+  if (!summaryText || coveredMessageCount < 1 || coveredMessageCount > list.length) {
+    return {
+      messages: list,
+      summaryReservedChars: 0
+    }
+  }
+  return {
+    messages: list.slice(coveredMessageCount),
+    summaryReservedChars: buildContextSummaryPrelude(summaryText).length
+  }
+}
+
 const contextWindowBudgetPlan = computed(() => {
   const providerKind = isUtoolsBuiltinProvider(selectedProvider.value) ? 'utools-ai' : 'openai-compatible'
   const currentToolsKey = getCurrentToolsKey()
   const toolEstimateFresh =
     !!lastBuiltRequestToolsStats.updatedAt && String(lastBuiltRequestToolsStats.key || '') === currentToolsKey
   const toolSchemaChars = toolEstimateFresh ? Number(lastBuiltRequestToolsStats.chars || 0) : 0
-  const systemChars = String(systemContent.value || '').length
+  const activeRecord = getActiveMemorySession()
+  const rawMessages = Array.isArray(session.apiMessages) ? session.apiMessages : []
+  const estimateSource = resolveContextEstimateSource(activeRecord, rawMessages)
+  const systemChars = String(systemContent.value || '').length + estimateSource.summaryReservedChars
   const reservedChars = systemChars + toolSchemaChars
-  const sourceChars = estimateMessagesSize(Array.isArray(session.apiMessages) ? session.apiMessages : [])
+  const sourceChars = estimateMessagesSize(estimateSource.messages)
+  const tokenTelemetry = getContextTokenTelemetry()
   const basePlan = resolveChatContextWindowBudgetPlan(effectiveContextWindowConfig.value, {
     reservedChars,
-    sourceChars
+    sourceChars,
+    reportedInputTokens: tokenTelemetry.inputTokens,
+    reportedRequestChars: tokenTelemetry.requestChars
   })
   return {
     ...basePlan,
@@ -4492,20 +3842,25 @@ function createEmptyContextWindowInspection() {
 
 function buildContextWindowStats({ includeRequestDetails = false } = {}) {
   const rawMessages = Array.isArray(session.apiMessages) ? session.apiMessages : []
+  const activeRecord = getActiveMemorySession()
+  const estimateSource = resolveContextEstimateSource(activeRecord, rawMessages)
   const providerKind = isUtoolsBuiltinProvider(selectedProvider.value) ? 'utools-ai' : 'openai-compatible'
   const currentToolsKey = getCurrentToolsKey()
   const toolEstimateFresh =
     !!lastBuiltRequestToolsStats.updatedAt && String(lastBuiltRequestToolsStats.key || '') === currentToolsKey
   const toolCount = toolEstimateFresh ? Number(lastBuiltRequestToolsStats.count || 0) : 0
   const toolSchemaChars = toolEstimateFresh ? Number(lastBuiltRequestToolsStats.chars || 0) : 0
-  const systemChars = String(systemContent.value || '').length
+  const systemChars = String(systemContent.value || '').length + estimateSource.summaryReservedChars
   const reservedChars = systemChars + toolSchemaChars
-  const sourceChars = estimateMessagesSize(rawMessages)
+  const sourceChars = estimateMessagesSize(estimateSource.messages)
+  const tokenTelemetry = getContextTokenTelemetry()
   const budgetPlan = resolveChatContextWindowBudgetPlan(effectiveContextWindowConfig.value, {
     reservedChars,
-    sourceChars
+    sourceChars,
+    reportedInputTokens: tokenTelemetry.inputTokens,
+    reportedRequestChars: tokenTelemetry.requestChars
   })
-  const historyBudgetChars = getHistoryContextCharBudget({ reservedCharsOverride: reservedChars })
+  const historyBudgetChars = budgetPlan.historyCharsBudget
   const rawAttachmentCount = countChatContextAttachmentMessages(rawMessages)
   const lightRawTurns = countUserTurns(rawMessages)
 
@@ -4515,11 +3870,17 @@ function buildContextWindowStats({ includeRequestDetails = false } = {}) {
       rawCount: rawMessages.length,
       rawTurns: lightRawTurns,
       rawAttachmentCount,
-      requestCount: rawMessages.length,
-      requestTurns: lightRawTurns,
+      requestCount: estimateSource.messages.length,
+      requestTurns: countUserTurns(estimateSource.messages),
       requestAttachmentCount: rawAttachmentCount,
       attachmentSummaryCount: 0,
       baseChars: budgetPlan.baseChars,
+      baseTokens: budgetPlan.baseTokens,
+      totalEstimatedTokens: budgetPlan.totalEstimatedTokens,
+      totalEstimatedChars: budgetPlan.totalEstimatedChars,
+      reportedInputTokens: budgetPlan.reportedInputTokens,
+      telemetryAvailable: budgetPlan.telemetryAvailable,
+      budgetUnit: budgetPlan.budgetUnit,
       expandedChars: budgetPlan.expandedChars,
       compactChars: budgetPlan.compactChars,
       autoCompactTriggerPercent: budgetPlan.autoCompactTriggerPercent,
@@ -4534,7 +3895,10 @@ function buildContextWindowStats({ includeRequestDetails = false } = {}) {
     }
   }
 
-  const requestMessages = buildRequestApiMessages(providerKind, { reservedCharsOverride: reservedChars })
+  const requestMessages = buildRequestApiMessages(providerKind, {
+    reservedCharsOverride: reservedChars,
+    sessionRecord: getActiveMemorySession()
+  })
   const requestAttachmentCount = countChatContextAttachmentMessages(requestMessages)
   const attachmentSummaryCount = countChatContextAttachmentSummaryMessages(requestMessages)
 
@@ -4548,6 +3912,12 @@ function buildContextWindowStats({ includeRequestDetails = false } = {}) {
     requestAttachmentCount,
     attachmentSummaryCount,
     baseChars: budgetPlan.baseChars,
+    baseTokens: budgetPlan.baseTokens,
+    totalEstimatedTokens: budgetPlan.totalEstimatedTokens,
+    totalEstimatedChars: budgetPlan.totalEstimatedChars,
+    reportedInputTokens: budgetPlan.reportedInputTokens,
+    telemetryAvailable: budgetPlan.telemetryAvailable,
+    budgetUnit: budgetPlan.budgetUnit,
     expandedChars: budgetPlan.expandedChars,
     compactChars: budgetPlan.compactChars,
     autoCompactTriggerPercent: budgetPlan.autoCompactTriggerPercent,
@@ -4577,6 +3947,8 @@ function buildContextWindowPreviewSourceSignature() {
     String(selectedModel.value || ''),
     String(systemContent.value || '').length,
     String(contextWindowBudgetPlan.value?.effectiveToolMode || effectiveToolMode.value || ''),
+    String(contextWindowBudgetPlan.value?.reportedInputTokens || 0),
+    String(contextWindowBudgetPlan.value?.reportedRequestChars || 0),
     JSON.stringify(contextWindowPreviewConfig.value || {}),
     getCurrentToolsKey()
   ].join('||')
@@ -4603,16 +3975,19 @@ watch(
       !!lastBuiltRequestToolsStats.updatedAt && String(lastBuiltRequestToolsStats.key || '') === String(getCurrentToolsKey() || '')
     const toolSchemaChars = toolEstimateFresh ? Number(lastBuiltRequestToolsStats.chars || 0) : 0
     const reservedChars = String(systemContent.value || '').length + toolSchemaChars
+    const tokenTelemetry = getContextTokenTelemetry()
     const budgetPlan = resolveChatContextWindowBudgetPlan(previewConfig, {
       reservedChars,
-      sourceChars: estimateMessagesSize(rawMessages)
+      sourceChars: estimateMessagesSize(rawMessages),
+      reportedInputTokens: tokenTelemetry.inputTokens,
+      reportedRequestChars: tokenTelemetry.requestChars
     })
 
     contextWindowPreviewState.value = inspectChatContextWindow(
       rawMessages,
       buildChatContextWindowRuntimeOptions(previewConfig, {
         providerKind,
-        maxChars: calculateHistoryContextCharBudget({ baseChars: budgetPlan.baseChars, reservedChars })
+        maxChars: budgetPlan.historyCharsBudget
       })
     )
   },
@@ -4636,28 +4011,25 @@ const contextWindowStats = computed(() =>
 
 const contextWindowSummaryTag = computed(() => {
   const stats = contextWindowStats.value
-  const focusSuffix = ` · ${contextWindowHistoryFocusLabel.value}`
-  const toolSuffix = stats.toolEstimateFresh && stats.toolCount ? ` · 工具 ${stats.toolCount}` : ''
-  const attachmentSuffix = stats.rawAttachmentCount ? ` · 附件 ${stats.requestAttachmentCount}/${stats.rawAttachmentCount}` : ''
-  const attachmentSummarySuffix = stats.attachmentSummaryCount ? ` · 摘要 ${stats.attachmentSummaryCount}` : ''
-  const pressureSuffix = contextWindowBudgetStatusTagSuffix.value ? ` · ${contextWindowBudgetStatusTagSuffix.value}` : ''
-  if (!stats.rawCount) return `上下文：${contextWindowPresetLabel.value}${focusSuffix}`
-  if (stats.requestCount >= stats.rawCount) {
-    return `上下文：${stats.requestTurns} 轮 / ${stats.requestCount} 条消息${focusSuffix}${toolSuffix}${attachmentSuffix}${attachmentSummarySuffix}${pressureSuffix}`
+  if (stats.telemetryAvailable) {
+    return `上下文 ${formatApproxChars(stats.totalEstimatedTokens)} / ${formatApproxChars(stats.baseTokens)} Token`
   }
-  return `上下文：${stats.requestTurns}/${stats.rawTurns} 轮 | ${stats.requestCount}/${stats.rawCount} 条消息${focusSuffix}${toolSuffix}${attachmentSuffix}${attachmentSummarySuffix}${pressureSuffix}`
+  return `上下文 ${formatApproxChars(stats.totalEstimatedChars)} / ${formatApproxChars(stats.baseChars)} 字符`
 })
 
 const contextWindowSummaryText = computed(() => {
   const stats = contextWindowStats.value
   const modeText = effectiveToolMode.value === 'compact' ? '精简工具模式' : '展开工具模式'
+  const budgetText = stats.telemetryAvailable
+    ? `上下文预算以最近一次真实输入 ${formatApproxChars(stats.reportedInputTokens)} Token 校准；当前预计 ${formatApproxChars(stats.totalEstimatedTokens)}/${formatApproxChars(stats.baseTokens)} Token。`
+    : `当前端点尚未返回可用的输入 Token，暂按 ${formatApproxChars(stats.totalEstimatedChars)}/${formatApproxChars(stats.baseChars)} 字符预算估算。`
   const toolBudgetText = stats.toolEstimateFresh
     ? `工具定义预留：约 ${formatApproxChars(stats.toolSchemaChars)}，共 ${stats.toolCount} 个工具。`
     : '工具定义预留会在首次构建请求工具后显示。'
   const attachmentText = stats.rawAttachmentCount
     ? `附件轮次保留：${stats.requestAttachmentCount}/${stats.rawAttachmentCount}，其中摘要 ${stats.attachmentSummaryCount} 条。`
     : '当前历史里没有附件轮次。'
-  return `${contextWindowPresetLabel.value} / ${contextWindowHistoryFocusLabel.value}；本次预计发送 ${stats.requestTurns}/${stats.rawTurns || 0} 轮、${stats.requestCount}/${stats.rawCount || 0} 条消息（${modeText}）。历史预算约为 ${formatApproxChars(stats.historyBudgetChars)}/${formatApproxChars(stats.baseChars)} 字符；系统提示词约占 ${formatApproxChars(stats.systemChars)}。${attachmentText}${toolBudgetText}`
+  return `${contextWindowPresetLabel.value} / ${contextWindowHistoryFocusLabel.value}；本次预计发送 ${stats.requestTurns}/${stats.rawTurns || 0} 轮、${stats.requestCount}/${stats.rawCount || 0} 条消息（${modeText}）。${budgetText} 系统提示词约占 ${formatApproxChars(stats.systemChars)} 字符。${attachmentText}${toolBudgetText}`
 })
 
 const contextWindowProviderHint = computed(() => {
@@ -4703,18 +4075,31 @@ const contextWindowPreviewBudgetStats = computed(() => {
   const toolSchemaChars = toolEstimateFresh ? Number(lastBuiltRequestToolsStats.chars || 0) : 0
   const toolCount = toolEstimateFresh ? Number(lastBuiltRequestToolsStats.count || 0) : 0
   const systemChars = String(systemContent.value || '').length
-  const baseChars = effectiveToolMode.value === 'compact' ? previewConfig.maxCharsCompact : previewConfig.maxCharsExpanded
   const reservedChars = systemChars + toolSchemaChars
-  const historyCharsBudget = calculateHistoryContextCharBudget({ baseChars, reservedChars })
+  const rawMessages = Array.isArray(session.apiMessages) ? session.apiMessages : []
+  const tokenTelemetry = getContextTokenTelemetry()
+  const budgetPlan = resolveChatContextWindowBudgetPlan(previewConfig, {
+    reservedChars,
+    sourceChars: estimateMessagesSize(rawMessages),
+    reportedInputTokens: tokenTelemetry.inputTokens,
+    reportedRequestChars: tokenTelemetry.requestChars
+  })
+  const historyCharsUsed = entries.reduce((total, entry) => total + Number(entry?.chars || 0), 0)
+  const requestEstimatedTokens = budgetPlan.telemetryAvailable
+    ? Math.max(0, Math.ceil((historyCharsUsed + reservedChars) * budgetPlan.tokensPerChar))
+    : 0
 
   return {
     turnBudget: providerKind === 'utools-ai' ? Math.min(32, previewConfig.maxTurns + 2) : previewConfig.maxTurns,
     turnUsed: entries.filter((entry) => entry?.kind === 'turn').length,
     messageBudget: previewConfig.maxMessages,
     messageUsed: Number(inspection?.messageCount || 0),
-    historyCharsBudget,
-    historyCharsUsed: entries.reduce((total, entry) => total + Number(entry?.chars || 0), 0),
-    baseChars,
+    historyCharsBudget: budgetPlan.historyCharsBudget,
+    historyCharsUsed,
+    baseChars: budgetPlan.baseChars,
+    baseTokens: budgetPlan.baseTokens,
+    requestEstimatedTokens,
+    telemetryAvailable: budgetPlan.telemetryAvailable,
     reservedChars,
     systemChars,
     toolSchemaChars,
@@ -4725,6 +4110,23 @@ const contextWindowPreviewBudgetStats = computed(() => {
 
 const contextWindowPreviewBudgetItems = computed(() => {
   const stats = contextWindowPreviewBudgetStats.value
+  const primaryBudgetItem = stats.telemetryAvailable
+    ? buildContextWindowBudgetItem({
+        key: 'input_tokens',
+        label: '上下文 Token',
+        used: stats.requestEstimatedTokens,
+        max: stats.baseTokens,
+        formatter: formatApproxChars,
+        hint: '依据最近一次接口返回的输入 Token 与请求体大小校准，展示本次预计输入。'
+      })
+    : buildContextWindowBudgetItem({
+        key: 'history_chars',
+        label: '历史字符',
+        used: stats.historyCharsUsed,
+        max: stats.historyCharsBudget,
+        formatter: formatApproxChars,
+        hint: '端点尚未返回输入 Token，当前使用字符预算兜底。'
+      })
   return [
     buildContextWindowBudgetItem({
       key: 'turns',
@@ -4740,14 +4142,7 @@ const contextWindowPreviewBudgetItems = computed(() => {
       max: stats.messageBudget,
       hint: '消息数直接受 maxMessages 限制，压缩后通常会下降。'
     }),
-    buildContextWindowBudgetItem({
-      key: 'history_chars',
-      label: '历史字符',
-      used: stats.historyCharsUsed,
-      max: stats.historyCharsBudget,
-      formatter: formatApproxChars,
-      hint: '这里表示本次请求实际会发送给模型的历史文本体量。'
-    }),
+    primaryBudgetItem,
     buildContextWindowBudgetItem({
       key: 'reserved_chars',
       label: '预留开销',
@@ -4763,6 +4158,11 @@ const contextWindowPreviewBudgetItems = computed(() => {
 
 const contextWindowPreviewBudgetSummaryText = computed(() => {
   const stats = contextWindowPreviewBudgetStats.value
+  if (stats.telemetryAvailable) {
+    const usageText = `${formatApproxChars(stats.requestEstimatedTokens)} / ${formatApproxChars(stats.baseTokens)} Token`
+    if (!stats.messageUsed) return `当前还没有可发送的历史；预计输入 ${usageText}。`
+    return `本次预计输入 ${usageText}；预算已按最近一次真实 usage 校准。`
+  }
   const historyUsageText = `${formatApproxChars(stats.historyCharsUsed)} / ${formatApproxChars(stats.historyCharsBudget)}`
   const reservedText = `${formatApproxChars(stats.reservedChars)} / ${formatApproxChars(stats.baseChars)}`
   if (!stats.messageUsed) {
@@ -4818,10 +4218,11 @@ const contextWindowBudgetStatus = computed(() => {
   }
 })
 
-const contextWindowBudgetStatusTagSuffix = computed(() => String(contextWindowBudgetStatus.value?.tagSuffix || ''))
 const contextWindowSummaryTagType = computed(() => {
-  const type = String(contextWindowBudgetStatus.value?.tagType || 'default')
-  return type === 'default' ? undefined : type
+  const pressure = Number(contextWindowBudgetPlan.value?.effectivePressure || 0)
+  if (pressure >= 0.98) return 'error'
+  if (pressure >= 0.8) return 'warning'
+  return undefined
 })
 const contextWindowSummaryTooltipText = computed(() => {
   const budgetTooltip = String(contextWindowBudgetStatus.value?.tooltip || '').trim()
@@ -5055,9 +4456,25 @@ function contextWindowPreviewEntryNoteV2(entry) {
   return contextWindowPreviewEntryNote(entry)
 }
 
+const activeQueuedInputs = computed(() => {
+  void chatRunInputQueueRevision.value
+  return chatRunInputQueue.list(activeMemorySessionId.value)
+})
+
+const activeQueuedGuidanceCount = computed(() => {
+  return activeQueuedInputs.value.filter((entry) => entry?.mode === CHAT_RUN_INPUT_MODE_STEER).length
+})
+
 const footerHint = computed(() => {
   if (preparingSend.value) return preparingSendStage.value ? `准备中：${preparingSendStage.value}` : '准备发送中...'
-  if (sending.value) return '发送中...'
+  if (sending.value) {
+    const count = activeQueuedInputs.value.length
+    const queueText = count
+      ? `待处理 ${count} 条${activeQueuedGuidanceCount.value ? `（引导 ${activeQueuedGuidanceCount.value}）` : ''}`
+      : '暂无待处理消息'
+    return `运行中 · ${queueText} · 回车排队，Ctrl/⌘+回车引导当前任务`
+  }
+  if (activeQueuedInputs.value.length) return `待处理 ${activeQueuedInputs.value.length} 条消息`
   if (effectiveHeaderHint.value) return effectiveHeaderHint.value
   if (!systemContent.value) return '系统提示词为空。你可以先选择提示词、启用技能，或在上方输入临时系统提示词。'
   return `联网：${webSearchEnabled.value ? '开' : '关'} | MCP 工具：${activeMcpServers.value.length} | 自动批准：${autoApproveTools.value ? '开' : '关'}`
@@ -5217,7 +4634,7 @@ const videoGenerationButtonType = computed(() => {
 })
 
 const canSend = computed(() => {
-  if (preparingSend.value || sending.value) return false
+  if (preparingSend.value) return false
   return !!String(input.value || '').trim() || (pendingAttachments.value || []).length > 0
 })
 
@@ -5353,20 +4770,6 @@ function handleChatPreviewLinkContextMenu(e) {
       copyToClipboard(noteHref || href)
     })
     .catch(() => copyToClipboard(href))
-}
-
-function isDataImageUrl(url) {
-  const s = String(url || '')
-  return /^data:image\/[a-z0-9.+-]+;base64,/i.test(s)
-}
-
-function looksLikeBase64Payload(s) {
-  const text = String(s || '').trim()
-  if (text.length < 256) return false
-  if (/\s/.test(text)) return false
-  if (!/^[a-z0-9+/]+=*$/i.test(text)) return false
-  if (text.length % 4 !== 0) return false
-  return true
 }
 
 function ensureFilenameExt(nameRaw, mime) {
@@ -5600,78 +5003,12 @@ function videoInsightLabel(video) {
   return String(video?.note || '').trim()
 }
 
-function sanitizeToolResultForLLM(result) {
-  const seen = new WeakSet()
-  const KEY_HINT_IMAGE = /^(images|image|artifacts|output|outputs)$/i
-  const KEY_HINT_BASE64 = /(base64|b64|b64_json|dataurl|data_url)$/i
-  const KEY_HINT_TRACE = /^(trace|events|steps)$/i
-
-  const walk = (val, depth, keyHint) => {
-    if (depth > 6) return '（已截断：层级过深）'
-    if (val == null) return val
-
-    if (typeof val === 'string') {
-      const s = val
-      const key = String(keyHint || '')
-
-      // 关键字段：base64 / dataUrl 直接省略
-      if (KEY_HINT_BASE64.test(key)) {
-        if (!s) return s
-        if (isDataImageUrl(s) || looksLikeBase64Payload(s) || s.length > 200) return '(omitted: base64/dataUrl too long)'
-        return s
-      }
-
-      // images/data 列表里的长字符串也倾向省略，通常就是 base64
-      if (KEY_HINT_IMAGE.test(key) && (isDataImageUrl(s) || looksLikeBase64Payload(s))) {
-        return '(omitted: image base64/dataUrl)'
-      }
-
-      if (s.length > 20000) return `${s.slice(0, 20000)}\n(truncated: string too long, total ${s.length} chars)`
-      return s
-    }
-
-    if (typeof val === 'number' || typeof val === 'boolean') return val
-
-    if (Array.isArray(val)) {
-      const limit = KEY_HINT_TRACE.test(String(keyHint || '')) ? 40 : 50
-      if (val.length > limit) {
-        return [...val.slice(0, limit).map((x) => walk(x, depth + 1, keyHint)), `（已截断：数组过长，共 ${val.length} 项）`]
-      }
-      return val.map((x) => walk(x, depth + 1, keyHint))
-    }
-
-    if (typeof val === 'object') {
-      if (seen.has(val)) return '（已省略：循环引用）'
-      seen.add(val)
-      const out = {}
-      const entries = Object.entries(val)
-      for (const [k, v] of entries) {
-        out[k] = walk(v, depth + 1, k)
-      }
-      return out
-    }
-
-    return String(val)
-  }
-
-  return walk(result, 0, '')
-}
-
-function stringifyToolResultForModel(result) {
-  if (typeof result === 'string') return result
-  try {
-    return stableStringify(result)
-  } catch {
-    return String(result ?? '')
-  }
-}
-
 const BUILTIN_AGENTS_TRACE_EVENT = 'builtin-agents-trace'
-const BUILTIN_AGENTS_SERVER_ID = 'builtin_agents_mcp'
 const BUILTIN_AGENT_ID = 'builtin_agent_notes'
 const BUILTIN_AGENT_ORCHESTRATION_SKILL_ID = 'builtin_skill_agent_orchestration'
 const BUILTIN_AGENTS_TOOL_APPROVAL_REQUEST_EVENT = 'builtin-agents-tool-approval-request'
 const BUILTIN_AGENTS_TOOL_APPROVAL_RESPONSE_EVENT = 'builtin-agents-tool-approval-response'
+const BUILTIN_AGENTS_TOOL_APPROVAL_MODE_CHANGE_EVENT = 'builtin-agents-tool-approval-mode-change'
 
 function copyChatImageLink(img) {
   const src = String(img?.src || '').trim()
@@ -6266,6 +5603,7 @@ function enqueueMemorySessionApprovalRequest(record, request) {
         : request.approvalKind === 'execution'
           ? 'execution'
           : 'tool',
+    forceApproval: request.forceApproval === true,
     approvalKey: String(request.approvalKey || '').trim(),
     streamId: String(request.streamId || '').trim(),
     agentName: String(request.agentName || '').trim(),
@@ -6294,6 +5632,26 @@ async function flushMemorySessionApprovalQueue(record) {
   const nextRequest = queue[0]
   if (!nextRequest) return false
 
+  const approvalDecision = evaluateToolApproval({
+    mode: normalizeToolApprovalMode(
+      record.toolApprovalMode,
+      record.autoApproveTools === false ? TOOL_APPROVAL_MODE_MANUAL : TOOL_APPROVAL_MODE_SAFE
+    ),
+    forceApproval: nextRequest.forceApproval === true,
+    interactive: true
+  })
+  if (
+    (nextRequest.approvalKey && sessionApprovedToolKeys.has(nextRequest.approvalKey)) ||
+    approvalDecision.action === 'allow'
+  ) {
+    removeMemorySessionApprovalRequest(record, nextRequest.requestId)
+    dispatchBuiltinAgentsToolApprovalResponse(nextRequest.requestId, true)
+    window.setTimeout(() => {
+      void flushMemorySessionApprovalQueue(record)
+    }, 0)
+    return true
+  }
+
   record.approvalPromptActive = true
   try {
     const approved = await confirmToolCall({
@@ -6307,7 +5665,12 @@ async function flushMemorySessionApprovalQueue(record) {
       sessionId: record.id,
       sessionTitle: resolveMemorySessionTitle(record),
       approvalKind: nextRequest.approvalKind,
-      rememberText: nextRequest.approvalKind === 'shell' ? '本会话允许相同命令' : '本会话允许此工具',
+      rememberText:
+        nextRequest.approvalKind === 'shell'
+          ? '本会话允许相同命令'
+          : nextRequest.approvalKind === 'execution'
+            ? '本会话允许相同脚本调用'
+            : '本会话允许此工具',
       onRememberForSession:
         nextRequest.approvalKey
           ? () => sessionApprovedToolKeys.add(nextRequest.approvalKey)
@@ -6517,13 +5880,15 @@ function handleBuiltinAgentsTraceEvent(event) {
   schedulePendingBuiltinAgentsEventsFlush()
 }
 
-function prepareBuiltinAgentToolCallArgs(server, toolName, argsObj, pendingMessage) {
-  const isBuiltinAgentsServer = String(server?._id || '').trim() === BUILTIN_AGENTS_SERVER_ID
-  if (!isBuiltinAgentsServer || !isAgentRunToolName(toolName)) return argsObj
+function prepareBuiltinAgentToolCallArgs(skillId, toolName, argsObj, pendingMessage) {
+  const isBuiltinAgentsSkill = String(skillId || '').trim() === BUILTIN_AGENT_ORCHESTRATION_SKILL_ID
+  if (!isBuiltinAgentsSkill || !isAgentRunToolName(toolName)) return argsObj
 
   const nextArgs = argsObj && typeof argsObj === 'object' && !Array.isArray(argsObj) ? { ...argsObj } : {}
   const streamId = String(pendingMessage?.toolTraceStreamId || pendingMessage?.id || '').trim()
-  const approvalMode = pendingMessage?.toolAutoApproved === true ? 'auto' : 'manual'
+  const approvalMode = resolveCurrentToolApprovalMode(
+    pendingMessage?.toolAbortState || abortController.value || null
+  )
   if (streamId) {
     // Keep legacy/internal key and a plain key to avoid middleware stripping prefixed fields.
     nextArgs.__trace_stream_id = streamId
@@ -6559,34 +5924,6 @@ function dispatchBuiltinAgentsToolApprovalResponse(requestId, approved) {
     )
   } catch {
     // ignore
-  }
-}
-
-function createAbortAwareDialogState() {
-  const controller = abortController.value
-  if (controller?.onAbort) {
-    return {
-      onAbort(listener) {
-        if (typeof listener !== 'function') return null
-        return controller.onAbort(listener)
-      }
-    }
-  }
-  const signal = controller?.signal
-  if (!signal?.addEventListener) return null
-  return {
-    onAbort(listener) {
-      if (typeof listener !== 'function') return null
-      const handler = () => listener()
-      signal.addEventListener('abort', handler, { once: true })
-      return () => {
-        try {
-          signal.removeEventListener('abort', handler)
-        } catch {
-          // ignore
-        }
-      }
-    }
   }
 }
 
@@ -6633,16 +5970,12 @@ async function handleBuiltinAgentsToolApprovalRequest(event) {
   const streamId = String(detail.streamId || detail.traceStreamId || detail.trace_stream_id || '').trim()
   const relatedToolMessage = streamId ? resolveActiveAgentRunToolMessage(streamId) : null
   const targetRecord = relatedToolMessage ? getMemorySessionForToolMessage(relatedToolMessage) : getActiveMemorySession()
-  const matchedServer = (activeMcpServers.value || []).find((item) => {
-    const id = String(item?._id || '').trim()
-    const name = String(item?.name || '').trim()
-    return (serverId && id === serverId) || (!serverId && name && name === serverName)
-  })
   const approvalKind =
-    detail.approvalKind === 'shell' ||
-    String(matchedServer?.transportType || '').trim() === 'builtinShell'
+    detail.approvalKind === 'shell'
       ? 'shell'
-      : 'tool'
+      : detail.approvalKind === 'execution'
+        ? 'execution'
+        : 'tool'
   const forceApproval =
     detail.forceApproval === true ||
     approvalKind === 'shell'
@@ -6654,13 +5987,17 @@ async function handleBuiltinAgentsToolApprovalRequest(event) {
     approvalKind,
     argsText
   })
-  const inheritedAutoApproval =
-    typeof relatedToolMessage?.toolAutoApproved === 'boolean'
-      ? relatedToolMessage.toolAutoApproved
-      : shouldAutoApproveToolExecution(relatedToolMessage?.toolAbortState || abortController.value || null)
+  const inheritedMode = normalizeToolApprovalMode(
+    targetRecord?.toolApprovalMode,
+    targetRecord?.autoApproveTools === false ? TOOL_APPROVAL_MODE_MANUAL : toolApprovalMode.value
+  )
   const autoApproved =
     sessionApprovedToolKeys.has(approvalKey) ||
-    (!forceApproval && inheritedAutoApproval)
+    evaluateToolApproval({
+      mode: inheritedMode,
+      forceApproval,
+      interactive: true
+    }).action === 'allow'
 
   let approved = null
   if (autoApproved) {
@@ -6674,6 +6011,7 @@ async function handleBuiltinAgentsToolApprovalRequest(event) {
       argsText,
       reasoningText,
       approvalKind,
+      forceApproval,
       approvalKey,
       streamId,
       agentName,
@@ -7056,7 +6394,6 @@ let pendingChatScrollCompensationPx = 0
 let pendingChatScrollCompensationRafId = 0
 let lastProcessedChatScrollTop = 0
 let didProcessChatScroll = false
-let lastActiveUserChatScrollAt = 0
 let programmaticChatScrollUntil = 0
 let sessionResetPromise = null
 
@@ -7727,16 +7064,6 @@ function bumpChatMessageMetricsVersion() {
   chatMessageMetricsVersion.value += 1
 }
 
-function updateChatMessageHeight(messageId, el) {
-  const id = String(messageId || '').trim()
-  if (!id || !(el instanceof HTMLElement)) return
-  const nextHeight = Math.max(96, Math.ceil(el.getBoundingClientRect().height || el.offsetHeight || 0))
-  if (!nextHeight) return
-  if (chatMessageHeightCache.get(id) === nextHeight) return
-  chatMessageHeightCache.set(id, nextHeight)
-  bumpChatMessageMetricsVersion()
-}
-
 function queueChatItemHeightMeasure(messageId, el) {
   const id = String(messageId || '').trim()
   if (!id || !(el instanceof HTMLElement)) return
@@ -7745,19 +7072,31 @@ function queueChatItemHeightMeasure(messageId, el) {
   const raf = window?.requestAnimationFrame || ((cb) => window.setTimeout(cb, 16))
   pendingChatItemHeightMeasureRafId = raf(() => {
     pendingChatItemHeightMeasureRafId = 0
+    const layoutBefore = chatVirtualLayout.value
+    const viewportTop = Number(chatScrollTop.value || 0)
+    let deltaAboveViewport = 0
     let changed = false
     const entries = Array.from(pendingChatItemHeightMeasureMap.entries())
     pendingChatItemHeightMeasureMap.clear()
     entries.forEach(([measureId, targetEl]) => {
       if (!(targetEl instanceof HTMLElement)) return
+      const itemIndex = layoutBefore?.idToIndex?.get(measureId)
+      const layoutItem = Number.isInteger(itemIndex) ? layoutBefore?.items?.[itemIndex] : null
+      const previousHeight = Number(chatMessageHeightCache.get(measureId) || layoutItem?.height || 0)
       const nextHeight = Math.max(96, Math.ceil(targetEl.getBoundingClientRect().height || targetEl.offsetHeight || 0))
-      if (!nextHeight || chatMessageHeightCache.get(measureId) === nextHeight) return
+      if (!nextHeight || previousHeight === nextHeight) return
       chatMessageHeightCache.set(measureId, nextHeight)
+      if (Number(layoutItem?.bottom) <= viewportTop + 1) {
+        deltaAboveViewport += (nextHeight - previousHeight)
+      }
       changed = true
     })
     if (changed) {
       bumpChatMessageMetricsVersion()
       scheduleRefreshUserAnchorMeta()
+      if (deltaAboveViewport && shouldApplyChatScrollCompensation()) {
+        queueChatScrollCompensation(deltaAboveViewport)
+      }
     }
   })
 }
@@ -7783,9 +7122,18 @@ function queueChatScrollCompensation(deltaPx) {
     if (!totalDelta) return
     const el = chatScrollEl.value || resolveScrollbarContainerEl()
     if (!el) return
-    const nextTop = Math.max(0, Number(el.scrollTop || 0) + totalDelta)
-    markProgrammaticChatScroll()
-    el.scrollTop = nextTop
+    const compensation = resolveChatViewportCompensation({
+      scrollTop: el.scrollTop,
+      deltaPx: totalDelta,
+      lastProcessedScrollTop,
+      didProcessScroll: didProcessChatScroll
+    })
+    if (!compensation.appliedDelta) return
+    if (didProcessChatScroll && Number.isFinite(compensation.nextLastProcessedScrollTop)) {
+      lastProcessedChatScrollTop = compensation.nextLastProcessedScrollTop
+    }
+    markProgrammaticChatScroll(CHAT_SCROLL_COMPENSATION_MARK_MS)
+    el.scrollTop = compensation.nextScrollTop
     updateAtBottomState(el)
   })
 }
@@ -7800,12 +7148,8 @@ function clearQueuedChatScrollCompensation() {
 
 function shouldApplyChatScrollCompensation() {
   if (isAtBottom.value) return false
-  if (autoScrollSuspendedByUser.value) return false
   const el = chatScrollEl.value || resolveScrollbarContainerEl()
-  const distanceFromBottom = el ? getDistanceFromBottom(el) : Number(chatScrollDistanceFromBottom.value || 0)
-  if (sending.value && distanceFromBottom > SCROLL_AUTO_DISABLE_DISTANCE_PX) return false
-  if (!lastActiveUserChatScrollAt) return true
-  return (Date.now() - lastActiveUserChatScrollAt) > CHAT_SCROLL_COMPENSATION_SUSPEND_MS
+  return !!el
 }
 
 function disconnectChatMessageResizeObserver() {
@@ -7840,12 +7184,13 @@ function ensureChatMessageResizeObserver() {
         }
         return
       }
-      const prevHeight = Number(chatMessageHeightCache.get(id) || 0)
+      const itemIndex = layoutBefore?.idToIndex?.get(id)
+      const layoutItem = Number.isInteger(itemIndex) ? layoutBefore?.items?.[itemIndex] : null
+      const prevHeight = Number(chatMessageHeightCache.get(id) || layoutItem?.height || estimateChatMessageHeight(msg) || 0)
       const nextHeight = Math.max(96, Math.ceil(entry.contentRect?.height || target.getBoundingClientRect().height || target.offsetHeight || 0))
       if (!nextHeight || prevHeight === nextHeight) return
       chatMessageHeightCache.set(id, nextHeight)
-      const top = Number(layoutBefore?.topById?.get(id))
-      if (Number.isFinite(top) && top < viewportTop - 1) {
+      if (Number(layoutItem?.bottom) <= viewportTop + 1) {
         deltaAboveViewport += (nextHeight - prevHeight)
       }
       changed = true
@@ -7982,6 +7327,12 @@ function shouldRenderHeavyChatMessage(msg) {
   if (hydratedHeavyChatMessageIds.value.has(id)) return true
   if (recentHeavyChatMessageIds.value.has(id)) return true
   return visibleHeavyChatMessageIds.value.has(id)
+}
+
+function shouldDeferHeavyChatBlockLayout(msg) {
+  return shouldDeferChatHeavyBlockLayout(msg, {
+    visibleMessageIds: visibleHeavyChatMessageIds.value
+  })
 }
 
 function shouldRenderCompactToolMessage(msg) {
@@ -8306,7 +7657,6 @@ function handleChatScroll(e) {
   const currentTop = Number(targetEl?.scrollTop || 0)
   const previousTop = didProcessChatScroll ? lastProcessedChatScrollTop : Number(chatScrollTop.value || 0)
   const isProgrammaticScroll = Date.now() <= programmaticChatScrollUntil
-  if (!isProgrammaticScroll && Math.abs(currentTop - previousTop) > 1) lastActiveUserChatScrollAt = Date.now()
   if (!isProgrammaticScroll && currentTop + 1 < previousTop) {
     autoScrollSuspendedByUser.value = true
     autoScrollEnabled.value = false
@@ -8317,7 +7667,6 @@ function handleChatScroll(e) {
 function handleChatWheel(e) {
   const deltaY = Number(e?.deltaY || 0)
   if (!deltaY) return
-  lastActiveUserChatScrollAt = Date.now()
   if (deltaY < 0) {
     autoScrollSuspendedByUser.value = true
     autoScrollEnabled.value = false
@@ -8342,7 +7691,6 @@ function processChatScroll(elMaybe) {
   const isProgrammaticScroll = Date.now() <= programmaticChatScrollUntil
   const isUserScrollingUp = didProcessChatScroll && (nextScrollTop + 1 < prevScrollTop)
   const isUserScrollingDown = didProcessChatScroll && (nextScrollTop > prevScrollTop + 1)
-  if (!isProgrammaticScroll && (isUserScrollingUp || isUserScrollingDown)) lastActiveUserChatScrollAt = Date.now()
   lastProcessedChatScrollTop = nextScrollTop
   didProcessChatScroll = true
 
@@ -8386,7 +7734,6 @@ function clearQueuedChatScrollProcessing() {
   pendingChatScrollEl = null
   lastProcessedChatScrollTop = 0
   didProcessChatScroll = false
-  lastActiveUserChatScrollAt = 0
   programmaticChatScrollUntil = 0
 }
 
@@ -8756,6 +8103,7 @@ function buildSessionTitleGenerationPrompt({ text = '', attachments = [] } = {})
 
 async function requestSessionTitleFromModel({
   providerKind = 'openai-compatible',
+  providerId = '',
   baseUrl = '',
   apiKey = '',
   model = '',
@@ -8775,6 +8123,12 @@ async function requestSessionTitleFromModel({
         apiMessages: [{ role: 'user', content: userPrompt }]
       })
     })
+    recordModelUsage(extractModelUsage(result), {
+      providerId,
+      model,
+      endpoint: 'utools-ai',
+      purpose: 'session-title'
+    })
     return String(result?.content || '').trim()
   }
 
@@ -8792,6 +8146,12 @@ async function requestSessionTitleFromModel({
         { role: 'user', content: userPrompt }
       ]
     }
+  })
+  recordModelUsage(result?.usage, {
+    providerId,
+    model,
+    endpoint: result?.endpoint || 'auto',
+    purpose: 'session-title'
   })
   return String(result?.content || '').trim()
 }
@@ -8835,13 +8195,6 @@ async function allocateAutoChatSessionPathByTitle(title, options = {}) {
 async function allocateAutoChatSessionPath(record) {
   const title = getPersistedMemorySessionTitle(record) || DEFAULT_MEMORY_SESSION_TITLE
   return allocateAutoChatSessionPathByTitle(title)
-}
-
-function shouldBootstrapAutoChatSession(record) {
-  if (!record) return false
-  if (String(record.activeSessionFilePath || '').trim()) return false
-  const userCount = (Array.isArray(record.messages) ? record.messages : []).filter((msg) => msg?.role === 'user').length
-  return userCount === 1
 }
 
 async function applyGeneratedSessionTitle(record, nextTitle, options = {}) {
@@ -8926,6 +8279,7 @@ function requestSessionTitleAsync({
       const persistedPath = String(await Promise.resolve(initialPersistPromise).catch(() => '') || '').trim()
       const generated = await requestSessionTitleFromModel({
         providerKind: cfg?.providerKind || 'openai-compatible',
+        providerId: String(cfg?.providerId || '').trim(),
         baseUrl: String(cfg?.baseUrl || '').trim(),
         apiKey: String(cfg?.apiKey || '').trim(),
         model: String(cfg?.model || '').trim(),
@@ -9426,6 +8780,7 @@ function buildCurrentChatState() {
     activatedAgentSkillIds: deepCopyJson(activatedAgentSkillIds.value, []),
     manualMcpIds: deepCopyJson(manualMcpIds.value, []),
     webSearchEnabled: webSearchEnabled.value,
+    toolApprovalMode: toolApprovalMode.value,
     autoApproveTools: autoApproveTools.value,
     autoActivateAgentSkills: autoActivateAgentSkills.value,
     toolMode: toolMode.value,
@@ -9440,7 +8795,8 @@ function buildCurrentChatState() {
     contextWindow: sessionContextWindowOverride.value
       ? deepCopyJson(normalizeChatContextWindowConfig(sessionContextWindowOverride.value), null)
       : null,
-    contextSummary: deepCopyJson(activeRecord?.contextSummary || {}, {})
+    contextSummary: deepCopyJson(activeRecord?.contextSummary || {}, {}),
+    contextTokenTelemetry: normalizeContextTokenTelemetry(activeRecord?.contextTokenTelemetry)
   }
 }
 
@@ -9461,6 +8817,7 @@ function buildDefaultChatState() {
     activatedAgentSkillIds: [],
     manualMcpIds: [],
     webSearchEnabled: false,
+    toolApprovalMode: TOOL_APPROVAL_MODE_SAFE,
     autoApproveTools: true,
     autoActivateAgentSkills: true,
     toolMode: 'auto',
@@ -9472,12 +8829,19 @@ function buildDefaultChatState() {
     imageGenerationParams: createDefaultImageGenerationParams(),
     videoGenerationParamsEnabled: false,
     videoGenerationParams: createDefaultVideoGenerationParams(),
-    contextWindow: null
+    contextWindow: null,
+    contextTokenTelemetry: createEmptyContextTokenTelemetry()
   }
 }
 
 function buildHydratedChatState(state) {
-  return buildMergedChatState(buildDefaultChatState(), state)
+  const merged = buildMergedChatState(buildDefaultChatState(), state)
+  merged.toolApprovalMode = normalizeToolApprovalMode(
+    state?.toolApprovalMode,
+    state?.autoApproveTools === false ? TOOL_APPROVAL_MODE_MANUAL : TOOL_APPROVAL_MODE_SAFE
+  )
+  merged.autoApproveTools = merged.toolApprovalMode !== TOOL_APPROVAL_MODE_MANUAL
+  return merged
 }
 
 function applyDefaultChatState() {
@@ -9527,7 +8891,8 @@ function buildSessionSavePayload(options = {}) {
     memory: {
       candidates: normalizeMemoryCandidateQueue(memorySource?.memoryCandidates),
       candidateUpdatedAt: Number(memorySource?.memoryCandidateUpdatedAt || 0) || 0,
-      contextSummary: deepCopyJson(memorySource?.contextSummary || {}, {})
+      contextSummary: deepCopyJson(memorySource?.contextSummary || {}, {}),
+      contextTokenTelemetry: normalizeContextTokenTelemetry(memorySource?.contextTokenTelemetry)
     }
   }
 }
@@ -9727,6 +9092,8 @@ function resetChatRuntimeState() {
   abortController.value = null
   const record = getActiveMemorySession()
   clearSessionApprovedTools(record?.id)
+  chatRunInputQueue.clear(record?.id)
+  touchChatRunInputQueue()
   const now = Date.now()
   clearMemoryCandidateFlushTimer(record)
   record.messages = session.messages
@@ -9736,6 +9103,7 @@ function resetChatRuntimeState() {
   record.memoryCandidates = []
   record.memoryCandidateUpdatedAt = 0
   record.contextSummary = createEmptyContextSummaryState()
+  record.contextTokenTelemetry = createEmptyContextTokenTelemetry()
   record.activeSessionFilePath = ''
   record.activeSessionTitle = ''
   record.title = DEFAULT_MEMORY_SESSION_TITLE
@@ -9776,47 +9144,6 @@ async function runExclusiveSessionReset(task) {
       sessionResetPromise = null
     })
   return sessionResetPromise
-}
-
-function hasUncommittedChatDraft(targetPath = '') {
-  const nextPath = String(targetPath || '').trim()
-  const currentPath = String(activeSessionFilePath.value || '').trim()
-  if (nextPath && currentPath && nextPath === currentPath) return false
-
-  if (String(input.value || '').trim()) return true
-  if ((pendingAttachments.value || []).length > 0) return true
-
-  if (!currentPath) {
-    return (session.messages?.length || 0) > 0 || (session.apiMessages?.length || 0) > 0
-  }
-
-  return false
-}
-
-async function confirmSwitchSessionWithDraft(targetPath = '') {
-  if (!hasUncommittedChatDraft(targetPath)) return true
-
-  const currentPath = String(activeSessionFilePath.value || '').trim()
-  const hasUnsavedConversation = !currentPath && ((session.messages?.length || 0) > 0 || (session.apiMessages?.length || 0) > 0)
-  const hasComposerDraft = !!String(input.value || '').trim() || (pendingAttachments.value || []).length > 0
-
-  const content = hasUnsavedConversation
-    ? '当前对话尚未保存，切换历史会话会丢失这段对话内容，是否继续？'
-    : hasComposerDraft
-      ? '输入框里还有未发送的文字或附件，切换历史会话会丢弃这份草稿，是否继续？'
-      : '切换历史会话会丢弃当前未保存内容，是否继续？'
-
-  return new Promise((resolve) => {
-    dialog.warning({
-      title: '确认切换会话',
-      content,
-      positiveText: '继续切换',
-      negativeText: '取消',
-      onPositiveClick: () => resolve(true),
-      onNegativeClick: () => resolve(false),
-      onClose: () => resolve(false)
-    })
-  })
 }
 
 async function clearSessionImpl() {
@@ -10238,7 +9565,10 @@ function applyLoadedChatState(state) {
   if (Array.isArray(hydratedState.manualMcpIds)) manualMcpIds.value = normalizeStringList(hydratedState.manualMcpIds)
 
   if (typeof hydratedState.webSearchEnabled === 'boolean') webSearchEnabled.value = hydratedState.webSearchEnabled
-  if (typeof hydratedState.autoApproveTools === 'boolean') autoApproveTools.value = hydratedState.autoApproveTools
+  toolApprovalMode.value = normalizeToolApprovalMode(
+    hydratedState.toolApprovalMode,
+    hydratedState.autoApproveTools === false ? TOOL_APPROVAL_MODE_MANUAL : TOOL_APPROVAL_MODE_SAFE
+  )
   if (typeof hydratedState.autoActivateAgentSkills === 'boolean') autoActivateAgentSkills.value = hydratedState.autoActivateAgentSkills
 
   const toolModeCandidate = String(hydratedState.toolMode || '').trim()
@@ -10267,6 +9597,7 @@ function applyLoadedChatState(state) {
     activeRecord.contextSummary = hydratedState.contextSummary && typeof hydratedState.contextSummary === 'object'
       ? deepCopyJson(hydratedState.contextSummary, {})
       : createEmptyContextSummaryState()
+    activeRecord.contextTokenTelemetry = normalizeContextTokenTelemetry(hydratedState.contextTokenTelemetry)
   }
 }
 
@@ -10375,6 +9706,9 @@ async function loadSessionFromFile(filePath) {
         : state?.contextSummary && typeof state.contextSummary === 'object'
           ? deepCopyJson(state.contextSummary, {})
           : null
+    const contextTokenTelemetry = normalizeContextTokenTelemetry(
+      data?.memory?.contextTokenTelemetry || state?.contextTokenTelemetry
+    )
 
     unbindSessionAutosave({ silent: true })
 
@@ -10383,9 +9717,10 @@ async function loadSessionFromFile(filePath) {
       : []
 
     const fallbackAutoApprove =
-      typeof state?.autoApproveTools === 'boolean'
-        ? state.autoApproveTools === true
-        : autoApproveTools.value === true
+      normalizeToolApprovalMode(
+        state?.toolApprovalMode,
+        state?.autoApproveTools === false ? TOOL_APPROVAL_MODE_MANUAL : toolApprovalMode.value
+      ) !== TOOL_APPROVAL_MODE_MANUAL
     const displaySafe = normalizeLoadedDisplayMessages(
       backfillLoadedToolAutoApproved(displayMessages, fallbackAutoApprove)
     )
@@ -10417,6 +9752,9 @@ async function loadSessionFromFile(filePath) {
         memoryCandidates,
         memoryCandidateUpdatedAt,
         contextSummary,
+        contextTokenTelemetry,
+        toolApprovalMode: state?.toolApprovalMode,
+        autoApproveTools: state?.autoApproveTools,
         activeSessionFilePath: relPath,
         activeSessionTitle: loadedTitle,
         titleSource,
@@ -10440,6 +9778,7 @@ async function loadSessionFromFile(filePath) {
       record.memoryCandidates = memoryCandidates
       record.memoryCandidateUpdatedAt = memoryCandidateUpdatedAt
       record.contextSummary = contextSummary || createEmptyContextSummaryState()
+      record.contextTokenTelemetry = contextTokenTelemetry
       record.activeSessionFilePath = relPath
       record.activeSessionTitle = loadedTitle
       record.titleSource = titleSource
@@ -10640,6 +9979,11 @@ function stop() {
 onBeforeUnmount(() => {
   cancelPendingToolApprovals()
   sessionApprovedToolKeys.clear()
+  chatRunInputQueue.clearAll()
+  touchChatRunInputQueue()
+  queuedInputDrainTimers.forEach((timer) => window.clearTimeout(timer))
+  queuedInputDrainTimers.clear()
+  queuedInputDrainInFlight.clear()
   try {
     if (pendingBuiltinAgentsEventsFlushTimer) {
       window.clearTimeout(pendingBuiltinAgentsEventsFlushTimer)
@@ -10822,6 +10166,7 @@ function getRequestConfigOrHint() {
 
     return {
       providerKind: 'utools-ai',
+      providerId: String(provider._id || '').trim(),
       model,
       requestMode: 'chat',
       imageGenerationPlaceholderMode: 'text',
@@ -10881,6 +10226,7 @@ function getRequestConfigOrHint() {
 
   return {
     providerKind: 'openai-compatible',
+    providerId: String(provider._id || '').trim(),
     baseUrl,
     apiKey,
     apiMode,
@@ -10902,11 +10248,15 @@ function getCurrentToolsKey() {
     .sort()
     .join(',')
 
-  const agentSet = agentSkillIdSet.value
-  const hasAgentSkillsSelected = selectedSkillObjects.value.some((s) => {
-    const id = s?._id
-    return !!id && agentSet.has(id)
-  })
+  const skillKey = (selectedSkillObjects.value || [])
+    .map((skill) => {
+      const id = String(skill?._id || '').trim()
+      const actionCount = Array.isArray(skill?.nativeActions) ? skill.nativeActions.length : 0
+      return `${id}:${String(skill?.sourceType || '')}:${actionCount}`
+    })
+    .filter(Boolean)
+    .sort()
+    .join(',')
 
   const mcpConfigKey = (activeMcpServers.value || [])
     .map((s) => {
@@ -10925,7 +10275,7 @@ function getCurrentToolsKey() {
     .sort()
     .join(';')
 
-  return `${toolMode.value}|${mcpToolsRevision.value}|${hasAgentSkillsSelected ? 'agent_skill_tools' : ''}|${mcpConfigKey}|${mcpKey}`
+  return `${toolMode.value}|${mcpToolsRevision.value}|${skillKey}|${mcpConfigKey}|${mcpKey}`
 }
 
 function syncLastBuiltRequestToolsStats(tools) {
@@ -10943,21 +10293,220 @@ function formatApproxChars(value) {
   return String(num)
 }
 
-function recordModelUsage(usage, { model = '', endpoint = '' } = {}) {
+function extractModelUsage(payload) {
+  if (!payload || typeof payload !== 'object') return null
+  const direct =
+    payload.usage ||
+    payload.response?.usage ||
+    payload.usageMetadata ||
+    payload.usage_metadata ||
+    payload.response?.usageMetadata ||
+    payload.response?.usage_metadata
+  if (direct && typeof direct === 'object') return direct
+
+  const payloads = Array.isArray(payload.payloads)
+    ? payload.payloads
+    : Array.isArray(payload)
+      ? payload
+      : []
+  for (let index = payloads.length - 1; index >= 0; index -= 1) {
+    const nested =
+      payloads[index]?.usage ||
+      payloads[index]?.response?.usage ||
+      payloads[index]?.usageMetadata ||
+      payloads[index]?.usage_metadata
+    if (nested && typeof nested === 'object') return nested
+  }
+  return null
+}
+
+function readUsageNumber(usage, paths = []) {
+  for (const path of paths) {
+    let current = usage
+    for (const key of path) {
+      current = current && typeof current === 'object' ? current[key] : undefined
+    }
+    const value = Number(current)
+    if (Number.isFinite(value) && value >= 0) return Math.floor(value)
+  }
+  return 0
+}
+
+function extractContextTokenMetrics(usage) {
+  if (!usage || typeof usage !== 'object') return { inputTokens: 0, cachedTokens: 0 }
+
+  let inputTokens = readUsageNumber(usage, [
+    ['prompt_tokens'],
+    ['promptTokens'],
+    ['promptTokenCount'],
+    ['inputTokenCount'],
+    ['input_tokens'],
+    ['inputTokens']
+  ])
+  const cacheReadTokens = readUsageNumber(usage, [
+    ['prompt_tokens_details', 'cached_tokens'],
+    ['input_tokens_details', 'cached_tokens'],
+    ['cached_tokens'],
+    ['cachedTokens'],
+    ['prompt_cache_hit_tokens'],
+    ['cache_read_input_tokens'],
+    ['cacheReadInputTokens']
+  ])
+  const cacheWriteTokens = readUsageNumber(usage, [
+    ['prompt_tokens_details', 'cache_write_tokens'],
+    ['input_tokens_details', 'cache_write_tokens'],
+    ['cache_creation_input_tokens'],
+    ['cacheCreationInputTokens']
+  ])
+
+  // Anthropic 的 input_tokens 不包含缓存读取/写入部分；OpenAI/DeepSeek 的
+  // prompt_tokens 已经是完整输入，因此只在 Anthropic 字段出现时补加。
+  const hasAnthropicCacheFields =
+    Object.prototype.hasOwnProperty.call(usage, 'cache_read_input_tokens') ||
+    Object.prototype.hasOwnProperty.call(usage, 'cache_creation_input_tokens') ||
+    Object.prototype.hasOwnProperty.call(usage, 'cacheReadInputTokens') ||
+    Object.prototype.hasOwnProperty.call(usage, 'cacheCreationInputTokens')
+  const hasPromptTotal =
+    Object.prototype.hasOwnProperty.call(usage, 'prompt_tokens') ||
+    Object.prototype.hasOwnProperty.call(usage, 'promptTokens') ||
+    Object.prototype.hasOwnProperty.call(usage, 'promptTokenCount')
+  if (hasAnthropicCacheFields && !hasPromptTotal) {
+    inputTokens += cacheReadTokens + cacheWriteTokens
+  }
+
+  return {
+    inputTokens,
+    cachedTokens: cacheReadTokens
+  }
+}
+
+function dispatchBuiltinAgentsToolApprovalModeChange(record, mode) {
+  const sessionId = String(record?.id || '').trim()
+  if (!sessionId) return false
+  const streamIds = []
+  for (const [streamId, toolMessage] of activeAgentRunToolMessageByStreamId) {
+    const owner = getMemorySessionForToolMessage(toolMessage)
+    if (String(owner?.id || '').trim() !== sessionId) continue
+    const normalizedStreamId = String(streamId || '').trim()
+    if (normalizedStreamId) streamIds.push(normalizedStreamId)
+    if (toolMessage && typeof toolMessage === 'object') {
+      toolMessage.toolApprovalMode = mode
+    }
+  }
+  if (!streamIds.length) return false
+  try {
+    window.dispatchEvent(
+      new window.CustomEvent(BUILTIN_AGENTS_TOOL_APPROVAL_MODE_CHANGE_EVENT, {
+        detail: {
+          sessionId,
+          streamIds,
+          toolApprovalMode: mode
+        }
+      })
+    )
+    return true
+  } catch {
+    return false
+  }
+}
+
+function updateContextTokenTelemetry(record, usage, {
+  requestChars = 0,
+  providerId = '',
+  model = '',
+  endpoint = ''
+} = {}) {
+  if (!record || typeof record !== 'object') return
+  const metrics = extractContextTokenMetrics(usage)
+  const normalizedRequestChars = Math.max(0, Math.floor(Number(requestChars) || 0))
+  if (!metrics.inputTokens || !normalizedRequestChars) return
+
+  record.contextTokenTelemetry = {
+    inputTokens: metrics.inputTokens,
+    requestChars: normalizedRequestChars,
+    cachedTokens: metrics.cachedTokens,
+    providerId: String(providerId || ''),
+    model: String(model || ''),
+    endpoint: String(endpoint || ''),
+    updatedAt: Date.now()
+  }
+}
+
+function recordModelUsage(usage, {
+  providerId = selectedProviderId.value,
+  model = '',
+  endpoint = '',
+  purpose = 'chat'
+} = {}) {
   if (!usage || typeof usage !== 'object') return
   const recorder = window?.aiToolsApi?.usage?.recordUsage
   if (typeof recorder !== 'function') return
   void recorder({
     usage,
-    providerId: String(selectedProviderId.value || ''),
+    providerId: String(providerId || ''),
     model: String(model || ''),
-    endpoint: String(endpoint || '')
+    endpoint: String(endpoint || ''),
+    purpose: String(purpose || '')
   }).catch((error) => {
     console.warn('记录模型用量失败：', error)
   })
 }
 
+function recordModelUsageFromPayload(payload, options = {}) {
+  recordModelUsage(extractModelUsage(payload), options)
+}
+
+async function injectPendingGuidanceMessages(abortState, { preferVision = false } = {}) {
+  const runRecord = runRecordByAbortState.get(abortState)
+  if (!runRecord) return false
+
+  const entries = chatRunInputQueue.takeSteering(runRecord.id)
+  if (!entries.length) return false
+  touchChatRunInputQueue()
+
+  let completedCount = 0
+  try {
+    for (const entry of entries) {
+      throwIfAborted(abortState)
+      const text = String(entry?.text || '').trim()
+      const attachments = Array.isArray(entry?.attachments) ? entry.attachments : []
+      const userDisplay = createDisplayMessage('user', text || (attachments.length ? '(sent attachments)' : ''), {
+        guidance: true
+      })
+      if (attachments.length) {
+        userDisplay.attachmentsExpanded = false
+        userDisplay.attachments = attachments
+      }
+      runRecord.messages.push(userDisplay)
+      try {
+        await prepareUserApiMessage({
+          text,
+          attachments,
+          userDisplay,
+          preferVision,
+          providerKind: 'openai-compatible',
+          sessionTarget: runRecord
+        })
+      } catch (error) {
+        const displayIndex = runRecord.messages.findIndex((item) => item?.id === userDisplay.id)
+        if (displayIndex >= 0) runRecord.messages.splice(displayIndex, 1)
+        throw error
+      }
+      completedCount += 1
+    }
+  } catch (error) {
+    chatRunInputQueue.restore(runRecord.id, entries.slice(completedCount))
+    touchChatRunInputQueue()
+    throw error
+  }
+
+  runRecord.updatedAt = Date.now()
+  await maybeScrollToBottomForRun(abortState)
+  return true
+}
+
 async function runChatRounds({
+  providerId = '',
   baseUrl,
   apiKey,
   apiMode = 'auto',
@@ -10998,6 +10547,7 @@ async function runChatRounds({
   for (let round = 0; round < maxRounds; round++) {
     throwIfAborted(abortState)
     await refreshToolsBundleIfNeeded()
+    if (round > 0) await injectPendingGuidanceMessages(abortState, { preferVision: supportsVision })
     const assistantDisplay = createDisplayMessage('assistant', '', {
       thinking: '',
       thinkingExpanded: false,
@@ -11025,6 +10575,7 @@ async function runChatRounds({
     }
 
     let result = null
+    let successfulRequestChars = 0
     for (let attempt = 0; attempt < 3; attempt++) {
         const activeTools = plainTextToolFallback ? [] : tools
         const attemptBody = {
@@ -11042,7 +10593,8 @@ async function runChatRounds({
             apiMessages: buildRequestApiMessages('openai-compatible', {
               tools: activeTools,
               apiMessages: targetSession.apiMessages,
-              contextSummary: targetSession?.contextSummary || null
+              contextSummary: targetSession?.contextSummary || null,
+              sessionRecord: targetSession
             }),
             plainTextToolFallback
           }),
@@ -11055,6 +10607,9 @@ async function runChatRounds({
             : {}),
           ...buildActiveRequestOverrides({ omitReasoningEffort })
         }
+        const attemptRequestChars =
+          estimateMessagesSize(attemptBody.messages) +
+          estimateToolDefinitionsChars(attemptBody.tools)
 
       try {
         result = await streamChatCompletion({
@@ -11067,6 +10622,7 @@ async function runChatRounds({
           abortState
         })
         throwIfAborted(abortState)
+        successfulRequestChars = attemptRequestChars
         break
       } catch (err) {
         const errText = String(err?.message || err || '')
@@ -11119,7 +10675,18 @@ async function runChatRounds({
       throw new Error('请求失败：已达到重试次数上限')
     }
     throwIfAborted(abortState)
-    recordModelUsage(result?.usage, { model, endpoint: result?.endpoint || apiMode || 'auto' })
+    recordModelUsage(result?.usage, {
+      providerId,
+      model,
+      endpoint: result?.endpoint || apiMode || 'auto',
+      purpose: round > 0 ? 'chat-tool-round' : 'chat'
+    })
+    updateContextTokenTelemetry(targetSession, result?.usage, {
+      requestChars: successfulRequestChars,
+      providerId,
+      model,
+      endpoint: result?.endpoint || apiMode || 'auto'
+    })
 
     if (result?.content && !assistantDisplay.content && !typewriterStates.has(assistantDisplay.id)) {
       prepareAssistantDisplayForTextResponse(assistantDisplay)
@@ -11181,7 +10748,14 @@ async function runChatRounds({
     setCurrentAssistantDisplay(null)
     await maybeScrollToBottomForRun(abortState)
 
-    if (!normalizedToolCalls.length) break
+    if (!normalizedToolCalls.length) {
+      const guidanceInjected =
+        round < maxRounds - 1
+          ? await injectPendingGuidanceMessages(abortState, { preferVision: supportsVision })
+          : false
+      if (guidanceInjected) continue
+      break
+    }
 
     if (round === maxRounds - 1) {
       targetSession.messages.push(createDisplayMessage('assistant', '工具调用轮次已达到上限。'))
@@ -11242,7 +10816,14 @@ function mergeUtoolsAiStreamText(previous, incoming) {
   }
 }
 
-async function runUtoolsAiChatRound({ model, setCurrentAssistantDisplay, setAbortHandle, isAborted, abortState = null }) {
+async function runUtoolsAiChatRound({
+  providerId = '',
+  model,
+  setCurrentAssistantDisplay,
+  setAbortHandle,
+  isAborted,
+  abortState = null
+}) {
   if (!canUseUtoolsAi()) {
     throw new Error('当前环境不支持 uTools 官方 AI')
   }
@@ -11332,14 +10913,19 @@ async function runUtoolsAiChatRound({ model, setCurrentAssistantDisplay, setAbor
   }
 
   const memorySystemContent = String(abortState?.memorySystemContent || '').trim()
+  let lastUtoolsRequestChars = 0
   const requestUtoolsAi = (requestApiMessages, requestTools = tools) => {
+    const requestMessages = buildUtoolsAiMessages({
+      systemContent: buildCombinedSystemContent(memorySystemContent, { sessionRecord: targetSession }),
+      apiMessages: requestApiMessages
+    })
+    lastUtoolsRequestChars =
+      estimateMessagesSize(requestMessages) +
+      estimateToolDefinitionsChars(requestTools)
     return window.utools.ai(
       {
         model,
-        messages: buildUtoolsAiMessages({
-          systemContent: buildCombinedSystemContent(memorySystemContent, { sessionRecord: targetSession }),
-          apiMessages: requestApiMessages
-        }),
+        messages: requestMessages,
         ...(requestTools.length ? { tools: requestTools } : {})
       },
       (chunk) => {
@@ -11403,7 +10989,8 @@ async function runUtoolsAiChatRound({ model, setCurrentAssistantDisplay, setAbor
     const requestApiMessages = buildRequestApiMessages('utools-ai', {
       tools,
       apiMessages: targetSession.apiMessages,
-      contextSummary: targetSession?.contextSummary || null
+      contextSummary: targetSession?.contextSummary || null,
+      sessionRecord: targetSession
     })
     let request = requestUtoolsAi(requestApiMessages, tools)
     setAbortHandle(request)
@@ -11430,6 +11017,18 @@ async function runUtoolsAiChatRound({ model, setCurrentAssistantDisplay, setAbor
     }
 
     if (isAborted?.() || abortState?.aborted) throw createAbortError()
+    recordModelUsage(extractModelUsage(result), {
+      providerId,
+      model,
+      endpoint: 'utools-ai',
+      purpose: 'chat'
+    })
+    updateContextTokenTelemetry(targetSession, extractModelUsage(result), {
+      requestChars: lastUtoolsRequestChars,
+      providerId,
+      model,
+      endpoint: 'utools-ai'
+    })
 
     const finalContentState = mergeUtoolsAiStreamText(streamedContent, result?.content)
     streamedContent = finalContentState.total
@@ -11601,6 +11200,7 @@ function applyImageGenerationImagesToDisplay(assistantDisplay, { images, userPro
 }
 
 async function runImageGenerationRound({
+  providerId = '',
   baseUrl,
   apiKey,
   model,
@@ -11655,6 +11255,12 @@ async function runImageGenerationRound({
     signal
   })
   attachMediaRequestSnapshot(assistantDisplay, 'image', { requestMeta })
+  recordModelUsageFromPayload(payload, {
+    providerId,
+    model,
+    endpoint: requestMeta?.kind || 'image-generation',
+    purpose: 'image-generation'
+  })
   throwIfAborted(abortState)
 
   const imageTask = extractImageGenerationTaskState(payload, requestMeta)
@@ -12000,6 +11606,7 @@ async function resolveVideoGenerationContentIfReady({
 }
 
 async function runVideoGenerationRound({
+  providerId = '',
   baseUrl,
   apiKey,
   model,
@@ -12052,6 +11659,12 @@ async function runVideoGenerationRound({
     signal
   })
   attachMediaRequestSnapshot(assistantDisplay, 'video', { requestMeta })
+  recordModelUsageFromPayload(payload, {
+    providerId,
+    model,
+    endpoint: requestMeta?.kind || 'video-generation',
+    purpose: 'video-generation'
+  })
   throwIfAborted(abortState)
 
   let finalPayload = payload
@@ -12432,6 +12045,7 @@ function getOpenaiCompatibleMediaConfigOrHint(kind = 'image', sourceMessage = nu
 
   return {
     providerKind: 'openai-compatible',
+    providerId: String(provider._id || '').trim(),
     baseUrl,
     apiKey,
     model,
@@ -12772,6 +12386,7 @@ async function resumeMediaTask(msg, kind = 'video') {
 const CHAT_REQUEST_TIMEOUT_MS = 36000000
 
 async function runChatSession({
+  providerId = '',
   providerKind = 'openai-compatible',
   apiMode = 'auto',
   requestMode = 'chat',
@@ -12801,7 +12416,14 @@ async function runChatSession({
   const requestAbortState = {
     aborted: false,
     memorySystemContent,
-    autoApproveTools: runRecord?.autoApproveTools === true || autoApproveTools.value === true,
+    toolApprovalMode: normalizeToolApprovalMode(
+      runRecord?.toolApprovalMode,
+      runRecord?.autoApproveTools === false ? TOOL_APPROVAL_MODE_MANUAL : toolApprovalMode.value
+    ),
+    autoApproveTools: normalizeToolApprovalMode(
+      runRecord?.toolApprovalMode,
+      runRecord?.autoApproveTools === false ? TOOL_APPROVAL_MODE_MANUAL : toolApprovalMode.value
+    ) !== TOOL_APPROVAL_MODE_MANUAL,
     onAbort(listener) {
       if (typeof listener !== 'function') return () => {}
       if (requestAbortState.aborted) {
@@ -12852,6 +12474,7 @@ async function runChatSession({
 
     if (providerKind === 'utools-ai') {
       await runUtoolsAiChatRound({
+        providerId,
         model,
         setCurrentAssistantDisplay: (m) => {
           currentAssistantDisplay = m
@@ -12868,6 +12491,7 @@ async function runChatSession({
       if (requestMode === 'image-generation') {
         try {
           await runImageGenerationRound({
+            providerId,
             baseUrl,
             apiKey,
             model,
@@ -12888,6 +12512,7 @@ async function runChatSession({
           if (requestAbortState.aborted) requestHandle.abort()
           message.warning('图片生成接口不兼容当前返回，已自动回退为文本聊天。')
           await runChatRounds({
+            providerId,
             baseUrl,
             apiKey,
             apiMode,
@@ -12905,6 +12530,7 @@ async function runChatSession({
       } else if (requestMode === 'video-generation') {
         try {
           await runVideoGenerationRound({
+            providerId,
             baseUrl,
             apiKey,
             model,
@@ -12925,6 +12551,7 @@ async function runChatSession({
           if (requestAbortState.aborted) requestHandle.abort()
           message.warning('视频生成接口不兼容当前返回，已自动回退为文本聊天。')
           await runChatRounds({
+            providerId,
             baseUrl,
             apiKey,
             apiMode,
@@ -12941,6 +12568,7 @@ async function runChatSession({
         }
       } else {
         await runChatRounds({
+          providerId,
           baseUrl,
           apiKey,
           apiMode,
@@ -13031,6 +12659,7 @@ async function runChatSession({
     }
     await maybeScrollToBottomForRun(requestAbortState)
     runRecordByAbortState.delete(requestAbortState)
+    scheduleQueuedInputDrain(runRecord)
   }
 
   return succeeded
@@ -13323,10 +12952,43 @@ async function submitUserEdit(msg) {
   })
 }
 
-function toggleAutoApproveTools() {
-  autoApproveTools.value = !autoApproveTools.value
+function commitToolApprovalMode(value) {
+  const nextMode = normalizeToolApprovalMode(value)
+  toolApprovalMode.value = nextMode
   const record = getActiveMemorySession()
-  if (record) record.autoApproveTools = autoApproveTools.value === true
+  if (record) {
+    record.toolApprovalMode = nextMode
+    record.autoApproveTools = nextMode !== TOOL_APPROVAL_MODE_MANUAL
+    if (record.activeRequestAbortState && typeof record.activeRequestAbortState === 'object') {
+      record.activeRequestAbortState.toolApprovalMode = nextMode
+      record.activeRequestAbortState.autoApproveTools = nextMode !== TOOL_APPROVAL_MODE_MANUAL
+    }
+    dispatchBuiltinAgentsToolApprovalModeChange(record, nextMode)
+    if (nextMode === TOOL_APPROVAL_MODE_FULL) {
+      pendingToolApprovals.value
+        .filter((request) => !request?.sessionId || String(request.sessionId) === String(record.id))
+        .forEach((request) => request?.settle?.('once'))
+      window.setTimeout(() => {
+        void flushMemorySessionApprovalQueue(record)
+      }, 0)
+    }
+  }
+}
+
+function setToolApprovalMode(value) {
+  const nextMode = normalizeToolApprovalMode(value)
+  if (nextMode === toolApprovalMode.value) return
+  if (nextMode === TOOL_APPROVAL_MODE_FULL) {
+    dialog.warning({
+      title: '启用全部自动调用？',
+      content: '全部自动会直接执行写入、脚本和命令调用，子 Agent 也会继承此模式。请只在信任当前智能体、技能和 MCP 服务时启用。',
+      positiveText: '启用全部自动',
+      negativeText: '取消',
+      onPositiveClick: () => commitToolApprovalMode(nextMode)
+    })
+    return
+  }
+  commitToolApprovalMode(nextMode)
 }
 
 function toggleWebSearch() {
@@ -13708,6 +13370,17 @@ async function applyInlineCommandSuggestion(item) {
 function handleInputKeydown(e) {
   if (isComposerCompositionKeydownEvent(e)) return
 
+  if (
+    sending.value &&
+    e.key === 'Enter' &&
+    !e.shiftKey &&
+    (e.ctrlKey || e.metaKey)
+  ) {
+    e.preventDefault()
+    steerCurrentRun()
+    return
+  }
+
   if (!sending.value && !e.ctrlKey && !e.metaKey && !e.altKey && showInlineCommandPicker.value) {
     if (e.key === 'ArrowDown') {
       e.preventDefault()
@@ -13903,7 +13576,7 @@ function resetChatSetupUiState() {
 
   // 其他开关回到初始值。
   webSearchEnabled.value = false
-  autoApproveTools.value = true
+  toolApprovalMode.value = TOOL_APPROVAL_MODE_SAFE
   autoActivateAgentSkills.value = true
   toolMode.value = 'auto'
   effectiveToolMode.value = 'expanded'
@@ -13929,26 +13602,6 @@ function resetChatSetupUiState() {
   selectedModel.value = ''
   hasAppliedDefaultModel.value = false
   tryApplyDefaultModelFromConfig({ force: true })
-}
-
-async function resetChatSetup() {
-  const record = getActiveMemorySession()
-  if (Number(record?.runningTaskCount || 0) > 0) {
-    await detachRunningSessionToHistory({ notify: false })
-    message.info('当前会话仍有后台任务，已转入后台并新建会话')
-    return
-  }
-
-  if (String(activeSessionFilePath.value || '').trim()) {
-    await closeActiveSession()
-    return
-  }
-
-  resetChatSetupUiState()
-  resetChatRuntimeState()
-  await nextTick()
-  scheduleRefreshUserAnchorMeta()
-  message.success('已重置为初始状态')
 }
 
 function clearSelectedAgent() {
@@ -13978,19 +13631,6 @@ function applyAgentModal() {
   applyAgent(agentModalSelectedId.value)
   clearInlinePickers()
   showAgentModal.value = false
-}
-
-function openPromptModal() {
-  clearInlinePickers()
-  promptModalSelectedId.value = hasActiveBasePromptSelection({
-    basePromptMode: basePromptMode.value,
-    selectedPromptId: selectedPromptId.value
-  })
-    ? makeLocalPromptOptionValue(selectedPromptId.value)
-    : null
-  resetPromptVariableFormData(selectedLocalPromptVariables.value, promptUserArgsForm)
-  showPromptModal.value = true
-  void ensureMcpPromptCatalogLoaded({ silent: true })
 }
 
 function clearSelectedPrompt() {
@@ -14060,46 +13700,15 @@ async function applyPromptModal() {
   showPromptModal.value = false
 }
 
-function openSkillModal() {
-  clearInlinePickers()
-  skillModalSelectedIds.value = Array.isArray(selectedSkillIds.value) ? [...selectedSkillIds.value] : []
-  showSkillModal.value = true
-}
-
 function applySkillModal() {
   selectedSkillIds.value = Array.isArray(skillModalSelectedIds.value) ? [...skillModalSelectedIds.value] : []
   showSkillModal.value = false
-}
-
-function openMcpModal() {
-  clearInlinePickers()
-  mcpModalSelectedIds.value = Array.isArray(manualMcpIds.value) ? [...manualMcpIds.value] : []
-  showMcpModal.value = true
 }
 
 function applyMcpModal() {
   manualMcpIds.value = Array.isArray(mcpModalSelectedIds.value) ? [...mcpModalSelectedIds.value] : []
   showMcpModal.value = false
   void ensureMcpPromptCatalogLoaded({ silent: true, forceRefresh: true })
-}
-
-function normalizeBaseUrl(url) {
-  const raw = String(url || '').trim()
-  if (!raw) return ''
-
-  const noQuery = raw.split('#')[0].split('?')[0]
-  let base = noQuery.replace(/\/+$/, '')
-
-  // 兼容：用户把“完整接口地址”粘进了接口地址
-  base = base
-    .replace(/\/v1\/chat\/completions$/i, '/v1')
-    .replace(/\/chat\/completions$/i, '')
-    .replace(/\/v1\/completions$/i, '/v1')
-    .replace(/\/completions$/i, '')
-    .replace(/\/v1\/models$/i, '/v1')
-    .replace(/\/models$/i, '')
-
-  return base.replace(/\/+$/, '')
 }
 
 const contextWindowPresetOptions = [
@@ -14144,7 +13753,7 @@ const contextWindowHistoryFocusOptions = [
 ]
 
 function resolveHistoryContextBudgetState(options = {}) {
-  const { tools = [], reservedCharsOverride = null, apiMessages = null } = options || {}
+  const { tools = [], reservedCharsOverride = null, apiMessages = null, sessionRecord = null } = options || {}
   const reservedChars = Number.isFinite(Number(reservedCharsOverride))
     ? Math.max(0, Math.floor(Number(reservedCharsOverride)))
     : calculateReservedRequestChars({
@@ -14153,14 +13762,14 @@ function resolveHistoryContextBudgetState(options = {}) {
       })
   const sourceMessages = Array.isArray(apiMessages) ? apiMessages : session.apiMessages
   const sourceChars = estimateMessagesSize(sourceMessages)
+  const tokenTelemetry = getContextTokenTelemetry(sessionRecord)
   const budgetPlan = resolveChatContextWindowBudgetPlan(effectiveContextWindowConfig.value, {
     reservedChars,
-    sourceChars
+    sourceChars,
+    reportedInputTokens: tokenTelemetry.inputTokens,
+    reportedRequestChars: tokenTelemetry.requestChars
   })
-  const historyBudget = calculateHistoryContextCharBudget({
-    baseChars: budgetPlan.baseChars,
-    reservedChars
-  })
+  const historyBudget = budgetPlan.historyCharsBudget
   return {
     reservedChars,
     sourceChars,
@@ -14192,7 +13801,8 @@ function buildRequestApiMessages(providerKind = 'openai-compatible', options = {
     tools = [],
     reservedCharsOverride = null,
     apiMessages = null,
-    contextSummary = null
+    contextSummary = null,
+    sessionRecord = null
   } = options || {}
   const sourceMessages = Array.isArray(apiMessages) ? apiMessages : session.apiMessages
   const summary =
@@ -14208,7 +13818,8 @@ function buildRequestApiMessages(providerKind = 'openai-compatible', options = {
   const budgetState = resolveHistoryContextBudgetState({
     tools,
     reservedCharsOverride,
-    apiMessages: effectiveMessages
+    apiMessages: effectiveMessages,
+    sessionRecord
   })
 
   return buildChatContextWindow(
@@ -14221,230 +13832,9 @@ function buildRequestApiMessages(providerKind = 'openai-compatible', options = {
   )
 }
 
-function extractRequestMessageTextContent(content) {
-  return extractImageGenerationPromptFromContent(content)
-}
-
-function buildContextSummarySourceHash(messages = []) {
-  const compact = (Array.isArray(messages) ? messages : [])
-    .map((message) => {
-      if (!message || typeof message !== 'object') return ''
-      const role = String(message.role || '').trim()
-      const text = extractEditableUserTextFromContent(extractRequestMessageTextContent(message.content)).slice(0, 1200)
-      if (!role && !text) return ''
-      return `${role}:${text}`
-    })
-    .filter(Boolean)
-    .join('\n')
-  return compact.slice(0, 20000)
-}
-
-function buildContextSummaryTurnPairs(apiMessages = [], options = {}) {
-  const list = Array.isArray(apiMessages) ? apiMessages : []
-  const endExclusive = Number.isFinite(Number(options.endExclusive))
-    ? Math.max(0, Math.floor(Number(options.endExclusive)))
-    : list.length
-  const pairs = []
-  let currentUserText = ''
-  for (let index = 0; index < Math.min(endExclusive, list.length); index += 1) {
-    const message = list[index]
-    if (!message || typeof message !== 'object') continue
-    if (message.role === 'user') {
-      currentUserText = extractEditableUserTextFromContent(extractRequestMessageTextContent(message.content)).trim()
-      continue
-    }
-    if (message.role !== 'assistant') continue
-    const assistantText = extractEditableUserTextFromContent(extractRequestMessageTextContent(message.content)).trim()
-    if (!currentUserText && !assistantText) continue
-    pairs.push({
-      userText: currentUserText.slice(0, 3000),
-      assistantText: assistantText.slice(0, 4000),
-      summary: currentUserText.slice(0, 200)
-    })
-    currentUserText = ''
-  }
-  return pairs
-}
-
-function buildContextSummaryTurnSegments(apiMessages = [], options = {}) {
-  const list = Array.isArray(apiMessages) ? apiMessages : []
-  const endExclusive = Number.isFinite(Number(options.endExclusive))
-    ? Math.max(0, Math.floor(Number(options.endExclusive)))
-    : list.length
-  const segments = []
-  let currentTurn = null
-
-  const extractSummaryText = (message) =>
-    extractEditableUserTextFromContent(extractRequestMessageTextContent(message?.content)).trim()
-
-  const flushCurrentTurn = () => {
-    if (!currentTurn) return
-    const turnText = currentTurn.parts.filter(Boolean).join('\n\n').trim()
-    if (!turnText) return
-    segments.push({
-      userText: truncateInlineText(currentTurn.userText || '', 3000),
-      assistantText: truncateInlineText(currentTurn.assistantText || '', 4000),
-      toolText: truncateInlineText(currentTurn.toolText || '', 4000),
-      messageCount: Math.max(0, Math.floor(Number(currentTurn.messageCount || 0))),
-      summary: truncateInlineText(currentTurn.summary || currentTurn.userText || currentTurn.assistantText || turnText, 200),
-      turnText: truncateText(turnText, 6000, '（更早的上下文已截断）')
-    })
-  }
-
-  const ensureCurrentTurn = () => {
-    if (!currentTurn) {
-      currentTurn = {
-        userText: '',
-        assistantText: '',
-        toolText: '',
-        summary: '',
-        messageCount: 0,
-        parts: []
-      }
-    }
-    return currentTurn
-  }
-
-  for (let index = 0; index < Math.min(endExclusive, list.length); index += 1) {
-    const message = list[index]
-    if (!message || typeof message !== 'object') continue
-    if (message.role === 'user') {
-      flushCurrentTurn()
-      const text = extractSummaryText(message)
-      currentTurn = {
-        userText: text,
-        assistantText: '',
-        toolText: '',
-        summary: text,
-        messageCount: 1,
-        parts: []
-      }
-      if (text) currentTurn.parts.push(`用户:\n${text}`)
-      continue
-    }
-
-    const block = ensureCurrentTurn()
-    block.messageCount = Math.max(0, Math.floor(Number(block.messageCount || 0))) + 1
-    if (message.role === 'assistant') {
-      const assistantText = extractSummaryText(message)
-      if (assistantText) {
-        block.assistantText = block.assistantText ? `${block.assistantText}\n\n${assistantText}` : assistantText
-        block.parts.push(`助手:\n${assistantText}`)
-      }
-
-      const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : []
-      if (toolCalls.length) {
-        const callLines = toolCalls
-          .map((toolCall, toolIndex) => {
-            const name = String(toolCall?.function?.name || '').trim() || `tool_${toolIndex + 1}`
-            const args = truncateInlineText(String(toolCall?.function?.arguments || '').trim() || '{}', 300)
-            return `${name}: ${args}`
-          })
-          .filter(Boolean)
-        if (callLines.length) {
-          block.parts.push(`工具调用:\n${callLines.map((line) => `- ${line}`).join('\n')}`)
-        }
-      }
-      continue
-    }
-
-    if (message.role === 'tool') {
-      const callId = String(message.tool_call_id || message.call_id || '').trim()
-      const toolText = extractSummaryText(message) || '（空结果）'
-      block.toolText = block.toolText ? `${block.toolText}\n\n${toolText}` : toolText
-      block.parts.push(`工具结果${callId ? `（${callId}）` : ''}:\n${truncateText(toolText, 4000, '（工具结果已截断）')}`)
-      continue
-    }
-
-    const otherText = extractSummaryText(message)
-    if (otherText) {
-      block.parts.push(`${String(message.role || '消息')}:\n${otherText}`)
-    }
-  }
-
-  flushCurrentTurn()
-  return segments
-}
-
-function buildContextSummaryTurnBatches(turnSegments = [], options = {}) {
-  const list = Array.isArray(turnSegments) ? turnSegments : []
-  const maxTurnsPerBatch = Math.max(
-    1,
-    Math.floor(Number(options.maxTurnsPerBatch || CONTEXT_SUMMARY_BATCH_TURN_LIMIT) || CONTEXT_SUMMARY_BATCH_TURN_LIMIT)
-  )
-  const maxCharsPerBatch = Math.max(
-    0,
-    Math.floor(Number(options.maxCharsPerBatch || CONTEXT_SUMMARY_BATCH_CHAR_LIMIT) || CONTEXT_SUMMARY_BATCH_CHAR_LIMIT)
-  )
-  const batches = []
-  let currentBatch = null
-
-  const flushCurrentBatch = () => {
-    if (!currentBatch || !currentBatch.items.length) return
-    const batchText = currentBatch.items
-      .map((item, index) => {
-        const itemLabel = item?.summary ? `轮次 ${index + 1} · ${item.summary}` : `轮次 ${index + 1}`
-        const text = String(item?.turnText || '').trim()
-        return [itemLabel, text].filter(Boolean).join('\n\n')
-      })
-      .filter(Boolean)
-      .join('\n\n')
-      .trim()
-    if (!batchText) {
-      currentBatch = null
-      return
-    }
-    batches.push({
-      turnCount: currentBatch.turnCount,
-      messageCount: currentBatch.messageCount,
-      chars: currentBatch.chars,
-      items: currentBatch.items,
-      batchText
-    })
-    currentBatch = null
-  }
-
-  for (let index = 0; index < list.length; index += 1) {
-    const segment = list[index]
-    const turnText = String(segment?.turnText || '').trim()
-    if (!turnText) continue
-    const nextTurnCount = currentBatch ? currentBatch.turnCount + 1 : 1
-    const nextChars = currentBatch ? currentBatch.chars + turnText.length : turnText.length
-    if (currentBatch && (nextTurnCount > maxTurnsPerBatch || (maxCharsPerBatch > 0 && nextChars > maxCharsPerBatch))) {
-      flushCurrentBatch()
-    }
-    if (!currentBatch) {
-      currentBatch = {
-        turnCount: 0,
-        messageCount: 0,
-        chars: 0,
-        items: []
-      }
-    }
-    currentBatch.turnCount += 1
-    currentBatch.messageCount += Math.max(0, Math.floor(Number(segment?.messageCount || 0)))
-    currentBatch.chars += turnText.length
-    currentBatch.items.push({
-      ...segment,
-      turnText
-    })
-  }
-
-  flushCurrentBatch()
-  return batches
-}
-
-function buildContextSummaryPrelude(summaryText = '') {
-  const text = String(summaryText || '').trim()
-  if (!text) return ''
-  return [
-    '以下是当前会话较早历史的压缩摘要，请将其视为背景，不要逐字复述：',
-    text
-  ].join('\n\n')
-}
-
 async function requestContextWindowSummary({
   providerKind = 'openai-compatible',
+  providerId = '',
   baseUrl = '',
   apiKey = '',
   model = '',
@@ -14480,6 +13870,12 @@ async function requestContextWindowSummary({
         apiMessages: [{ role: 'user', content: prompt.join('\n\n') }]
       })
     })
+    recordModelUsage(extractModelUsage(result), {
+      providerId,
+      model,
+      endpoint: 'utools-ai',
+      purpose: 'context-summary'
+    })
     return truncateText(String(result?.content || '').trim(), 1200, '（摘要已截断）')
   }
 
@@ -14508,6 +13904,12 @@ async function requestContextWindowSummary({
     onDelta: null,
     abortState: null
   })
+  recordModelUsage(result?.usage, {
+    providerId,
+    model,
+    endpoint: result?.endpoint || 'auto',
+    purpose: 'context-summary'
+  })
   return truncateText(String(result?.content || '').trim(), 1200, '（摘要已截断）')
 }
 
@@ -14516,7 +13918,8 @@ function resolveContextSummaryCoverage({
   cfg = null,
   tools = [],
   reservedCharsOverride = null,
-  targetSourceChars = null
+  targetSourceChars = null,
+  sessionRecord = null
 } = {}) {
   const list = Array.isArray(sourceMessages) ? sourceMessages : []
   if (!cfg || cfg.requestMode !== 'chat' || list.length < 1) {
@@ -14530,7 +13933,8 @@ function resolveContextSummaryCoverage({
   const requestMessages = buildRequestApiMessages(cfg.providerKind || 'openai-compatible', {
     tools,
     reservedCharsOverride,
-    apiMessages: list
+    apiMessages: list,
+    sessionRecord
   })
   let coveredCount = Math.max(0, list.length - requestMessages.length)
   if (coveredCount < 1 && list.length > 1 && Number.isFinite(Number(targetSourceChars))) {
@@ -14581,7 +13985,8 @@ async function ensureContextWindowSummary({
     cfg,
     tools,
     reservedCharsOverride,
-    targetSourceChars
+    targetSourceChars,
+    sessionRecord: requestRecord
   })
   if (coveredCount < 1) return ''
 
@@ -14631,6 +14036,7 @@ async function ensureContextWindowSummary({
 
   const summaryText = await requestContextWindowSummary({
     providerKind: cfg.providerKind,
+    providerId: cfg.providerId,
     baseUrl: cfg.baseUrl,
     apiKey: cfg.apiKey,
     model: cfg.model,
@@ -14691,7 +14097,7 @@ async function prepareChatRequestContext({
 
   const triggerText = safeText || safeAttachments.map((a) => String(a?.name || '')).filter(Boolean).join(' ')
   try {
-    autoActivateAgentSkillsFromText(triggerText)
+    await autoActivateAgentSkillsFromText(triggerText)
   } catch {
     // ignore
   }
@@ -14747,7 +14153,8 @@ async function prepareChatRequestContext({
     const budgetState = resolveHistoryContextBudgetState({
       tools: requestTools,
       reservedCharsOverride: reservedChars,
-      apiMessages: sourceMessages
+      apiMessages: sourceMessages,
+      sessionRecord: targetRecord
     })
     const historyBudget = budgetState.historyBudget
     const summaryTriggerChars = calculateContextSummaryTriggerChars({
@@ -14759,14 +14166,16 @@ async function prepareChatRequestContext({
       cfg,
       tools: requestTools,
       reservedCharsOverride: reservedChars,
-      targetSourceChars: summaryTriggerChars
+      targetSourceChars: summaryTriggerChars,
+      sessionRecord: targetRecord
     })
     const cachedSummary = syncContextSummaryCacheForRecord(targetRecord, coverage)
     const sourceBudgetMessages = buildRequestApiMessages(cfg.providerKind || 'openai-compatible', {
       tools: requestTools,
       reservedCharsOverride: reservedChars,
       apiMessages: sourceMessages,
-      contextSummary: targetRecord?.contextSummary || null
+      contextSummary: targetRecord?.contextSummary || null,
+      sessionRecord: targetRecord
     })
     const contextInspection = inspectChatContextWindow(
       sourceMessages,
@@ -14969,33 +14378,6 @@ function shouldRetryToolContinuationAsPlainText(errorText) {
   return false
 }
 
-function formatToolCallFallbackLine(toolCall) {
-  const name = String(toolCall?.function?.name || '').trim() || 'unknown_tool'
-  const args = truncateText(String(toolCall?.function?.arguments || '').trim() || '{}', 1200, '（工具参数已截断）')
-  return `- ${name}: ${args}`
-}
-
-function coerceToolStateMessageToPlainText(message) {
-  if (!message || typeof message !== 'object') return null
-  if (message.role === 'tool') {
-    const callId = String(message.tool_call_id || message.call_id || '').trim()
-    const content = truncateText(message.content || '', 24000, '（工具结果已截断）')
-    return {
-      role: 'assistant',
-      content: [`工具结果${callId ? `（${callId}）` : ''}：`, content || '（空结果）'].join('\n')
-    }
-  }
-  if (message.role === 'assistant' && Array.isArray(message.tool_calls) && message.tool_calls.length) {
-    const content = String(message.content || '').trim()
-    const calls = message.tool_calls.map(formatToolCallFallbackLine).filter(Boolean).join('\n')
-    return {
-      role: 'assistant',
-      content: [content, calls ? `已调用工具：\n${calls}` : '已调用工具。'].filter(Boolean).join('\n\n')
-    }
-  }
-  return null
-}
-
 function buildRequestMessages(options = {}) {
   const {
     baseUrl = '',
@@ -15010,115 +14392,41 @@ function buildRequestMessages(options = {}) {
     apiMessages = null,
     tools = []
   } = options || {}
-  const msgs = []
-  const mergedSystemContent = buildCombinedSystemContent(memorySystemContent, { sessionRecord })
-  if (mergedSystemContent) msgs.push({ role: 'system', content: mergedSystemContent })
-
   const sourceMessages = Array.isArray(apiMessages)
     ? apiMessages
     : buildRequestApiMessages('openai-compatible', {
         tools,
-        contextSummary: sessionRecord?.contextSummary || null
+        contextSummary: sessionRecord?.contextSummary || null,
+        sessionRecord
       })
-  const needsReasoningContent = shouldIncludeReasoningContent({
-    baseUrl,
-    model,
-    forceReasoningContent,
-    apiMessages: sourceMessages
+  return buildChatRequestMessages({
+    systemContent: buildCombinedSystemContent(memorySystemContent, { sessionRecord }),
+    sourceMessages,
+    needsReasoningContent: shouldIncludeReasoningContent({
+      baseUrl,
+      model,
+      forceReasoningContent,
+      apiMessages: sourceMessages
+    }),
+    compatToolCallIdAsFc,
+    visionFallbackText,
+    fallbackAllVisionMessages,
+    plainTextToolFallback
   })
-  let latestVisionUserIndex = -1
-  for (let i = sourceMessages.length - 1; i >= 0; i -= 1) {
-    const candidate = sourceMessages[i]
-    if (candidate?.role === 'user' && messageContentHasImageUrl(candidate.content)) {
-      latestVisionUserIndex = i
-      break
-    }
-  }
-
-  for (let index = 0; index < sourceMessages.length; index += 1) {
-    const m = sourceMessages[index]
-    if (!m || typeof m !== 'object') continue
-    const toolFallbackMessage = plainTextToolFallback ? coerceToolStateMessageToPlainText(m) : null
-    const cloned = toolFallbackMessage ? { ...toolFallbackMessage } : { ...m }
-
-    if (messageContentHasImageUrl(cloned.content) && fallbackAllVisionMessages) {
-      const fallbackText = String(
-        cloned.vision_fallback_text ||
-          (index === latestVisionUserIndex ? visionFallbackText : '') ||
-          buildVisionFallbackTextFromContent(cloned.content, { reason: '当前接口不支持 image_url' }) ||
-          '（图片已省略）'
-      ).trim()
-      cloned.content = fallbackText
-    }
-
-    if (!toolFallbackMessage && compatToolCallIdAsFc) {
-      if (cloned.role === 'assistant' && Array.isArray(cloned.tool_calls)) {
-        cloned.tool_calls = cloned.tool_calls.map((tc) => {
-          if (!tc || typeof tc !== 'object') return tc
-          const id = typeof tc.id === 'string' ? tc.id : ''
-          if (!id.startsWith('call_')) return tc
-          const callId = typeof tc.call_id === 'string' && tc.call_id ? tc.call_id : id
-          return { ...tc, id: `fc_${id.slice('call_'.length)}`, call_id: callId }
-        })
-      }
-
-      if (cloned.role === 'tool' && typeof cloned.tool_call_id === 'string' && cloned.tool_call_id.startsWith('call_')) {
-        cloned.call_id = cloned.tool_call_id
-        cloned.tool_call_id = `fc_${cloned.tool_call_id.slice('call_'.length)}`
-      }
-    }
-
-    if (cloned.role === 'assistant') {
-      if (needsReasoningContent) {
-        const rc = cloned.reasoning_content ?? cloned.reasoning ?? cloned.thinking ?? cloned.thought ?? ''
-        cloned.reasoning_content = typeof rc === 'string' ? rc : stableStringify(rc)
-      } else {
-        delete cloned.reasoning_content
-        delete cloned.reasoning
-        delete cloned.thinking
-        delete cloned.thought
-      }
-    } else {
-      delete cloned.reasoning_content
-      delete cloned.reasoning
-      delete cloned.thinking
-      delete cloned.thought
-    }
-
-    delete cloned.vision_fallback_text
-    delete cloned.synthetic_tool_vision
-
-    msgs.push(cloned)
-  }
-
-  return sanitizeRequestToolMessages(msgs, { compatToolCallIdAsFc })
 }
 
-function safeJsonParse(text) {
-  try {
-    return { ok: true, value: JSON.parse(text) }
-  } catch (e) {
-    return { ok: false, error: e }
-  }
-}
-
-function stableStringify(obj, spaces = 2) {
-  try {
-    return JSON.stringify(obj, null, spaces)
-  } catch {
-    return String(obj)
-  }
-}
-
-function shouldAutoApproveToolExecution(abortState = abortController.value) {
-  if (abortState && typeof abortState.autoApproveTools === 'boolean') {
-    return abortState.autoApproveTools === true
+function resolveCurrentToolApprovalMode(abortState = abortController.value) {
+  if (abortState && typeof abortState.toolApprovalMode === 'string') {
+    return normalizeToolApprovalMode(abortState.toolApprovalMode)
   }
   const runRecord = getRunRecord(abortState)
-  if (runRecord && typeof runRecord.autoApproveTools === 'boolean') {
-    return runRecord.autoApproveTools === true
+  if (runRecord) {
+    return normalizeToolApprovalMode(
+      runRecord.toolApprovalMode,
+      runRecord.autoApproveTools === false ? TOOL_APPROVAL_MODE_MANUAL : toolApprovalMode.value
+    )
   }
-  return autoApproveTools.value === true
+  return normalizeToolApprovalMode(toolApprovalMode.value)
 }
 
 function closeMcpClientSafely(server, client, pooled = false) {
@@ -15766,50 +15074,6 @@ function buildProviderToolDescription(server, tool, definition) {
   return `${base} (the original inputSchema top level is not an object; call it with {"input": ...})`
 }
 
-function getMcpToolApprovalPolicy(server, tool) {
-  const transportType = String(server?.transportType || '').trim()
-  if (transportType === 'builtinShell') {
-    return {
-      forceApproval: true,
-      approvalKind: 'shell'
-    }
-  }
-
-  const annotations =
-    tool?.annotations && typeof tool.annotations === 'object' && !Array.isArray(tool.annotations)
-      ? tool.annotations
-      : {}
-  if (annotations.destructiveHint === true || annotations.readOnlyHint === false) {
-    return {
-      forceApproval: true,
-      approvalKind: 'tool'
-    }
-  }
-
-  const toolName = String(tool?.name || '').trim()
-  if (transportType === 'builtinConfig') {
-    const readOnly =
-      toolName === 'config_get_system_time' ||
-      toolName.startsWith('config_list_')
-    return {
-      forceApproval: !readOnly,
-      approvalKind: 'tool'
-    }
-  }
-  if (transportType === 'builtinNotes') {
-    const readOnly = /^(notes_(list|read|search|get|stat|recent))/.test(toolName)
-    return {
-      forceApproval: !readOnly,
-      approvalKind: 'tool'
-    }
-  }
-
-  return {
-    forceApproval: false,
-    approvalKind: 'tool'
-  }
-}
-
 async function buildToolsBundle(options = {}) {
   const abortState = options.abortState || null
   const targetSession = options.sessionTarget || getRunSessionTarget(abortState)
@@ -15845,96 +15109,13 @@ async function buildToolsBundle(options = {}) {
     )
   }
 
-  const agentSet = agentSkillIdSet.value
-  const hasAgentSkillsSelected = selectedSkillObjects.value.some((s) => {
-    const id = String(s?._id || '').trim()
-    return !!id && agentSet.has(id)
+  const skillBundle = buildSkillToolsBundle({
+    selectedSkills: selectedSkillObjects.value,
+    agentSkillIds: agentSkillIds.value,
+    internalToolSpecs: INTERNAL_TOOL_SPECS
   })
-  const hasDirectorySkillsSelected = selectedSkillObjects.value.some((skill) => isDirectorySkill(skill))
-  const hasRunnableSkillScriptsSelected = selectedSkillObjects.value.some((skill) => {
-    return isDirectorySkill(skill) && getSkillScriptCatalog(skill).length > 0
-  })
-  const hasActivatableSkillsSelected = selectedSkillObjects.value.some((skill) => {
-    const id = String(skill?._id || '').trim()
-    return !!id && (agentSet.has(id) || isDirectorySkill(skill))
-  })
-
-  if (hasActivatableSkillsSelected) {
-    functionMap.set('use_skill', { type: 'internal', internal: 'use_skill', serverName: 'Skill', toolName: 'use_skill' })
-    functionMap.set('use_skills', { type: 'internal', internal: 'use_skills', serverName: 'Skill', toolName: 'use_skills' })
-    functionMap.set('activate_all_agent_skills', {
-      type: 'internal',
-      internal: 'activate_all_agent_skills',
-      serverName: 'Skill',
-      toolName: 'activate_all_agent_skills'
-    })
-
-    tools.push({
-      type: 'function',
-      function: {
-        name: 'use_skill',
-        description: INTERNAL_TOOL_SPECS.useSkill.description,
-        parameters: INTERNAL_TOOL_SPECS.useSkill.parameters
-      }
-    })
-
-    tools.push({
-      type: 'function',
-      function: {
-        name: 'use_skills',
-        description: INTERNAL_TOOL_SPECS.useSkills.description,
-        parameters: INTERNAL_TOOL_SPECS.useSkills.parameters
-      }
-    })
-
-    if (hasDirectorySkillsSelected) {
-      functionMap.set('read_skill_file', {
-        type: 'internal',
-        internal: 'read_skill_file',
-        serverName: 'Skill',
-        toolName: 'read_skill_file'
-      })
-
-      tools.push({
-        type: 'function',
-        function: {
-          name: 'read_skill_file',
-          description: INTERNAL_TOOL_SPECS.readSkillFile.description,
-          parameters: INTERNAL_TOOL_SPECS.readSkillFile.parameters
-        }
-      })
-    }
-
-    if (hasRunnableSkillScriptsSelected) {
-      functionMap.set('run_skill_script', {
-        type: 'internal',
-        internal: 'run_skill_script',
-        serverName: 'Skill',
-        toolName: 'run_skill_script',
-        approvalKind: 'execution'
-      })
-
-      tools.push({
-        type: 'function',
-        function: {
-          name: 'run_skill_script',
-          description: INTERNAL_TOOL_SPECS.runSkillScript.description,
-          parameters: INTERNAL_TOOL_SPECS.runSkillScript.parameters
-        }
-      })
-    }
-
-    if (hasAgentSkillsSelected) {
-      tools.push({
-        type: 'function',
-        function: {
-          name: 'activate_all_agent_skills',
-          description: INTERNAL_TOOL_SPECS.activateAllAgentSkills.description,
-          parameters: INTERNAL_TOOL_SPECS.activateAllAgentSkills.parameters
-        }
-      })
-    }
-  }
+  skillBundle.tools.forEach((tool) => tools.push(tool))
+  skillBundle.map.forEach((mapping, name) => functionMap.set(name, mapping))
 
   const servers = activeMcpServers.value.filter((s) => s && !s.disabled && s._id)
 
@@ -16041,7 +15222,7 @@ async function buildToolsBundle(options = {}) {
       if (!t?.name) continue
       const fnName = makeToolFunctionName(server._id, t.name)
       const toolDef = buildProviderToolDefinition(t.inputSchema)
-      const approvalPolicy = getMcpToolApprovalPolicy(server, t)
+      const approvalPolicy = resolveMcpToolApprovalPolicy(t)
       functionMap.set(fnName, {
         type: 'mcp',
         serverId: server._id,
@@ -16067,321 +15248,6 @@ async function buildToolsBundle(options = {}) {
 
   throwIfAborted(abortState)
   return finalizeBundle()
-}
-
-async function streamResponsesCompletion({ baseUrl, apiKey, body, signal, onDelta, abortState = null, stream = true }) {
-  const base = normalizeBaseUrl(baseUrl)
-  const candidates = [`${base}/responses`]
-  if (!/\/v1$/.test(base)) candidates.push(`${base}/v1/responses`)
-  const throwIfStreamingAborted = () => {
-    if (abortState?.aborted || signal?.aborted) throw createAbortError()
-  }
-
-  let resp = null
-  let usedUrl = candidates[0]
-  let lastNetworkError = null
-
-  for (const url of candidates) {
-    usedUrl = url
-    try {
-      resp = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json, text/event-stream',
-          Authorization: `Bearer ${apiKey}`
-        },
-        body: JSON.stringify(buildResponsesRequestBodyFromChatBody(body, { stream })),
-        signal
-      })
-
-      if (resp.status === 404 && url !== candidates[candidates.length - 1]) continue
-      break
-    } catch (err) {
-      lastNetworkError = err
-      if (url !== candidates[candidates.length - 1]) continue
-      throw err
-    }
-  }
-
-  if (!resp) {
-    throw lastNetworkError || new Error('Request failed: no response received')
-  }
-
-  if (!resp.ok) {
-    const responseText = await resp.text()
-    const parsedResponse = safeJsonParse(responseText)
-    const errJson = parsedResponse.ok ? parsedResponse.value : null
-    const detail = errJson?.error?.message || (parsedResponse.ok ? stableStringify(errJson) : responseText)
-    throw new Error(`Responses 请求失败（HTTP ${resp.status}）：${detail || resp.statusText}\nURL：${usedUrl}`)
-  }
-
-  if (!stream) {
-    const responseText = await resp.text()
-    const parsedResponse = safeJsonParse(responseText)
-    if (!parsedResponse.ok) {
-      throw new Error(`Responses 请求失败：无法解析 JSON 响应\nURL：${usedUrl}`)
-    }
-    const state = createResponsesStreamAccumulator()
-    applyResponsesStreamEvent(state, parsedResponse.value)
-    const result = finalizeResponsesStreamAccumulator(state)
-    result.endpoint = 'responses'
-    result.payloads = [parsedResponse.value]
-    if (!String(result.content || '').trim()) {
-      result.content = extractAssistantTextFromPayload(parsedResponse.value)
-    }
-    return result
-  }
-
-  const state = createResponsesStreamAccumulator()
-  await consumeJsonEventStream({
-    response: resp,
-    signal,
-    isAborted: () => {
-      throwIfStreamingAborted()
-      return !!abortState?.aborted
-    },
-    onJson: (json) => {
-      throwIfStreamingAborted()
-      const events = applyResponsesStreamEvent(state, json)
-      events.forEach((evt) => onDelta?.(evt))
-    }
-  })
-
-  const result = finalizeResponsesStreamAccumulator(state)
-  result.endpoint = 'responses'
-  if (!String(result.content || '').trim() && result.payloads.length) {
-    result.content = extractAssistantTextFromPayloads(result.payloads)
-  }
-  return result
-}
-
-async function streamResponsesCompletionWithFallback(args) {
-  try {
-    return await streamResponsesCompletion({ ...args, stream: true })
-  } catch (err) {
-    if (isAbortError(err) || args?.abortState?.aborted || args?.signal?.aborted) throw createAbortError()
-    if (!shouldRetryResponsesWithoutStreaming(err?.message || err)) throw err
-    return await streamResponsesCompletion({ ...args, stream: false })
-  }
-}
-
-async function streamChatCompletion({ baseUrl, apiKey, apiMode = 'auto', body, signal, onDelta, abortState = null }) {
-  const base = normalizeBaseUrl(baseUrl)
-  const candidates = [`${base}/chat/completions`]
-  if (!/\/v1$/.test(base)) candidates.push(`${base}/v1/chat/completions`)
-  const throwIfStreamingAborted = () => {
-    if (abortState?.aborted || signal?.aborted) throw createAbortError()
-  }
-
-  const configuredApiMode = normalizeProviderApiMode(apiMode)
-  const automaticApiFallback = allowsAutomaticApiFallback(configuredApiMode)
-  const initialApiMode = resolveChatApiMode({
-    configuredMode: configuredApiMode,
-    preferResponses: shouldPreferResponsesApiForModel(body?.model)
-  })
-
-  if (initialApiMode === 'responses') {
-    try {
-      return await streamResponsesCompletionWithFallback({ baseUrl, apiKey, body, signal, onDelta, abortState })
-    } catch (err) {
-      if (isAbortError(err) || abortState?.aborted || signal?.aborted) throw createAbortError()
-      if (!automaticApiFallback || !shouldFallbackResponsesToChatCompletions(err?.message || err)) throw err
-    }
-  }
-
-  let resp = null
-  let usedUrl = candidates[0]
-  let lastNetworkError = null
-
-  for (const url of candidates) {
-    usedUrl = url
-    try {
-      resp = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`
-        },
-        body: JSON.stringify(body),
-        signal
-      })
-
-      // 常见误配置：baseUrl 忘了带 /v1，会导致 404；此时自动尝试 /v1/chat/completions
-      if (resp.status === 404 && url !== candidates[candidates.length - 1]) continue
-      break
-    } catch (err) {
-      lastNetworkError = err
-      if (url !== candidates[candidates.length - 1]) continue
-      throw err
-    }
-  }
-
-  if (!resp) {
-    throw lastNetworkError || new Error('Request failed: no response received')
-  }
-
-  if (!resp.ok) {
-    const responseText = await resp.text()
-    const parsedResponse = safeJsonParse(responseText)
-    const errJson = parsedResponse.ok ? parsedResponse.value : null
-    const detail = errJson?.error?.message || (parsedResponse.ok ? stableStringify(errJson) : responseText)
-    const errorText = `请求失败（HTTP ${resp.status}）：${detail || resp.statusText}\nURL：${usedUrl}`
-    if (automaticApiFallback && shouldFallbackChatCompletionsToResponses(errorText)) {
-      return await streamResponsesCompletionWithFallback({ baseUrl, apiKey, body, signal, onDelta, abortState })
-    }
-    throw new Error(errorText)
-  }
-
-  const toText = (val) => {
-    if (val == null) return ''
-    if (typeof val === 'string') return val
-    if (Array.isArray(val)) return val.map(toText).join('')
-    if (typeof val === 'object') {
-      if (typeof val.text === 'string') return val.text
-      if (typeof val.content === 'string') return val.content
-      return stableStringify(val)
-    }
-    return String(val)
-  }
-
-  let content = ''
-  let reasoning = ''
-  let finishReason = null
-  let usage = null
-  const toolCallsByIndex = new Map()
-  const payloadSnapshots = []
-
-  const finalize = () => ({
-    content,
-    reasoning,
-    toolCalls: Array.from(toolCallsByIndex.values()),
-    finishReason: finishReason || 'stop',
-    usage,
-    endpoint: 'chat-completions',
-    payloads: payloadSnapshots.slice()
-  })
-
-  const applyJson = (json) => {
-    throwIfStreamingAborted()
-    if (!json || typeof json !== 'object') return
-    payloadSnapshots.push(json)
-    const responseUsage = json?.usage || json?.response?.usage
-    if (responseUsage && typeof responseUsage === 'object') usage = responseUsage
-
-    if (json?.error) {
-      const errText = json?.error?.message || stableStringify(json.error)
-      throw new Error(`请求失败：${errText}\nURL：${usedUrl}`)
-    }
-
-    const choice = json?.choices?.[0] || {}
-    const delta = choice.delta || {}
-    const msg = choice.message || {}
-
-    if (choice.finish_reason) finishReason = choice.finish_reason
-
-    // content：优先处理 delta；若只有 message/text，则按全量内容补齐。
-    const deltaContent = delta.content ?? delta.text
-    if (deltaContent != null) {
-      const deltaText = toText(deltaContent)
-      if (deltaText) {
-        content += deltaText
-        onDelta?.({ type: 'content', delta: deltaText, content })
-      }
-    } else if (msg?.content != null) {
-      const next = toText(msg.content)
-      const deltaText = content && next.startsWith(content) ? next.slice(content.length) : next
-      content = next
-      if (deltaText) onDelta?.({ type: 'content', delta: deltaText, content })
-    } else if (choice?.text != null) {
-      const deltaText = toText(choice.text)
-      if (deltaText) {
-        content += deltaText
-        onDelta?.({ type: 'content', delta: deltaText, content })
-      }
-    } else if (json?.content != null || json?.text != null) {
-      const deltaText = toText(json.content ?? json.text)
-      if (deltaText) {
-        content += deltaText
-        onDelta?.({ type: 'content', delta: deltaText, content })
-      }
-    }
-
-    const deltaReasoning = delta.reasoning ?? delta.reasoning_content ?? delta.thinking ?? delta.thought
-    const msgReasoning = msg.reasoning ?? msg.reasoning_content ?? msg.thinking ?? msg.thought
-    if (deltaReasoning != null) {
-      const deltaText = toText(deltaReasoning)
-      if (deltaText) {
-        reasoning += deltaText
-        onDelta?.({ type: 'reasoning', delta: deltaText, reasoning })
-      }
-    } else if (msgReasoning != null) {
-      const next = toText(msgReasoning)
-      const deltaText = reasoning && next.startsWith(reasoning) ? next.slice(reasoning.length) : next
-      reasoning = next
-      if (deltaText) onDelta?.({ type: 'reasoning', delta: deltaText, reasoning })
-    }
-
-    const legacyFunctionCall = delta.function_call || msg.function_call
-    const deltaToolCalls = delta.tool_calls
-    if (Array.isArray(deltaToolCalls)) {
-      deltaToolCalls.forEach((tc) => {
-        const index = tc.index ?? 0
-        const prev = toolCallsByIndex.get(index) || { id: '', type: 'function', function: { name: '', arguments: '' } }
-        if (tc.id) prev.id = tc.id
-        if (tc.call_id || tc.callId) prev.call_id = tc.call_id || tc.callId
-        if (tc.type) prev.type = tc.type
-        if (tc.function?.name) prev.function.name = tc.function.name
-        if (tc.function?.arguments) prev.function.arguments += tc.function.arguments
-        toolCallsByIndex.set(index, prev)
-      })
-      onDelta?.({ type: 'tool_calls', toolCalls: Array.from(toolCallsByIndex.values()) })
-    } else if (Array.isArray(msg?.tool_calls)) {
-      // 兼容直接返回完整 message.tool_calls
-      msg.tool_calls.forEach((tc, i) => {
-        const index = tc.index ?? i
-        toolCallsByIndex.set(index, {
-          id: tc.id || '',
-          type: tc.type || 'function',
-          ...((tc.call_id || tc.callId) ? { call_id: tc.call_id || tc.callId } : {}),
-          function: {
-            name: tc.function?.name || '',
-            arguments: tc.function?.arguments || ''
-          }
-        })
-      })
-      if (toolCallsByIndex.size) onDelta?.({ type: 'tool_calls', toolCalls: Array.from(toolCallsByIndex.values()) })
-    } else if (legacyFunctionCall && typeof legacyFunctionCall === 'object') {
-      const prev = toolCallsByIndex.get(0) || {
-        id: `call_legacy_${Date.now().toString(16)}`,
-        type: 'function',
-        function: { name: '', arguments: '' }
-      }
-      if (legacyFunctionCall.name) prev.function.name = legacyFunctionCall.name
-      if (legacyFunctionCall.arguments) {
-        if (msg.function_call === legacyFunctionCall) {
-          prev.function.arguments = legacyFunctionCall.arguments
-        } else {
-          prev.function.arguments += legacyFunctionCall.arguments
-        }
-      }
-      toolCallsByIndex.set(0, prev)
-      onDelta?.({ type: 'tool_calls', toolCalls: Array.from(toolCallsByIndex.values()) })
-    }
-  }
-
-  await consumeJsonEventStream({
-    response: resp,
-    signal,
-    isAborted: () => !!abortState?.aborted,
-    onJson: applyJson
-  })
-
-  if (!String(content || '').trim() && payloadSnapshots.length) {
-    content = extractAssistantTextFromPayloads(payloadSnapshots)
-  }
-
-  return finalize()
 }
 
 function createDisplayMessage(role, content = '', extra = {}) {
@@ -16412,150 +15278,15 @@ function createDisplayMessage(role, content = '', extra = {}) {
   return reactive({ ...base, ...extra })
 }
 
-async function confirmToolCall({
-  serverName,
-  toolName,
-  argsText,
-  reasoningText,
-  abortState = null,
-  titleText = '确认工具调用',
-  extraLines = [],
-  sessionId = '',
-  sessionTitle = '',
-  approvalKind = 'tool',
-  rememberText = '本会话允许此工具',
-  onRememberForSession = null
-}) {
-  throwIfAborted(abortState)
-  const normalizedKind =
-    approvalKind === 'shell'
-      ? 'shell'
-      : approvalKind === 'execution'
-        ? 'execution'
-        : 'tool'
-  const normalizedArgsText = String(argsText || '{}').trim() || '{}'
-  const normalizedArgs = normalizeToolApprovalArgs(null, normalizedArgsText)
-  const shellCommand = normalizeShellApprovalCommand(normalizedArgs, normalizedArgsText)
-
-  return await new Promise((resolve) => {
-    let settled = false
-    let unregisterAbort = null
-    const requestId = `tool_approval_${newId()}`
-    const finish = (value, rememberForSession = false) => {
-      if (settled) return
-      settled = true
-      pendingToolApprovals.value = pendingToolApprovals.value.filter((item) => item.id !== requestId)
-      try {
-        unregisterAbort?.()
-      } catch {
-        // ignore
-      }
-      if (rememberForSession && typeof onRememberForSession === 'function') {
-        try {
-          onRememberForSession()
-        } catch {
-          // Approval remains valid for this call even if the in-memory remember callback fails.
-        }
-      }
-      resolve(value)
-    }
-
-    pendingToolApprovals.value = [
-      ...pendingToolApprovals.value,
-      {
-        id: requestId,
-        serverName: String(serverName || '未知').trim() || '未知',
-        toolName: String(toolName || 'unknown').trim() || 'unknown',
-        argsText: normalizedArgsText,
-        reasoningText: String(reasoningText || '').trim(),
-        titleText: String(titleText || '确认工具调用').trim() || '确认工具调用',
-        extraLines: Array.isArray(extraLines)
-          ? extraLines.map((line) => String(line || '').trim()).filter(Boolean)
-          : [],
-        sessionId: String(sessionId || '').trim(),
-        sessionTitle: String(sessionTitle || '').trim(),
-        approvalKind: normalizedKind,
-        commandText: normalizedKind === 'shell' ? shellCommand.command : '',
-        cwdText: normalizedKind === 'shell' ? shellCommand.cwd : '',
-        canRemember: typeof onRememberForSession === 'function',
-        rememberText: String(rememberText || '').trim() || '本会话允许此工具',
-        scopeHint:
-          normalizedKind === 'shell'
-            ? '会话内允许只匹配当前 cwd 和完全相同的命令；其他 Bash 命令仍会再次询问。'
-            : normalizedKind === 'execution'
-              ? '会话内允许只匹配当前技能、脚本和完全相同的参数；其他代码执行仍会再次询问。'
-              : '会话内允许只对当前会话中的此工具生效。',
-        settle(decision) {
-          if (decision === 'session') {
-            finish(true, true)
-            return
-          }
-          if (decision === 'once') {
-            finish(true, false)
-            return
-          }
-          if (decision === 'deny') {
-            finish(false, false)
-            return
-          }
-          finish(null, false)
-        }
-      }
-    ]
-
-    const abortCleanup = abortState?.onAbort?.(() => {
-      finish(null)
-    }) || null
-    if (settled) {
-      try {
-        abortCleanup?.()
-      } catch {
-        // ignore
-      }
-    } else {
-      unregisterAbort = abortCleanup
-    }
+function resolveSelectedSkillTarget({ idCandidate = '', nameCandidate = '' } = {}) {
+  return resolveSelectedSkillTargetFromList(selectedSkillObjects.value, {
+    idCandidate,
+    nameCandidate
   })
 }
 
-function resolveActiveToolApproval(decision) {
-  activeToolApproval.value?.settle?.(decision)
-}
-
-function cancelPendingToolApprovals() {
-  const pending = [...pendingToolApprovals.value]
-  pending.forEach((request) => request?.settle?.('abort'))
-}
-
-function resolveSelectedSkillTarget({ idCandidate = '', nameCandidate = '' } = {}) {
-  const available = Array.isArray(selectedSkillObjects.value) ? selectedSkillObjects.value : []
-
-  const id = String(idCandidate || '').trim()
-  if (id) {
-    const hit = available.find((s) => String(s?._id || '').trim() === id)
-    if (hit) return hit
-  }
-
-  const name = String(nameCandidate || '').trim()
-  if (name) {
-    const norm = name.toLowerCase()
-    return (
-      available.find((s) => String(s?.name || '').trim().toLowerCase() === norm) ||
-      available.find((s) => String(s?._id || '').trim().toLowerCase() === norm) ||
-      available.find((s) => String(s?.name || '').trim().toLowerCase().includes(norm)) ||
-      null
-    )
-  }
-
-  return null
-}
-
 function listSelectedSkillsBrief(limit = 30) {
-  const available = Array.isArray(selectedSkillObjects.value) ? selectedSkillObjects.value : []
-  return available
-    .map((s) => ({ id: s?._id, name: s?.name || s?._id }))
-    .filter((x) => x?.id)
-    .slice(0, limit)
+  return listSelectedSkillsBriefFromList(selectedSkillObjects.value, limit)
 }
 
 function normalizeSkillScriptPathCandidate(value) {
@@ -16729,6 +15460,18 @@ function getWebOperationsApi() {
   return globalThis?.aiToolsApi?.web || null
 }
 
+function getBuiltinSkillsApi() {
+  return globalThis?.aiToolsApi?.dangerous?.skills || null
+}
+
+const builtinSkillActionCatalog = createBuiltinSkillActionCatalog((skillId) => {
+  const api = getBuiltinSkillsApi()
+  if (typeof api?.listActions !== 'function') {
+    throw new Error('preload 未注入内置 Skill 动作 API')
+  }
+  return api.listActions(skillId)
+})
+
 function getWebToolMissingText() {
   return '内置联网服务不可用：preload 未注入 aiToolsApi.web。请在 uTools 插件环境中运行，或重新构建插件。'
 }
@@ -16876,6 +15619,50 @@ function normalizeToolCallExecutionContext(toolCall, toolMap) {
   }
 }
 
+async function hydrateSkillGatewayExecutionContext(context, abortState = null) {
+  if (context?.mapping?.type !== 'internal' || context.mapping.internal !== 'skill_call') {
+    return context
+  }
+
+  let resolved = null
+  try {
+    throwIfAborted(abortState)
+    resolved = await waitForAbortable(
+      resolveBuiltinSkillCall({
+        selectedSkills: selectedSkillObjects.value,
+        catalog: builtinSkillActionCatalog,
+        args: context.argsObj,
+        isSkillLoaded: isSkillPromptContentLoaded
+      }),
+      abortState
+    )
+    throwIfAborted(abortState)
+  } catch (err) {
+    if (isAbortError(err) || abortState?.aborted) throw createAbortError()
+    resolved = { ok: false, error: err?.message || String(err) }
+  }
+
+  if (!resolved?.ok) {
+    return {
+      ...context,
+      mapping: {
+        ...context.mapping,
+        gatewayError: resolved?.error || 'Skill Action 解析失败',
+        gatewayDetails: resolved || null
+      }
+    }
+  }
+
+  return {
+    ...context,
+    mapping: resolved.mapping,
+    serverName: resolved.mapping.serverName,
+    toolName: resolved.mapping.toolName,
+    argsObj: resolved.args,
+    argsText: stableStringify(resolved.args)
+  }
+}
+
 function resolveToolApprovalTarget(context = {}) {
   const mapping = context.mapping || {}
   let serverId = String(mapping.serverId || '').trim()
@@ -16910,6 +15697,14 @@ function resolveToolApprovalTarget(context = {}) {
     }
   }
 
+  if (mapping?.type === 'internal' && mapping.internal === 'run_skill_script') {
+    argsObj = normalizeSkillScriptApprovalArgs(argsObj, {
+      resolveSkill: resolveSelectedSkillTarget,
+      resolveScript: resolveSkillScriptTarget
+    })
+    argsText = stableStringify(argsObj)
+  }
+
   let resolvedTool = null
   if (server && toolName) {
     const cachedTools = mcpListToolsCache.get(getMcpToolsCacheKey(server))?.tools
@@ -16917,11 +15712,9 @@ function resolveToolApprovalTarget(context = {}) {
       resolvedTool = cachedTools.find((tool) => String(tool?.name || '').trim() === toolName) || null
     }
   }
-  const resolvedPolicy = getMcpToolApprovalPolicy(server, resolvedTool)
+  const resolvedPolicy = resolveMcpToolApprovalPolicy(resolvedTool)
   const configuredApprovalKind = String(mapping.approvalKind || resolvedPolicy.approvalKind || '').trim()
-  const isShell =
-    configuredApprovalKind === 'shell' ||
-    String(mapping.transportType || server?.transportType || '').trim() === 'builtinShell'
+  const isShell = configuredApprovalKind === 'shell'
   const approvalKind =
     isShell
       ? 'shell'
@@ -16950,9 +15743,9 @@ async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, ab
   const targetSession = getRunSessionTarget(abortState)
   const targetRecord = getRunRecord(abortState) || getActiveMemorySession()
   throwIfAborted(abortState)
-  const context = normalizeToolCallExecutionContext(toolCall, toolMap)
+  const normalizedContext = normalizeToolCallExecutionContext(toolCall, toolMap)
+  const context = await hydrateSkillGatewayExecutionContext(normalizedContext, abortState)
   const approvalTarget = resolveToolApprovalTarget(context)
-  const requiresExplicitApproval = approvalTarget.forceApproval === true
   const approvalKey = buildSessionToolApprovalKey({
     sessionId: String(targetRecord?.id || 'chat'),
     serverId: approvalTarget.serverId,
@@ -16962,9 +15755,14 @@ async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, ab
     args: approvalTarget.argsObj,
     argsText: approvalTarget.argsText
   })
+  const currentApprovalMode = resolveCurrentToolApprovalMode(abortState)
   const autoApproved =
     sessionApprovedToolKeys.has(approvalKey) ||
-    (!requiresExplicitApproval && shouldAutoApproveToolExecution(abortState))
+    evaluateToolApproval({
+      mode: currentApprovalMode,
+      forceApproval: approvalTarget.forceApproval === true,
+      interactive: true
+    }).action === 'allow'
 
   const pendingToolMessage = createPendingToolExecutionMessage({
     serverName: context.serverName,
@@ -16977,6 +15775,7 @@ async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, ab
     toolSessionId: String(targetRecord?.id || '').trim()
   })
   pendingToolMessage.toolAbortState = abortState || null
+  pendingToolMessage.toolApprovalMode = currentApprovalMode
   targetSession.messages.push(pendingToolMessage)
   await maybeScrollToBottomForRun(abortState)
 
@@ -17065,1035 +15864,77 @@ function getToolCallParallelExecutionKey(prepared = {}) {
     return `parallel:${newId()}`
   }
 
+  if (mapping?.type === 'skill' && mapping?.skillId) {
+    return `skill:${mapping.skillId}`
+  }
+
   return `parallel:${newId()}`
 }
+
+const executePreparedSkillTool = createPreparedSkillToolExecutor({
+  activatedAgentSkillIds,
+  agentSkillIdSet,
+  buildToolExecutionResultSubMeta,
+  buildWebToolSubMeta,
+  builtinSkillActionCatalog,
+  deepCopyJson,
+  executeBuiltinWebTool,
+  extractChatImagesFromToolResult,
+  getBuiltinSkillsApi,
+  getLoadedSkillFilePathSet,
+  getSkillMcpStatus,
+  hasLoadedSkillMainContent,
+  listSelectedSkillsBrief,
+  loadSkillMainContent,
+  loadedSkillContentById,
+  loadedSkillFileCacheBySkillId,
+  maybeScrollToBottomForRun,
+  mcpServers,
+  prepareBuiltinAgentToolCallArgs,
+  resolveSelectedSkillTarget,
+  resolveSkillScriptTarget,
+  selectedSkillObjects
+})
+
+const executePreparedMcpTool = createPreparedMcpToolExecutor({
+  activeMcpServers,
+  buildMcpToolCatalogEntry,
+  buildToolExecutionResultSubMeta,
+  closeMcpClientSafely,
+  deepCopyJson,
+  extractChatImagesFromToolResult,
+  filterAllowedMcpTools,
+  listActiveMcpServersBrief,
+  listMcpToolsForServer,
+  maybeScrollToBottomForRun,
+  registerAbortableMcpClient,
+  resolveActiveMcpServer,
+  setMcpToolCatalogEntry,
+  upsertPinnedMcpToolHint
+})
 
 async function executePreparedToolCall(prepared, abortState = null) {
   const targetSession = getRunSessionTarget(abortState)
   throwIfAborted(abortState)
   const {
-    mapping,
-    serverName,
-    toolName,
     toolCallId,
-    toolExecutionId,
-    argsObj,
-    pendingToolMessage
+    toolExecutionId
   } = prepared || {}
   const createCurrentToolResultMessage = (content = '', extra = {}) =>
     createToolExecutionResultMessage(content, extra, toolCallId, toolExecutionId)
 
-  if (mapping?.type === 'internal' && (mapping.internal === 'web_search' || mapping.internal === 'web_read')) {
-    try {
-      const exec = await executeBuiltinWebTool({ mapping, argsObj, serverName, toolName, abortState })
-      throwIfAborted(abortState)
-      targetSession.messages.push(
-        createCurrentToolResultMessage(exec.display || `### 联网工具结果\n\n\`\`\`json\n${exec.content || ''}\n\`\`\``, {
-          toolMeta: `${serverName} / ${toolName}`,
-          toolName,
-          toolServerName: serverName,
-          toolResultPayload: exec.payload || null,
-          toolSubMeta: buildWebToolSubMeta(exec.payload)
-        })
-      )
-      await maybeScrollToBottomForRun(abortState)
-      return exec
-    } catch (err) {
-      if (isAbortError(err) || abortState?.aborted) throw createAbortError()
-      const errorText = err?.message || String(err)
-      targetSession.messages.push(createCurrentToolResultMessage(`### 联网工具结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await maybeScrollToBottomForRun(abortState)
-      return { ok: false, content: `错误：${errorText}` }
-    }
-  }
-
-  if (mapping?.type === 'internal' && mapping.internal === 'read_skill_file') {
-    const idCandidate = String(argsObj?.id ?? argsObj?._id ?? argsObj?.skillId ?? argsObj?.skill_id ?? '').trim()
-    const pathCandidate = String(argsObj?.path ?? argsObj?.file ?? argsObj?.filePath ?? '').trim()
-    const target = resolveSelectedSkillTarget({ idCandidate })
-
-    if (!target || !target._id) {
-      const errorText = `未找到要读取的技能文件。可用技能：${stableStringify(listSelectedSkillsBrief())}`
-      targetSession.messages.push(createCurrentToolResultMessage(`### 技能文件读取结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await maybeScrollToBottomForRun(abortState)
-      return { ok: false, content: errorText }
-    }
-
-    if (!pathCandidate) {
-      const errorText = 'path 不能为空'
-      targetSession.messages.push(createCurrentToolResultMessage(`### 技能文件读取结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await maybeScrollToBottomForRun(abortState)
-      return { ok: false, content: errorText }
-    }
-
-    try {
-      throwIfAborted(abortState)
-      const result = await waitForAbortable(Promise.resolve(readSkillRegistryFile(target._id, pathCandidate)), abortState)
-      throwIfAborted(abortState)
-      const skillId = String(target._id || '').trim()
-      const skillName = String(target.name || target._id || '').trim() || skillId
-      const resolvedPath = String(result?.path || pathCandidate).trim() || pathCandidate
-      const content = String(result?.content || '')
-      const current = getLoadedSkillFilePathSet(skillId)
-      current.add(resolvedPath)
-      loadedSkillFileCacheBySkillId[skillId] = Array.from(current)
-      if (resolvedPath === String(target?.entryFile || 'SKILL.md').trim() || resolvedPath === 'SKILL.md') {
-        loadedSkillContentById[skillId] = content.trim()
-      }
-
-      const resultText = ['OK: read_skill_file', `skill_id: ${skillId}`, `skill_name: ${skillName}`, `path: ${resolvedPath}`, '', content].join('\n')
-      throwIfAborted(abortState)
-      targetSession.messages.push(
-        createCurrentToolResultMessage(
-          `### 技能文件读取结果\n- 技能：**${skillName}**\n- 路径：\`${resolvedPath}\`\n\n\`\`\`\n${content}\n\`\`\``,
-          { toolMeta: `${serverName} / ${toolName}` }
-        )
-      )
-      await maybeScrollToBottomForRun(abortState)
-      return { ok: true, content: resultText }
-    } catch (err) {
-      if (isAbortError(err) || abortState?.aborted) throw createAbortError()
-      const errorText = err?.message || String(err)
-      targetSession.messages.push(createCurrentToolResultMessage(`### 技能文件读取结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await maybeScrollToBottomForRun(abortState)
-      return { ok: false, content: errorText }
-    }
-  }
-
-  if (mapping?.type === 'internal' && mapping.internal === 'run_skill_script') {
-    const idCandidate = String(argsObj?.id ?? argsObj?._id ?? argsObj?.skillId ?? argsObj?.skill_id ?? '').trim()
-    const pathCandidate = String(argsObj?.path ?? argsObj?.script ?? argsObj?.scriptPath ?? '').trim()
-    const nameCandidate = String(argsObj?.name ?? argsObj?.skillName ?? argsObj?.skill_name ?? argsObj?.skill ?? '').trim()
-    const target = resolveSelectedSkillTarget({ idCandidate, nameCandidate })
-
-    if (!target || !target._id) {
-      const errorText = `未找到要执行脚本的技能。可用技能：${stableStringify(listSelectedSkillsBrief())}`
-      targetSession.messages.push(createCurrentToolResultMessage(`### 技能脚本执行结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await maybeScrollToBottomForRun(abortState)
-      return { ok: false, content: errorText }
-    }
-
-    const resolvedScript = resolveSkillScriptTarget(target, pathCandidate)
-    if (!resolvedScript.ok) {
-      const errorText = resolvedScript.error || '脚本路径无效'
-      targetSession.messages.push(createCurrentToolResultMessage(`### 技能脚本执行结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await maybeScrollToBottomForRun(abortState)
-      return { ok: false, content: errorText }
-    }
-
-    let successfulScriptResult = null
-    try {
-      throwIfAborted(abortState)
-      const result = await waitForAbortable(
-        Promise.resolve(runSkillRegistryScript(target._id, resolvedScript.path, {
-          args: Array.isArray(argsObj?.args) ? argsObj.args : [],
-          input: argsObj?.input,
-          timeout_ms: argsObj?.timeout_ms
-        })),
-        abortState
-      )
-      throwIfAborted(abortState)
-
-      const skillId = String(target._id || '').trim()
-      const skillName = String(target.name || target._id || '').trim() || skillId
-      const resolvedPath = String(result?.path || resolvedScript.path).trim() || resolvedScript.path
-      const stdout = String(result?.stdout || '')
-      const stderr = String(result?.stderr || '')
-      const exitCode = Number.isFinite(Number(result?.exitCode)) ? Number(result.exitCode) : 0
-      const command = String(result?.command || '').trim()
-      const outputType = String(result?.outputType || (result?.output != null && typeof result.output === 'object' ? 'json' : 'text')).trim() || 'text'
-      const parsedOutput = result?.output === undefined ? null : result.output
-      const scriptMeta = result?.scriptMeta && typeof result.scriptMeta === 'object' ? result.scriptMeta : (resolvedScript.entry || null)
-      const images = extractChatImagesFromToolResult(result)
-      const resultObj = {
-        ok: true,
-        tool: 'run_skill_script',
-        skill_id: skillId,
-        skill_name: skillName,
-        path: resolvedPath,
-        inferred_path: !!resolvedScript.inferred,
-        command: command || '',
-        exit_code: exitCode,
-        output_type: outputType,
-        output: parsedOutput,
-        stdout,
-        stderr,
-        script_meta: scriptMeta
-      }
-      const resultText = stableStringify(resultObj)
-
-      const sections = [
-        `### 技能脚本执行结果\n- 技能：**${skillName}**\n- 路径：\`${resolvedPath}\`\n- 退出码：**${exitCode}**${command ? `\n- 命令：\`${command}\`` : ''}`
-      ]
-      if (scriptMeta?.description || scriptMeta?.whenToUse) {
-        sections.push(
-          [
-            '#### 脚本信息',
-            scriptMeta?.runtime ? `- 运行时：${scriptMeta.runtime}` : '',
-            scriptMeta?.description ? `- 描述：${scriptMeta.description}` : '',
-            scriptMeta?.whenToUse ? `- 使用场景：${scriptMeta.whenToUse}` : ''
-          ].filter(Boolean).join('\n')
-        )
-      } else if (scriptMeta?.runtime) {
-        sections.push(`#### 脚本信息\n- 运行时：${scriptMeta.runtime}`)
-      }
-      if (outputType === 'json' && parsedOutput !== null) {
-        sections.push(`#### 输出（JSON）\n\`\`\`json\n${stableStringify(parsedOutput)}\n\`\`\``)
-      }
-      if (images.length) sections.push(`#### 图片\n- ${images.length} 张（已在上方预览；base64/dataUrl 已省略）`)
-      if (stdout) sections.push(`#### 标准输出\n\`\`\`\n${stdout}\n\`\`\``)
-      if (stderr) sections.push(`#### 标准错误\n\`\`\`\n${stderr}\n\`\`\``)
-      if (!stdout && !stderr) sections.push('（脚本未产生输出）')
-
-      throwIfAborted(abortState)
-      const execResult = {
-        ok: true,
-        content: resultText,
-        images,
-        serverName,
-        toolName
-      }
-      targetSession.messages.push(createCurrentToolResultMessage(sections.join('\n\n'), {
-        toolMeta: `${serverName} / ${toolName}`,
-        images,
-        toolName,
-        toolServerName: serverName,
-        toolExpanded: false
-      }))
-      successfulScriptResult = execResult
-      await maybeScrollToBottomForRun(abortState)
-      return execResult
-    } catch (err) {
-      if (isAbortError(err) || abortState?.aborted) throw createAbortError()
-      if (successfulScriptResult) return successfulScriptResult
-      const errorText = err?.message || String(err)
-      targetSession.messages.push(createCurrentToolResultMessage(`### 技能脚本执行结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await maybeScrollToBottomForRun(abortState)
-      return { ok: false, content: errorText }
-    }
-  }
-
-  if (mapping?.type === 'internal' && mapping.internal === 'use_skill') {
-    const idCandidate = String(argsObj?.id ?? argsObj?._id ?? argsObj?.skillId ?? argsObj?.skill_id ?? '').trim()
-    const nameCandidate = String(argsObj?.name ?? argsObj?.skillName ?? argsObj?.skill_name ?? argsObj?.skill ?? '').trim()
-
-    const available = Array.isArray(selectedSkillObjects.value) ? selectedSkillObjects.value : []
-
-    let target = null
-    if (idCandidate) {
-      target = available.find((s) => String(s?._id || '') === idCandidate) || null
-    }
-    if (!target && nameCandidate) {
-      const norm = nameCandidate.toLowerCase()
-      target =
-        available.find((s) => String(s?.name || '').trim().toLowerCase() === norm) ||
-        available.find((s) => String(s?._id || '').trim().toLowerCase() === norm) ||
-        available.find((s) => String(s?.name || '').trim().toLowerCase().includes(norm)) ||
-        null
-    }
-
-    if (!target || !target._id) {
-      const list = available
-        .map((s) => ({ id: s?._id, name: s?.name || s?._id }))
-        .filter((x) => x?.id)
-        .slice(0, 30)
-      const errorText = `未找到要启用的技能（仅可启用当前已选择的技能）。可用技能：${stableStringify(list)}`
-      targetSession.messages.push(createCurrentToolResultMessage(`### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      return { ok: false, content: errorText }
-    }
-
-    const skillId = String(target._id || '').trim()
-    const skillName = String(target.name || target._id || '').trim() || skillId
-    const isAgentSkill = agentSkillIdSet.value.has(skillId)
-    const isDirectory = isDirectorySkill(target)
-    const wasLoaded = isDirectory ? hasLoadedSkillMainContent(skillId, target?.entryFile || 'SKILL.md') : true
-
-    if (isDirectory && !wasLoaded) {
-      try {
-        throwIfAborted(abortState)
-        await waitForAbortable(loadSkillMainContent(skillId), abortState)
-        throwIfAborted(abortState)
-      } catch (err) {
-        if (isAbortError(err) || abortState?.aborted) throw createAbortError()
-        const errorText = err?.message || String(err)
-        targetSession.messages.push(createCurrentToolResultMessage(`### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-        await maybeScrollToBottomForRun(abortState)
-        return { ok: false, content: errorText }
-      }
-    }
-
-    let changed = false
-    if (isAgentSkill) {
-      throwIfAborted(abortState)
-      const prev = Array.isArray(activatedAgentSkillIds.value) ? activatedAgentSkillIds.value : []
-      if (!prev.includes(skillId)) {
-        activatedAgentSkillIds.value = [...prev, skillId]
-        changed = true
-      }
-    }
-
-    const mcpIds = Array.isArray(target?.mcp) ? target.mcp.map((x) => String(x || '').trim()).filter(Boolean) : []
-    const mcpList = Array.isArray(mcpServers.value) ? mcpServers.value : []
-    const mcpById = new Map(mcpList.filter((s) => s && s._id).map((s) => [String(s._id), s]))
-    const mountedMcpIds = mcpIds.filter((id) => mcpById.has(String(id)))
-    const missingMcpIds = mcpIds.filter((id) => !mcpById.has(String(id)))
-    const mcpNameList = mountedMcpIds.map((id) => mcpById.get(String(id))?.name || id)
-
-    const resultText = [
-      'OK: use_skill',
-      `skill_id: ${skillId}`,
-      `skill_name: ${skillName}`,
-      `status: ${
-        isDirectory ? (wasLoaded ? 'already_loaded' : 'loaded') : (isAgentSkill ? (changed ? 'activated' : 'already_activated') : 'noop_not_agent_skill')
-      }`,
-      `activation_status: ${isAgentSkill ? (changed ? 'activated' : 'already_activated') : 'noop_not_agent_skill'}`,
-      `mounted_mcp: ${mcpNameList.length ? mcpNameList.join(', ') : '无'}`,
-      ...(missingMcpIds.length ? [`missing_mcp: ${missingMcpIds.join(', ')}`] : []),
-      isAgentSkill
-        ? '说明：完整技能内容已注入系统提示词，并已按技能配置挂载 MCP 服务；如果工具列表还没刷新出来，请下一轮再调用一次。'
-        : '说明：这个技能不是智能体预设技能，或已经启用，因此无需额外激活。'
-    ].join('\n')
-
-    throwIfAborted(abortState)
-    targetSession.messages.push(
-      createCurrentToolResultMessage(
-        `### 技能启用结果\n- 技能：**${skillName}**\n- 状态：**${isAgentSkill ? (changed ? '已启用' : '已启用过') : '无需启用'}**\n- MCP：${mcpNameList.length ? mcpNameList.map((n) => `\`${n}\``).join(', ') : '（无）'}${missingMcpIds.length ? `\n- 缺失的 MCP 配置：${missingMcpIds.map((id) => `\`${id}\``).join(', ')}` : ''}`,
-        { toolMeta: `${serverName} / ${toolName}` }
-      )
-    )
-    await maybeScrollToBottomForRun(abortState)
-    return { ok: true, content: resultText }
-  }
-
-  if (mapping?.type === 'internal' && mapping.internal === 'use_skills') {
-    const idsRaw = argsObj?.ids ?? argsObj?.skill_ids ?? argsObj?.skillIds ?? []
-    const namesRaw = argsObj?.names ?? argsObj?.skill_names ?? argsObj?.skillNames ?? []
-    const ids = Array.isArray(idsRaw) ? idsRaw.map((x) => String(x || '').trim()).filter(Boolean) : []
-    const names = Array.isArray(namesRaw) ? namesRaw.map((x) => String(x || '').trim()).filter(Boolean) : []
-
-    const resolvedById = ids.map((id) => resolveSelectedSkillTarget({ idCandidate: id })).filter(Boolean)
-    const resolvedByName = names.map((name) => resolveSelectedSkillTarget({ nameCandidate: name })).filter(Boolean)
-    const uniq = new Map()
-    ;[...resolvedById, ...resolvedByName].forEach((s) => {
-      const id = String(s?._id || '').trim()
-      if (id && !uniq.has(id)) uniq.set(id, s)
-    })
-
-    const targets = Array.from(uniq.values())
-    if (!targets.length) {
-      const errorText = `未找到要启用的技能（仅可启用当前已选择的技能）。可用技能：${stableStringify(listSelectedSkillsBrief())}`
-      targetSession.messages.push(createCurrentToolResultMessage(`### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await maybeScrollToBottomForRun(abortState)
-      return { ok: false, content: errorText }
-    }
-
-    const agentSet = agentSkillIdSet.value
-    const loaded = []
-    const alreadyLoaded = []
-    const loadFailed = []
-    for (const skill of targets) {
-      throwIfAborted(abortState)
-      const id = String(skill?._id || '').trim()
-      if (!id || !isDirectorySkill(skill)) continue
-      const wasLoaded = hasLoadedSkillMainContent(id, skill?.entryFile || 'SKILL.md')
-      if (wasLoaded) {
-        alreadyLoaded.push(id)
-        continue
-      }
-      try {
-        await waitForAbortable(loadSkillMainContent(id), abortState)
-        throwIfAborted(abortState)
-        loaded.push(id)
-      } catch (err) {
-        if (isAbortError(err) || abortState?.aborted) throw createAbortError()
-        loadFailed.push({ id, error: err?.message || String(err) })
-      }
-    }
-
-    const prev = new Set(Array.isArray(activatedAgentSkillIds.value) ? activatedAgentSkillIds.value : [])
-    const activated = []
-    const already = []
-    const noop = []
-    const mountedMcpNames = new Set()
-    const missingMcpIds = new Set()
-
-    targets.forEach((s) => {
-      const id = String(s?._id || '').trim()
-      if (!id) return
-      if (loadFailed.some((item) => item.id === id)) return
-      const isAgentSkill = agentSet.has(id)
-      if (!isAgentSkill) {
-        noop.push(id)
-        return
-      }
-      if (prev.has(id)) already.push(id)
-      else {
-        prev.add(id)
-        activated.push(id)
-      }
-
-      const mcpStatus = getSkillMcpStatus(s)
-      mcpStatus.mountedNames.forEach((n) => mountedMcpNames.add(n))
-      mcpStatus.missingMcpIds.forEach((x) => missingMcpIds.add(x))
-    })
-
-    throwIfAborted(abortState)
-    activatedAgentSkillIds.value = Array.from(prev)
-
-    const resultObj = {
-      ok: true,
-      tool: 'use_skills',
-      resolved_skills: targets.map((s) => ({ id: s?._id, name: s?.name || s?._id })),
-      status: {
-        activated,
-        already_activated: already,
-        noop_not_agent_skill: noop
-      },
-      content_status: {
-        loaded,
-        already_loaded: alreadyLoaded,
-        failed: loadFailed
-      },
-      mounted_mcp: Array.from(mountedMcpNames),
-      missing_mcp: Array.from(missingMcpIds)
-    }
-
-    const resultText = stableStringify(resultObj)
-    throwIfAborted(abortState)
-    targetSession.messages.push(
-      createCurrentToolResultMessage(
-        `### 技能启用结果\n- 已启用：${activated.length ? activated.length : 0}\n- 已启用过：${already.length ? already.length : 0}\n- 无需启用：${noop.length ? noop.length : 0}\n- MCP：${mountedMcpNames.size ? Array.from(mountedMcpNames).map((n) => `\`${n}\``).join(', ') : '（无）'}${missingMcpIds.size ? `\n- 缺失的 MCP 配置：${Array.from(missingMcpIds).map((id) => `\`${id}\``).join(', ')}` : ''}`,
-        { toolMeta: `${serverName} / ${toolName}` }
-      )
-    )
-    await maybeScrollToBottomForRun(abortState)
-    return {
-      ok: true,
-      content: resultText,
-      serverName,
-      toolName
-    }
-  }
-
-  if (mapping?.type === 'internal' && mapping.internal === 'activate_all_agent_skills') {
-    const confirm = argsObj?.confirm === true
-    if (!confirm) {
-      const errorText = '请在执行前传入 confirm=true，避免系统提示词被意外膨胀。'
-      targetSession.messages.push(createCurrentToolResultMessage(`### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await maybeScrollToBottomForRun(abortState)
-      return { ok: false, content: errorText }
-    }
-
-    const agentSet = agentSkillIdSet.value
-    const targets = (Array.isArray(selectedSkillObjects.value) ? selectedSkillObjects.value : []).filter((s) => {
-      const id = String(s?._id || '').trim()
-      return !!id && agentSet.has(id)
-    })
-    if (!targets.length) {
-      const errorText = '当前上下文中没有可启用的智能体预设技能。'
-      targetSession.messages.push(createCurrentToolResultMessage(`### 技能启用结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await maybeScrollToBottomForRun(abortState)
-      return { ok: false, content: errorText }
-    }
-
-    const loaded = []
-    const alreadyLoaded = []
-    const loadFailed = []
-    for (const skill of targets) {
-      throwIfAborted(abortState)
-      const id = String(skill?._id || '').trim()
-      if (!id || !isDirectorySkill(skill)) continue
-      const wasLoaded = hasLoadedSkillMainContent(id, skill?.entryFile || 'SKILL.md')
-      if (wasLoaded) {
-        alreadyLoaded.push(id)
-        continue
-      }
-      try {
-        await waitForAbortable(loadSkillMainContent(id), abortState)
-        throwIfAborted(abortState)
-        loaded.push(id)
-      } catch (err) {
-        if (isAbortError(err) || abortState?.aborted) throw createAbortError()
-        loadFailed.push({ id, error: err?.message || String(err) })
-      }
-    }
-
-    const prev = new Set(Array.isArray(activatedAgentSkillIds.value) ? activatedAgentSkillIds.value : [])
-    const activated = []
-    const already = []
-    const mountedMcpNames = new Set()
-    const missingMcpIds = new Set()
-
-    targets.forEach((s) => {
-      const id = String(s?._id || '').trim()
-      if (!id) return
-      if (loadFailed.some((item) => item.id === id)) return
-      if (prev.has(id)) already.push(id)
-      else {
-        prev.add(id)
-        activated.push(id)
-      }
-
-      const mcpStatus = getSkillMcpStatus(s)
-      mcpStatus.mountedNames.forEach((n) => mountedMcpNames.add(n))
-      mcpStatus.missingMcpIds.forEach((x) => missingMcpIds.add(x))
-    })
-
-    throwIfAborted(abortState)
-    activatedAgentSkillIds.value = Array.from(prev)
-
-    const resultObj = {
-      ok: true,
-      tool: 'activate_all_agent_skills',
-      total_agent_skills: targets.length,
-      status: {
-        activated,
-        already_activated: already
-      },
-      content_status: {
-        loaded,
-        already_loaded: alreadyLoaded,
-        failed: loadFailed
-      },
-      mounted_mcp: Array.from(mountedMcpNames),
-      missing_mcp: Array.from(missingMcpIds)
-    }
-    const resultText = stableStringify(resultObj)
-
-    throwIfAborted(abortState)
-    targetSession.messages.push(
-      createDisplayMessage(
-        'tool',
-        `### 技能启用结果\n- 已启用：${activated.length}\n- 已启用过：${already.length}\n- MCP：${mountedMcpNames.size ? Array.from(mountedMcpNames).map((n) => `\`${n}\``).join(', ') : '（无）'}${missingMcpIds.size ? `\n- 缺失的 MCP 配置：${Array.from(missingMcpIds).map((id) => `\`${id}\``).join(', ')}` : ''}`,
-
-
-        { toolMeta: `${serverName} / ${toolName}` }
-      )
-    )
-    await maybeScrollToBottomForRun(abortState)
-    return { ok: true, content: resultText }
-  }
-
-  if (mapping?.type === 'internal' && mapping.internal === 'mcp_discover') {
-    const serverIdCandidate = String(argsObj?.server_id ?? argsObj?.serverId ?? argsObj?.id ?? '').trim()
-    const serverNameCandidate = String(argsObj?.server_name ?? argsObj?.serverName ?? argsObj?.server ?? '').trim()
-    const refresh = argsObj?.refresh === true
-    const toolFilter = String(argsObj?.tool || '').trim()
-    const searchRaw = String(argsObj?.search || '').trim()
-    const searchLower = searchRaw ? searchRaw.toLowerCase() : ''
-    const withSchema = argsObj?.with_schema === true
-    const limitRaw = Number(argsObj?.limit)
-
-    const hasServerSelector = !!serverIdCandidate || !!serverNameCandidate
-    const defaultLimit = hasServerSelector ? 200 : 30
-    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 500) : defaultLimit
-
-    const activeServers = (Array.isArray(activeMcpServers.value) ? activeMcpServers.value : []).filter((s) => s && s._id && !s.disabled)
-    const resolved = hasServerSelector ? resolveActiveMcpServer({ idCandidate: serverIdCandidate, nameCandidate: serverNameCandidate }) : null
-
-    const targetServers = resolved ? [resolved] : activeServers
-    if (!targetServers.length) {
-      const errorText = `当前没有可用的 MCP 服务。可用：${stableStringify(listActiveMcpServersBrief())}`
-      targetSession.messages.push(createCurrentToolResultMessage(`### MCP 发现\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await maybeScrollToBottomForRun(abortState)
-      return { ok: false, content: errorText }
-    }
-
-    if (toolFilter && targetServers.length !== 1) {
-      const errorText = '提供 tool 时也必须同时提供 server_id，避免在多个服务之间产生歧义。'
-      targetSession.messages.push(createCurrentToolResultMessage(`### MCP 发现\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await maybeScrollToBottomForRun(abortState)
-      return { ok: false, content: errorText }
-    }
-
-    const listResults = await Promise.all(
-      targetServers.map(async (s) => ({ server: s, result: await listMcpToolsForServer(s, { forceRefresh: refresh, silent: true, abortState }) }))
-    )
-    throwIfAborted(abortState)
-
-    if (refresh) {
-      throwIfAborted(abortState)
-      listResults.forEach(({ server, result }) => {
-        try {
-          if (result?.ok) {
-            const entry = buildMcpToolCatalogEntry(server, result.tools)
-            setMcpToolCatalogEntry(String(server?._id || ''), entry)
-          } else {
-            const err = result?.error || new Error('listTools failed')
-            setMcpToolCatalogEntry(String(server?._id || ''), {
-              ok: false,
-              server_id: String(server?._id || ''),
-              server_name: server?.name || server?._id,
-              keepAlive: !!server?.keepAlive,
-              error: err?.message || String(err),
-              updated_at: Date.now()
-            })
-          }
-        } catch {
-          // ignore
-        }
-      })
-    }
-
-    if (toolFilter) {
-      const { server, result } = listResults[0]
-      if (!result?.ok) {
-        const err = result?.error || new Error('listTools failed')
-        const errorText = err?.message || String(err)
-        targetSession.messages.push(
-          createCurrentToolResultMessage(
-            `### MCP 发现\n- 服务：**${server.name || server._id}**\n- 错误：${errorText}`,
-            { toolMeta: `${server.name || server._id} / MCP` }
-          )
-        )
-        await maybeScrollToBottomForRun(abortState)
-        return { ok: false, content: errorText }
-      }
-
-      const allowed = filterAllowedMcpTools(server, result.tools)
-      const exact = allowed.find((t) => String(t?.name || '') === toolFilter) || null
-      const norm = toolFilter.toLowerCase()
-      const fuzzy =
-        exact ||
-        allowed.find((t) => String(t?.name || '').toLowerCase() === norm) ||
-        allowed.find((t) => String(t?.name || '').toLowerCase().includes(norm)) ||
-        null
-      if (!fuzzy) {
-        const errorText = `未找到工具：${toolFilter}（服务：${server.name || server._id}）`
-        targetSession.messages.push(createCurrentToolResultMessage(`### MCP 发现\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / MCP` }))
-        await maybeScrollToBottomForRun(abortState)
-        return { ok: false, content: errorText }
-      }
-
-      try {
-        upsertPinnedMcpToolHint(server._id, fuzzy)
-      } catch {
-        // ignore
-      }
-
-      const resultObj = {
-        ok: true,
-        server_id: server._id,
-        server_name: server.name || server._id,
-        tool: {
-          name: fuzzy.name,
-          description: fuzzy.description || '',
-          inputSchema: fuzzy.inputSchema || null
-        }
-      }
-      const resultText = stableStringify(resultObj)
-      throwIfAborted(abortState)
-      targetSession.messages.push(
-        createCurrentToolResultMessage(`### MCP 工具详情\n\n\`\`\`json\n${resultText}\n\`\`\``, {
-          toolMeta: `${server.name || server._id} / ${fuzzy.name}`
-        })
-      )
-      await maybeScrollToBottomForRun(abortState)
-      return {
-        ok: true,
-        content: resultText,
-        serverName: server.name || server._id,
-        toolName: fuzzy.name || toolFilter
-      }
-    }
-
-    const serversPayload = []
-    for (const { server, result } of listResults) {
-      throwIfAborted(abortState)
-      if (!result?.ok) {
-        const err = result?.error || new Error('listTools failed')
-        serversPayload.push({
-          server_id: server?._id,
-          server_name: server?.name || server?._id,
-          ok: false,
-          error: err?.message || String(err)
-        })
-        continue
-      }
-
-      let allowed = filterAllowedMcpTools(server, result.tools)
-      if (searchLower) {
-        allowed = allowed.filter((t) => {
-          const n = String(t?.name || '').toLowerCase()
-          const d = String(t?.description || '').toLowerCase()
-          return n.includes(searchLower) || d.includes(searchLower)
-        })
-      }
-
-      const list = allowed.slice(0, limit).map((t) => ({
-        name: t?.name,
-        description: t?.description || '',
-        ...(withSchema ? { inputSchema: t?.inputSchema || null } : {})
-      }))
-
-      serversPayload.push({
-        server_id: server._id,
-        server_name: server.name || server._id,
-        ok: true,
-        total: allowed.length,
-        returned: list.length,
-        truncated: allowed.length > list.length,
-        tools: list
-      })
-    }
-
-    const resultObj = hasServerSelector
-      ? serversPayload[0]
-      : {
-          ok: true,
-          servers: serversPayload
-        }
-
-    const resultText = stableStringify(resultObj)
-    throwIfAborted(abortState)
-    targetSession.messages.push(
-      createCurrentToolResultMessage(`### MCP 发现\n\n\`\`\`json\n${resultText}\n\`\`\``, { toolMeta: `${serverName} / ${toolName}` })
-    )
-    await maybeScrollToBottomForRun(abortState)
-    return {
-      ok: true,
-      content: resultText,
-      serverName,
-      toolName
-    }
-  }
-
-  if (mapping?.type === 'internal' && mapping.internal === 'mcp_list_servers') {
-    const resultObj = { ok: true, servers: listActiveMcpServersBrief(100) }
-    const resultText = stableStringify(resultObj)
-    targetSession.messages.push(
-      createCurrentToolResultMessage(`### MCP 服务器\n\n\`\`\`json\n${resultText}\n\`\`\``, { toolMeta: `${serverName} / ${toolName}` })
-    )
-    await maybeScrollToBottomForRun(abortState)
-    return { ok: true, content: resultText }
-  }
-
-  if (mapping?.type === 'internal' && mapping.internal === 'mcp_list_tools') {
-    const serverIdCandidate = String(argsObj?.server_id ?? argsObj?.serverId ?? argsObj?.id ?? '').trim()
-    const serverNameCandidate = String(argsObj?.server_name ?? argsObj?.serverName ?? argsObj?.server ?? '').trim()
-    const server = resolveActiveMcpServer({ idCandidate: serverIdCandidate, nameCandidate: serverNameCandidate })
-    if (!server || !server._id) {
-      const errorText = `未找到 MCP 服务器。可用：${stableStringify(listActiveMcpServersBrief())}`
-      targetSession.messages.push(createCurrentToolResultMessage(`### MCP 工具列表\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await maybeScrollToBottomForRun(abortState)
-      return { ok: false, content: errorText }
-    }
-    if (server.disabled) {
-      const errorText = `MCP 服务器已禁用：${server.name || server._id}`
-      targetSession.messages.push(createCurrentToolResultMessage(`### MCP 工具列表\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / MCP` }))
-      await maybeScrollToBottomForRun(abortState)
-      return { ok: false, content: errorText }
-    }
-
-    const refresh = argsObj?.refresh === true
-    const toolFilter = String(argsObj?.tool || '').trim()
-    const withSchema = argsObj?.with_schema === true
-    const limitRaw = Number(argsObj?.limit)
-    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 200) : 60
-
-    const listResult = await listMcpToolsForServer(server, { forceRefresh: refresh, silent: true, abortState })
-    throwIfAborted(abortState)
-    if (!listResult.ok) {
-      const err = listResult.error || new Error('listTools failed')
-      const errorText = err?.message || String(err)
-      targetSession.messages.push(
-        createCurrentToolResultMessage(
-          `### MCP 工具列表\n- 服务：**${server.name || server._id}**\n- 错误：${errorText}`,
-          { toolMeta: `${server.name || server._id} / MCP` }
-        )
-      )
-      await maybeScrollToBottomForRun(abortState)
-      return { ok: false, content: errorText }
-    }
-
-    const allowed = filterAllowedMcpTools(server, listResult.tools)
-
-    if (toolFilter) {
-      const exact = allowed.find((t) => String(t?.name || '') === toolFilter) || null
-      const norm = toolFilter.toLowerCase()
-      const fuzzy =
-        exact ||
-        allowed.find((t) => String(t?.name || '').toLowerCase() === norm) ||
-        allowed.find((t) => String(t?.name || '').toLowerCase().includes(norm)) ||
-        null
-      if (!fuzzy) {
-        const errorText = `未找到工具：${toolFilter}（服务：${server.name || server._id}）`
-        targetSession.messages.push(createCurrentToolResultMessage(`### MCP 工具列表\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / MCP` }))
-        await maybeScrollToBottomForRun(abortState)
-        return { ok: false, content: errorText }
-      }
-
-      const resultObj = {
-        ok: true,
-        server_id: server._id,
-        server_name: server.name || server._id,
-        tool: {
-          name: fuzzy.name,
-          description: fuzzy.description || '',
-          inputSchema: fuzzy.inputSchema || null
-        }
-      }
-      const resultText = stableStringify(resultObj)
-      throwIfAborted(abortState)
-      targetSession.messages.push(
-        createCurrentToolResultMessage(`### MCP 工具详情\n\n\`\`\`json\n${resultText}\n\`\`\``, { toolMeta: `${server.name || server._id} / ${fuzzy.name}` })
-      )
-      await maybeScrollToBottomForRun(abortState)
-      return { ok: true, content: resultText }
-    }
-
-    const list = allowed.slice(0, limit).map((t) => ({
-      name: t?.name,
-      description: t?.description || '',
-      ...(withSchema ? { inputSchema: t?.inputSchema || null } : {})
-    }))
-
-    const resultObj = {
-      ok: true,
-      server_id: server._id,
-      server_name: server.name || server._id,
-      total: allowed.length,
-      returned: list.length,
-      tools: list
-    }
-    const resultText = stableStringify(resultObj)
-    throwIfAborted(abortState)
-    targetSession.messages.push(
-      createCurrentToolResultMessage(`### MCP 工具列表\n\n\`\`\`json\n${resultText}\n\`\`\``, { toolMeta: `${server.name || server._id} / MCP` })
-    )
-    await maybeScrollToBottomForRun(abortState)
-    return { ok: true, content: resultText }
-  }
-
-  if (mapping?.type === 'internal' && mapping.internal === 'mcp_call') {
-    const serverIdCandidate = String(argsObj?.server_id ?? argsObj?.serverId ?? argsObj?.id ?? '').trim()
-    const serverNameCandidate = String(argsObj?.server_name ?? argsObj?.serverName ?? argsObj?.server ?? '').trim()
-    const tool = String(argsObj?.tool || '').trim()
-    const hasArgsField = Object.prototype.hasOwnProperty.call(argsObj, 'args')
-    const hasArgumentsField = Object.prototype.hasOwnProperty.call(argsObj, 'arguments')
-    const toolArgs = hasArgsField ? argsObj.args : hasArgumentsField ? argsObj.arguments : {}
-
-    if (!tool) {
-      const errorText = '缺少 tool 字段。'
-      targetSession.messages.push(createCurrentToolResultMessage(`### MCP 工具调用\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await maybeScrollToBottomForRun(abortState)
-      return { ok: false, content: errorText }
-    }
-
-    const server = resolveActiveMcpServer({ idCandidate: serverIdCandidate, nameCandidate: serverNameCandidate })
-    if (!server || !server._id) {
-      const errorText = `未找到 MCP 服务。可用：${stableStringify(listActiveMcpServersBrief())}`
-      targetSession.messages.push(createCurrentToolResultMessage(`### MCP 工具调用\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-      await maybeScrollToBottomForRun(abortState)
-      return { ok: false, content: errorText }
-    }
-    if (server.disabled) {
-      const errorText = `MCP 服务已禁用：${server.name || server._id}`
-      targetSession.messages.push(createCurrentToolResultMessage(`### MCP 工具调用\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / MCP` }))
-      await maybeScrollToBottomForRun(abortState)
-      return { ok: false, content: errorText }
-    }
-
-    const allow = Array.isArray(server.allowTools) ? server.allowTools.map((x) => String(x || '').trim()).filter(Boolean) : []
-    if (allow.length && !allow.includes(tool)) {
-      const errorText = `该工具不在 allowTools 白名单中：${tool}`
-      targetSession.messages.push(createCurrentToolResultMessage(`### MCP 工具调用\n- 错误：${errorText}`, { toolMeta: `${server.name || server._id} / ${tool}` }))
-      await maybeScrollToBottomForRun(abortState)
-      return { ok: false, content: errorText }
-    }
-
-    let client = null
-    let pooled = false
-    let unregisterAbort = null
-    try {
-      ;({ client, pooled } = getOrCreateMCPClient(server))
-      if (!client?.callTool) {
-        throw new Error('MCP 客户端不可用（未注入 createMCPClient）')
-      }
-
-      const callTimeoutMs = Number(server?.timeout) || 60000
-      const runtimeToolArgs = prepareBuiltinAgentToolCallArgs(server, tool, toolArgs, pendingToolMessage)
-      unregisterAbort = registerAbortableMcpClient(abortState, server, client, pooled)
-      const result = await waitForAbortable(
-        withTimeout(client.callTool(tool, runtimeToolArgs), callTimeoutMs, `Call tool: ${server.name || server._id} / ${tool}`),
-        abortState
-      )
-      try {
-        unregisterAbort?.()
-      } catch {
-        // ignore
-      }
-      unregisterAbort = null
-      throwIfAborted(abortState)
-      releaseMCPClient(server, client)
-      client = null
-
-      const images = extractChatImagesFromToolResult(result)
-      const toolResultPayload = isAgentRunToolResult(result) ? deepCopyJson(result, null) : null
-      const resultText = stringifyToolResultForLlm(result)
-      const imageHint = images.length ? `- 图片：${images.length}（已在上方预览；base64/dataUrl 已省略）\n` : ''
-      const displayText = formatToolResultDisplayContent(result, {
-        heading: '### MCP 工具结果',
-        serverName: server.name || server._id,
-        toolName: tool,
-        imageHint,
-        resultText,
-        truncateInlineText
-      })
-      throwIfAborted(abortState)
-      targetSession.messages.push(
-        createCurrentToolResultMessage(
-          displayText,
-          {
-            toolMeta: `${server.name || server._id} / ${tool}`,
-            images,
-            toolExpanded: false,
-            toolName: tool,
-            toolServerName: server.name || server._id,
-            toolSubMeta: buildToolExecutionResultSubMeta(result),
-            toolResultPayload,
-            toolTraceStreamId: String(pendingToolMessage?.toolTraceStreamId || '').trim(),
-            toolAutoApproved: pendingToolMessage?.toolAutoApproved === true
-          }
-        )
-      )
-      await maybeScrollToBottomForRun(abortState)
-      return {
-        ok: true,
-        content: resultText,
-        images,
-        serverName: server.name || server._id,
-        toolName: tool
-      }
-    } catch (err) {
-      try {
-        unregisterAbort?.()
-      } catch {
-        // ignore
-      }
-      unregisterAbort = null
-      if (isAbortError(err) || abortState?.aborted) throw createAbortError()
-      closeMcpClientSafely(server, client, pooled)
-      const errorText = err?.message || String(err)
-      targetSession.messages.push(
-        createCurrentToolResultMessage(`### MCP 工具结果\n- 工具：\`${tool}\`\n- 错误：${errorText}`, {
-          toolMeta: `${server.name || server._id} / ${tool}`,
-          toolTraceStreamId: String(pendingToolMessage?.toolTraceStreamId || '').trim(),
-          toolAutoApproved: pendingToolMessage?.toolAutoApproved === true
-        })
-      )
-      await maybeScrollToBottomForRun(abortState)
-      return { ok: false, content: `错误：${errorText}` }
-    } finally {
-      try {
-        unregisterAbort?.()
-      } catch {
-        // ignore
-      }
-    }
-  }
-
-  const server = activeMcpServers.value.find((s) => s._id === mapping.serverId)
-  if (!server) {
-    const errorText = `未找到 MCP 服务器：${mapping.serverId}`
-    targetSession.messages.push(createCurrentToolResultMessage(`### 工具结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-    return { ok: false, content: errorText }
-  }
-  if (server.disabled) {
-    const errorText = `MCP 服务器已禁用：${serverName}`
-    targetSession.messages.push(createCurrentToolResultMessage(`### 工具结果\n- 错误：${errorText}`, { toolMeta: `${serverName} / ${toolName}` }))
-    return { ok: false, content: errorText }
-  }
-
-  let client = null
-  let pooled = false
-  let unregisterAbort = null
-  try {
-    ;({ client, pooled } = getOrCreateMCPClient(server))
-    if (!client?.callTool) {
-      throw new Error('MCP 客户端不可用（createMCPClient 未注入）')
-    }
-
-    const callTimeoutMs = Number(server?.timeout) || 60000
-    const callArgs = typeof mapping?.unwrapArgs === 'function' ? mapping.unwrapArgs(argsObj) : argsObj
-    const runtimeCallArgs = prepareBuiltinAgentToolCallArgs(server, toolName, callArgs, pendingToolMessage)
-    unregisterAbort = registerAbortableMcpClient(abortState, server, client, pooled)
-    const result = await waitForAbortable(
-      withTimeout(client.callTool(mapping.toolName, runtimeCallArgs), callTimeoutMs, `Call tool: ${serverName} / ${toolName}`),
-      abortState
-    )
-    try {
-      unregisterAbort?.()
-    } catch {
-      // ignore
-    }
-    unregisterAbort = null
-    throwIfAborted(abortState)
-    releaseMCPClient(server, client)
-    client = null
-
-    const images = extractChatImagesFromToolResult(result)
-    const toolResultPayload = isAgentRunToolResult(result) ? deepCopyJson(result, null) : null
-    const resultText = stringifyToolResultForLlm(result)
-    const imageHint = images.length ? `- 图片：${images.length}（已在上方预览；base64/dataUrl 已省略）\n` : ''
-    const displayText = formatToolResultDisplayContent(result, {
-      heading: '### 工具结果',
-      serverName,
-      toolName,
-      imageHint,
-      resultText,
-      truncateInlineText
-    })
-    throwIfAborted(abortState)
-    targetSession.messages.push(
-      createCurrentToolResultMessage(
-        displayText,
-        {
-          toolMeta: `${serverName} / ${toolName}`,
-          images,
-          toolExpanded: false,
-          toolName,
-          toolServerName: serverName,
-          toolSubMeta: buildToolExecutionResultSubMeta(result),
-          toolResultPayload,
-          toolTraceStreamId: String(pendingToolMessage?.toolTraceStreamId || '').trim(),
-          toolAutoApproved: pendingToolMessage?.toolAutoApproved === true
-        }
-      )
-    )
-    await maybeScrollToBottomForRun(abortState)
-    return {
-      ok: true,
-      content: resultText,
-      serverName,
-      toolName
-    }
-  } catch (err) {
-    try {
-      unregisterAbort?.()
-    } catch {
-      // ignore
-    }
-    unregisterAbort = null
-    if (isAbortError(err) || abortState?.aborted) throw createAbortError()
-    closeMcpClientSafely(server, client, pooled)
-    const errorText = err?.message || String(err)
-    targetSession.messages.push(
-      createCurrentToolResultMessage(`### 工具结果\n- 工具：\`${toolName}\`\n- 错误：${errorText}`, {
-        toolMeta: `${serverName} / ${toolName}`,
-        toolTraceStreamId: String(pendingToolMessage?.toolTraceStreamId || '').trim(),
-        toolAutoApproved: pendingToolMessage?.toolAutoApproved === true
-      })
-    )
-    await maybeScrollToBottomForRun(abortState)
-    return { ok: false, content: `错误：${errorText}` }
-  } finally {
-    try {
-      unregisterAbort?.()
-    } catch {
-      // ignore
-    }
-  }
+  const skillExecution = await executePreparedSkillTool(
+    prepared,
+    { targetSession, createCurrentToolResultMessage },
+    abortState
+  )
+  if (skillExecution.handled) return skillExecution.result
+
+  return executePreparedMcpTool(
+    prepared,
+    { targetSession, createCurrentToolResultMessage },
+    abortState
+  )
 }
 
 async function executeToolCallsParallel(toolCalls, toolMap, lastReasoningText, abortState = null) {
@@ -18135,21 +15976,105 @@ async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState 
   return result
 }
 
-async function send() {
-  if (sending.value || preparingSend.value) return
+const queuedInputDrainTimers = new Map()
+const queuedInputDrainInFlight = new Set()
+
+function getComposerDraft() {
+  return {
+    text: String(input.value || '').trim(),
+    attachments: Array.isArray(pendingAttachments.value) ? pendingAttachments.value.slice() : []
+  }
+}
+
+function clearComposerDraft() {
+  input.value = ''
+  resetComposerInput()
+  pendingAttachments.value = []
+}
+
+function enqueueComposerDraft(mode = CHAT_RUN_INPUT_MODE_QUEUE) {
+  if (preparingSend.value) return null
+  const draft = getComposerDraft()
+  if (!draft.text && !draft.attachments.length) return null
+
   clearAllUserEditingState()
+  const record = getActiveMemorySession()
+  const entry = chatRunInputQueue.enqueue(record.id, draft, mode)
+  if (!entry) return null
 
+  clearComposerDraft()
+  record.input = ''
+  record.pendingAttachments = []
+  record.updatedAt = Date.now()
+  touchChatRunInputQueue()
+  if (mode === CHAT_RUN_INPUT_MODE_STEER) {
+    message.info('已加入引导，将在当前任务的下一个安全边界生效')
+  } else {
+    message.info('消息已加入队列')
+  }
+  return entry
+}
+
+function steerCurrentRun() {
+  if (!sending.value) {
+    void send()
+    return
+  }
+  enqueueComposerDraft(CHAT_RUN_INPUT_MODE_STEER)
+}
+
+function removeQueuedInput(entryId) {
+  const removed = chatRunInputQueue.remove(activeMemorySessionId.value, entryId)
+  if (!removed) return
+  touchChatRunInputQueue()
+  message.info(removed.mode === CHAT_RUN_INPUT_MODE_STEER ? '已移除引导' : '已移除排队消息')
+}
+
+function scheduleQueuedInputDrain(record = getMemorySessionById(activeMemorySessionId.value)) {
+  const sessionId = String(record?.id || '').trim()
+  if (!sessionId || queuedInputDrainTimers.has(sessionId)) return
+  const timer = window.setTimeout(() => {
+    queuedInputDrainTimers.delete(sessionId)
+    void drainQueuedInputs(record)
+  }, 0)
+  queuedInputDrainTimers.set(sessionId, timer)
+}
+
+async function drainQueuedInputs(record) {
+  const sessionId = String(record?.id || '').trim()
+  if (!sessionId || queuedInputDrainInFlight.has(sessionId)) return
+  if (!isMemorySessionActive(record)) return
+  if (preparingSend.value || sending.value || isMemorySessionChatRunning(record)) return
+
+  const entry = chatRunInputQueue.takeNext(sessionId)
+  if (!entry) return
+  touchChatRunInputQueue()
+  queuedInputDrainInFlight.add(sessionId)
+  try {
+    const accepted = await dispatchChatDraft(entry)
+    if (!accepted) {
+      chatRunInputQueue.restore(sessionId, [entry])
+      touchChatRunInputQueue()
+      return
+    }
+  } finally {
+    queuedInputDrainInFlight.delete(sessionId)
+  }
+
+  if (chatRunInputQueue.count(sessionId) > 0) scheduleQueuedInputDrain(record)
+}
+
+async function dispatchChatDraft({ text: rawText, attachments: rawAttachments } = {}) {
+  if (sending.value || preparingSend.value) return false
   const cfg = getRequestConfigOrHint()
-  if (!cfg) return
+  if (!cfg) return false
 
-  const text = String(input.value || '').trim()
-  const attachments = Array.isArray(pendingAttachments.value) ? pendingAttachments.value.slice() : []
-  if (!text && !attachments.length) return
+  const text = String(rawText || '').trim()
+  const attachments = Array.isArray(rawAttachments) ? rawAttachments.slice() : []
+  if (!text && !attachments.length) return false
 
-  await withPreparingSend(async () => {
-    input.value = ''
-    resetComposerInput()
-    pendingAttachments.value = []
+  let prepared = false
+  const accepted = await withPreparingSend(async () => {
     const userDisplay = createDisplayMessage('user', text || (attachments.length ? '(sent attachments)' : ''))
     if (attachments.length) {
       userDisplay.attachmentsExpanded = false
@@ -18185,9 +16110,6 @@ async function send() {
       }
     } catch (err) {
       removeDisplayMessageById(userDisplay.id)
-      input.value = text
-      pendingAttachments.value = attachments
-      resetComposerInput()
       autoScrollEnabled.value = true
       autoScrollSuspendedByUser.value = false
       scheduleRefreshUserAnchorMeta()
@@ -18195,6 +16117,7 @@ async function send() {
       message.error('发送准备失败：' + (err?.message || String(err)))
       return
     }
+    prepared = true
     if (canGenerateMemorySessionTitle(requestRecord)) {
       requestRecord.titlePostReplyRetryDone = false
       requestSessionTitleAsync({
@@ -18250,6 +16173,28 @@ async function send() {
     }
 
   })
+  return accepted && prepared
+}
+
+async function send() {
+  if (preparingSend.value) return
+  if (sending.value) {
+    enqueueComposerDraft(CHAT_RUN_INPUT_MODE_QUEUE)
+    return
+  }
+
+  const draft = getComposerDraft()
+  if (!draft.text && !draft.attachments.length) return
+  clearAllUserEditingState()
+  clearComposerDraft()
+  const accepted = await dispatchChatDraft(draft)
+  if (!accepted) {
+    input.value = draft.text
+    pendingAttachments.value = draft.attachments
+    resetComposerInput()
+    return
+  }
+  scheduleQueuedInputDrain(getMemorySessionById(activeMemorySessionId.value))
 }
 
 const lastEnterKey = ref('')
@@ -18265,1459 +16210,10 @@ watch(
     lastEnterKey.value = key
 
     input.value = typeof val.payload === 'string' ? val.payload : ''
-    if (!sending.value) send()
+    send()
   },
   { immediate: true }
 )
 </script>
 
-<style scoped>
-.chat-shell {
-  height: calc(var(--app-viewport-height) - (var(--app-shell-padding) * 2));
-  min-height: 0;
-  overflow: hidden;
-}
-
-.chat-shell :deep(> .n-space-item) {
-  height: 100%;
-  min-height: 0;
-}
-
-.chat-shell__layout {
-  background: transparent;
-  height: 100%;
-  min-height: 0;
-  overflow: visible;
-}
-
-.chat-shell__layout :deep(> .n-layout-scroll-container) {
-  height: 100%;
-  min-height: 0;
-  overflow: visible;
-}
-
-.chat-layout__content {
-  min-width: 0;
-  min-height: 0;
-  overflow: visible;
-}
-
-.chat-page {
-  width: 100%;
-  max-width: 1000px;
-  margin: 0 auto;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-  overflow: visible;
-  position: relative;
-}
-
-.chat-empty-state {
-  min-height: min(52vh, 420px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 28px 18px 36px;
-}
-
-.chat-empty-state__panel {
-  width: min(100%, 760px);
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  padding: 24px;
-  border-radius: 22px;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  background:
-    radial-gradient(circle at top right, rgba(32, 128, 240, 0.12), transparent 36%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.78));
-  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.08);
-  animation: chat-fade-up 420ms cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
-.chat-page.dark .chat-empty-state__panel {
-  border-color: rgba(255, 255, 255, 0.12);
-  background:
-    radial-gradient(circle at top right, rgba(56, 189, 248, 0.16), transparent 38%),
-    linear-gradient(180deg, rgba(15, 23, 42, 0.78), rgba(15, 23, 42, 0.58));
-  box-shadow: 0 18px 40px rgba(2, 6, 23, 0.32);
-}
-
-.chat-empty-state__hero {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.chat-empty-state__icon {
-  width: 44px;
-  height: 44px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 14px;
-  color: rgb(32, 128, 240);
-  background: rgba(32, 128, 240, 0.12);
-}
-
-.chat-page.dark .chat-empty-state__icon {
-  color: rgba(125, 211, 252, 0.96);
-  background: rgba(56, 189, 248, 0.16);
-}
-
-.chat-empty-state__title {
-  font-size: 20px;
-  font-weight: 700;
-  line-height: 1.2;
-}
-
-.chat-empty-state__description,
-.chat-empty-state__hint {
-  font-size: 13px;
-  line-height: 1.65;
-  opacity: 0.78;
-}
-
-.chat-empty-state__summary {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
-  gap: 10px;
-}
-
-.chat-empty-state__summary-item {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-  padding: 11px 12px;
-  border-radius: 14px;
-  border: 1px solid rgba(0, 0, 0, 0.06);
-  background: rgba(0, 0, 0, 0.03);
-}
-
-.chat-page.dark .chat-empty-state__summary-item {
-  border-color: rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.05);
-}
-
-.chat-empty-state__summary-label {
-  font-size: 11px;
-  font-weight: 600;
-  opacity: 0.72;
-}
-
-.chat-empty-state__summary-value {
-  min-width: 0;
-  font-size: 13px;
-  line-height: 1.45;
-  font-weight: 600;
-  word-break: break-word;
-}
-
-.chat-empty-state__actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.chat-messages-shell {
-  width: 100%;
-  flex: 1;
-  display: flex;
-  margin-top: 8px;
-  min-width: 0;
-  min-height: 0;
-  height: 100%;
-  max-height: 100%;
-  position: relative;
-  overflow: visible;
-}
-
-.tool-approval-card {
-  width: calc(100% - 24px);
-  flex: 0 0 auto;
-  box-sizing: border-box;
-  margin: 10px 12px 0;
-  padding: 13px 14px;
-  border: 1px solid rgba(245, 158, 11, 0.4);
-  border-radius: 15px;
-  background:
-    linear-gradient(135deg, rgba(255, 251, 235, 0.98), rgba(255, 255, 255, 0.98));
-  box-shadow: 0 10px 28px rgba(120, 53, 15, 0.1);
-}
-
-.chat-page.dark .tool-approval-card {
-  border-color: rgba(251, 191, 36, 0.34);
-  background:
-    linear-gradient(135deg, rgba(69, 26, 3, 0.88), rgba(15, 23, 42, 0.97));
-  box-shadow: 0 12px 30px rgba(2, 6, 23, 0.34);
-}
-
-.tool-approval-card__header,
-.tool-approval-card__footer,
-.tool-approval-card__command-label {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.tool-approval-card__title-wrap {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.tool-approval-card__icon {
-  width: 34px;
-  height: 34px;
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 11px;
-  color: rgb(180, 83, 9);
-  background: rgba(245, 158, 11, 0.16);
-}
-
-.chat-page.dark .tool-approval-card__icon {
-  color: rgb(253, 224, 71);
-  background: rgba(245, 158, 11, 0.18);
-}
-
-.tool-approval-card__title-copy {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.tool-approval-card__title-copy strong {
-  font-size: 14px;
-}
-
-.tool-approval-card__title-copy span,
-.tool-approval-card__meta,
-.tool-approval-card__scope {
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.tool-approval-card__title-copy span {
-  opacity: 0.72;
-  overflow-wrap: anywhere;
-}
-
-.tool-approval-card__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-  margin: 9px 0;
-  opacity: 0.74;
-}
-
-.tool-approval-card__command,
-.tool-approval-card__details {
-  border: 1px solid rgba(120, 53, 15, 0.14);
-  border-radius: 11px;
-  background: rgba(255, 255, 255, 0.62);
-}
-
-.chat-page.dark .tool-approval-card__command,
-.chat-page.dark .tool-approval-card__details {
-  border-color: rgba(251, 191, 36, 0.18);
-  background: rgba(2, 6, 23, 0.34);
-}
-
-.tool-approval-card__command-label {
-  padding: 8px 10px 0;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.tool-approval-card__command-label code {
-  max-width: 60%;
-  overflow: hidden;
-  font-size: 11px;
-  font-weight: 500;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  opacity: 0.72;
-}
-
-.tool-approval-card pre {
-  max-height: 140px;
-  margin: 0;
-  padding: 9px 10px;
-  overflow: auto;
-  font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.tool-approval-card__details {
-  margin-top: 8px;
-}
-
-.tool-approval-card__details summary {
-  padding: 8px 10px;
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 600;
-  user-select: none;
-}
-
-.tool-approval-card__reasoning {
-  max-height: 100px;
-  padding: 0 10px 8px;
-  overflow: auto;
-  font-size: 12px;
-  line-height: 1.55;
-  white-space: pre-wrap;
-  opacity: 0.8;
-}
-
-.tool-approval-card__footer {
-  align-items: flex-end;
-  margin-top: 10px;
-}
-
-.tool-approval-card__scope {
-  max-width: 56%;
-}
-
-.tool-approval-enter-active,
-.tool-approval-leave-active {
-  transition: opacity 160ms ease, transform 160ms ease;
-}
-
-.tool-approval-enter-from,
-.tool-approval-leave-to {
-  opacity: 0;
-  transform: translateY(6px);
-}
-
-@media (max-width: 720px) {
-  .tool-approval-card__header,
-  .tool-approval-card__footer {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .tool-approval-card__scope {
-    max-width: none;
-  }
-}
-
-.chat-messages {
-  width: 100%;
-  flex: 1;
-  height: 100%;
-  max-height: 100%;
-  min-width: 0;
-  min-height: 0;
-  overflow: visible;
-  background: transparent;
-}
-
-.chat-messages :deep(.n-card__content) {
-  height: 100%;
-  min-height: 0;
-  overflow: visible;
-}
-
-.chat-scroll-wrapper {
-  position: relative;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-  overflow: visible;
-}
-
-
-.chat-scroll-to-bottom {
-  position: absolute;
-  right: 28px;
-  bottom: 12px;
-  z-index: 5;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
-}
-
-.chat-sticky-bubble {
-  position: absolute;
-  top: 8px;
-  left: 48px;
-  right: 48px;
-  z-index: 9;
-  width: fit-content;
-  max-width: min(720px, calc(100% - 96px));
-  margin: 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 7px 8px 7px 10px;
-  border-radius: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  background: rgba(255, 255, 255, 0.98);
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
-  cursor: pointer;
-}
-
-.chat-sticky-bubble.is-dark {
-  border-color: rgba(148, 163, 184, 0.24);
-  background: rgba(15, 23, 42, 0.98);
-  box-shadow: 0 12px 28px rgba(2, 6, 23, 0.34);
-}
-
-.chat-sticky-bubble__main {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  line-height: 1.2;
-}
-
-.chat-sticky-bubble__label {
-  flex: 0 0 auto;
-  font-weight: 700;
-}
-
-.chat-sticky-bubble__meta {
-  min-width: 0;
-  opacity: 0.72;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.chat-sticky-bubble__status {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  height: 20px;
-  padding: 0 8px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 600;
-  background: rgba(100, 116, 139, 0.12);
-}
-
-.chat-sticky-bubble__status.is-running {
-  color: rgb(180, 83, 9);
-  background: rgba(245, 166, 35, 0.14);
-}
-
-.chat-sticky-bubble__status.is-success {
-  color: rgb(8, 145, 178);
-  background: rgba(14, 165, 233, 0.12);
-}
-
-.chat-sticky-bubble__status.is-error {
-  color: rgb(208, 48, 80);
-  background: rgba(208, 48, 80, 0.10);
-}
-
-.chat-sticky-bubble__status.is-rejected {
-  color: rgb(71, 85, 105);
-  background: rgba(100, 116, 139, 0.12);
-}
-
-.chat-page.dark .chat-scroll-to-bottom {
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
-}
-
-.chat-anchor-rail {
-  position: absolute;
-  right: 0;
-  top: 18px;
-  bottom: 64px;
-  width: 32px;
-  padding: 10px 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  align-items: center;
-  border-radius: 999px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(248, 250, 252, 0.88));
-  box-shadow:
-    0 14px 30px rgba(15, 23, 42, 0.12),
-    inset 0 1px 0 rgba(255, 255, 255, 0.72);
-  backdrop-filter: blur(14px);
-  transform: translateX(calc(100% + 12px));
-  transition:
-    transform 0.18s ease,
-    box-shadow 0.18s ease,
-    background-color 0.18s ease;
-  pointer-events: auto;
-  z-index: 8;
-  overflow: hidden auto;
-  scrollbar-width: none;
-}
-
-.chat-anchor-rail:hover {
-  transform: translateX(calc(100% + 8px));
-  box-shadow:
-    0 18px 34px rgba(15, 23, 42, 0.16),
-    inset 0 1px 0 rgba(255, 255, 255, 0.72);
-}
-
-.chat-anchor-rail::-webkit-scrollbar {
-  display: none;
-}
-
-.chat-anchor-rail::before {
-  content: '';
-  position: absolute;
-  top: 10px;
-  bottom: 10px;
-  left: 50%;
-  width: 2px;
-  transform: translateX(-50%);
-  border-radius: 999px;
-  background: linear-gradient(180deg, rgba(148, 163, 184, 0.14), rgba(148, 163, 184, 0.34), rgba(148, 163, 184, 0.12));
-}
-
-.chat-anchor-marker {
-  position: relative;
-  z-index: 1;
-  width: 8px;
-  height: 8px;
-  flex: 0 0 auto;
-  border-radius: 999px;
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  background: rgba(255, 255, 255, 0.98);
-  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.08);
-  cursor: pointer;
-  transition:
-    transform 120ms ease,
-    background-color 120ms ease,
-    border-color 120ms ease,
-    box-shadow 120ms ease,
-    width 120ms ease,
-    height 120ms ease;
-}
-
-.chat-anchor-marker:hover {
-  transform: scale(1.12);
-  border-color: rgba(14, 116, 144, 0.24);
-  background: rgba(240, 249, 255, 0.98);
-  box-shadow: 0 6px 14px rgba(14, 116, 144, 0.16);
-}
-
-.chat-anchor-marker.active {
-  width: 10px;
-  height: 20px;
-  border-color: rgba(32, 128, 240, 0.24);
-  border-radius: 999px;
-  background: rgba(32, 128, 240, 0.95);
-  box-shadow:
-    0 8px 18px rgba(32, 128, 240, 0.28),
-    0 0 0 3px rgba(32, 128, 240, 0.14);
-}
-
-.chat-page.dark .chat-anchor-rail {
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0.92), rgba(15, 23, 42, 0.82));
-  box-shadow:
-    0 18px 34px rgba(2, 6, 23, 0.4),
-    inset 0 1px 0 rgba(148, 163, 184, 0.14);
-}
-
-.chat-page.dark .chat-anchor-rail::before {
-  background: linear-gradient(180deg, rgba(71, 85, 105, 0.18), rgba(148, 163, 184, 0.36), rgba(71, 85, 105, 0.16));
-}
-
-.chat-page.dark .chat-anchor-marker {
-  border-color: rgba(148, 163, 184, 0.24);
-  background: rgba(30, 41, 59, 0.96);
-  box-shadow: 0 4px 12px rgba(2, 6, 23, 0.3);
-}
-
-.chat-page.dark .chat-anchor-marker:hover {
-  border-color: rgba(125, 211, 252, 0.28);
-  background: rgba(30, 64, 175, 0.28);
-  box-shadow: 0 8px 16px rgba(30, 64, 175, 0.24);
-}
-
-.chat-page.dark .chat-anchor-marker.active {
-  background: rgba(32, 128, 240, 0.95);
-  box-shadow:
-    0 10px 20px rgba(30, 64, 175, 0.34),
-    0 0 0 3px rgba(32, 128, 240, 0.18);
-}
-
-:deep(.chat-session-sider) {
-  display: flex;
-  flex-direction: column;
-  position: relative;
-  z-index: 12;
-  margin-left: 12px;
-  height: 100%;
-  max-height: 100%;
-  min-width: 0;
-  min-height: 0;
-  max-width: 100%;
-  background: transparent;
-  overflow: visible;
-}
-
-:deep(.chat-session-sider .n-layout-sider__border) {
-  display: none;
-}
-
-:deep(.chat-session-sider .n-layout-toggle-button) {
-  z-index: 60;
-  pointer-events: auto;
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
-}
-
-.chat-session-sider :deep(.n-layout-sider-scroll-container) {
-  display: flex;
-  flex-direction: column;
-  position: relative;
-  z-index: 13;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-  max-width: 100%;
-  overflow: hidden !important;
-  scrollbar-gutter: stable;
-  box-sizing: border-box;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(248, 250, 252, 0.92));
-  border-radius: 24px;
-}
-
-.chat-session-sider :deep(.n-layout-sider-children) {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.chat-session-sider.is-dark :deep(.n-layout-sider-scroll-container) {
-  background: linear-gradient(180deg, rgba(17, 24, 39, 0.88), rgba(15, 23, 42, 0.96));
-  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.08);
-}
-
-.chat-file-attachments {
-  margin-top: 6px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.chat-file-attachment-card {
-  min-width: 0;
-  max-width: min(100%, 320px);
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border-radius: 12px;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  background: rgba(0, 0, 0, 0.03);
-}
-
-.chat-page.dark .chat-file-attachment-card {
-  border-color: rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.06);
-}
-
-.chat-file-attachment-card.is-processing {
-  border-color: rgba(240, 160, 32, 0.28);
-  background: rgba(240, 160, 32, 0.08);
-}
-
-.chat-page.dark .chat-file-attachment-card.is-processing {
-  border-color: rgba(240, 160, 32, 0.36);
-  background: rgba(240, 160, 32, 0.12);
-}
-
-.chat-file-attachment-card.is-error {
-  border-color: rgba(208, 48, 80, 0.24);
-  background: rgba(208, 48, 80, 0.06);
-}
-
-.chat-page.dark .chat-file-attachment-card.is-error {
-  border-color: rgba(255, 143, 163, 0.3);
-  background: rgba(255, 143, 163, 0.12);
-}
-
-.chat-file-attachment-card__icon {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 10px;
-  background: rgba(0, 0, 0, 0.05);
-}
-
-.chat-page.dark .chat-file-attachment-card__icon {
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.chat-file-attachment-card__content {
-  min-width: 0;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.chat-file-attachment-card__name {
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 1.4;
-  word-break: break-word;
-  overflow-wrap: anywhere;
-}
-
-.chat-file-attachment-card__meta {
-  font-size: 12px;
-  line-height: 1.4;
-  opacity: 0.68;
-}
-
-.chat-file-attachment-card__close {
-  flex: 0 0 auto;
-}
-
-.chat-image-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin: 6px 0 10px;
-}
-
-.chat-image-item {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  max-width: 220px;
-}
-
-.chat-image-grid--tool {
-  margin: 0 0 10px;
-}
-
-.chat-image-placeholder {
-  width: 132px;
-  min-height: 96px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  font-size: 12px;
-  padding: 10px;
-  border-radius: 10px;
-  color: rgba(0, 0, 0, 0.55);
-  background: rgba(0, 0, 0, 0.04);
-}
-
-.chat-page.dark .chat-image-placeholder {
-  color: rgba(255, 255, 255, 0.72);
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.chat-image-caption {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.chat-image-name {
-  font-size: 12px;
-  font-weight: 500;
-  word-break: break-word;
-  overflow-wrap: anywhere;
-}
-
-.chat-image-meta-line,
-.chat-image-note,
-.chat-image-status {
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.chat-image-meta-line {
-  opacity: 0.72;
-}
-
-.chat-image-note {
-  opacity: 0.68;
-}
-
-.chat-image-status {
-  color: #d03050;
-}
-
-.chat-page.dark .chat-image-status {
-  color: #ff8fa3;
-}
-
-.chat-image-actions {
-  width: 100%;
-}
-
-.chat-image-frame {
-  overflow: hidden;
-  border-radius: 14px;
-}
-
-.chat-list {
-  padding: 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  min-width: 0;
-  width: 100%;
-  max-width: 100%;
-  overflow-anchor: none;
-}
-
-.chat-list__spacer {
-  flex: 0 0 auto;
-  width: 100%;
-}
-
-@keyframes chat-fade-up {
-  from {
-    opacity: 0;
-    transform: translateY(12px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes assistant-avatar-bob {
-  0%, 100% { transform: translateY(0) scale(1); }
-  35% { transform: translateY(-2px) scale(1.03); }
-  70% { transform: translateY(1px) scale(0.99); }
-}
-
-@keyframes assistant-icon-glow {
-  0%, 100% { opacity: 0.86; transform: scale(1); }
-  50% { opacity: 1; transform: scale(1.08); }
-}
-
-@keyframes tool-icon-spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
-.chat-item {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  animation: chat-fade-up 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
-.chat-item.is-virtualized {
-  animation: none;
-}
-
-.chat-item.user {
-  align-items: flex-end;
-  box-sizing: border-box;
-  padding-right: 24px;
-}
-
-.chat-item__row {
-  display: flex;
-  align-items: flex-end;
-  gap: 10px;
-  width: 100%;
-  min-width: 0;
-  max-width: 100%;
-}
-
-.chat-item.user .chat-item__row {
-  flex-direction: row-reverse;
-}
-
-.chat-item__avatar {
-  flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
-  border-radius: 999px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid rgba(0, 0, 0, 0.10);
-  background: rgba(0, 0, 0, 0.04);
-  color: rgba(0, 0, 0, 0.65);
-  transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease, background 160ms ease, color 160ms ease;
-}
-
-.chat-page.dark .chat-item__avatar {
-  border-color: rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(255, 255, 255, 0.85);
-}
-
-.chat-item__avatar-icon {
-  transition: transform 160ms ease, opacity 160ms ease;
-}
-
-.chat-item.assistant .chat-item__avatar {
-  border-color: rgba(32, 128, 240, 0.28);
-  background: rgba(32, 128, 240, 0.16);
-  color: rgb(32, 128, 240);
-}
-
-.chat-item.user .chat-item__avatar {
-  border-color: rgba(24, 160, 88, 0.28);
-  background: rgba(24, 160, 88, 0.16);
-  color: rgb(24, 160, 88);
-}
-
-.chat-item.thinking .chat-item__avatar {
-  border-color: rgba(245, 166, 35, 0.32);
-  background: rgba(245, 166, 35, 0.18);
-  color: rgb(245, 166, 35);
-}
-
-.chat-item.tool_call .chat-item__avatar {
-  border-color: rgba(159, 122, 234, 0.34);
-  background: rgba(159, 122, 234, 0.18);
-  color: rgb(159, 122, 234);
-}
-
-.chat-item.assistant.is-streaming .chat-item__avatar,
-.chat-item__avatar.is-streaming {
-  animation: assistant-avatar-bob 1.05s ease-in-out infinite;
-  box-shadow: 0 0 0 6px rgba(32, 128, 240, 0.08);
-}
-
-.chat-page.dark .chat-item.assistant.is-streaming .chat-item__avatar,
-.chat-page.dark .chat-item__avatar.is-streaming {
-  box-shadow: 0 0 0 6px rgba(94, 169, 255, 0.12);
-}
-
-.chat-item__avatar-icon.is-streaming {
-  animation: assistant-icon-glow 1.1s ease-in-out infinite;
-}
-
-.chat-item__avatar-icon.is-spinning {
-  animation: tool-icon-spin 0.9s linear infinite;
-}
-
-.chat-item.tool.is-tool-running .chat-item__avatar,
-.chat-item.tool_call.is-tool-running .chat-item__avatar,
-.chat-item__avatar.is-running {
-  border-color: rgba(245, 166, 35, 0.34);
-  background: rgba(245, 166, 35, 0.16);
-  color: rgb(245, 166, 35);
-}
-
-.chat-item.tool.is-tool-paused .chat-item__avatar,
-.chat-item.tool_call.is-tool-paused .chat-item__avatar,
-.chat-item__avatar.is-paused {
-  border-color: rgba(224, 168, 63, 0.34);
-  background: rgba(224, 168, 63, 0.16);
-  color: rgb(180, 83, 9);
-}
-
-.chat-item.tool.is-tool-stopped .chat-item__avatar,
-.chat-item.tool_call.is-tool-stopped .chat-item__avatar,
-.chat-item__avatar.is-stopped {
-  border-color: rgba(100, 116, 139, 0.34);
-  background: rgba(100, 116, 139, 0.16);
-  color: rgb(71, 85, 105);
-}
-
-.chat-item.tool.is-tool-success .chat-item__avatar,
-.chat-item__avatar.is-success {
-  border-color: rgba(14, 165, 233, 0.3);
-  background: rgba(14, 165, 233, 0.15);
-  color: rgb(8, 145, 178);
-}
-
-.chat-item.tool.is-tool-error .chat-item__avatar,
-.chat-item__avatar.is-error {
-  border-color: rgba(208, 48, 80, 0.32);
-  background: rgba(208, 48, 80, 0.14);
-  color: rgb(208, 48, 80);
-}
-
-.chat-item.tool.is-tool-rejected .chat-item__avatar,
-.chat-item__avatar.is-rejected {
-  border-color: rgba(100, 116, 139, 0.34);
-  background: rgba(100, 116, 139, 0.16);
-  color: rgb(71, 85, 105);
-}
-
-.chat-item__bubble {
-  max-width: min(calc(100% - 68px), 780px);
-  width: fit-content;
-  min-width: 0;
-  border-radius: 16px;
-  padding: 10px 12px;
-  border: 1px solid rgba(0, 0, 0, 0.06);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(255, 255, 255, 0.78));
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
-  transition: box-shadow 160ms ease, border-color 160ms ease, background 160ms ease;
-}
-
-.chat-item__content {
-  min-width: 0;
-  max-width: 100%;
-  overflow: visible;
-}
-
-.chat-item__bubble:hover {
-  box-shadow: 0 16px 30px rgba(15, 23, 42, 0.10);
-}
-
-.chat-item__actions {
-  margin-top: 8px;
-  padding-top: 6px;
-  border-top: 1px dashed rgba(0, 0, 0, 0.10);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  opacity: 0.78;
-  transition: opacity 120ms ease;
-}
-
-.chat-item.user .chat-item__actions {
-  justify-content: flex-end;
-}
-
-.chat-item.assistant .chat-item__actions {
-  justify-content: flex-start;
-}
-
-.chat-item__bubble:hover .chat-item__actions {
-  opacity: 1;
-}
-
-.chat-page.dark .chat-item__actions {
-  border-top-color: rgba(255, 255, 255, 0.14);
-}
-
-.chat-page.dark .chat-item__bubble {
-  border-color: rgba(255, 255, 255, 0.10);
-  background: linear-gradient(180deg, rgba(30, 41, 59, 0.88), rgba(15, 23, 42, 0.78));
-  box-shadow: 0 12px 26px rgba(2, 6, 23, 0.30);
-}
-
-.chat-page.dark .chat-item__bubble:hover {
-  box-shadow: 0 18px 34px rgba(2, 6, 23, 0.40);
-}
-
-.chat-item.user .chat-item__bubble {
-  border-color: rgba(24, 160, 88, 0.20);
-}
-
-.chat-item.assistant .chat-item__bubble {
-  border-color: rgba(32, 128, 240, 0.20);
-}
-
-.chat-item.assistant.is-streaming .chat-item__bubble {
-  border-color: rgba(32, 128, 240, 0.28);
-  box-shadow: 0 10px 26px rgba(32, 128, 240, 0.10);
-  overflow-anchor: none;
-}
-
-.chat-item.thinking .chat-item__bubble {
-  border-color: rgba(245, 166, 35, 0.24);
-}
-
-.chat-item.tool_call .chat-item__bubble {
-  border-color: rgba(159, 122, 234, 0.26);
-}
-
-.chat-item.tool .chat-item__bubble {
-  border-color: rgba(0, 0, 0, 0.06);
-}
-
-.chat-item.tool.is-tool-running .chat-item__bubble,
-.chat-item.tool_call.is-tool-running .chat-item__bubble {
-  border-color: rgba(245, 166, 35, 0.28);
-  box-shadow: 0 10px 26px rgba(245, 166, 35, 0.08);
-}
-
-.chat-item.tool.is-tool-paused .chat-item__bubble,
-.chat-item.tool_call.is-tool-paused .chat-item__bubble {
-  border-color: rgba(224, 168, 63, 0.28);
-  box-shadow: 0 10px 26px rgba(224, 168, 63, 0.08);
-}
-
-.chat-item.tool.is-tool-stopped .chat-item__bubble,
-.chat-item.tool_call.is-tool-stopped .chat-item__bubble {
-  border-color: rgba(100, 116, 139, 0.26);
-}
-
-.chat-item.tool.is-tool-success .chat-item__bubble {
-  border-color: rgba(14, 165, 233, 0.22);
-}
-
-.chat-item.tool.is-tool-error .chat-item__bubble {
-  border-color: rgba(208, 48, 80, 0.24);
-}
-
-.chat-item.tool.is-tool-rejected .chat-item__bubble {
-  border-color: rgba(100, 116, 139, 0.26);
-}
-
-.chat-item.tool.is-agent-run .chat-item__bubble {
-  background:
-    radial-gradient(circle at top right, rgba(14, 165, 233, 0.12), transparent 32%),
-    linear-gradient(180deg, rgba(14, 165, 233, 0.06), rgba(14, 165, 233, 0.015));
-}
-
-.chat-page.dark .chat-item.tool .chat-item__bubble {
-  border-color: rgba(255, 255, 255, 0.10);
-}
-
-.chat-page.dark .chat-item.assistant.is-streaming .chat-item__bubble {
-  border-color: rgba(94, 169, 255, 0.28);
-  box-shadow: 0 12px 28px rgba(30, 64, 175, 0.25);
-}
-
-.chat-page.dark .chat-item.tool.is-tool-running .chat-item__bubble,
-.chat-page.dark .chat-item.tool_call.is-tool-running .chat-item__bubble {
-  border-color: rgba(245, 166, 35, 0.34);
-  box-shadow: 0 10px 28px rgba(146, 64, 14, 0.22);
-}
-
-.chat-page.dark .chat-item.tool.is-tool-paused .chat-item__bubble,
-.chat-page.dark .chat-item.tool_call.is-tool-paused .chat-item__bubble {
-  border-color: rgba(224, 168, 63, 0.34);
-  box-shadow: 0 10px 28px rgba(146, 90, 14, 0.22);
-}
-
-.chat-page.dark .chat-item.tool.is-tool-stopped .chat-item__bubble,
-.chat-page.dark .chat-item.tool_call.is-tool-stopped .chat-item__bubble {
-  border-color: rgba(148, 163, 184, 0.26);
-}
-
-.chat-page.dark .chat-item.tool.is-tool-success .chat-item__bubble {
-  border-color: rgba(34, 211, 238, 0.24);
-}
-
-.chat-page.dark .chat-item.tool.is-tool-error .chat-item__bubble {
-  border-color: rgba(251, 113, 133, 0.28);
-}
-
-.chat-page.dark .chat-item.tool.is-tool-rejected .chat-item__bubble {
-  border-color: rgba(148, 163, 184, 0.26);
-}
-
-.chat-page.dark .chat-item.tool.is-agent-run .chat-item__bubble {
-  background:
-    radial-gradient(circle at top right, rgba(56, 189, 248, 0.16), transparent 34%),
-    linear-gradient(180deg, rgba(14, 165, 233, 0.11), rgba(14, 165, 233, 0.03));
-}
-
-.chat-item__time {
-  margin-top: 4px;
-  font-size: 11px;
-  line-height: 1.2;
-  opacity: 0.75;
-}
-
-.chat-item.user .chat-item__time {
-  text-align: right;
-}
-
-.chat-plain {
-  margin: 0;
-  font-size: 14px;
-  line-height: 1.65;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.chat-plain--deferred {
-  opacity: 0.92;
-  contain: content;
-}
-
-.chat-tool-compact {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: min(100%, 680px);
-  padding: 4px 6px;
-  border-radius: 10px;
-  border: 1px dashed rgba(148, 163, 184, 0.32);
-  background: rgba(248, 250, 252, 0.82);
-  cursor: pointer;
-  user-select: none;
-  font-size: 12px;
-  line-height: 1.2;
-}
-
-.chat-page.dark .chat-tool-compact {
-  border-color: rgba(148, 163, 184, 0.24);
-  background: rgba(30, 41, 59, 0.58);
-}
-
-.chat-tool-compact__chevron {
-  opacity: 0.76;
-}
-
-.chat-tool-compact__label {
-  font-weight: 600;
-  flex: 0 0 auto;
-}
-
-.chat-tool-compact__status {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  height: 18px;
-  padding: 0 6px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 600;
-  background: rgba(100, 116, 139, 0.10);
-}
-
-.chat-tool-compact__status.is-running {
-  color: rgb(180, 83, 9);
-  background: rgba(245, 166, 35, 0.14);
-}
-
-.chat-tool-compact__status.is-paused {
-  color: rgb(180, 83, 9);
-  background: rgba(224, 168, 63, 0.14);
-}
-
-.chat-tool-compact__status.is-stopped {
-  color: rgb(71, 85, 105);
-  background: rgba(100, 116, 139, 0.12);
-}
-
-.chat-tool-compact__status.is-success {
-  color: rgb(8, 145, 178);
-  background: rgba(14, 165, 233, 0.12);
-}
-
-.chat-tool-compact__status.is-error {
-  color: rgb(208, 48, 80);
-  background: rgba(208, 48, 80, 0.10);
-}
-
-.chat-tool-compact__status.is-rejected {
-  color: rgb(71, 85, 105);
-  background: rgba(100, 116, 139, 0.12);
-}
-
-.chat-tool-compact__meta {
-  min-width: 0;
-  flex: 1;
-  opacity: 0.72;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.chat-tool-compact__hint {
-  flex: 0 0 auto;
-  opacity: 0.62;
-}
-
-.assistant-thinking {
-  margin-bottom: 10px;
-  padding-bottom: 10px;
-  border-bottom: 1px dashed rgba(0, 0, 0, 0.10);
-}
-
-.md-editor {
-  background-color: transparent !important;
-}
-
-.chat-page.dark .assistant-thinking {
-  border-bottom-color: rgba(255, 255, 255, 0.14);
-}
-
-.assistant-thinking__toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  user-select: none;
-  font-size: 12px;
-  line-height: 1.2;
-  color: rgba(0, 0, 0, 0.65);
-}
-
-.chat-page.dark .assistant-thinking__toggle {
-  color: rgba(255, 255, 255, 0.78);
-}
-
-.assistant-thinking__label {
-  font-weight: 600;
-}
-
-.assistant-thinking__hint {
-  margin-left: auto;
-  opacity: 0.7;
-  font-size: 12px;
-}
-
-.assistant-thinking__text {
-  margin: 8px 0 0;
-  padding-left: 12px;
-  border-left: 2px solid rgba(0, 0, 0, 0.10);
-  font-size: 12px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-word;
-  opacity: 0.9;
-}
-
-.chat-page.dark .assistant-thinking__text {
-  border-left-color: rgba(255, 255, 255, 0.16);
-}
-
-.chat-item__content :deep(.md-editor-preview-wrapper) {
-  padding: 0;
-  height: auto !important;
-  min-height: 0;
-  max-width: 100%;
-  overflow: visible !important;
-}
-
-.chat-item__content :deep(.md-editor.md-editor-previewOnly) {
-  height: auto !important;
-  min-height: 0;
-  overflow: visible !important;
-  display: block;
-}
-
-.chat-item__content :deep(.md-editor.md-editor-previewOnly .md-editor-content) {
-  height: auto !important;
-  min-height: 0;
-  overflow: visible !important;
-  display: block;
-}
-
-.chat-item__content :deep(.md-editor-preview) {
-  font-size: 14px;
-  line-height: 1.65;
-  background: transparent;
-  max-width: 100%;
-  overflow: visible !important;
-}
-
-.chat-item__content :deep(.md-editor-preview .md-editor-code) {
-  max-width: 100%;
-  overflow: visible !important;
-  position: relative;
-}
-
-.chat-item__content :deep(.md-editor-preview .md-editor-code pre) {
-  overflow: visible !important;
-}
-
-.chat-item__content :deep(.md-editor-preview .md-editor-code .md-editor-code-head) {
-  position: sticky;
-  top: 0;
-  z-index: 6;
-  background: var(--md-theme-code-before-bg-color);
-}
-
-.chat-item__content :deep(.n-scrollbar-container),
-.chat-item__content :deep(.n-scrollbar-content) {
-  overflow: visible !important;
-}
-
-.chat-item__content :deep(.md-editor-preview pre),
-.chat-item__content :deep(.md-editor-preview table) {
-  max-width: 100%;
-  overflow-x: auto;
-}
-
-.chat-item__content :deep(.md-editor-preview pre code) {
-  overflow-x: auto;
-  overflow-y: hidden;
-}
-
-.chat-item__content :deep(.md-editor-preview table) {
-  display: block;
-}
-
-@media (max-width: 960px) {
-  .chat-page {
-    max-width: none;
-  }
-
-  .chat-list {
-    padding: 12px 10px;
-  }
-
-  .chat-item__bubble {
-    max-width: calc(100% - 40px);
-  }
-}
-
-@media (max-width: 720px) {
-  :deep(.chat-session-sider) {
-    margin-left: 8px;
-  }
-
-  .chat-empty-state {
-    min-height: 360px;
-    padding: 20px 10px 28px;
-  }
-
-  .chat-empty-state__panel {
-    padding: 18px;
-    border-radius: 18px;
-  }
-
-  .chat-empty-state__summary {
-    grid-template-columns: 1fr;
-  }
-
-  .chat-empty-state__actions {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
-  }
-
-  .chat-list {
-    padding: 8px;
-    gap: 12px;
-  }
-
-  .chat-item__row {
-    gap: 8px;
-  }
-
-  .chat-item.user {
-    padding-right: 14px;
-  }
-
-  .chat-item__avatar {
-    width: 28px;
-    height: 28px;
-  }
-
-  .chat-item__bubble {
-    max-width: calc(100% - 36px);
-    padding: 10px;
-    border-radius: 14px;
-  }
-
-  .chat-file-attachments {
-    flex-direction: column;
-  }
-
-  .chat-file-attachment-card {
-    max-width: 100%;
-  }
-}
-</style>
+<style scoped src="./Chat.css"></style>

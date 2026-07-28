@@ -19,7 +19,7 @@ if (!globalThis.utools) {
 }
 
 const globalConfig = require('../public/preload/utils/global-config.js')
-const createBuiltinSessionsMcpClient = require('../public/preload/builtins/sessions-mcp-client.js')
+const createBuiltinSessionsSkillRuntime = require('../public/preload/builtin-skills/inspect-session-history/runtime.js')
 
 function createFixtureFile(rootPath, relativePath, content = '{}') {
   const targetPath = path.join(rootPath, ...String(relativePath || '').split('/'))
@@ -35,7 +35,7 @@ function flattenTreeNames(node, out = []) {
   return out
 }
 
-test('sessions MCP tree hides per-session asset directories', async (t) => {
+test('sessions Skill runtime tree hides per-session asset directories', async (t) => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-sessions-mcp-'))
   const originalGetDataStorageRoot = globalConfig.getDataStorageRoot
   globalConfig.getDataStorageRoot = () => tempRoot
@@ -48,8 +48,8 @@ test('sessions MCP tree hides per-session asset directories', async (t) => {
   createFixtureFile(tempRoot, 'session/story.json.assets/msg/video.mp4', 'video')
   createFixtureFile(tempRoot, 'session/folder/record.json', '{"title":"record"}')
 
-  const client = createBuiltinSessionsMcpClient({ sessionsRoot: 'session' })
-  const result = await client.callTool('sessions_list_tree', {})
+  const runtime = createBuiltinSessionsSkillRuntime({ sessionsRoot: 'session' })
+  const result = await runtime.runAction('sessions_list_tree', {})
   const names = flattenTreeNames(result.tree)
 
   assert.ok(names.includes('story'))
@@ -58,7 +58,7 @@ test('sessions MCP tree hides per-session asset directories', async (t) => {
   assert.equal(names.includes('story.json.assets'), false)
 })
 
-test('sessions MCP directory listing returns direct children only', async (t) => {
+test('sessions Skill runtime directory listing returns direct children only', async (t) => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-sessions-dir-'))
   const originalGetDataStorageRoot = globalConfig.getDataStorageRoot
   globalConfig.getDataStorageRoot = () => tempRoot
@@ -71,8 +71,8 @@ test('sessions MCP directory listing returns direct children only', async (t) =>
   createFixtureFile(tempRoot, 'session/jobs/nested/run-2.json', '{"title":"run-2"}')
   createFixtureFile(tempRoot, 'session/jobs/run-1.json.assets/a.txt', 'asset')
 
-  const client = createBuiltinSessionsMcpClient({ sessionsRoot: 'session' })
-  const result = await client.callTool('sessions_list_directory', { dirPath: 'jobs' })
+  const runtime = createBuiltinSessionsSkillRuntime({ sessionsRoot: 'session' })
+  const result = await runtime.runAction('sessions_list_directory', { dirPath: 'jobs' })
 
   assert.equal(result.dirPath, 'jobs')
   assert.equal(result.items.some((item) => item.path.includes('.json.assets')), false)
@@ -82,7 +82,7 @@ test('sessions MCP directory listing returns direct children only', async (t) =>
   )
 })
 
-test('sessions MCP tree defaults to shallow depth and supports deeper maxDepth', async (t) => {
+test('sessions Skill runtime tree defaults to shallow depth and supports deeper maxDepth', async (t) => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-sessions-tree-'))
   const originalGetDataStorageRoot = globalConfig.getDataStorageRoot
   globalConfig.getDataStorageRoot = () => tempRoot
@@ -93,8 +93,8 @@ test('sessions MCP tree defaults to shallow depth and supports deeper maxDepth',
 
   createFixtureFile(tempRoot, 'session/cron/task-a/log-1.json', '{"title":"log-1"}')
 
-  const client = createBuiltinSessionsMcpClient({ sessionsRoot: 'session' })
-  const shallow = await client.callTool('sessions_list_tree', {})
+  const runtime = createBuiltinSessionsSkillRuntime({ sessionsRoot: 'session' })
+  const shallow = await runtime.runAction('sessions_list_tree', {})
   const cronNode = shallow.tree.children.find((item) => item.path === 'cron')
   const taskNode = cronNode?.children?.find((item) => item.path === 'cron/task-a')
 
@@ -104,7 +104,7 @@ test('sessions MCP tree defaults to shallow depth and supports deeper maxDepth',
   assert.equal(taskNode.hasMore, true)
   assert.deepEqual(taskNode.children, [])
 
-  const deep = await client.callTool('sessions_list_tree', { maxDepth: 4 })
+  const deep = await runtime.runAction('sessions_list_tree', { maxDepth: 4 })
   const deepCronNode = deep.tree.children.find((item) => item.path === 'cron')
   const deepTaskNode = deepCronNode?.children?.find((item) => item.path === 'cron/task-a')
 
@@ -112,7 +112,7 @@ test('sessions MCP tree defaults to shallow depth and supports deeper maxDepth',
   assert.ok(deepTaskNode?.children?.some((item) => item.path === 'cron/task-a/log-1.json'))
 })
 
-test('sessions MCP recent listing sorts by mtime descending', async (t) => {
+test('sessions Skill runtime recent listing sorts by mtime descending', async (t) => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-sessions-recent-'))
   const originalGetDataStorageRoot = globalConfig.getDataStorageRoot
   globalConfig.getDataStorageRoot = () => tempRoot
@@ -127,8 +127,8 @@ test('sessions MCP recent listing sorts by mtime descending', async (t) => {
   fs.utimesSync(older, now / 1000 - 120, now / 1000 - 120)
   fs.utimesSync(newer, now / 1000, now / 1000)
 
-  const client = createBuiltinSessionsMcpClient({ sessionsRoot: 'session' })
-  const result = await client.callTool('sessions_list_recent', { limit: 10 })
+  const runtime = createBuiltinSessionsSkillRuntime({ sessionsRoot: 'session' })
+  const result = await runtime.runAction('sessions_list_recent', { limit: 10 })
 
   assert.deepEqual(
     result.items.map((item) => item.path),
@@ -136,7 +136,7 @@ test('sessions MCP recent listing sorts by mtime descending', async (t) => {
   )
 })
 
-test('sessions MCP search finds sessions by name and path fragments', async (t) => {
+test('sessions Skill runtime search finds sessions by name and path fragments', async (t) => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-sessions-search-'))
   const originalGetDataStorageRoot = globalConfig.getDataStorageRoot
   globalConfig.getDataStorageRoot = () => tempRoot
@@ -148,14 +148,14 @@ test('sessions MCP search finds sessions by name and path fragments', async (t) 
   createFixtureFile(tempRoot, 'session/cron/nightly-run.json', '{"title":"nightly"}')
   createFixtureFile(tempRoot, 'session/manual/debug-log.json', '{"title":"debug"}')
 
-  const client = createBuiltinSessionsMcpClient({ sessionsRoot: 'session' })
-  const result = await client.callTool('sessions_search', { query: 'nightly' })
+  const runtime = createBuiltinSessionsSkillRuntime({ sessionsRoot: 'session' })
+  const result = await runtime.runAction('sessions_search', { query: 'nightly' })
 
   assert.equal(result.returned, 1)
   assert.equal(result.items[0].path, 'cron/nightly-run.json')
 })
 
-test('sessions MCP search matches title and message preview text', async (t) => {
+test('sessions Skill runtime search matches title and message preview text', async (t) => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-sessions-search-title-'))
   const originalGetDataStorageRoot = globalConfig.getDataStorageRoot
   globalConfig.getDataStorageRoot = () => tempRoot
@@ -176,8 +176,8 @@ test('sessions MCP search matches title and message preview text', async (t) => 
     }, null, 2)
   )
 
-  const client = createBuiltinSessionsMcpClient({ sessionsRoot: 'session' })
-  const result = await client.callTool('sessions_search', { query: 'rollback checklist' })
+  const runtime = createBuiltinSessionsSkillRuntime({ sessionsRoot: 'session' })
+  const result = await runtime.runAction('sessions_search', { query: 'rollback checklist' })
 
   assert.equal(result.returned, 1)
   assert.equal(result.items[0].path, 'projects/review.json')

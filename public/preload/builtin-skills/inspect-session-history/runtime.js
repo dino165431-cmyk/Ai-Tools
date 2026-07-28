@@ -1,8 +1,8 @@
 const path = require('path')
 const fs = require('fs').promises
 
-const fileOperations = require('../utils/file-operations')
-const contentIndex = require('../utils/content-index')
+const fileOperations = require('../../utils/file-operations')
+const contentIndex = require('../../utils/content-index')
 
 const DEFAULT_LIST_LIMIT = 200
 const MAX_LIST_LIMIT = 1000
@@ -273,7 +273,7 @@ async function readOneSession({ sessionsRoot, sessionPath, parse = true }) {
   }
 }
 
-const TOOLS = [
+const ACTIONS = [
   {
     name: 'sessions_list_directory',
     description: '列出指定目录下的直接子目录和会话文件，不递归，适合大目录场景下快速定位。',
@@ -352,17 +352,17 @@ const TOOLS = [
   }
 ]
 
-class BuiltinSessionsMcpClient {
-  constructor(serverConfig) {
-    this.config = serverConfig || {}
+class BuiltinSessionsSkillRuntime {
+  constructor(skillConfig) {
+    this.config = skillConfig || {}
     this.sessionsRoot = normalizeRootDir(this.config.sessionsRoot, 'session')
   }
 
-  async listTools() {
-    return TOOLS
+  async listActions() {
+    return ACTIONS
   }
 
-  async callTool(toolName, args) {
+  async runAction(toolName, args) {
     const name = String(toolName || '').trim()
     const params = args && typeof args === 'object' ? args : {}
 
@@ -433,7 +433,7 @@ class BuiltinSessionsMcpClient {
       }
     }
 
-    throw new Error(`Unknown tool: ${name}`)
+    throw new Error(`Unknown action: ${name}`)
   }
 
   async listPrompts() {
@@ -447,6 +447,8 @@ class BuiltinSessionsMcpClient {
   close() {}
 }
 
-module.exports = function createBuiltinSessionsMcpClient(serverConfig) {
-  return new BuiltinSessionsMcpClient(serverConfig)
+module.exports = function createBuiltinSessionsSkillRuntime(skillConfig) {
+  return new BuiltinSessionsSkillRuntime(skillConfig)
 }
+
+module.exports.ACTIONS = ACTIONS

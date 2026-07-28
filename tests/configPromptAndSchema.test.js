@@ -1,4 +1,4 @@
-﻿import test from 'node:test'
+import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -38,8 +38,9 @@ if (!globalThis.window) {
 }
 
 const globalConfig = require('../public/preload/utils/global-config.js')
-const createBuiltinConfigMcpClient = require('../public/preload/builtins/config-mcp-client.js')
-const createBuiltinAgentsMcpClient = require('../public/preload/builtins/agents-mcp-client.js')
+const createBuiltinConfigSkillRuntime = require('../public/preload/builtin-skills/manage-ai-tools-config/runtime.js')
+const createBuiltinAgentsSkillRuntime = require('../public/preload/builtin-skills/orchestrate-agents/runtime.js')
+const builtinSkills = require('../public/preload/builtin-skills/index.js')
 
 function getLocalNotebookRuntimeConfigPath() {
   return path.join(globalThis.utools.getPath('userData'), '.ai-tools-local', 'notebook-runtime.json')
@@ -65,7 +66,7 @@ function createSkillFixture(t, {
   scripts = [],
   scriptManifest = null
 } = {}) {
-  const tempRoot = fs.mkdtempSync(path.join(process.cwd(), '.tmp-skill-'))
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-skill-fixture-'))
   t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }))
 
   const skillDir = path.join(tempRoot, folderName)
@@ -111,24 +112,125 @@ function createSkillFixture(t, {
   }
 }
 
-test('builtin config skill includes strict config payload rules and import guidance', () => {
+test('builtin config Skill includes native action rules and import guidance', () => {
   resetConfigStorage()
   const cfg = globalConfig.getConfig()
   const skill = cfg.skills.builtin_skill_config
 
   assert.ok(skill)
-  assert.ok(skill.description.includes('payload'))
-  assert.ok(skill.description.includes('SKILL.md'))
+  assert.ok(skill.description.includes('native Skill actions'))
+  assert.equal(skill.sourceType, 'builtin-directory')
+  assert.ok(skill.nativeActions.includes('config_import_skill_directory'))
   assert.ok(skill.content.includes('config_import_skill_directory'))
   assert.ok(skill.content.includes('config_import_skill_file'))
   assert.ok(skill.content.includes('config_add_*'))
   assert.ok(skill.content.includes('config_update_*'))
   assert.ok(skill.content.includes('{ id, patch }'))
-  assert.ok(skill.content.includes('builtin_config_mcp'))
+  assert.equal(skill.content.includes('builtin_config_mcp'), false)
   assert.ok(skill.content.includes('sourcePath'))
   assert.ok(skill.content.includes('transportType'))
   assert.ok(skill.content.includes('config_get_system_time'))
   assert.ok(skill.content.includes('***'))
+})
+
+test('builtin Skills expose standard packages, icons, references, and native action policies', async () => {
+  resetConfigStorage()
+  const records = builtinSkills.buildBuiltinSkillRecords()
+  const ids = Object.values(builtinSkills.BUILTIN_SKILL_IDS)
+
+  assert.equal(ids.length, 5)
+  assert.deepEqual(Object.keys(records).sort(), [...ids].sort())
+
+  for (const id of ids) {
+    const skill = records[id]
+    assert.equal(skill.sourceType, 'builtin-directory')
+    assert.equal(skill.builtin, true)
+    assert.deepEqual(skill.mcp, [])
+    assert.ok(skill.content.length > 0)
+    assert.ok(skill.interface.displayName)
+    assert.ok(skill.interface.shortDescription)
+    assert.match(skill.interface.brandColor, /^#[0-9A-F]{6}$/i)
+    assert.equal(skill.interface.iconSmall, './assets/icon.svg')
+    assert.equal(skill.interface.iconLarge, './assets/icon.svg')
+    assert.ok(skill.cache.fileIndex.agents.includes('agents/openai.yaml'))
+    assert.ok(skill.cache.fileIndex.assets.includes('assets/icon.svg'))
+    assert.ok(skill.cache.fileIndex.references.includes('references/actions.md'))
+    assert.equal(skill.capabilities.supportsReferences, true)
+    assert.equal(skill.capabilities.supportsAssets, true)
+
+    const icon = globalConfig.readSkillIcon(id, 'small')
+    assert.equal(icon.mime, 'image/svg+xml')
+    assert.match(icon.dataUrl, /^data:image\/svg\+xml;base64,/)
+
+    const actions = await builtinSkills.listBuiltinSkillActions(id)
+    assert.deepEqual(actions.map((action) => action.name), skill.nativeActions)
+  }
+
+  const noteActions = await builtinSkills.listBuiltinSkillActions(builtinSkills.BUILTIN_SKILL_IDS.notes)
+  assert.equal(noteActions.find((action) => action.name === 'notes_read').forceApproval, false)
+  assert.equal(noteActions.find((action) => action.name === 'notes_delete').forceApproval, true)
+  assert.equal(noteActions.find((action) => action.name === 'notebook_execute_all').approvalKind, 'execution')
+  await builtinSkills.closeBuiltinSkillRuntimes()
+})
+
+test('legacy builtin MCP records and bindings are removed during config migration', () => {
+  resetConfigStorage()
+  const seeded = globalConfig.getConfig()
+  seeded.mcpServers.builtin_notes_mcp = { _id: 'builtin_notes_mcp', name: 'legacy notes' }
+  seeded.mcpServers.external_demo = { _id: 'external_demo', name: 'external demo', transportType: 'stdio', command: 'demo' }
+  seeded.skills.legacy_binding = {
+    _id: 'legacy_binding',
+    name: 'legacy binding',
+    description: '',
+    content: '',
+    triggers: { keywords: [] },
+    mcp: ['builtin_notes_mcp', 'external_demo']
+  }
+  seeded.agents.legacy_binding = {
+    _id: 'legacy_binding',
+    name: 'legacy binding',
+    provider: '',
+    model: '',
+    skills: [],
+    mcp: ['builtin_notes_mcp', 'external_demo'],
+    prompt: ''
+  }
+  storage.set('global-config', seeded)
+
+  const migrated = globalConfig.getConfig()
+  assert.equal(migrated.mcpServers.builtin_notes_mcp, undefined)
+  assert.ok(migrated.mcpServers.external_demo)
+  assert.deepEqual(migrated.skills.legacy_binding.mcp, ['external_demo'])
+  assert.deepEqual(migrated.agents.legacy_binding.mcp, ['external_demo'])
+})
+
+test('external MCP records preserve standard icons and reject active SVG data', () => {
+  resetConfigStorage()
+  globalConfig.addMcpServer({
+    _id: 'mcp_with_icon',
+    name: 'Icon MCP',
+    icon: '🔧',
+    brandColor: '#123ABC',
+    transportType: 'stdio',
+    command: 'node',
+    args: []
+  })
+
+  const saved = globalConfig.getConfig().mcpServers.mcp_with_icon
+  assert.equal(saved.icon, '🔧')
+  assert.equal(saved.brandColor, '#123ABC')
+
+  assert.throws(
+    () => globalConfig.addMcpServer({
+      _id: 'mcp_unsafe_icon',
+      name: 'Unsafe icon MCP',
+      icon: `data:image/svg+xml;base64,${Buffer.from('<svg onload="alert(1)"/>').toString('base64')}`,
+      transportType: 'stdio',
+      command: 'node',
+      args: []
+    }),
+    /active or remote content/
+  )
 })
 
 test('builtin assistant prompt mentions skill import priority and compatibility rules', () => {
@@ -162,24 +264,21 @@ test('builtin notes and sessions skills prefer lightweight discovery tools first
   const sessionsSkill = cfg.skills.builtin_skill_sessions
 
   assert.ok(noteSkill)
-  assert.ok(noteSkill.description.includes('轻量'))
+  assert.ok(noteSkill.description.includes('native actions'))
   assert.ok(noteSkill.content.includes('notes_list_directory'))
   assert.ok(noteSkill.content.includes('notes_list_recent'))
   assert.ok(noteSkill.content.includes('notes_search'))
-  assert.ok(noteSkill.content.includes('才使用 `notes_list_tree`'))
-  assert.ok(noteSkill.content.includes('如果用户已经给出了明确路径'))
-  assert.ok(noteSkill.content.includes('不要先列目录'))
-  assert.ok(noteSkill.content.includes('默认不要从 note 根目录做大深度遍历'))
+  assert.ok(noteSkill.content.includes('`notes_list_tree` only'))
+  assert.ok(noteSkill.content.includes('path is known'))
 
   assert.ok(sessionsSkill)
-  assert.ok(sessionsSkill.description.includes('轻量'))
+  assert.ok(sessionsSkill.description.includes('read-only actions'))
   assert.ok(sessionsSkill.content.includes('sessions_list_directory'))
   assert.ok(sessionsSkill.content.includes('sessions_list_recent'))
   assert.ok(sessionsSkill.content.includes('sessions_search'))
-  assert.ok(sessionsSkill.content.includes('才使用 `sessions_list_tree`'))
-  assert.ok(sessionsSkill.content.includes('如果用户已经给出了明确路径'))
-  assert.ok(sessionsSkill.content.includes('不要先列目录'))
-  assert.ok(sessionsSkill.content.includes('批量分析时'))
+  assert.ok(sessionsSkill.content.includes('`sessions_list_tree` only'))
+  assert.ok(sessionsSkill.content.includes('known path'))
+  assert.ok(sessionsSkill.content.includes('small verified set'))
 })
 
 test('builtin prompt explicitly discourages full-tree scans as the default', () => {
@@ -197,9 +296,9 @@ test('builtin prompt explicitly discourages full-tree scans as the default', () 
   assert.ok(prompt.content.includes('批量分析前先用轻量工具筛小范围'))
 })
 
-test('config mcp tool schemas expose strict config-specific descriptions', async () => {
-  const client = createBuiltinConfigMcpClient()
-  const tools = await client.listTools()
+test('config Skill action schemas expose strict config-specific descriptions', async () => {
+  const runtime = createBuiltinConfigSkillRuntime()
+  const tools = await runtime.listActions()
   const toolMap = new Map(tools.map((tool) => [tool.name, tool]))
 
   const updateMcp = toolMap.get('config_update_mcp_server')
@@ -258,8 +357,8 @@ test('config prompt tools preserve prompt type metadata', async () => {
   resetConfigStorage()
   globalConfig.ensureBuiltins()
 
-  const client = createBuiltinConfigMcpClient()
-  const added = await client.callTool('config_add_prompt', {
+  const runtime = createBuiltinConfigSkillRuntime()
+  const added = await runtime.runAction('config_add_prompt', {
     name: '变量提示词',
     type: 'user',
     content: '你好 {{name}}'
@@ -267,12 +366,12 @@ test('config prompt tools preserve prompt type metadata', async () => {
 
   assert.equal(added.ok, true)
 
-  const listed = await client.callTool('config_list_prompts', {})
+  const listed = await runtime.runAction('config_list_prompts', {})
   const item = listed.items.find((entry) => entry._id === added.id)
   assert.ok(item)
   assert.equal(item.type, 'user')
 
-  await client.callTool('config_update_prompt', {
+  await runtime.runAction('config_update_prompt', {
     id: added.id,
     patch: {
       type: 'system'
@@ -357,32 +456,32 @@ test('agent prompt bindings only keep system prompts across config tools and sto
   resetConfigStorage()
   globalConfig.ensureBuiltins()
 
-  const client = createBuiltinConfigMcpClient()
-  const userPrompt = await client.callTool('config_add_prompt', {
+  const runtime = createBuiltinConfigSkillRuntime()
+  const userPrompt = await runtime.runAction('config_add_prompt', {
     name: '用户模板',
     type: 'user',
     content: '你好 {{name}}'
   })
-  const systemPrompt = await client.callTool('config_add_prompt', {
+  const systemPrompt = await runtime.runAction('config_add_prompt', {
     name: '系统模板',
     type: 'system',
     content: '你是一个助手'
   })
 
-  const added = await client.callTool('config_add_agent', {
+  const added = await runtime.runAction('config_add_agent', {
     name: '测试智能体',
     prompt: userPrompt.id
   })
   assert.equal(added.ok, true)
   assert.equal(globalConfig.getAgent(added.id).prompt, null)
 
-  await client.callTool('config_update_agent', {
+  await runtime.runAction('config_update_agent', {
     id: added.id,
     patch: { prompt: systemPrompt.id }
   })
   assert.equal(globalConfig.getAgent(added.id).prompt, systemPrompt.id)
 
-  await client.callTool('config_update_agent', {
+  await runtime.runAction('config_update_agent', {
     id: added.id,
     patch: { prompt: userPrompt.id }
   })
@@ -467,8 +566,8 @@ test('builtin agents list hides invalid non-system prompt bindings from summarie
   }
   storage.set('global-config', stored)
 
-  const client = createBuiltinAgentsMcpClient()
-  const listed = await client.callTool('agents_list', {})
+  const runtime = createBuiltinAgentsSkillRuntime()
+  const listed = await runtime.runAction('agents_list', {})
   const item = listed.items.find((entry) => entry.id === agentId)
 
   assert.ok(item)
@@ -486,8 +585,8 @@ test('config import skill file preserves multiline description and source metada
     body: '# Multiline Skill\n\n用于测试多行 description。\n'
   })
 
-  const client = createBuiltinConfigMcpClient()
-  const imported = await client.callTool('config_import_skill_file', { path: skillFile })
+  const runtime = createBuiltinConfigSkillRuntime()
+  const imported = await runtime.runAction('config_import_skill_file', { path: skillFile })
 
   assert.equal(imported.ok, true)
   assert.equal(imported.item.sourceType, 'directory')
@@ -503,7 +602,7 @@ test('config import skill file preserves multiline description and source metada
   assert.equal(imported.item.entryFile, 'SKILL.md')
   assert.equal(imported.item.description, '第一行描述\n第二行描述\n第三行描述')
 
-  const listed = await client.callTool('config_list_skills', {})
+  const listed = await runtime.runAction('config_list_skills', {})
   const item = listed.items.find((entry) => entry._id === imported.id)
 
   assert.ok(item)
@@ -511,6 +610,29 @@ test('config import skill file preserves multiline description and source metada
   assert.equal(path.resolve(item.sourcePath), path.resolve(imported.item.sourcePath))
   assert.equal(item.entryFile, 'SKILL.md')
   assert.equal(item.description, '第一行描述\n第二行描述\n第三行描述')
+})
+
+test('directory skill import keeps a localized display name out of the managed path', (t) => {
+  resetConfigStorage()
+
+  const { skillDir } = createSkillFixture(t, {
+    folderName: 'mobile-adjust-analysis',
+    descriptionLines: ['分析移动端 Adjust 数据']
+  })
+  const agentsDir = path.join(skillDir, 'agents')
+  fs.mkdirSync(agentsDir, { recursive: true })
+  fs.writeFileSync(
+    path.join(agentsDir, 'openai.yaml'),
+    ['interface:', '  display_name: "移动端 Adjust 分析"'].join('\n'),
+    'utf8'
+  )
+
+  const imported = globalConfig.importSkillDirectory(skillDir)
+
+  assert.equal(imported.name, '移动端 Adjust 分析')
+  assert.equal(imported.packageName, 'mobile-adjust-analysis')
+  assert.equal(path.basename(imported.sourcePath), 'mobile-adjust-analysis')
+  assert.equal(fs.existsSync(path.join(imported.sourcePath, 'SKILL.md')), true)
 })
 
 test('directory skill import enforces the current Agent Skills frontmatter contract', (t) => {
@@ -551,12 +673,22 @@ test('runSkillScript executes JavaScript files under imported skill scripts', as
       "      skillId: process.env.AI_TOOLS_SKILL_ID,",
       "      skillRoot: String(process.env.AI_TOOLS_SKILL_ROOT || '').replace(/\\\\/g, '/'),",
       "      scriptPath: process.env.AI_TOOLS_SKILL_SCRIPT_PATH,",
-      "      inheritedSecret: process.env.AI_TOOLS_TEST_SECRET",
+      "      inheritedSecret: process.env.AI_TOOLS_TEST_SECRET,",
+      "      configuredValue: process.env.DEMO_API_KEY,",
+      "      configuredLabel: process.env.DEMO_LABEL",
       '    }',
       '  }))',
       '})'
     ].join('\n')
   })
+
+  fs.writeFileSync(
+    path.join(skillDir, '.env'),
+    ['DEMO_API_KEY=loaded-from-skill', 'DEMO_LABEL="hello world" # comment'].join('\n'),
+    'utf8'
+  )
+  fs.writeFileSync(path.join(skillDir, '.env.local'), 'LOCAL_ONLY_SECRET=hidden\n', 'utf8')
+  fs.writeFileSync(path.join(skillDir, '.env.example'), 'DEMO_API_KEY=replace-me\n', 'utf8')
 
   const imported = globalConfig.importSkillDirectory(skillDir)
   process.env.AI_TOOLS_TEST_SECRET = 'must-not-leak'
@@ -583,6 +715,49 @@ test('runSkillScript executes JavaScript files under imported skill scripts', as
   assert.equal(result.output.env.skillRoot, path.resolve(imported.sourcePath).replace(/\\/g, '/'))
   assert.equal(result.output.env.scriptPath, 'scripts/run.js')
   assert.equal(result.output.env.inheritedSecret, undefined)
+  assert.equal(result.output.env.configuredValue, 'loaded-from-skill')
+  assert.equal(result.output.env.configuredLabel, 'hello world')
+  assert.equal(fs.existsSync(path.join(imported.sourcePath, '.env')), true)
+
+  const listedFiles = globalConfig.listSkillFiles(imported._id)
+  assert.equal(listedFiles.extra.includes('.env'), false)
+  assert.equal(listedFiles.extra.includes('.env.local'), false)
+  assert.equal(listedFiles.extra.includes('.env.example'), true)
+  assert.throws(
+    () => globalConfig.readSkillFile(imported._id, '.env'),
+    /skill environment files cannot be read/
+  )
+  assert.equal(
+    globalConfig.readSkillFile(imported._id, '.env.example').content,
+    'DEMO_API_KEY=replace-me\n'
+  )
+})
+
+test('runSkillScript rejects reserved variables from imported skill .env', async (t) => {
+  resetConfigStorage()
+  globalConfig.ensureBuiltins()
+
+  const { skillDir } = createSkillFixture(t, {
+    folderName: 'reserved-env-skill',
+    skillName: 'Reserved Env Skill',
+    descriptionLines: ['Reserved environment variables'],
+    scriptName: 'run.js',
+    scriptContent: "process.stdout.write('ok')"
+  })
+
+  fs.writeFileSync(path.join(skillDir, '.env'), 'AI_TOOLS_SKILL_ROOT=unsafe\n', 'utf8')
+  const imported = globalConfig.importSkillDirectory(skillDir)
+
+  await assert.rejects(
+    globalConfig.runSkillScript(imported._id, 'scripts/run.js', { timeout_ms: 5000 }),
+    /cannot override reserved environment variable: AI_TOOLS_SKILL_ROOT/
+  )
+
+  fs.writeFileSync(path.join(imported.sourcePath, '.env'), 'NODE_OPTIONS=--trace-warnings\n', 'utf8')
+  await assert.rejects(
+    globalConfig.runSkillScript(imported._id, 'scripts/run.js', { timeout_ms: 5000 }),
+    /cannot override reserved environment variable: NODE_OPTIONS/
+  )
 })
 
 test('directory skill caches script manifest metadata and supports auto-selecting the only runnable script', async (t) => {
@@ -760,6 +935,8 @@ test('chatConfig contextWindow defaults and updates are normalized', () => {
     maxTurns: 48,
     keepRecentTurnsFull: 16,
     maxMessages: 320,
+    maxTokensExpanded: 100000,
+    maxTokensCompact: 80000,
     maxCharsExpanded: 400000,
     maxCharsCompact: 320000,
     autoCompactTriggerPercent: 80
@@ -771,6 +948,8 @@ test('chatConfig contextWindow defaults and updates are normalized', () => {
       maxTurns: 1,
       keepRecentTurnsFull: 99,
       maxMessages: 999,
+      maxTokensExpanded: 500,
+      maxTokensCompact: 999999,
       maxCharsExpanded: 2000,
       maxCharsCompact: 999999
     }
@@ -782,6 +961,8 @@ test('chatConfig contextWindow defaults and updates are normalized', () => {
     maxTurns: 2,
     keepRecentTurnsFull: 2,
     maxMessages: 999,
+    maxTokensExpanded: 1000,
+    maxTokensCompact: 1000,
     maxCharsExpanded: 4000,
     maxCharsCompact: 4000,
     autoCompactTriggerPercent: 80
@@ -799,6 +980,8 @@ test('chatConfig contextWindow defaults and updates are normalized', () => {
     maxTurns: 18,
     keepRecentTurnsFull: 6,
     maxMessages: 120,
+    maxTokensExpanded: 32000,
+    maxTokensCompact: 24000,
     maxCharsExpanded: 128000,
     maxCharsCompact: 96000,
     autoCompactTriggerPercent: 75

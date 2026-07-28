@@ -8,7 +8,10 @@ import {
   normalizeAssistantToolCalls,
   sanitizeRequestToolMessages,
   shouldIncludeReasoningContent,
-  shouldRetryWithReasoningContent
+  shouldRetryWithReasoningContent,
+  shouldRetryWithoutChatCompletionStreamUsage,
+  withChatCompletionStreamUsage,
+  withoutChatCompletionStreamUsage
 } from '../src/utils/chatRequestCompat.js'
 
 test('tool history helpers preserve distinct Responses item id and call_id', () => {
@@ -101,6 +104,26 @@ test('shouldRetryWithReasoningContent recognizes DeepSeek thinking-mode validati
     shouldRetryWithReasoningContent('invalid api key'),
     false
   )
+})
+
+test('stream usage helpers request final usage and support compatibility fallback', () => {
+  const body = {
+    model: 'test',
+    stream: true,
+    stream_options: { include_obfuscation: false }
+  }
+  const withUsage = withChatCompletionStreamUsage(body)
+  assert.deepEqual(withUsage.stream_options, {
+    include_obfuscation: false,
+    include_usage: true
+  })
+  assert.equal(body.stream_options.include_usage, undefined)
+  assert.equal(withoutChatCompletionStreamUsage(withUsage).stream_options, undefined)
+  assert.equal(
+    shouldRetryWithoutChatCompletionStreamUsage('Unsupported parameter: stream_options.include_usage'),
+    true
+  )
+  assert.equal(shouldRetryWithoutChatCompletionStreamUsage('invalid api key'), false)
 })
 
 test('sanitizeRequestToolMessages keeps tool call ids aligned in fc compatibility mode', () => {

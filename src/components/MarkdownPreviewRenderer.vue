@@ -17,6 +17,9 @@
       :code-theme="codeTheme"
       :code-foldable="codeFoldable"
       :auto-fold-threshold="autoFoldThreshold"
+      :sanitize="sanitizeHtml"
+      :sanitize-mermaid="sanitizeSvgMarkup"
+      :no-echarts="true"
     />
   </div>
 </template>
@@ -27,6 +30,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useMessage } from 'naive-ui'
 import { MdPreview } from 'md-editor-v3'
 import { createMarkdownDiagramDecorator } from '@/utils/markdownDiagramDecorator'
+import { sanitizeHtml } from '@/utils/sanitizeHtml'
+import { sanitizeSvgMarkup } from '@/utils/sanitizeSvg'
 import {
   getCachedFileBlobUrlSync,
   getFileBlobUrl

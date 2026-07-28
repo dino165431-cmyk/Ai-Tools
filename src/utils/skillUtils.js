@@ -104,7 +104,8 @@ function normalizeSkillScriptCatalogEntry(entry) {
 }
 
 export function isDirectorySkill(skill) {
-  return String(skill?.sourceType || '').trim() === 'directory' && !!String(skill?.sourcePath || '').trim()
+  const sourceType = String(skill?.sourceType || '').trim()
+  return (sourceType === 'directory' || sourceType === 'builtin-directory') && !!String(skill?.sourcePath || '').trim()
 }
 
 export function getSkillSummary(skill) {

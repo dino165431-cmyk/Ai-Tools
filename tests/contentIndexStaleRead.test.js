@@ -77,7 +77,7 @@ function loadContentIndexModule(overrides = {}) {
 
 function createIndexPayload({ dirty = true, entries = [] } = {}) {
   return JSON.stringify({
-    version: 2,
+    version: 3,
     kind: 'session',
     root: 'session',
     systemDir: '.ai-tools-settings',

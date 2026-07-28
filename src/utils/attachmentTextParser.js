@@ -1,6 +1,32 @@
 let worker = null
 let sequence = 0
 const pendingMap = new Map()
+const DEFAULT_ATTACHMENT_PARSE_TIMEOUT_MS = 30_000
+const ISOLATED_ATTACHMENT_EXTENSIONS = new Set(['pdf', 'docx', 'xls', 'xlsx', 'pptx'])
+
+function normalizeAttachmentParseTimeoutMs(value) {
+  const timeoutMs = Number(value)
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return DEFAULT_ATTACHMENT_PARSE_TIMEOUT_MS
+  return Math.min(120_000, Math.max(1_000, Math.round(timeoutMs)))
+}
+
+function rejectPendingRequests(error) {
+  for (const pending of pendingMap.values()) {
+    clearTimeout(pending.timer)
+    pending.reject(error)
+  }
+  pendingMap.clear()
+}
+
+function terminateWorker(error = null) {
+  try {
+    worker?.terminate?.()
+  } catch {
+    // ignore
+  }
+  worker = null
+  if (error) rejectPendingRequests(error)
+}
 
 function ensureWorker() {
   if (worker) return worker
@@ -11,22 +37,14 @@ function ensureWorker() {
     const pending = pendingMap.get(payload.id)
     if (!pending) return
     pendingMap.delete(payload.id)
+    clearTimeout(pending.timer)
     if (payload.ok) pending.resolve(String(payload.text || ''))
     else pending.reject(new Error(payload.error || '附件解析失败'))
   })
 
   worker.addEventListener('error', (event) => {
     const error = event?.error || new Error(event?.message || '附件解析工作线程失败')
-    for (const pending of pendingMap.values()) {
-      pending.reject(error)
-    }
-    pendingMap.clear()
-    try {
-      worker?.terminate?.()
-    } catch {
-      // ignore
-    }
-    worker = null
+    terminateWorker(error)
   })
 
   return worker
@@ -43,18 +61,32 @@ export async function parseAttachmentTextInWorker(options = {}) {
   const arrayBuffer = await file.arrayBuffer()
 
   return new Promise((resolve, reject) => {
-    pendingMap.set(id, { resolve, reject })
-    parserWorker.postMessage(
-      {
-        id,
-        ext,
-        fileName: String(options.fileName || file.name || ''),
-        maxChars: Number(options.maxChars) || 0,
-        arrayBuffer
-      },
-      [arrayBuffer]
-    )
+    const timer = setTimeout(() => {
+      terminateWorker(new Error(`附件解析超时（${normalizeAttachmentParseTimeoutMs(options.timeoutMs)}ms）`))
+    }, normalizeAttachmentParseTimeoutMs(options.timeoutMs))
+
+    pendingMap.set(id, { resolve, reject, timer })
+    try {
+      parserWorker.postMessage(
+        {
+          id,
+          ext,
+          fileName: String(options.fileName || file.name || ''),
+          maxChars: Number(options.maxChars) || 0,
+          arrayBuffer
+        },
+        [arrayBuffer]
+      )
+    } catch (error) {
+      clearTimeout(timer)
+      pendingMap.delete(id)
+      reject(error)
+    }
   })
+}
+
+export function shouldAllowMainThreadAttachmentFallback(ext) {
+  return !ISOLATED_ATTACHMENT_EXTENSIONS.has(String(ext || '').trim().toLowerCase())
 }
 
 export async function parseAttachmentTextWithFallback(options = {}) {
@@ -66,6 +98,10 @@ export async function parseAttachmentTextWithFallback(options = {}) {
   try {
     return await parseAttachmentTextInWorker(options)
   } catch (workerError) {
+    if (!shouldAllowMainThreadAttachmentFallback(ext)) {
+      throw new Error(`附件解析失败。为避免阻塞主界面，${ext.toUpperCase()} 仅允许在隔离工作线程中解析：${workerError?.message || String(workerError)}`)
+    }
+
     const arrayBuffer = await file.arrayBuffer()
     try {
       const { parseAttachmentText, truncateAttachmentText } = await import('./attachmentTextParserCore')
@@ -80,11 +116,5 @@ export async function parseAttachmentTextWithFallback(options = {}) {
 }
 
 export function resetAttachmentTextParserWorker() {
-  try {
-    worker?.terminate?.()
-  } catch {
-    // ignore
-  }
-  worker = null
-  pendingMap.clear()
+  terminateWorker(new Error('附件解析已取消'))
 }

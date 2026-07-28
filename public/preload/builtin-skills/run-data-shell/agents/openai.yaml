@@ -1,0 +1,9 @@
+interface:
+  display_name: "数据目录命令执行"
+  short_description: "在 Ai Tools 数据目录内执行经审批的 Bash 命令。"
+  icon_small: "./assets/icon.svg"
+  icon_large: "./assets/icon.svg"
+  brand_color: "#3C4658"
+  default_prompt: "Use $run-data-shell to run an approved Bash command in the Ai Tools data directory."
+policy:
+  allow_implicit_invocation: true

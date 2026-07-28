@@ -2,6 +2,112 @@ function cleanText(value) {
   return typeof value === 'string' ? value.trim() : ''
 }
 
+export const TOOL_APPROVAL_MODE_MANUAL = 'manual'
+export const TOOL_APPROVAL_MODE_SAFE = 'safe'
+export const TOOL_APPROVAL_MODE_FULL = 'full'
+export const TOOL_APPROVAL_MODE_DENY = 'deny'
+
+export const TOOL_APPROVAL_MODES = Object.freeze([
+  TOOL_APPROVAL_MODE_MANUAL,
+  TOOL_APPROVAL_MODE_SAFE,
+  TOOL_APPROVAL_MODE_FULL,
+  TOOL_APPROVAL_MODE_DENY
+])
+
+export function normalizeToolApprovalMode(value, fallback = TOOL_APPROVAL_MODE_SAFE) {
+  if (value === true) return TOOL_APPROVAL_MODE_SAFE
+  if (value === false) return TOOL_APPROVAL_MODE_MANUAL
+
+  const normalized = cleanText(value).toLowerCase()
+  if (TOOL_APPROVAL_MODES.includes(normalized)) return normalized
+
+  // Compatibility with the previous sub-agent modes.
+  if (normalized === 'auto' || normalized === 'readonly') return TOOL_APPROVAL_MODE_SAFE
+
+  const normalizedFallback = cleanText(fallback).toLowerCase()
+  return TOOL_APPROVAL_MODES.includes(normalizedFallback)
+    ? normalizedFallback
+    : TOOL_APPROVAL_MODE_SAFE
+}
+
+export function normalizeUnattendedToolApprovalMode(value, fallback = TOOL_APPROVAL_MODE_SAFE) {
+  const normalized = normalizeToolApprovalMode(value, fallback)
+  if (
+    normalized === TOOL_APPROVAL_MODE_FULL ||
+    normalized === TOOL_APPROVAL_MODE_DENY ||
+    normalized === TOOL_APPROVAL_MODE_SAFE
+  ) {
+    return normalized
+  }
+  return TOOL_APPROVAL_MODE_SAFE
+}
+
+export function getToolApprovalModeLabel(value) {
+  const mode = normalizeToolApprovalMode(value)
+  if (mode === TOOL_APPROVAL_MODE_MANUAL) return '每次确认'
+  if (mode === TOOL_APPROVAL_MODE_FULL) return '全部自动'
+  if (mode === TOOL_APPROVAL_MODE_DENY) return '禁止调用'
+  return '低风险自动'
+}
+
+export function evaluateToolApproval({
+  mode = TOOL_APPROVAL_MODE_SAFE,
+  forceApproval = false,
+  interactive = true
+} = {}) {
+  const normalizedMode = normalizeToolApprovalMode(mode)
+
+  if (normalizedMode === TOOL_APPROVAL_MODE_DENY) {
+    return {
+      action: 'deny',
+      mode: normalizedMode,
+      reason: 'tool_calls_disabled'
+    }
+  }
+
+  if (normalizedMode === TOOL_APPROVAL_MODE_FULL) {
+    return {
+      action: 'allow',
+      mode: normalizedMode,
+      reason: 'full_auto'
+    }
+  }
+
+  const requiresPrompt =
+    normalizedMode === TOOL_APPROVAL_MODE_MANUAL ||
+    forceApproval === true
+
+  if (requiresPrompt) {
+    return {
+      action: interactive ? 'prompt' : 'deny',
+      mode: normalizedMode,
+      reason: interactive ? 'confirmation_required' : 'unattended_confirmation_unavailable'
+    }
+  }
+
+  return {
+    action: 'allow',
+    mode: normalizedMode,
+    reason: 'safe_auto'
+  }
+}
+
+export function resolveMcpToolApprovalPolicy(tool) {
+  const annotations =
+    tool?.annotations && typeof tool.annotations === 'object' && !Array.isArray(tool.annotations)
+      ? tool.annotations
+      : {}
+  const explicitlyReadOnly =
+    annotations.readOnlyHint === true &&
+    annotations.destructiveHint !== true
+
+  return {
+    forceApproval: !explicitlyReadOnly,
+    approvalKind: 'tool',
+    explicitlyReadOnly
+  }
+}
+
 export function normalizeToolApprovalArgs(args, argsText = '') {
   if (args && typeof args === 'object' && !Array.isArray(args)) return args
   const raw = cleanText(argsText)
@@ -20,6 +126,38 @@ export function normalizeShellApprovalCommand(args, argsText = '') {
     command: cleanText(normalizedArgs.command).replace(/\r\n?/g, '\n'),
     cwd: (cleanText(normalizedArgs.cwd) || '.').replace(/\\/g, '/')
   }
+}
+
+export function normalizeSkillScriptApprovalArgs(
+  args,
+  {
+    resolveSkill,
+    resolveScript
+  } = {}
+) {
+  const source = args && typeof args === 'object' && !Array.isArray(args) ? args : {}
+  if (typeof resolveSkill !== 'function' || typeof resolveScript !== 'function') return source
+
+  const idCandidate = cleanText(source.id ?? source._id ?? source.skillId ?? source.skill_id)
+  const nameCandidate = cleanText(source.name ?? source.skillName ?? source.skill_name ?? source.skill)
+  const pathCandidate = cleanText(source.path ?? source.script ?? source.scriptPath)
+  const skill = resolveSkill({ idCandidate, nameCandidate })
+  const script = skill ? resolveScript(skill, pathCandidate) : null
+  if (!skill?._id || !script?.ok) return source
+
+  const normalized = {
+    skillId: String(skill._id),
+    path: String(script.path),
+    args: Array.isArray(source.args) ? source.args : []
+  }
+  if (Object.prototype.hasOwnProperty.call(source, 'input')) {
+    normalized.input = source.input
+  }
+  const timeoutMs = Number(source.timeout_ms)
+  if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+    normalized.timeout_ms = timeoutMs
+  }
+  return normalized
 }
 
 function sortApprovalValue(value) {

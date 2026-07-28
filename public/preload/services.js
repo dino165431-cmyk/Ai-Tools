@@ -6,6 +6,7 @@ const pythonLsp = require('./utils/python-lsp')
 const webOperations = require('./utils/web-operations')
 const contentIndex = require('./utils/content-index')
 const usageStatistics = require('./utils/usage-statistics')
+const builtinSkills = require('./builtin-skills')
 
 const BRIDGE_NAME = 'aiToolsApi'
 const preloadCleanupTasks = new Map()
@@ -76,6 +77,7 @@ function startPreloadLifecycle() {
   registerPreloadCleanup(() => notebookRuntime.dispose?.(), 'notebook-runtime')
   registerPreloadCleanup(() => fileOperations.dispose?.(), 'file-operations')
   registerPreloadCleanup(() => contentIndex.dispose?.(), 'content-index')
+  registerPreloadCleanup(() => builtinSkills.closeBuiltinSkillRuntimes?.(), 'builtin-skills')
 
   try {
     contentIndex.init?.()
@@ -119,6 +121,7 @@ const configApi = bindMethods(globalConfig, [
   'importSkillFile',
   'refreshSkillFromSource',
   'readSkillFile',
+  'readSkillIcon',
   'listSkillFiles',
   'addMcpServer',
   'updateMcpServer',
@@ -173,11 +176,21 @@ const notebookApi = bindMethods(notebookRuntime, [
   'listManagedVenvs'
 ])
 
+const contentSearchApi = Object.freeze({
+  searchNotes(options = {}) {
+    return contentIndex.searchIndex('note', options)
+  }
+})
+
 const dangerousApi = deepFreeze({
   config: bindMethods(globalConfig, [
     'runSkillScript',
     'installSkillsFromCommand'
   ]),
+  skills: Object.freeze({
+    listActions: builtinSkills.listBuiltinSkillActions,
+    runAction: builtinSkills.runBuiltinSkillAction
+  }),
   mcp: Object.freeze({
     createClient: createMCPClient
   }),
@@ -210,6 +223,7 @@ const aiToolsApi = deepFreeze({
     'recordUsage',
     'getUsageSummary'
   ]),
+  contentSearch: contentSearchApi,
   lifecycle: Object.freeze({
     start: startPreloadLifecycle,
     dispose: disposePreloadLifecycle,

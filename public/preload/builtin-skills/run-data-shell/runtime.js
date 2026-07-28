@@ -2,7 +2,7 @@ const path = require('path')
 const fsSync = require('fs')
 const { spawn } = require('child_process')
 
-const globalConfig = require('../utils/global-config')
+const globalConfig = require('../../utils/global-config')
 
 const MAX_OUTPUT_CHARS = 20000
 const DEFAULT_TIMEOUT_MS = 30000
@@ -173,7 +173,7 @@ function runBash(command, options = {}) {
   })
 }
 
-const TOOLS = Object.freeze([
+const ACTIONS = Object.freeze([
   {
     name: 'bash_run',
     description: 'Run a Bash command inside the user-selected AI Tools data directory. This tool always requires explicit approval.',
@@ -190,13 +190,13 @@ const TOOLS = Object.freeze([
   }
 ])
 
-class BuiltinShellMcpClient {
-  async listTools() {
-    return TOOLS
+class BuiltinShellSkillRuntime {
+  async listActions() {
+    return ACTIONS
   }
 
-  async callTool(toolName, args = {}) {
-    if (cleanString(toolName) !== 'bash_run') throw new Error(`Unknown tool: ${toolName}`)
+  async runAction(toolName, args = {}) {
+    if (cleanString(toolName) !== 'bash_run') throw new Error(`Unknown action: ${toolName}`)
     const command = cleanString(args.command)
     if (!command) throw new Error('command is required')
     return runBash(command, {
@@ -208,9 +208,11 @@ class BuiltinShellMcpClient {
   async close() {}
 }
 
-module.exports = function createBuiltinShellMcpClient() {
-  return new BuiltinShellMcpClient()
+module.exports = function createBuiltinShellSkillRuntime() {
+  return new BuiltinShellSkillRuntime()
 }
+
+module.exports.ACTIONS = ACTIONS
 
 module.exports._test = {
   resolveWorkingDirectory,

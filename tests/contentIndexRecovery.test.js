@@ -77,7 +77,7 @@ function loadContentIndexModule(overrides = {}) {
 
 test('content index readIndex recovers from concatenated trailing JSON', async () => {
   const indexPayload = {
-    version: 2,
+    version: 3,
     kind: 'session',
     root: 'session',
     systemDir: '.ai-tools-settings',

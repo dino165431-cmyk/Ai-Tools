@@ -141,7 +141,7 @@ test('content index can keyword-search agents by prompt and skill metadata', asy
 
   assert.equal(
     contentIndex.getIndexRelPath('agent'),
-    '.ai-tools-settings/indexes/agents-index-v2.json'
+    '.ai-tools-settings/indexes/agents-index-v3.json'
   )
 
   const result = await contentIndex.searchIndex('agent', {

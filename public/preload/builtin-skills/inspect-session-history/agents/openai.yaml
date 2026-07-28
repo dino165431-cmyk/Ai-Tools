@@ -1,0 +1,9 @@
+interface:
+  display_name: "会话历史分析"
+  short_description: "检索、读取并分析聊天会话以及定时任务执行记录与异常。"
+  icon_small: "./assets/icon.svg"
+  icon_large: "./assets/icon.svg"
+  brand_color: "#3478F6"
+  default_prompt: "Use $inspect-session-history to locate and analyze past sessions or task logs."
+policy:
+  allow_implicit_invocation: true

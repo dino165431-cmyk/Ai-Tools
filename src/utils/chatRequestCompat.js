@@ -87,6 +87,46 @@ export function calculateHistoryContextCharBudget({ baseChars = 0, reservedChars
   return Math.max(floorChars, base - reserved)
 }
 
+export function withChatCompletionStreamUsage(body = {}) {
+  const source = body && typeof body === 'object' && !Array.isArray(body) ? body : {}
+  if (source.stream !== true) return source
+  const streamOptions =
+    source.stream_options && typeof source.stream_options === 'object' && !Array.isArray(source.stream_options)
+      ? source.stream_options
+      : {}
+  return {
+    ...source,
+    stream_options: {
+      ...streamOptions,
+      include_usage: true
+    }
+  }
+}
+
+export function withoutChatCompletionStreamUsage(body = {}) {
+  const source = body && typeof body === 'object' && !Array.isArray(body) ? body : {}
+  if (!Object.prototype.hasOwnProperty.call(source, 'stream_options')) return source
+  const next = { ...source }
+  delete next.stream_options
+  return next
+}
+
+export function shouldRetryWithoutChatCompletionStreamUsage(errorText = '') {
+  const lower = normalizeLowercaseText(errorText)
+  if (!lower || (!lower.includes('stream_options') && !lower.includes('include_usage'))) return false
+  return (
+    lower.includes('unsupported') ||
+    lower.includes('not supported') ||
+    lower.includes('unknown parameter') ||
+    lower.includes('unrecognized') ||
+    lower.includes('extra inputs are not permitted') ||
+    lower.includes('invalid request') ||
+    lower.includes('不支持') ||
+    lower.includes('未知参数') ||
+    lower.includes('非法参数')
+  )
+}
+
 function normalizeMessageRole(role) {
   return String(role || '').trim().toLowerCase()
 }

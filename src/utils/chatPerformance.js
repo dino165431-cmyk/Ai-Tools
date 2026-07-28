@@ -49,3 +49,21 @@ export function shouldDeferChatHeavyBlockLayout(message, options = {}) {
   if (!visibleMessageIds) return true
   return !visibleMessageIds.has(id)
 }
+
+export function resolveChatViewportCompensation(options = {}) {
+  const scrollTop = Number(options.scrollTop)
+  const deltaPx = Number(options.deltaPx)
+  const lastProcessedScrollTop = Number(options.lastProcessedScrollTop)
+  const safeScrollTop = Number.isFinite(scrollTop) ? Math.max(0, scrollTop) : 0
+  const safeDelta = Number.isFinite(deltaPx) ? deltaPx : 0
+  const nextScrollTop = Math.max(0, safeScrollTop + safeDelta)
+  const appliedDelta = nextScrollTop - safeScrollTop
+
+  return {
+    nextScrollTop,
+    appliedDelta,
+    nextLastProcessedScrollTop: options.didProcessScroll && Number.isFinite(lastProcessedScrollTop)
+      ? Math.max(0, lastProcessedScrollTop + appliedDelta)
+      : lastProcessedScrollTop
+  }
+}

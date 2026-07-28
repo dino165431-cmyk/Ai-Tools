@@ -5,6 +5,30 @@ import providerChatRuntime from '../public/preload/utils/provider-chat-runtime.j
 
 const compat = providerChatRuntime._test
 
+test('preload Chat Completions requests usage in streaming mode with a compatible fallback', () => {
+  const body = {
+    model: 'gpt-test',
+    stream: true,
+    stream_options: { include_obfuscation: false }
+  }
+  const withUsage = compat.withChatCompletionStreamUsage(body)
+
+  assert.deepEqual(withUsage.stream_options, {
+    include_obfuscation: false,
+    include_usage: true
+  })
+  assert.equal(body.stream_options.include_usage, undefined)
+  assert.deepEqual(
+    compat.withoutChatCompletionStreamUsage(withUsage).stream_options,
+    { include_obfuscation: false }
+  )
+  assert.equal(
+    compat.shouldRetryWithoutChatCompletionStreamUsage('Unsupported parameter: stream_options.include_usage'),
+    true
+  )
+  assert.equal(compat.shouldRetryWithoutChatCompletionStreamUsage('invalid api key'), false)
+})
+
 test('preload Responses conversion keeps item id and call id separate', () => {
   const body = compat.buildResponsesRequestBodyFromChatBody({
     model: 'gpt-test',

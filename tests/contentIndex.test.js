@@ -21,8 +21,8 @@ if (!globalThis.utools) {
 const globalConfig = require('../public/preload/utils/global-config.js')
 const fileOperations = require('../public/preload/utils/file-operations.js')
 const contentIndex = require('../public/preload/utils/content-index.js')
-const createBuiltinNotesMcpClient = require('../public/preload/builtins/notes-mcp-client.js')
-const createBuiltinSessionsMcpClient = require('../public/preload/builtins/sessions-mcp-client.js')
+const createBuiltinNotesSkillRuntime = require('../public/preload/builtin-skills/manage-notes/runtime.js')
+const createBuiltinSessionsSkillRuntime = require('../public/preload/builtin-skills/inspect-session-history/runtime.js')
 
 import { encryptNoteContent } from '../src/utils/noteEncryption.js'
 
@@ -65,7 +65,7 @@ test('content index is stored under synced hidden settings directory', async (t)
   createFixtureFile(tempRoot, 'note/demo.md', '---\ntitle: Demo Note\n---\n\n# demo\n\npreview body')
 
   const rebuilt = await contentIndex.rebuildIndex('note', { reason: 'test' })
-  const indexPath = path.join(tempRoot, '.ai-tools-settings', 'indexes', 'notes-index-v2.json')
+  const indexPath = path.join(tempRoot, '.ai-tools-settings', 'indexes', 'notes-index-v3.json')
 
   assert.equal(rebuilt.root, 'note')
   assert.equal(fs.existsSync(indexPath), true)
@@ -94,7 +94,7 @@ test('file operations keep note index in sync for write delete and move', async 
   noteIndex = await contentIndex.ensureIndex('note')
   assert.deepEqual(noteIndex.entries.map((entry) => entry.path), [])
 
-  assert.equal(fs.existsSync(path.join(tempRoot, '.ai-tools-settings', 'indexes', 'notes-index-v2.json')), true)
+  assert.equal(fs.existsSync(path.join(tempRoot, '.ai-tools-settings', 'indexes', 'notes-index-v3.json')), true)
 })
 
 test('file operations keep session index in sync and cloud restore marks it dirty', async (t) => {
@@ -176,6 +176,85 @@ test('content index search matches note title and session message preview text',
   assert.match(sessionResult.items[0].preview, /rollback checklist/i)
 })
 
+test('content index parses and searches super-note metadata and cell content', async (t) => {
+  const { tempRoot } = setupIndexTest(t)
+  createFixtureFile(
+    tempRoot,
+    'note/lab/forecast.ipynb',
+    JSON.stringify({
+      nbformat: 4,
+      nbformat_minor: 5,
+      metadata: {
+        title: 'Quarterly Forecast Lab'
+      },
+      cells: [
+        {
+          cell_type: 'markdown',
+          id: 'intro',
+          metadata: {},
+          source: ['Revenue sensitivity analysis']
+        },
+        {
+          cell_type: 'code',
+          id: 'calc',
+          metadata: { aiTools: { runtime: 'javascript' } },
+          source: 'console.log("forecast-scenario-unique")',
+          execution_count: null,
+          outputs: []
+        }
+      ]
+    }, null, 2)
+  )
+
+  const rebuilt = await contentIndex.rebuildIndex('note', { reason: 'notebook_search' })
+  const entry = rebuilt.entries.find((item) => item.path === 'lab/forecast.ipynb')
+  assert.ok(entry)
+  assert.equal(entry.noteType, 'notebook')
+  assert.equal(entry.title, 'Quarterly Forecast Lab')
+  assert.equal(entry.cellCount, 2)
+
+  const searchResult = await contentIndex.searchIndex('note', { query: 'forecast-scenario-unique' })
+  assert.equal(searchResult.returned, 1)
+  assert.equal(searchResult.items[0].path, 'lab/forecast.ipynb')
+  assert.equal(searchResult.items[0].noteType, 'notebook')
+})
+
+test('content index still parses super-note cells when execution outputs exceed the Markdown sample size', async (t) => {
+  const { tempRoot } = setupIndexTest(t)
+  createFixtureFile(
+    tempRoot,
+    'note/lab/output-heavy.ipynb',
+    JSON.stringify({
+      nbformat: 4,
+      nbformat_minor: 5,
+      metadata: {},
+      cells: [
+        {
+          cell_type: 'code',
+          id: 'large-output',
+          metadata: { aiTools: { runtime: 'python' } },
+          source: 'print("large-output-cell-query")',
+          execution_count: 1,
+          outputs: [{
+            output_type: 'stream',
+            name: 'stdout',
+            text: 'x'.repeat(48 * 1024)
+          }]
+        }
+      ]
+    })
+  )
+
+  const rebuilt = await contentIndex.rebuildIndex('note', { reason: 'large_notebook_search' })
+  const entry = rebuilt.entries.find((item) => item.path === 'lab/output-heavy.ipynb')
+  assert.equal(entry?.noteType, 'notebook')
+  assert.equal(entry?.cellCount, 1)
+
+  const searchResult = await contentIndex.searchIndex('note', { query: 'large-output-cell-query' })
+  assert.equal(searchResult.returned, 1)
+  assert.equal(searchResult.items[0].path, 'lab/output-heavy.ipynb')
+})
+
 test('content index skips encrypted notes during rebuild and search', async (t) => {
   const { tempRoot } = setupIndexTest(t)
   const encrypted = await encryptNoteContent('# Secret Note\n\ntoken-unique-abc123', { notePassword: 'note-pass-123' })
@@ -204,7 +283,7 @@ test('content index removes a note after it becomes encrypted', async (t) => {
   noteIndex = await contentIndex.ensureIndex('note')
   assert.deepEqual(noteIndex.entries.map((entry) => entry.path), [])
 
-  const indexPath = path.join(tempRoot, '.ai-tools-settings', 'indexes', 'notes-index-v2.json')
+  const indexPath = path.join(tempRoot, '.ai-tools-settings', 'indexes', 'notes-index-v3.json')
   const payload = JSON.parse(fs.readFileSync(indexPath, 'utf8'))
   assert.equal(payload.entries.some((entry) => entry.path === 'transient.md'), false)
 })
@@ -517,7 +596,7 @@ test('hybrid content index rebuilds after moving a directory', async (t) => {
   assert.notDeepEqual(movedEntry.embedding, beforeEmbedding)
 })
 
-test('readonly notes and sessions MCP calls do not create directories', async (t) => {
+test('readonly notes and sessions Skill actions do not create directories', async (t) => {
   const { tempRoot } = setupIndexTest(t)
   createFixtureFile(tempRoot, 'note/demo/demo.md', '# demo note')
   createFixtureFile(
@@ -537,16 +616,16 @@ test('readonly notes and sessions MCP calls do not create directories', async (t
     fileOperations.createDirectory = originalCreateDirectory
   })
 
-  const notesClient = createBuiltinNotesMcpClient({ notesRoot: 'note' })
-  const sessionsClient = createBuiltinSessionsMcpClient({ sessionsRoot: 'session' })
+  const notesRuntime = createBuiltinNotesSkillRuntime({ notesRoot: 'note' })
+  const sessionsRuntime = createBuiltinSessionsSkillRuntime({ sessionsRoot: 'session' })
 
-  await notesClient.callTool('notes_search', { query: 'demo' })
-  await notesClient.callTool('notes_list_directory', { dirPath: '' })
-  await notesClient.callTool('notes_list_tree', { dirPath: '', maxDepth: 2 })
+  await notesRuntime.runAction('notes_search', { query: 'demo' })
+  await notesRuntime.runAction('notes_list_directory', { dirPath: '' })
+  await notesRuntime.runAction('notes_list_tree', { dirPath: '', maxDepth: 2 })
 
-  await sessionsClient.callTool('sessions_search', { query: 'demo' })
-  await sessionsClient.callTool('sessions_list_directory', { dirPath: '' })
-  await sessionsClient.callTool('sessions_list_tree', { dirPath: '', maxDepth: 2 })
+  await sessionsRuntime.runAction('sessions_search', { query: 'demo' })
+  await sessionsRuntime.runAction('sessions_list_directory', { dirPath: '' })
+  await sessionsRuntime.runAction('sessions_list_tree', { dirPath: '', maxDepth: 2 })
 
   assert.equal(createDirectoryCalls, 0)
 })

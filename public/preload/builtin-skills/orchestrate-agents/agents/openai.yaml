@@ -1,0 +1,9 @@
+interface:
+  display_name: "智能体编排"
+  short_description: "发现并调用已有智能体，拆解、委派和协同执行复杂多步骤任务。"
+  icon_small: "./assets/icon.svg"
+  icon_large: "./assets/icon.svg"
+  brand_color: "#D85B29"
+  default_prompt: "Use $orchestrate-agents to delegate a complex task to the right agents."
+policy:
+  allow_implicit_invocation: true

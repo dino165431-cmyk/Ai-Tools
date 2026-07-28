@@ -7,6 +7,9 @@
     :theme="theme"
     :toolbars="toolbars"
     :toolbars-exclude="toolbarsExclude"
+    :sanitize="sanitizeHtml"
+    :sanitize-mermaid="sanitizeSvgMarkup"
+    :no-echarts="true"
     @update:model-value="emit('update:modelValue', $event)"
     @on-upload-img="handleUploadImg"
     @on-html-changed="handleHtmlChanged"
@@ -30,6 +33,8 @@ import { MdEditor, allToolbar } from 'md-editor-v3'
 import NoteDiagramToolbar from './NoteDiagramToolbar.vue'
 import { getNoteConfig } from '@/utils/configListener'
 import { buildNoteTemplateView } from '@/utils/noteTemplateConfig'
+import { sanitizeHtml } from '@/utils/sanitizeHtml'
+import { sanitizeSvgMarkup } from '@/utils/sanitizeSvg'
 
 const props = defineProps({
   modelValue: {

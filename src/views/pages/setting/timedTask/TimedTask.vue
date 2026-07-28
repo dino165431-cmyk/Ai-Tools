@@ -55,6 +55,9 @@
             <n-text depth="3" style="font-size: 12px;">
               智能体：{{ getAgentLabel(task.agentId) }}
             </n-text>
+            <n-text depth="3" style="font-size: 12px;">
+              工具权限：{{ getToolApprovalModeLabel(task?.options?.toolApprovalMode) }}
+            </n-text>
           </n-flex>
 
           <n-flex align="center" :size="8">
@@ -170,6 +173,22 @@
 
         <n-divider style="margin: 16px 0;">后台行为与扩展</n-divider>
 
+        <n-alert
+          :type="formData.toolApprovalMode === 'full' ? 'warning' : 'info'"
+          :bordered="false"
+          style="margin-bottom: 16px;"
+        >
+          {{ formData.toolApprovalMode === 'full'
+            ? '全部自动模式不会等待人工审批。请只挂载可信的智能体、技能和 MCP 服务。'
+            : formData.toolApprovalMode === 'deny'
+              ? '当前任务不会执行任何工具调用。'
+              : '低风险模式只自动执行明确标注为只读的工具；写入、脚本、命令及未标注工具会被阻止并写入会话结果。' }}
+        </n-alert>
+
+        <n-form-item label="工具权限" path="toolApprovalMode">
+          <n-select v-model:value="formData.toolApprovalMode" :options="toolApprovalModeOptions" />
+        </n-form-item>
+
         <n-form-item label="MCP 服务" path="mcpIds">
           <n-select v-model:value="formData.mcpIds" multiple :options="mcpOptions" filterable placeholder="可多选，执行时全部挂载" />
         </n-form-item>
@@ -228,6 +247,7 @@ import {
   NTimePicker,
   NInputNumber,
   NEmpty,
+  NAlert,
   useDialog,
   useMessage
 } from 'naive-ui'
@@ -285,6 +305,7 @@ const formData = reactive({
   mcpIds: [],
   skillIds: [],
 
+  toolApprovalMode: 'safe',
   autoSaveSession: true
 })
 
@@ -316,6 +337,11 @@ const weekdayOptions = [
 ]
 
 const monthDayOptions = Array.from({ length: 31 }).map((_, idx) => ({ label: String(idx + 1), value: idx + 1 }))
+const toolApprovalModeOptions = [
+  { label: '低风险只读（推荐）', value: 'safe' },
+  { label: '禁止工具', value: 'deny' },
+  { label: '全部自动（高风险）', value: 'full' }
+]
 
 const agentOptions = computed(() => (agents.value || []).map((a) => ({ label: a.name || a._id, value: a._id })))
 const skillOptions = computed(() => (skills.value || []).map((s) => ({ label: s.name || s._id, value: s._id })))
@@ -341,6 +367,7 @@ function resetForm() {
   formData.mcpIds = []
   formData.skillIds = []
 
+  formData.toolApprovalMode = 'safe'
   formData.autoSaveSession = true
 }
 
@@ -376,6 +403,9 @@ function openEditModal(task) {
   formData.mcpIds = Array.isArray(task?.mcpIds) ? task.mcpIds : []
   formData.skillIds = Array.isArray(task?.skillIds) ? task.skillIds : []
 
+  formData.toolApprovalMode = ['safe', 'deny', 'full'].includes(task?.options?.toolApprovalMode)
+    ? task.options.toolApprovalMode
+    : 'safe'
   formData.autoSaveSession = task?.options?.autoSaveSession !== false
 
   formRef.value?.restoreValidation()
@@ -387,6 +417,12 @@ function getAgentLabel(agentId) {
   if (!id) return '—'
   const a = (agents.value || []).find((x) => x?._id === id)
   return a?.name || id
+}
+
+function getToolApprovalModeLabel(value) {
+  if (value === 'full') return '全部自动（高风险）'
+  if (value === 'deny') return '禁止工具'
+  return '低风险只读'
 }
 
 function weekdayLabel(val) {
@@ -500,7 +536,10 @@ function buildSubmitData() {
     mcpIds: Array.isArray(formData.mcpIds) ? formData.mcpIds : [],
     skillIds: Array.isArray(formData.skillIds) ? formData.skillIds : [],
     options: {
-      autoSaveSession: !!formData.autoSaveSession
+      autoSaveSession: !!formData.autoSaveSession,
+      toolApprovalMode: ['safe', 'deny', 'full'].includes(formData.toolApprovalMode)
+        ? formData.toolApprovalMode
+        : 'safe'
     }
   }
 }

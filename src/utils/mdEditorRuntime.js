@@ -337,6 +337,15 @@ export async function ensureMarkdownPreviewRuntime() {
               instance: echarts
             }
           },
+          mermaidConfig: (config) => ({
+            ...(config || {}),
+            securityLevel: 'strict',
+            htmlLabels: false,
+            flowchart: {
+              ...(config?.flowchart || {}),
+              htmlLabels: false
+            }
+          }),
           markdownItPlugins: (plugins) => [
             ...enhanceDiagramPlugins(plugins),
             {

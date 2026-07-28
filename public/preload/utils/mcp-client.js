@@ -1148,30 +1148,6 @@ class StreamableHTTPClient extends BaseHTTPClient {
 function createMCPClient(serverConfig) {
   const transportType = cleanString(serverConfig?.transportType);
   switch (transportType) {
-    case 'builtinNotes': {
-      // Lazy require to avoid breaking non-uTools environments.
-      const createBuiltinNotesMcpClient = require('../builtins/notes-mcp-client')
-      return createBuiltinNotesMcpClient(serverConfig)
-    }
-    case 'builtinSessions': {
-      // Lazy require to avoid breaking non-uTools environments.
-      const createBuiltinSessionsMcpClient = require('../builtins/sessions-mcp-client')
-      return createBuiltinSessionsMcpClient(serverConfig)
-    }
-    case 'builtinConfig': {
-      // Lazy require to avoid breaking non-uTools environments.
-      const createBuiltinConfigMcpClient = require('../builtins/config-mcp-client')
-      return createBuiltinConfigMcpClient(serverConfig)
-    }
-    case 'builtinAgents': {
-      // Lazy require to avoid breaking non-uTools environments.
-      const createBuiltinAgentsMcpClient = require('../builtins/agents-mcp-client')
-      return createBuiltinAgentsMcpClient(serverConfig)
-    }
-    case 'builtinShell': {
-      const createBuiltinShellMcpClient = require('../builtins/shell-mcp-client')
-      return createBuiltinShellMcpClient(serverConfig)
-    }
     case 'stdio':
       return new StdioClient(serverConfig);
     case 'sse':

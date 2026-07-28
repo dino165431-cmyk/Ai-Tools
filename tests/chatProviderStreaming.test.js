@@ -1,0 +1,58 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+
+import {
+  normalizeChatProviderBaseUrl,
+  safeJsonParse,
+  stableStringify,
+  streamChatCompletion
+} from '../src/utils/chatProviderStreaming.js'
+
+test('normalizeChatProviderBaseUrl accepts base and full endpoint URLs', () => {
+  assert.equal(normalizeChatProviderBaseUrl('https://example.com/v1/chat/completions?x=1'), 'https://example.com/v1')
+  assert.equal(normalizeChatProviderBaseUrl('https://example.com/chat/completions/'), 'https://example.com')
+  assert.equal(normalizeChatProviderBaseUrl('https://example.com/v1/models'), 'https://example.com/v1')
+})
+
+test('JSON helpers expose parse errors and tolerate circular values', () => {
+  assert.deepEqual(safeJsonParse('{"ok":true}'), { ok: true, value: { ok: true } })
+  assert.equal(safeJsonParse('{').ok, false)
+
+  const circular = {}
+  circular.self = circular
+  assert.equal(stableStringify(circular), '[object Object]')
+})
+
+test('streamChatCompletion retries the v1 endpoint after a 404', async (t) => {
+  const originalFetch = globalThis.fetch
+  const requestedUrls = []
+  t.after(() => {
+    globalThis.fetch = originalFetch
+  })
+
+  globalThis.fetch = async (url) => {
+    requestedUrls.push(String(url))
+    if (requestedUrls.length === 1) return new Response('not found', { status: 404 })
+    return new Response(
+      'data: {"choices":[{"delta":{"content":"hello"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+      { status: 200, headers: { 'content-type': 'text/event-stream' } }
+    )
+  }
+
+  const deltas = []
+  const result = await streamChatCompletion({
+    baseUrl: 'https://example.com',
+    apiKey: 'secret',
+    apiMode: 'chat-completions',
+    body: { model: 'test-model', messages: [], stream: true },
+    onDelta: (event) => deltas.push(event)
+  })
+
+  assert.deepEqual(requestedUrls, [
+    'https://example.com/chat/completions',
+    'https://example.com/v1/chat/completions'
+  ])
+  assert.equal(result.content, 'hello')
+  assert.equal(result.endpoint, 'chat-completions')
+  assert.equal(deltas[0]?.delta, 'hello')
+})

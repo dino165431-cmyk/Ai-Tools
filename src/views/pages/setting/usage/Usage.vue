@@ -119,7 +119,7 @@
         :loading="loading"
         :bordered="false"
         :pagination="tablePagination"
-        :scroll-x="760"
+        :scroll-x="980"
         size="small"
       />
     </n-card>
@@ -210,7 +210,9 @@ const chartMetricOptions = [
   { label: '请求次数', value: 'requests' },
   { label: '输入 Token', value: 'inputTokens' },
   { label: '输出 Token', value: 'outputTokens' },
-  { label: '缓存 Token', value: 'cachedTokens' }
+  { label: '缓存读取', value: 'cachedTokens' },
+  { label: '缓存写入', value: 'cacheWriteTokens' },
+  { label: '推理 Token', value: 'reasoningTokens' }
 ]
 
 const chartMetricMeta = {
@@ -218,7 +220,9 @@ const chartMetricMeta = {
   requests: { label: '请求次数', color: '#2080f0', unit: '次' },
   inputTokens: { label: '输入 Token', color: '#0ea5e9', unit: 'Token' },
   outputTokens: { label: '输出 Token', color: '#8b5cf6', unit: 'Token' },
-  cachedTokens: { label: '缓存 Token', color: '#f59e0b', unit: 'Token' }
+  cachedTokens: { label: '缓存读取', color: '#f59e0b', unit: 'Token' },
+  cacheWriteTokens: { label: '缓存写入', color: '#ef8354', unit: 'Token' },
+  reasoningTokens: { label: '推理 Token', color: '#ec4899', unit: 'Token' }
 }
 
 const selectedRange = computed(resolveSelectedRange)
@@ -231,7 +235,7 @@ const groupByOptions = computed(() => [
 const currentChartMetric = computed(() => chartMetricMeta[chartMetric.value] || chartMetricMeta.totalTokens)
 const currentChartTotal = computed(() => toNonNegativeNumber(summary[chartMetric.value]))
 const rangeLabel = computed(() => formatRangeLabel(selectedRange.value))
-const cacheRate = computed(() => formatPercentage(summary.cachedTokens, summary.inputTokens))
+const cacheRate = computed(() => formatPercentage(summary.cachedTokens, summary.cacheReportedInputTokens))
 const averageTokens = computed(() => {
   const requests = toNonNegativeNumber(summary.requests)
   return requests ? summary.totalTokens / requests : 0
@@ -268,10 +272,28 @@ const metricCards = computed(() => [
   },
   {
     key: 'cached',
-    label: '缓存命中',
+    label: '缓存读取',
     value: formatCompactNumber(summary.cachedTokens),
     exactTitle: `${formatExactNumber(summary.cachedTokens)} Token`,
-    hint: `输入命中率 ${cacheRate.value}`
+    hint: summary.cacheReportedRequests
+      ? `命中率 ${cacheRate.value} · ${formatExactNumber(summary.cacheReportedRequests)}/${formatExactNumber(summary.requests)} 次上报`
+      : '提供商未返回缓存明细'
+  },
+  {
+    key: 'cache_write',
+    label: '缓存写入',
+    value: formatCompactNumber(summary.cacheWriteTokens),
+    exactTitle: `${formatExactNumber(summary.cacheWriteTokens)} Token`,
+    hint: summary.cacheWriteReportedRequests
+      ? `${formatExactNumber(summary.cacheWriteReportedRequests)}/${formatExactNumber(summary.requests)} 次上报`
+      : '提供商未返回写入明细'
+  },
+  {
+    key: 'reasoning',
+    label: '推理 Token',
+    value: formatCompactNumber(summary.reasoningTokens),
+    exactTitle: `${formatExactNumber(summary.reasoningTokens)} Token`,
+    hint: '通常已包含在输出 Token 中'
   }
 ])
 
@@ -284,6 +306,11 @@ function createEmptySummary() {
     inputTokens: 0,
     outputTokens: 0,
     cachedTokens: 0,
+    cacheWriteTokens: 0,
+    reasoningTokens: 0,
+    cacheReportedRequests: 0,
+    cacheWriteReportedRequests: 0,
+    cacheReportedInputTokens: 0,
     totalTokens: 0,
     byModel: {},
     series: []
@@ -408,11 +435,25 @@ const columns = [
     render: (row) => renderNumber(row.outputTokens)
   },
   {
-    title: '缓存',
+    title: '缓存读取',
     key: 'cachedTokens',
     width: 108,
     align: 'right',
     render: (row) => renderNumber(row.cachedTokens)
+  },
+  {
+    title: '缓存写入',
+    key: 'cacheWriteTokens',
+    width: 108,
+    align: 'right',
+    render: (row) => renderNumber(row.cacheWriteTokens)
+  },
+  {
+    title: '推理',
+    key: 'reasoningTokens',
+    width: 108,
+    align: 'right',
+    render: (row) => renderNumber(row.reasoningTokens)
   },
   {
     title: '总计',
@@ -432,6 +473,8 @@ const rows = computed(() => Object.entries(summary.byModel || {})
     inputTokens: toNonNegativeNumber(value?.inputTokens),
     outputTokens: toNonNegativeNumber(value?.outputTokens),
     cachedTokens: toNonNegativeNumber(value?.cachedTokens),
+    cacheWriteTokens: toNonNegativeNumber(value?.cacheWriteTokens),
+    reasoningTokens: toNonNegativeNumber(value?.reasoningTokens),
     totalTokens: toNonNegativeNumber(value?.totalTokens)
   }))
   .sort((a, b) => b.totalTokens - a.totalTokens))
@@ -650,7 +693,7 @@ onBeforeUnmount(() => {
 .usage-metrics {
   position: relative;
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
   gap: 12px;
   width: 100%;
   margin-top: 12px;

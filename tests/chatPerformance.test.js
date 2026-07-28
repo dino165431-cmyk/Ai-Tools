@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  resolveChatViewportCompensation,
   resolveChatHeavyRenderTuning,
   shouldDeferChatHeavyBlockLayout
 } from '../src/utils/chatPerformance.js'
@@ -64,5 +65,37 @@ test('shouldDeferChatHeavyBlockLayout defers offscreen heavy items', () => {
   assert.equal(
     shouldDeferChatHeavyBlockLayout({ id: '', content: 'no id' }, { visibleMessageIds }),
     true
+  )
+})
+
+test('resolveChatViewportCompensation keeps the virtual-list anchor in sync', () => {
+  assert.deepEqual(
+    resolveChatViewportCompensation({
+      scrollTop: 640,
+      deltaPx: 120,
+      lastProcessedScrollTop: 640,
+      didProcessScroll: true
+    }),
+    {
+      nextScrollTop: 760,
+      appliedDelta: 120,
+      nextLastProcessedScrollTop: 760
+    }
+  )
+})
+
+test('resolveChatViewportCompensation reports the clamped applied delta', () => {
+  assert.deepEqual(
+    resolveChatViewportCompensation({
+      scrollTop: 20,
+      deltaPx: -50,
+      lastProcessedScrollTop: 20,
+      didProcessScroll: true
+    }),
+    {
+      nextScrollTop: 0,
+      appliedDelta: -20,
+      nextLastProcessedScrollTop: 0
+    }
   )
 })

@@ -5,6 +5,7 @@ import {
   getDiagramFenceMetaForLine,
   normalizeDiagramSizeMeta
 } from '@/utils/diagramFenceMeta'
+import { parseEchartsOptionSource } from '@/utils/echartsOptionParser'
 import { sanitizeSvgTree } from '@/utils/sanitizeSvg'
 import '@/styles/markdownDiagramDecorator.css'
 
@@ -288,12 +289,12 @@ export async function renderMermaidSvgForExport(source, theme, size = null) {
     const { svg } = await mermaid.render(`diagram-preview-export-${Date.now()}`, normalizedSource, renderHost)
     if (!svg) throw new Error('\u672a\u751f\u6210 Mermaid SVG')
 
-    if (!size) return svg
-
-    const svgNode = parseSvgInput(svg)
-    const normalizedSize = normalizeDiagramSize(size)
-    svgNode.setAttribute('width', String(normalizedSize.width))
-    svgNode.setAttribute('height', String(normalizedSize.height))
+    const svgNode = sanitizeSvgTree(parseSvgInput(svg))
+    if (size) {
+      const normalizedSize = normalizeDiagramSize(size)
+      svgNode.setAttribute('width', String(normalizedSize.width))
+      svgNode.setAttribute('height', String(normalizedSize.height))
+    }
     return new XMLSerializer().serializeToString(svgNode)
   } finally {
     renderHost.remove()
@@ -379,33 +380,7 @@ function resolveDiagramRenderSize(node, kind = 'default') {
 }
 
 function parseEchartsOption(source) {
-  const text = String(source || '').trim()
-  if (!text) {
-    throw new Error('ECharts \u914d\u7f6e\u4e3a\u7a7a')
-  }
-
-  const candidates = [
-    `"use strict"; return (${text})`,
-    `"use strict"; return ${text}`,
-    `"use strict"; ${text}; return typeof option !== 'undefined' ? option : undefined`
-  ]
-
-  let lastError = null
-  for (const body of candidates) {
-    try {
-      const value = new Function(body)()
-      if (value && typeof value === 'object') {
-        return value
-      }
-      if (value !== undefined) {
-        return value
-      }
-    } catch (err) {
-      lastError = err
-    }
-  }
-
-  throw lastError instanceof Error ? lastError : new Error('ECharts \u914d\u7f6e\u89e3\u6790\u5931\u8d25')
+  return parseEchartsOptionSource(source)
 }
 
 function cloneSerializableFallback(value, seen = new WeakMap()) {
@@ -462,9 +437,29 @@ function normalizeEchartsOptionForExport(optionInput, theme) {
     throw new Error('ECharts option \u9700\u8981\u8fd4\u56de\u4e00\u4e2a\u5bf9\u8c61')
   }
 
+  hardenEchartsTooltipRendering(option)
+
   const backgroundColor = String(option.backgroundColor || '').trim().toLowerCase()
   if (!backgroundColor || backgroundColor === 'transparent') {
     option.backgroundColor = theme === 'dark' ? '#0f172a' : '#ffffff'
+  }
+
+  return option
+}
+
+function hardenEchartsTooltipRendering(option) {
+  const hardenTooltip = (tooltip) => {
+    if (!tooltip || typeof tooltip !== 'object' || Array.isArray(tooltip)) return tooltip
+    return {
+      ...tooltip,
+      renderMode: 'richText'
+    }
+  }
+
+  if (Array.isArray(option?.tooltip)) {
+    option.tooltip = option.tooltip.map(hardenTooltip)
+  } else if (option?.tooltip && typeof option.tooltip === 'object') {
+    option.tooltip = hardenTooltip(option.tooltip)
   }
 
   return option
@@ -567,9 +562,10 @@ export async function renderEchartsSvgForExport(optionInput, theme, size = {}) {
     if (!svg.getAttribute('xmlns')) {
       svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
     }
+    sanitizeSvgTree(svg)
 
     return {
-      svgMarkup: svg.outerHTML,
+      svgMarkup: new XMLSerializer().serializeToString(svg),
       size: normalizeDiagramSize(resolveSvgRasterSize(svg))
     }
   } finally {
@@ -767,6 +763,20 @@ export function createMarkdownDiagramDecorator(options = {}) {
   let overlayRenderToken = 0
   let diagramMetaCacheMarkdown = null
   let diagramMetaCache = new Map()
+  const managedEchartsNodes = new Map()
+
+  function disposeManagedEchartsNode(node) {
+    const managed = managedEchartsNodes.get(node)
+    managed?.observer?.disconnect?.()
+    managed?.chart?.dispose?.()
+    managedEchartsNodes.delete(node)
+  }
+
+  function cleanupDetachedEchartsNodes() {
+    managedEchartsNodes.forEach((_, node) => {
+      if (!node?.isConnected) disposeManagedEchartsNode(node)
+    })
+  }
 
   function getDiagramMetaMap() {
     const markdown = String(getMarkdownSource() || '')
@@ -1430,6 +1440,55 @@ export function createMarkdownDiagramDecorator(options = {}) {
     applyDiagramSize(node, 'echarts')
   }
 
+  async function renderEchartsNode(node) {
+    if (!node || node.dataset.aiToolsDiagramRendering === 'true') return
+
+    node.dataset.aiToolsDiagramRendering = 'true'
+    let chart = null
+
+    try {
+      const source = cacheDiagramSource(
+        node,
+        String(node.dataset.aiToolsDiagramSource || '').trim() || readDiagramNodeText(node)
+      )
+      const option = parseEchartsOption(source)
+      if (!option || typeof option !== 'object' || Array.isArray(option)) {
+        throw new Error('ECharts option \u9700\u8981\u8fd4\u56de\u4e00\u4e2a\u5bf9\u8c61')
+      }
+
+      hardenEchartsTooltipRendering(option)
+      applyDiagramSize(node, 'echarts')
+
+      const echarts = await loadEchartsModule()
+      if (!node.isConnected) return
+
+      disposeManagedEchartsNode(node)
+      echarts.getInstanceByDom?.(node)?.dispose?.()
+      node.replaceChildren()
+      node.classList.remove('note-preview-echarts-error-host')
+      delete node.dataset.aiToolsDiagramError
+
+      chart = echarts.init(node, getTheme() === 'dark' ? 'dark' : 'light', {
+        renderer: 'canvas'
+      })
+      chart.setOption(option, true)
+      chart.resize()
+      const observer = typeof ResizeObserver === 'function'
+        ? new ResizeObserver(() => chart?.resize?.())
+        : null
+      observer?.observe?.(node)
+      managedEchartsNodes.set(node, { chart, observer })
+      node.dataset.aiToolsEchartsTheme = getTheme() === 'dark' ? 'dark' : 'light'
+      node.dataset.processed = ''
+      ensureDiagramActionBar(node, 'echarts')
+    } catch (err) {
+      chart?.dispose?.()
+      renderEchartsErrorState(node, err)
+    } finally {
+      delete node.dataset.aiToolsDiagramRendering
+    }
+  }
+
   function ensureDiagramActionBar(node, kind) {
     if (!node || node.dataset.aiToolsDiagramError === 'true') return
     if (node.dataset.aiToolsDiagramEnhanced === 'true') return
@@ -1501,21 +1560,22 @@ export function createMarkdownDiagramDecorator(options = {}) {
 
   function decorate(root) {
     if (!root) return
+    cleanupDetachedEchartsNodes()
 
     root.querySelectorAll('div.md-editor-echarts:not([data-processed])').forEach((node) => {
       if (node.dataset.closed === 'false') return
-      try {
-        const source = cacheDiagramSource(node, readDiagramNodeText(node))
-        const parsed = parseEchartsOption(source)
-        if (!parsed || typeof parsed !== 'object') {
-          throw new Error('ECharts option \u9700\u8981\u8fd4\u56de\u4e00\u4e2a\u5bf9\u8c61')
-        }
-      } catch (err) {
-        renderEchartsErrorState(node, err)
-      }
+      void renderEchartsNode(node)
     })
 
     root.querySelectorAll('div.md-editor-echarts[data-processed]').forEach((node) => {
+      const activeTheme = getTheme() === 'dark' ? 'dark' : 'light'
+      if (node.dataset.aiToolsEchartsTheme && node.dataset.aiToolsEchartsTheme !== activeTheme) {
+        disposeManagedEchartsNode(node)
+        node.removeAttribute('data-processed')
+        node.dataset.aiToolsDiagramEnhanced = ''
+        void renderEchartsNode(node)
+        return
+      }
       applyDiagramSize(node, 'echarts')
       ensureDiagramActionBar(node, 'echarts')
     })
@@ -1528,6 +1588,7 @@ export function createMarkdownDiagramDecorator(options = {}) {
   }
 
   function dispose() {
+    managedEchartsNodes.forEach((_, node) => disposeManagedEchartsNode(node))
     overlayRenderToken += 1
     closePreviewOverlay()
     overlayRoot?.remove()

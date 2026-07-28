@@ -5,6 +5,8 @@ export const CHAT_CONTEXT_WINDOW_PRESETS = Object.freeze({
     maxTurns: 18,
     keepRecentTurnsFull: 6,
     maxMessages: 120,
+    maxTokensExpanded: 32000,
+    maxTokensCompact: 24000,
     maxCharsExpanded: 128000,
     maxCharsCompact: 96000,
     autoCompactTriggerPercent: 75
@@ -15,6 +17,8 @@ export const CHAT_CONTEXT_WINDOW_PRESETS = Object.freeze({
     maxTurns: 48,
     keepRecentTurnsFull: 16,
     maxMessages: 320,
+    maxTokensExpanded: 100000,
+    maxTokensCompact: 80000,
     maxCharsExpanded: 400000,
     maxCharsCompact: 320000,
     autoCompactTriggerPercent: 80
@@ -25,6 +29,8 @@ export const CHAT_CONTEXT_WINDOW_PRESETS = Object.freeze({
     maxTurns: 96,
     keepRecentTurnsFull: 32,
     maxMessages: 800,
+    maxTokensExpanded: 250000,
+    maxTokensCompact: 200000,
     maxCharsExpanded: 1000000,
     maxCharsCompact: 800000,
     autoCompactTriggerPercent: 85
@@ -55,6 +61,8 @@ export const DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG = Object.freeze({
   maxTurns: CHAT_CONTEXT_WINDOW_PRESETS[DEFAULT_CHAT_CONTEXT_WINDOW_PRESET].maxTurns,
   keepRecentTurnsFull: CHAT_CONTEXT_WINDOW_PRESETS[DEFAULT_CHAT_CONTEXT_WINDOW_PRESET].keepRecentTurnsFull,
   maxMessages: CHAT_CONTEXT_WINDOW_PRESETS[DEFAULT_CHAT_CONTEXT_WINDOW_PRESET].maxMessages,
+  maxTokensExpanded: CHAT_CONTEXT_WINDOW_PRESETS[DEFAULT_CHAT_CONTEXT_WINDOW_PRESET].maxTokensExpanded,
+  maxTokensCompact: CHAT_CONTEXT_WINDOW_PRESETS[DEFAULT_CHAT_CONTEXT_WINDOW_PRESET].maxTokensCompact,
   maxCharsExpanded: CHAT_CONTEXT_WINDOW_PRESETS[DEFAULT_CHAT_CONTEXT_WINDOW_PRESET].maxCharsExpanded,
   maxCharsCompact: CHAT_CONTEXT_WINDOW_PRESETS[DEFAULT_CHAT_CONTEXT_WINDOW_PRESET].maxCharsCompact,
   autoCompactTriggerPercent: CHAT_CONTEXT_WINDOW_PRESETS[DEFAULT_CHAT_CONTEXT_WINDOW_PRESET].autoCompactTriggerPercent
@@ -195,6 +203,8 @@ export function normalizeChatContextWindowConfig(raw) {
       maxTurns: presetConfig.maxTurns,
       keepRecentTurnsFull: presetConfig.keepRecentTurnsFull,
       maxMessages: presetConfig.maxMessages,
+      maxTokensExpanded: presetConfig.maxTokensExpanded,
+      maxTokensCompact: presetConfig.maxTokensCompact,
       maxCharsExpanded: presetConfig.maxCharsExpanded,
       maxCharsCompact: presetConfig.maxCharsCompact,
       autoCompactTriggerPercent: presetConfig.autoCompactTriggerPercent
@@ -207,6 +217,8 @@ export function normalizeChatContextWindowConfig(raw) {
     maxTurns: normalizeOptionalLimit(src.maxTurns, presetConfig.maxTurns, 2, 200),
     keepRecentTurnsFull: normalizeOptionalLimit(src.keepRecentTurnsFull, presetConfig.keepRecentTurnsFull, 1, 64),
     maxMessages: normalizeOptionalLimit(src.maxMessages, presetConfig.maxMessages, 8, 1000),
+    maxTokensExpanded: normalizeOptionalLimit(src.maxTokensExpanded, presetConfig.maxTokensExpanded, 1000, 4000000),
+    maxTokensCompact: normalizeOptionalLimit(src.maxTokensCompact, presetConfig.maxTokensCompact, 1000, 4000000),
     maxCharsExpanded: normalizeOptionalLimit(src.maxCharsExpanded, presetConfig.maxCharsExpanded, 4000, 4200000),
     maxCharsCompact: normalizeOptionalLimit(src.maxCharsCompact, presetConfig.maxCharsCompact, 4000, 4200000),
     autoCompactTriggerPercent: normalizeBudgetTriggerPercent(
@@ -221,6 +233,9 @@ export function normalizeChatContextWindowConfig(raw) {
   if (Number.isFinite(next.maxCharsExpanded) && Number.isFinite(next.maxCharsCompact)) {
     next.maxCharsCompact = Math.min(next.maxCharsCompact, next.maxCharsExpanded)
   }
+  if (Number.isFinite(next.maxTokensExpanded) && Number.isFinite(next.maxTokensCompact)) {
+    next.maxTokensCompact = Math.min(next.maxTokensCompact, next.maxTokensExpanded)
+  }
   return next
 }
 
@@ -234,6 +249,12 @@ export function resolveChatContextWindowOptions(raw) {
 
 export function resolveChatContextWindowBudgetPlan(raw, runtime = {}) {
   const resolved = resolveChatContextWindowOptions(raw)
+  const expandedTokens = isFinitePositiveNumber(resolved.maxTokensExpanded)
+    ? Math.floor(resolved.maxTokensExpanded)
+    : Number.MAX_SAFE_INTEGER
+  const compactTokens = isFinitePositiveNumber(resolved.maxTokensCompact)
+    ? Math.floor(resolved.maxTokensCompact)
+    : expandedTokens
   const expandedChars = isFinitePositiveNumber(resolved.maxCharsExpanded)
     ? Math.floor(resolved.maxCharsExpanded)
     : Number.MAX_SAFE_INTEGER
@@ -242,13 +263,24 @@ export function resolveChatContextWindowBudgetPlan(raw, runtime = {}) {
     : expandedChars
   const reservedChars = Math.max(0, Math.floor(Number(runtime?.reservedChars) || 0))
   const sourceChars = Math.max(0, Math.floor(Number(runtime?.sourceChars) || 0))
+  const reportedInputTokens = Math.max(0, Math.floor(Number(runtime?.reportedInputTokens) || 0))
+  const reportedRequestChars = Math.max(0, Math.floor(Number(runtime?.reportedRequestChars) || 0))
+  const telemetryAvailable = reportedInputTokens > 0 && reportedRequestChars > 0
+  const tokensPerChar = telemetryAvailable
+    ? Math.min(8, Math.max(0.05, reportedInputTokens / reportedRequestChars))
+    : 0
   const autoCompactTriggerPercent = normalizeBudgetTriggerPercent(
     runtime?.autoCompactTriggerPercent,
     resolved.autoCompactTriggerPercent
   )
   const triggerRatio = autoCompactTriggerPercent / 100
   const totalEstimatedChars = reservedChars + sourceChars
-  const expandedPressure = expandedChars > 0 ? totalEstimatedChars / expandedChars : 0
+  const reservedTokens = telemetryAvailable ? Math.max(0, Math.ceil(reservedChars * tokensPerChar)) : 0
+  const sourceEstimatedTokens = telemetryAvailable ? Math.max(0, Math.ceil(sourceChars * tokensPerChar)) : 0
+  const totalEstimatedTokens = telemetryAvailable ? reservedTokens + sourceEstimatedTokens : 0
+  const expandedPressure = telemetryAvailable
+    ? (expandedTokens > 0 ? totalEstimatedTokens / expandedTokens : 0)
+    : (expandedChars > 0 ? totalEstimatedChars / expandedChars : 0)
   const modeHint =
     runtime?.modeHint === 'compact' || runtime?.modeHint === 'expanded'
       ? runtime.modeHint
@@ -268,8 +300,15 @@ export function resolveChatContextWindowBudgetPlan(raw, runtime = {}) {
   }
 
   const baseChars = mode === 'compact' ? compactChars : expandedChars
-  const historyCharsBudget = Math.max(0, baseChars - reservedChars)
-  const effectivePressure = baseChars > 0 ? totalEstimatedChars / baseChars : 0
+  const baseTokens = mode === 'compact' ? compactTokens : expandedTokens
+  const historyTokensBudget = telemetryAvailable ? Math.max(0, baseTokens - reservedTokens) : 0
+  const charFallbackFloor = Math.max(4000, Math.floor(baseChars * 0.35))
+  const historyCharsBudget = telemetryAvailable
+    ? Math.max(1, Math.floor(historyTokensBudget / tokensPerChar))
+    : Math.max(charFallbackFloor, baseChars - reservedChars)
+  const effectivePressure = telemetryAvailable
+    ? (baseTokens > 0 ? totalEstimatedTokens / baseTokens : 0)
+    : (baseChars > 0 ? totalEstimatedChars / baseChars : 0)
 
   return {
     mode,
@@ -277,6 +316,18 @@ export function resolveChatContextWindowBudgetPlan(raw, runtime = {}) {
     autoCompactActive: mode === 'compact' && reason === 'auto_threshold',
     autoCompactTriggerPercent,
     triggerRatio,
+    budgetUnit: telemetryAvailable ? 'token' : 'char',
+    telemetryAvailable,
+    expandedTokens,
+    compactTokens,
+    baseTokens,
+    reportedInputTokens,
+    reportedRequestChars,
+    tokensPerChar,
+    reservedTokens,
+    sourceEstimatedTokens,
+    totalEstimatedTokens,
+    historyTokensBudget,
     expandedChars,
     compactChars,
     baseChars,

@@ -91,7 +91,7 @@
           type="textarea"
           :autosize="{ minRows: 4, maxRows: 12 }"
           :placeholder="composerPlaceholder"
-          :disabled="busy"
+          :disabled="preparingSend"
           @update:value="handleInputValueUpdate"
           @keydown="emit('input-keydown', $event)"
           @paste="emit('composer-paste', $event)"
@@ -110,6 +110,11 @@
         :theme="theme"
         :helpers="pendingAttachmentHelpers"
         :actions="pendingAttachmentActions"
+      />
+
+      <ChatRunInputQueue
+        :entries="queuedInputs"
+        @remove="emit('remove-queued-input', $event)"
       />
 
       <n-flex v-if="showInputModeTags" wrap :size="6" class="chat-attachments">
@@ -256,23 +261,24 @@
             联网搜索：{{ webSearchEnabled ? '开' : '关' }}
           </n-tooltip>
 
-          <n-tooltip trigger="hover">
-            <template #trigger>
+          <n-dropdown
+            trigger="click"
+            placement="top-start"
+            :options="toolApprovalModeOptions"
+            @select="emit('set-tool-approval-mode', $event)"
+          >
               <n-button
                 size="small"
                 tertiary
                 circle
-                :type="autoApproveTools ? 'primary' : 'default'"
-                :disabled="busy"
-                @click="emit('toggle-auto-approve-tools')"
+                :type="toolApprovalMode === 'full' ? 'error' : autoApproveTools ? 'primary' : 'default'"
+                :title="`工具调用控制：${toolApprovalModeLabel}`"
               >
                 <template #icon>
                   <n-icon :component="autoApproveTools ? ShieldCheckmarkOutline : ShieldOutline" size="12" />
                 </template>
               </n-button>
-            </template>
-            自动批准工具调用：{{ autoApproveTools ? '开' : '关' }}
-          </n-tooltip>
+          </n-dropdown>
 
           <n-tooltip trigger="hover">
             <template #trigger>
@@ -469,13 +475,31 @@
             停止
           </n-tooltip>
 
+          <n-tooltip v-if="sending" trigger="hover">
+            <template #trigger>
+              <n-button
+                size="small"
+                tertiary
+                circle
+                type="info"
+                :disabled="!canSend"
+                @click="emit('steer')"
+              >
+                <template #icon>
+                  <n-icon :component="SparklesOutline" size="12" />
+                </template>
+              </n-button>
+            </template>
+            引导当前任务（在下一个安全边界生效）
+          </n-tooltip>
+
           <n-tooltip trigger="hover">
             <template #trigger>
               <n-button
                 size="small"
                 type="primary"
                 circle
-                :loading="busy"
+                :loading="preparingSend"
                 :disabled="!canSend"
                 @click="emit('send')"
               >
@@ -484,7 +508,7 @@
                 </template>
               </n-button>
             </template>
-            发送
+            {{ sending ? '加入队列' : '发送' }}
           </n-tooltip>
         </n-flex>
       </n-flex>
@@ -519,6 +543,7 @@ import {
 
 import ChatPendingAttachments from './ChatPendingAttachments.vue'
 import ChatMediaGenerationParamsPopover from './ChatMediaGenerationParamsPopover.vue'
+import ChatRunInputQueue from './ChatRunInputQueue.vue'
 
 const thinkingEffortOptions = [
   { label: '自动（跟随模型）', key: 'auto' },
@@ -688,6 +713,18 @@ const props = defineProps({
     type: Boolean,
     default: false
   },
+  toolApprovalMode: {
+    type: String,
+    default: 'safe'
+  },
+  toolApprovalModeLabel: {
+    type: String,
+    default: '低风险自动'
+  },
+  toolApprovalModeOptions: {
+    type: Array,
+    default: () => []
+  },
   webSearchEnabled: {
     type: Boolean,
     default: true
@@ -732,6 +769,10 @@ const props = defineProps({
     type: Boolean,
     default: false
   },
+  queuedInputs: {
+    type: Array,
+    default: () => []
+  },
   footerHint: {
     type: String,
     default: ''
@@ -764,7 +805,7 @@ const emit = defineEmits([
   'insert-inline-command-trigger',
   'open-file-picker',
   'toggle-web-search',
-  'toggle-auto-approve-tools',
+  'set-tool-approval-mode',
   'toggle-auto-activate-agent-skills',
   'cycle-tool-mode',
   'open-context-window-modal',
@@ -773,6 +814,8 @@ const emit = defineEmits([
   'cycle-video-generation-mode',
   'apply-media-preset',
   'stop',
+  'steer',
+  'remove-queued-input',
   'send'
 ])
 
@@ -786,7 +829,7 @@ const busy = computed(() => props.sending || props.preparingSend)
 
 const composerPlaceholder = computed(() => {
   if (props.preparingSend) return '正在准备发送，请稍候…'
-  if (props.sending) return '正在发送，请稍候…'
+  if (props.sending) return '继续输入：发送会排队，也可选择“引导当前任务”'
   return '输入消息……（回车发送，Shift+回车换行，@ 选择智能体，/prompt 提示词，/skill 技能，/mcp MCP）'
 })
 

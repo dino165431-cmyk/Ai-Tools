@@ -630,6 +630,31 @@ async function requestOpenAiCompatibleJson({ baseUrl, apiKey, path, body, signal
   throw lastError || new Error('request failed')
 }
 
+function recordMemoryModelUsage(payload, {
+  providerId = '',
+  model = '',
+  endpoint = '',
+  purpose = ''
+} = {}) {
+  const usage =
+    payload?.usage ||
+    payload?.response?.usage ||
+    payload?.usageMetadata ||
+    payload?.usage_metadata
+  if (!usage || typeof usage !== 'object') return
+  const recorder = globalThis?.aiToolsApi?.usage?.recordUsage || globalThis?.window?.aiToolsApi?.usage?.recordUsage
+  if (typeof recorder !== 'function') return
+  void Promise.resolve(recorder({
+    usage,
+    providerId: String(providerId || ''),
+    model: String(model || ''),
+    endpoint: String(endpoint || ''),
+    purpose: String(purpose || '')
+  })).catch((error) => {
+    console.warn('记录记忆模型用量失败：', error)
+  })
+}
+
 async function requestEmbeddingVector(text, selection) {
   const provider = getProviderBaseInfo(selection?.providerId)
   const model = normalizeText(selection?.model)
@@ -644,6 +669,12 @@ async function requestEmbeddingVector(text, selection) {
       model,
       input: text
     }
+  })
+  recordMemoryModelUsage(json, {
+    providerId: selection?.providerId,
+    model,
+    endpoint: 'embeddings',
+    purpose: 'memory-embedding'
   })
   return normalizeEmbeddingVector(json?.data?.[0]?.embedding || [])
 }
@@ -745,6 +776,12 @@ async function requestMemoryExtraction({ userText, assistantText, systemPrompt, 
   if (provider?.providerType === 'utools-ai' || provider?.builtin) {
     if (!canUseUtoolsAi()) throw new Error('utools ai is unavailable for memory extraction')
     const result = await window.utools.ai({ model, messages: body.messages })
+    recordMemoryModelUsage(result, {
+      providerId: selection?.providerId,
+      model,
+      endpoint: 'utools-ai',
+      purpose: 'memory-extraction'
+    })
     const raw = String(result?.content || '').trim()
     const parsed = safeParseJsonArray(raw)
     return parsed.ok ? parsed.value : []
@@ -797,6 +834,12 @@ async function requestMemoryExtraction({ userText, assistantText, systemPrompt, 
     usedApiMode = fallbackMode
     json = await requestByMode(fallbackMode)
   }
+  recordMemoryModelUsage(json, {
+    providerId: selection?.providerId,
+    model,
+    endpoint: usedApiMode,
+    purpose: 'memory-extraction'
+  })
 
   const raw = String(
     usedApiMode === 'responses'

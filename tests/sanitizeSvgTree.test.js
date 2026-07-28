@@ -64,7 +64,7 @@ function installMinimalDom() {
 
 installMinimalDom()
 
-const { sanitizeSvgTree } = await import('../src/utils/sanitizeSvg.js')
+const { sanitizeSvgMarkup, sanitizeSvgTree } = await import('../src/utils/sanitizeSvg.js')
 
 test('sanitizeSvgTree strips scripts, event handlers, and external hrefs', () => {
   const svg = sanitizeSvgTree(`
@@ -82,4 +82,22 @@ test('sanitizeSvgTree strips scripts, event handlers, and external hrefs', () =>
   assert.doesNotMatch(output, /onclick=/i)
   assert.doesNotMatch(output, /href="https:\/\/example\.com"/i)
   assert.match(output, /hello/)
+})
+
+test('sanitizeSvgMarkup returns safe serialized SVG for renderer callbacks', () => {
+  const output = sanitizeSvgMarkup(`
+    <svg xmlns="http://www.w3.org/2000/svg">
+      <script>alert(1)</script>
+      <text onclick="alert(2)">safe</text>
+      <foreignObject><div xmlns="http://www.w3.org/1999/xhtml">unsafe html</div></foreignObject>
+      <image href="https://example.com/tracker.png" />
+    </svg>
+  `)
+
+  assert.doesNotMatch(output, /script/i)
+  assert.doesNotMatch(output, /onclick/i)
+  assert.doesNotMatch(output, /foreignObject/i)
+  assert.doesNotMatch(output, /unsafe html/i)
+  assert.doesNotMatch(output, /example\.com/i)
+  assert.match(output, />safe</)
 })

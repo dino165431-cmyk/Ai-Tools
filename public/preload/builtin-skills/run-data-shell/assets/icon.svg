@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="命令执行">
+  <rect width="64" height="64" rx="16" fill="#3C4658"/>
+  <rect x="12" y="15" width="40" height="34" rx="6" fill="#fff"/>
+  <path d="m21 27 7 6-7 6M32 39h11" fill="none" stroke="#3C4658" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="18" cy="21" r="2" fill="#FF6B6B"/>
+  <circle cx="24" cy="21" r="2" fill="#FFD166"/>
+  <circle cx="30" cy="21" r="2" fill="#06D6A0"/>
+</svg>

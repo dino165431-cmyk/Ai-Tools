@@ -1,9 +1,14 @@
 ﻿const fs = require('fs');
 const path = require('path');
 const { exec, execFile } = require('child_process');
+const { parseEnv: parseNodeEnv } = require('util');
 const { fileURLToPath } = require('url');
 const { buildExportableSkillPackage, normalizeSkillPackage, slugify } = require('./skill-package');
 const { DEFAULT_CONTENT_SEARCH_CONFIG, normalizeContentSearchConfig } = require('./contentSearchConfig');
+const {
+    BUILTIN_SKILL_IDS: BUILTIN_SKILL_ID_MAP,
+    buildBuiltinSkillRecords
+} = require('../builtin-skills');
 
 const DEFAULT_SYSTEM_PROMPT = [
     '你是一个 AI 助手（AI Assistant）。',
@@ -36,239 +41,77 @@ const DEFAULT_CHAT_MEMORY_CONFIG = Object.freeze({
     relevantMaxItems: 6
 })
 
-// -------------------- Built-in presets (MCP / Skill / Prompt / Agent) --------------------
-const BUILTIN_MCP_SERVER_ID = 'builtin_notes_mcp'
-const BUILTIN_CONFIG_MCP_SERVER_ID = 'builtin_config_mcp'
-const BUILTIN_SESSIONS_MCP_SERVER_ID = 'builtin_sessions_mcp'
-const BUILTIN_AGENTS_MCP_SERVER_ID = 'builtin_agents_mcp'
-const BUILTIN_SHELL_MCP_SERVER_ID = 'builtin_shell_mcp'
-const BUILTIN_SKILL_ID = 'builtin_skill_notes'
-const BUILTIN_CONFIG_SKILL_ID = 'builtin_skill_config'
-const BUILTIN_SESSIONS_SKILL_ID = 'builtin_skill_sessions'
-const BUILTIN_AGENT_ORCHESTRATION_SKILL_ID = 'builtin_skill_agent_orchestration'
+// -------------------- Built-in presets (Skill / Prompt / Agent) --------------------
+const LEGACY_BUILTIN_MCP_SERVER_IDS = Object.freeze([
+    'builtin_notes_mcp',
+    'builtin_config_mcp',
+    'builtin_sessions_mcp',
+    'builtin_agents_mcp',
+    'builtin_shell_mcp'
+])
+const BUILTIN_SKILL_ID = BUILTIN_SKILL_ID_MAP.notes
+const BUILTIN_CONFIG_SKILL_ID = BUILTIN_SKILL_ID_MAP.config
+const BUILTIN_SESSIONS_SKILL_ID = BUILTIN_SKILL_ID_MAP.sessions
+const BUILTIN_AGENT_ORCHESTRATION_SKILL_ID = BUILTIN_SKILL_ID_MAP.agents
+const BUILTIN_SHELL_SKILL_ID = BUILTIN_SKILL_ID_MAP.shell
 const BUILTIN_PROMPT_ID = 'builtin_prompt_notes'
 const BUILTIN_AGENT_ID = 'builtin_agent_notes'
 const BUILTIN_PROVIDER_ID = 'builtin_provider_utools_ai'
 
-const BUILTIN_MCP_SERVER_IDS = [BUILTIN_MCP_SERVER_ID, BUILTIN_CONFIG_MCP_SERVER_ID, BUILTIN_SESSIONS_MCP_SERVER_ID, BUILTIN_AGENTS_MCP_SERVER_ID, BUILTIN_SHELL_MCP_SERVER_ID]
-const BUILTIN_SKILL_IDS = [BUILTIN_SKILL_ID, BUILTIN_CONFIG_SKILL_ID, BUILTIN_SESSIONS_SKILL_ID, BUILTIN_AGENT_ORCHESTRATION_SKILL_ID]
+const BUILTIN_SKILL_IDS = [BUILTIN_SKILL_ID, BUILTIN_CONFIG_SKILL_ID, BUILTIN_SESSIONS_SKILL_ID, BUILTIN_AGENT_ORCHESTRATION_SKILL_ID, BUILTIN_SHELL_SKILL_ID]
 const BUILTIN_PROMPT_IDS = [BUILTIN_PROMPT_ID]
 const BUILTIN_AGENT_IDS = [BUILTIN_AGENT_ID]
 const BUILTIN_PROVIDER_IDS = [BUILTIN_PROVIDER_ID]
 
-function buildBuiltinMcpServer() {
-    return {
-        _id: BUILTIN_MCP_SERVER_ID,
-        name: '内置笔记（MCP）',
-        transportType: 'builtinNotes',
-        disabled: false,
-        keepAlive: true,
-        timeout: 15000,
-        allowTools: [],
-        notesRoot: 'note',
-        builtin: true
-    }
-}
-
-function buildBuiltinConfigMcpServer() {
-    return {
-        _id: BUILTIN_CONFIG_MCP_SERVER_ID,
-        name: '内置配置（MCP）',
-        transportType: 'builtinConfig',
-        disabled: false,
-        keepAlive: true,
-        timeout: 15000,
-        allowTools: [],
-        builtin: true
-    }
-}
-
-function buildBuiltinSessionsMcpServer() {
-    return {
-        _id: BUILTIN_SESSIONS_MCP_SERVER_ID,
-        name: '内置会话历史（MCP）',
-        transportType: 'builtinSessions',
-        disabled: false,
-        keepAlive: true,
-        timeout: 15000,
-        allowTools: [],
-        sessionsRoot: 'session',
-        builtin: true
-    }
-}
-
-function buildBuiltinAgentsMcpServer() {
-    return {
-        _id: BUILTIN_AGENTS_MCP_SERVER_ID,
-        name: '内置智能体编排（MCP）',
-        transportType: 'builtinAgents',
-        disabled: false,
-        keepAlive: true,
-        timeout: 120000,
-        allowTools: [],
-        builtin: true
-    }
-}
-
 function buildBuiltinSkill() {
-    return {
-        _id: BUILTIN_SKILL_ID,
-        name: '笔记查阅与记录（内置）',
-        description: '用于查阅笔记、记录笔记：优先按目录或最近项轻量定位，再读取或写入具体笔记；索引会随笔记变更和配置切换自动维护，加密笔记不参与索引检索。',
-        content: [
-            '你是一个“笔记助手”。你可以通过内置 MCP 工具访问用户的笔记库，完成“查阅笔记 / 记笔记”相关工作。',
-            '笔记根目录：`note/`（相对“数据存储根目录”）。图片目录：`*.assets/`。',
-            `可用工具（均来自内置 MCP：\`${BUILTIN_MCP_SERVER_ID}\`）：`,
-            '- `notes_list_directory`：列出某个目录下的直接子目录和笔记，不递归，适合大目录快速定位。',
-            '- `notes_list_recent`：按最近修改时间列出笔记，适合先看最近活跃内容。',
-            '- `notes_search`：按笔记名、标题、摘要或相对路径搜索笔记，默认是关键词检索；如果全局检索配置启用了 embedding 的混合模式，排序会自动结合关键词和语义结果。索引会在笔记增删改、移动和配置切换后自动维护。加密笔记不会进入索引，因此不会出现在搜索或最近列表中。',
-            '- `notes_read`：读取指定 `path` 的笔记；加密笔记会直接报错，需要先在笔记页解锁。',
-            '- `notes_list_tree`：列出笔记树形结构；默认只展开较浅层级，确实需要全局概览时再提高 `maxDepth`。',
-            '- `notes_create`：新建笔记并写入内容（可传 `path`，或传 `dirPath` + `noteName`；`noteName` 可不带 `.md`）。',
-            '- `notes_write`：写入笔记内容（可传 `path`，或传 `dirPath` + `noteName`；默认追加 `mode=append`，覆盖用 `mode=overwrite`）。',
-            '使用原则：',
-            '1. 如果用户已经给出了明确路径，或路径已经能唯一确定目标，直接 `notes_read` / `notes_write` / `notes_create`，不要先列目录。',
-            '2. 用户只给了关键词、文件名片段、路径片段时，优先先 `notes_search` 缩小范围，再 `notes_read`；默认走关键词检索，启用 embedding 后会自动变成混合检索。加密笔记不会进入检索结果，且 `notes_read` 不能直接读取。',
-            '3. 用户只给了目录、主题、最近修改、最近记录等线索时，优先先 `notes_list_directory` 或 `notes_list_recent` 缩小范围，再 `notes_read`。',
-            '4. 只有用户明确要“看结构 / 看层级 / 看整库分布”，或者前几步无法定位时，才使用 `notes_list_tree`；默认不要从 note 根目录做大深度遍历。',
-            '5. 用户要“记录 / 新增 / 整理”笔记：优先确认写入的目录与笔记名；不明确时先问 1 个澄清问题。',
-            '6. 默认不要覆盖已有内容；仅在用户明确要求或你已确认时才使用覆盖模式。',
-            '7. 写入完成后，向用户回报最终写入的相对路径，例如 `project/todo.md`。'
-        ].join('\n'),
-        triggers: {
-            keywords: ['笔记', '记笔记', '记录', '查阅', '查看笔记', '笔记库', 'note']
-        },
-        mcp: [BUILTIN_MCP_SERVER_ID],
-        builtin: true
-    }
+    return buildBuiltinSkillRecords()[BUILTIN_SKILL_ID]
 }
 
 function buildBuiltinConfigSkill() {
-    return {
-        _id: BUILTIN_CONFIG_SKILL_ID,
-        name: '配置管理（内置）',
-        description: '用于在聊天中严格新增或修改配置：MCP、技能、提示词、智能体、服务商、定时任务。支持从标准 Skill 目录或 SKILL.md 导入，也兼容旧版内联 Skill payload。',
-        content: [
-            '你是一个“配置助手”。你可以通过内置 MCP 工具帮助用户创建、修改和检查本插件的真实配置。',
-            '',
-            '重要约束：',
-            '- 先 list 再改：不知道 `_id` 时，先调用对应 `config_list_*`，不要猜 `_id`。',
-            '- `config_add_*` 直接传完整对象；`config_update_*` 顶层只能传 `{ id, patch }`，不要把 patch 里的字段平铺到顶层。',
-            '- 标准 Skill 导入优先：如果用户给的是 skill 目录或 `SKILL.md`，优先使用 `config_import_skill_directory` / `config_import_skill_file`。',
-            '- 只有旧版内联 Skill，或用户明确要把规则直接存进配置时，才使用 `config_add_skill` / `config_update_skill`。',
-            '- 标准目录 Skill 导入后会复制到当前数据目录的托管区；`sourcePath` 指向托管副本，原始路径仅用于用户主动刷新。',
-            '- 敏感字段如 `apikey`、`env`、`headers` 不要回显；列表里的 `***` 只是脱敏占位，不能原样写回。',
-            '- 修改 `transportType` 或 `trigger.type` 时，要在同一个 patch 里补齐新类型所需字段。',
-            '',
-            `可用工具（均来自内置 MCP：\`${BUILTIN_CONFIG_MCP_SERVER_ID}\` / builtin_config_mcp）：`,
-            '- `config_list_mcp_servers` / `config_add_mcp_server` / `config_update_mcp_server` / `config_delete_mcp_server`',
-            '- `config_list_skills` / `config_import_skill_directory` / `config_import_skill_file` / `config_add_skill` / `config_update_skill` / `config_delete_skill`',
-            '- `config_list_prompts` / `config_add_prompt` / `config_update_prompt` / `config_delete_prompt`',
-            '- `config_list_agents` / `config_add_agent` / `config_update_agent` / `config_delete_agent`',
-            '- `config_list_providers` / `config_add_provider` / `config_update_provider` / `config_delete_provider`',
-            '- `config_list_timed_tasks` / `config_add_timed_task` / `config_update_timed_task` / `config_delete_timed_task`',
-            '- `config_get_system_time`',
-            '',
-            '高频字段规则：',
-            '- `args` 必须是字符串数组；`env` / `headers` 必须是对象。',
-            '- `config_import_skill_directory` / `config_import_skill_file` 的 `path` 必须是绝对路径，并且目标要符合 `SKILL.md` 结构。',
-            '- 定时任务建议直接传完整 `trigger` 对象。',
-            '- 修改后向用户说明改动内容、影响范围，以及在哪里验证结果。'
-        ].join('\n'),
-        triggers: {
-            keywords: ['配置', '设置', 'MCP', '技能', '提示词', '智能体', '服务商', 'provider', 'agent', 'skill', 'prompt', '定时任务', 'timedTask', '模型', 'apikey', 'baseurl']
-        },
-        mcp: [BUILTIN_CONFIG_MCP_SERVER_ID],
-        builtin: true
-    }
+    return buildBuiltinSkillRecords()[BUILTIN_CONFIG_SKILL_ID]
 }
 
 function buildBuiltinSessionsSkill() {
-    return {
-        _id: BUILTIN_SESSIONS_SKILL_ID,
-        name: '会话历史 / 定时任务日志（内置）',
-        description: '用于查询历史会话与定时任务执行记录：优先按目录或最近项轻量定位，再读取会话 JSON 分析；索引会随会话变更和配置切换自动维护。',
-        content: [
-            '你是一个“会话历史查询助手”。你可以通过内置 MCP 工具读取历史会话和定时任务执行日志。',
-            '存储位置相对数据根目录：普通会话在 `session/`；定时任务通常在 `session/定时任务/...`。',
-            `可用工具（来自内置 MCP：\`${BUILTIN_SESSIONS_MCP_SERVER_ID}\`）：`,
-            '- `sessions_list_directory`：列出某个目录下的直接子目录和会话文件，不递归，适合大目录快速定位。',
-            '- `sessions_list_recent`：按最近修改时间列出会话文件，适合先看最近记录。',
-            '- `sessions_search`：按会话文件名、标题、摘要或相对路径搜索会话，默认是关键词检索；如果全局检索配置启用了 embedding 的混合模式，排序会自动结合关键词和语义结果。索引会在会话增删改、移动和配置切换后自动维护。',
-            '- `sessions_list_tree`：列出会话树形结构；默认只展开较浅层级，确实需要全局概览时再提高 `maxDepth`。',
-            '- `sessions_read`：读取单个会话文件并解析 JSON。',
-            '- `sessions_read_many`：批量读取多个会话文件并解析 JSON。',
-            '使用原则：',
-            '1. 如果用户已经给出了明确路径，或路径已经能唯一确定目标，直接 `sessions_read` 或 `sessions_read_many`，不要先列目录。',
-            '2. 用户只给了关键词、文件名片段、路径片段时，优先先 `sessions_search` 缩小范围，再 `sessions_read` 或 `sessions_read_many`；默认走关键词检索，启用 embedding 后会自动变成混合检索。',
-            '3. 用户只给了目录、任务名、最近记录、最近失败等线索时，优先先 `sessions_list_directory` 或 `sessions_list_recent` 定位，再 `sessions_read` 或 `sessions_read_many`。',
-            '4. 只有用户明确要“看结构 / 看层级 / 看整库分布”，或者前几步无法定位时，才使用 `sessions_list_tree`；默认不要从 session 根目录做大深度遍历。',
-            '5. 批量分析时，先用轻量工具筛出小批量目标，再 `sessions_read_many`，避免把大量无关会话一次读入。'
-        ].join('\n'),
-        triggers: {
-            keywords: ['历史会话', '会话历史', '会话树', '会话记录', '读取会话', '会话文件', '定时任务日志', '任务执行日志', '定时任务', 'cron']
-        },
-        mcp: [BUILTIN_SESSIONS_MCP_SERVER_ID],
-        builtin: true
-    }
+    return buildBuiltinSkillRecords()[BUILTIN_SESSIONS_SKILL_ID]
 }
 
 function buildBuiltinAgentOrchestrationSkill() {
-    return {
-        _id: BUILTIN_AGENT_ORCHESTRATION_SKILL_ID,
-        name: '任务拆解与子智能体编排（内置）',
-        description: '用于主动识别复杂任务并拆解给已有 Agent 执行，再统一汇总结论、风险和后续步骤。',
-        content: [
-            '你是一个“任务拆解与子智能体编排助手”。当任务明显包含多个相对独立的子目标时，应优先拆解再委托执行。',
-            '',
-            `可用工具（来自内置 MCP：\`${BUILTIN_AGENTS_MCP_SERVER_ID}\`）：`,
-            '- `agents_list`：查看当前可用的 Agent；带 `query` 时会搜索 id、名称、provider、model、prompt、skill、MCP，默认关键词检索，启用 embedding 后会自动变成混合检索。',
-            '- `agent_run`：调用指定 Agent 执行单个子任务，并返回过程与结果。',
-            '',
-            '执行原则：',
-            '- 先用 `agents_list` 确认可用 Agent，再选择合适的执行者；如果只知道任务特征，不知道具体 Agent 名称，也先用 `agents_list query=...` 缩小范围。',
-            '- 每个 `agent_run` 只交付一个边界清晰的子任务，说明目标、范围、约束和预期产物。',
-            '- 子任务之间尽量解耦，避免后一个任务依赖前一个任务里未确认的隐式状态。',
-            '- 多个 Agent 返回后，由主线程统一汇总结论、冲突点与剩余风险。',
-            '- 如果任务本身很直接，就保持在主线程处理，不要为了拆分而拆分。'
-        ].join('\n'),
-        triggers: {
-            keywords: ['复杂任务', '多步骤', '拆解', '拆分', '编排', '委派', '子智能体', '多阶段', '分工', '并行', '协作', '大任务'],
-            intents: ['implement', 'analyze', 'refactor', 'research']
-        },
-        mcp: [BUILTIN_AGENTS_MCP_SERVER_ID],
-        builtin: true
-    }
+    return buildBuiltinSkillRecords()[BUILTIN_AGENT_ORCHESTRATION_SKILL_ID]
+}
+
+function buildBuiltinShellSkill() {
+    return buildBuiltinSkillRecords()[BUILTIN_SHELL_SKILL_ID]
 }
 
 function buildBuiltinPrompt() {
     return {
         _id: BUILTIN_PROMPT_ID,
         name: 'Ai Tools 助手（内置）',
-        description: '覆盖笔记查阅/记录与配置管理的系统提示词，强调标准 Skill 导入优先、旧版内联 Skill 兼容、敏感配置保护与工具调用规范。',
+        description: 'Ai Tools 内置助手系统提示词：按需加载内置 Skill，并通过 Skill 原生 actions 管理笔记、超级笔记、配置、会话、智能体和数据目录命令。',
         type: 'system',
         content: [
-            '你是 Ai Tools 插件内置助手。你可以使用本插件提供的 MCP 工具读取和修改真实数据与配置。',
+            '你是 Ai Tools 插件内置助手。使用内置 Skill 的原生 actions 读取和修改真实数据；Action 通过 skill_discover 按需发现并通过 skill_call 调用，外部 MCP 只用于用户配置的第三方工具。',
             '',
             '角色边界：',
             '- Prompt：定义系统级指令、风格、约束与回答边界。',
-            '- Skill：定义可复用的规则、知识入口和任务流程；必要时再按需加载正文或附加文件。',
-            '- MCP：定义可调用的外部工具能力。',
+            '- Skill：定义可复用规则、知识入口、任务流程和可调用的原生 actions；必要时按需加载 SKILL.md，并按需发现 Action Schema。',
+            '- MCP：仅表示用户配置的外部工具能力。',
             '- Agent：把 provider / model / prompt / skills / MCP 组合起来执行具体任务。',
             '',
             '通用原则：',
             '- 能用工具就用工具，尤其是读取或修改笔记、配置时不要猜。',
             '- 写入前先确认路径、id、名称和模式；不明确时先问 1 个澄清问题。',
             '- 敏感信息如 API Key、env、headers 不要回显。',
-            '- 内置 MCP / Skill / Prompt 不可删除或修改；内置 Agent 不可删除，且只允许部分字段更新。',
+            '- 内置 Skill / Prompt 不可删除或修改；内置 Agent 不可删除，且只允许部分字段更新。',
             '- 对 Agent、笔记和会话这类可能很多的对象，默认优先轻量定位，优先用检索/最近/目录工具缩小范围，不要一上来就做整库递归遍历。',
             '- `agents_list` / `notes_search` / `sessions_search` 默认是关键词检索；如果全局检索配置启用了 embedding 的混合模式，工具会自动把关键词和语义结果一起用于排序，调用方式不变。Agent 索引会随智能体、提示词、技能、MCP、服务商配置变更自动维护；笔记和会话索引会随数据变更、移动、删除以及配置切换自动维护。笔记侧的加密内容不参与索引或搜索，`notes_read` 也不会直接读取加密笔记。',
             '',
-            '内置 MCP：',
-            `- 笔记 MCP（\`${BUILTIN_MCP_SERVER_ID}\`）：\`notes_list_directory\` / \`notes_list_recent\` / \`notes_search\` / \`notes_list_tree\` / \`notes_read\` / \`notes_create\` / \`notes_write\``,
-            `- 会话 MCP（\`${BUILTIN_SESSIONS_MCP_SERVER_ID}\`）：\`sessions_list_directory\` / \`sessions_list_recent\` / \`sessions_search\` / \`sessions_list_tree\` / \`sessions_read\` / \`sessions_read_many\``,
-            `- 配置 MCP（\`${BUILTIN_CONFIG_MCP_SERVER_ID}\`）：\`config_*\` 系列工具，包含 \`config_import_skill_directory\` / \`config_import_skill_file\` / \`config_get_system_time\``,
-            `- 编排 MCP（\`${BUILTIN_AGENTS_MCP_SERVER_ID}\`）：\`agents_list\` / \`agent_run\``,
+            '内置 Skill actions：',
+            '- 笔记：`notes_*` 管理 Markdown 和目录；`notebook_*` 管理并执行 `.ipynb` 超级笔记。',
+            '- 会话：`sessions_*` 检索与读取历史会话和定时任务日志。',
+            '- 配置：`config_*` 管理外部 MCP、Skills、Prompts、Agents、Providers 和定时任务。',
+            '- 编排：`agents_list` / `agent_run`。',
+            '- 命令：`bash_run`，始终需要明确审批。',
             '',
             '配置规范：',
             '- 标准 Skill 导入优先：如果用户提供的是 skill 目录或 `SKILL.md`，优先使用 `config_import_skill_directory` / `config_import_skill_file`。',
@@ -311,8 +154,8 @@ function buildBuiltinAgent() {
         name: 'Ai Tools 助手（内置）',
         provider: null,
         model: null,
-        skills: [BUILTIN_SKILL_ID, BUILTIN_CONFIG_SKILL_ID, BUILTIN_SESSIONS_SKILL_ID, BUILTIN_AGENT_ORCHESTRATION_SKILL_ID],
-        // 内置助手默认由 skill.mcp 自动挂载对应 MCP，这里保持空数组。
+        skills: [BUILTIN_SKILL_ID, BUILTIN_CONFIG_SKILL_ID, BUILTIN_SESSIONS_SKILL_ID, BUILTIN_AGENT_ORCHESTRATION_SKILL_ID, BUILTIN_SHELL_SKILL_ID],
+        // 外部 MCP 仍由用户按需绑定；内置能力由 Skill 原生 actions 提供。
         mcp: [],
         modelParams: null,
         prompt: BUILTIN_PROMPT_ID,
@@ -346,6 +189,8 @@ const DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG = Object.freeze({
     maxTurns: 48,
     keepRecentTurnsFull: 16,
     maxMessages: 320,
+    maxTokensExpanded: 100000,
+    maxTokensCompact: 80000,
     maxCharsExpanded: 400000,
     maxCharsCompact: 320000,
     autoCompactTriggerPercent: 80
@@ -457,19 +302,6 @@ function normalizeCloudConfig(raw) {
     }
 }
 
-function buildBuiltinShellMcpServer() {
-    return {
-        _id: BUILTIN_SHELL_MCP_SERVER_ID,
-        name: 'Bash 工具箱（需审批）',
-        transportType: 'builtinShell',
-        disabled: false,
-        keepAlive: true,
-        timeout: 120000,
-        allowTools: [],
-        builtin: true
-    }
-}
-
 function pickWebSearchConfig(raw, keys) {
     const normalized = normalizeWebSearchConfig(raw)
     return Object.fromEntries(keys.map((key) => [key, normalized[key]]))
@@ -534,6 +366,8 @@ function normalizeChatContextWindowConfig(raw) {
             maxTurns: preset === 'aggressive' ? 18 : preset === 'wide' ? 96 : DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.maxTurns,
             keepRecentTurnsFull: preset === 'aggressive' ? 6 : preset === 'wide' ? 32 : DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.keepRecentTurnsFull,
             maxMessages: preset === 'aggressive' ? 120 : preset === 'wide' ? 800 : DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.maxMessages,
+            maxTokensExpanded: preset === 'aggressive' ? 32000 : preset === 'wide' ? 250000 : DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.maxTokensExpanded,
+            maxTokensCompact: preset === 'aggressive' ? 24000 : preset === 'wide' ? 200000 : DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.maxTokensCompact,
             maxCharsExpanded: preset === 'aggressive' ? 128000 : preset === 'wide' ? 1000000 : DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.maxCharsExpanded,
             maxCharsCompact: preset === 'aggressive' ? 96000 : preset === 'wide' ? 800000 : DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.maxCharsCompact,
             autoCompactTriggerPercent: preset === 'aggressive' ? 75 : preset === 'wide' ? 85 : DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.autoCompactTriggerPercent
@@ -546,12 +380,15 @@ function normalizeChatContextWindowConfig(raw) {
         maxTurns: normalizeIntegerInRange(src.maxTurns, DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.maxTurns, 2, 200),
         keepRecentTurnsFull: normalizeIntegerInRange(src.keepRecentTurnsFull, DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.keepRecentTurnsFull, 1, 64),
         maxMessages: normalizeIntegerInRange(src.maxMessages, DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.maxMessages, 8, 1000),
+        maxTokensExpanded: normalizeIntegerInRange(src.maxTokensExpanded, DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.maxTokensExpanded, 1000, 4000000),
+        maxTokensCompact: normalizeIntegerInRange(src.maxTokensCompact, DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.maxTokensCompact, 1000, 4000000),
         maxCharsExpanded: normalizeIntegerInRange(src.maxCharsExpanded, DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.maxCharsExpanded, 4000, 4200000),
         maxCharsCompact: normalizeIntegerInRange(src.maxCharsCompact, DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.maxCharsCompact, 4000, 4200000),
         autoCompactTriggerPercent: normalizeBudgetTriggerPercent(src.autoCompactTriggerPercent, DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG.autoCompactTriggerPercent)
     }
 
     next.keepRecentTurnsFull = Math.min(next.keepRecentTurnsFull, next.maxTurns)
+    next.maxTokensCompact = Math.min(next.maxTokensCompact, next.maxTokensExpanded)
     next.maxCharsCompact = Math.min(next.maxCharsCompact, next.maxCharsExpanded)
     return next
 }
@@ -1076,8 +913,8 @@ function mergeBuiltinAgent(override, builtinAgent) {
     out.mcp = normalizeStringList(src.mcp)
     out.modelParams = compactAgentModelParams(src.modelParams)
 
-    // Migrate legacy default MCP selections to implicit skill-mounted defaults.
-    const oldDefault = new Set([BUILTIN_MCP_SERVER_ID, BUILTIN_CONFIG_MCP_SERVER_ID, BUILTIN_AGENTS_MCP_SERVER_ID])
+    // Remove legacy built-in MCP selections; built-in capabilities now come from native Skill actions.
+    const oldDefault = new Set(LEGACY_BUILTIN_MCP_SERVER_IDS)
     if (out.mcp.length && out.mcp.every((id) => oldDefault.has(id))) out.mcp = []
 
     return out
@@ -1299,6 +1136,72 @@ function extractSkillFrontmatter(text) {
     }
 }
 
+function parseSkillAgentYaml(text) {
+    const raw = String(text || '').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n')
+    const result = {}
+    let section = ''
+
+    raw.split('\n').forEach((line) => {
+        if (!line.trim() || line.trimStart().startsWith('#')) return
+        const top = line.match(/^([A-Za-z0-9_-]+)\s*:\s*$/)
+        if (top) {
+            section = top[1]
+            if (!result[section]) result[section] = {}
+            return
+        }
+        const field = line.match(/^\s{2}([A-Za-z0-9_-]+)\s*:\s*(.*)$/)
+        if (!field || !section) return
+        const value = parseSimpleYamlScalar(field[2])
+        result[section][field[1]] =
+            value === 'true' ? true : value === 'false' ? false : value
+    })
+
+    return result
+}
+
+function normalizeSkillInterfaceMetadata(value = {}) {
+    const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+    return {
+        displayName: String(source.display_name || source.displayName || '').trim(),
+        shortDescription: String(source.short_description || source.shortDescription || '').trim(),
+        defaultPrompt: String(source.default_prompt || source.defaultPrompt || '').trim(),
+        iconSmall: String(source.icon_small || source.iconSmall || '').trim(),
+        iconLarge: String(source.icon_large || source.iconLarge || '').trim(),
+        brandColor: String(source.brand_color || source.brandColor || '').trim()
+    }
+}
+
+function normalizeConfigIconValue(value) {
+    const raw = String(value || '').trim()
+    if (!raw) return ''
+    if (/[\u0000-\u001f\u007f]/.test(raw)) throw new Error('icon contains control characters')
+    if (/^data:/i.test(raw)) {
+        if (!/^data:image\/(?:png|jpeg|jpg|webp|gif|svg\+xml|avif);base64,/i.test(raw)) {
+            throw new Error('icon data URL must contain a supported image')
+        }
+        if (raw.length > 512 * 1024) throw new Error('icon data URL is too large')
+        if (/^data:image\/svg\+xml;base64,/i.test(raw)) {
+            let svg = ''
+            try {
+                svg = Buffer.from(raw.slice(raw.indexOf(',') + 1), 'base64').toString('utf-8')
+            } catch {
+                throw new Error('icon SVG data URL is invalid')
+            }
+            if (/<script\b|on[a-z]+\s*=|(?:href|src)\s*=\s*["'](?:https?:|javascript:|data:)/i.test(svg)) {
+                throw new Error('icon SVG contains active or remote content')
+            }
+        }
+        return raw
+    }
+    if (/^https?:\/\//i.test(raw)) {
+        if (raw.length > 2048) throw new Error('icon URL is too long')
+        return raw
+    }
+    if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) throw new Error('unsupported icon URL scheme')
+    if (Array.from(raw).length > 8) throw new Error('text icon cannot exceed 8 characters')
+    return raw
+}
+
 function validateStandardSkillFrontmatter(frontmatter, skillRoot) {
     const meta = frontmatter && typeof frontmatter === 'object' ? frontmatter : {}
     const name = String(meta.name || '').trim()
@@ -1341,15 +1244,136 @@ function summarizeSkillMarkdown(text) {
     return useful.join(' ').trim().slice(0, 240)
 }
 
+const SKILL_DOTENV_FILENAME = '.env'
+const MAX_SKILL_DOTENV_BYTES = 64 * 1024
+const RESERVED_SKILL_ENV_KEYS = new Set([
+    'PATH',
+    'PATHEXT',
+    'SYSTEMROOT',
+    'WINDIR',
+    'COMSPEC',
+    'LANG',
+    'LC_ALL',
+    'TERM',
+    'NUMBER_OF_PROCESSORS',
+    'PROCESSOR_ARCHITECTURE',
+    'HOME',
+    'USERPROFILE',
+    'APPDATA',
+    'LOCALAPPDATA',
+    'TMP',
+    'TEMP',
+    'TMPDIR',
+    'NODE_OPTIONS',
+    'NODE_PATH',
+    'NODE_EXTRA_CA_CERTS',
+    'NODE_TLS_REJECT_UNAUTHORIZED',
+    'ELECTRON_RUN_AS_NODE',
+    'PYTHONHOME',
+    'PYTHONPATH',
+    'PYTHONSTARTUP',
+    'BASH_ENV',
+    'ENV',
+    'LD_PRELOAD',
+    'LD_LIBRARY_PATH',
+    'DYLD_INSERT_LIBRARIES',
+    'DYLD_LIBRARY_PATH'
+])
+
+function getSkillEnvironmentFileBasename(filePath) {
+    const normalized = normalizeSkillPathForMatch(filePath).toLowerCase()
+    return normalized ? path.posix.basename(normalized) : ''
+}
+
+function isSkillEnvironmentExampleFilePath(filePath) {
+    return getSkillEnvironmentFileBasename(filePath) === '.env.example'
+}
+
+function isSensitiveSkillEnvironmentFilePath(filePath) {
+    const basename = getSkillEnvironmentFileBasename(filePath)
+    return basename === '.env' || (basename.startsWith('.env.') && basename !== '.env.example')
+}
+
+function isReservedSkillEnvironmentKey(key) {
+    const normalized = String(key || '').trim().toUpperCase()
+    return RESERVED_SKILL_ENV_KEYS.has(normalized)
+        || normalized.startsWith('AI_TOOLS_')
+        || normalized.startsWith('SKILL_')
+        || normalized.startsWith('XDG_')
+}
+
+function parseSkillDotEnvFallback(text) {
+    const parsed = {}
+    const lines = String(text || '').replace(/^\uFEFF/, '').split(/\r?\n/)
+
+    lines.forEach((rawLine, index) => {
+        let line = rawLine.trim()
+        if (!line || line.startsWith('#')) return
+        line = line.replace(/^export\s+/, '')
+
+        const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/)
+        if (!match) throw new Error(`invalid assignment at line ${index + 1}`)
+
+        const key = match[1]
+        let value = match[2].trim()
+        const quote = value[0]
+
+        if (quote === '"' || quote === "'") {
+            let closingIndex = -1
+            for (let i = 1; i < value.length; i += 1) {
+                if (quote === '"' && value[i] === '\\') {
+                    i += 1
+                    continue
+                }
+                if (value[i] === quote) {
+                    closingIndex = i
+                    break
+                }
+            }
+            if (closingIndex < 0) throw new Error(`unterminated quoted value at line ${index + 1}`)
+
+            const trailing = value.slice(closingIndex + 1).trim()
+            if (trailing && !trailing.startsWith('#')) {
+                throw new Error(`unexpected content at line ${index + 1}`)
+            }
+
+            value = value.slice(1, closingIndex)
+            if (quote === '"') {
+                value = value.replace(/\\([nrt"\\$])/g, (_whole, escaped) => {
+                    if (escaped === 'n') return '\n'
+                    if (escaped === 'r') return '\r'
+                    if (escaped === 't') return '\t'
+                    return escaped
+                })
+            }
+        } else {
+            const commentIndex = value.indexOf('#')
+            if (commentIndex >= 0) value = value.slice(0, commentIndex).trim()
+        }
+
+        parsed[key] = value
+    })
+
+    return parsed
+}
+
+function parseSkillDotEnv(text) {
+    const normalized = String(text || '').replace(/^\uFEFF/, '')
+    return typeof parseNodeEnv === 'function'
+        ? parseNodeEnv(normalized)
+        : parseSkillDotEnvFallback(normalized)
+}
+
 function normalizeFileIndex(index) {
     const src = index && typeof index === 'object' && !Array.isArray(index) ? index : {}
+    const visiblePaths = (value) => normalizeStringList(value).filter((item) => !isSensitiveSkillEnvironmentFilePath(item))
     return {
         skill: String(src.skill || 'SKILL.md'),
-        references: normalizeStringList(src.references),
-        scripts: normalizeStringList(src.scripts),
-        assets: normalizeStringList(src.assets),
-        agents: normalizeStringList(src.agents),
-        extra: normalizeStringList(src.extra)
+        references: visiblePaths(src.references),
+        scripts: visiblePaths(src.scripts),
+        assets: visiblePaths(src.assets),
+        agents: visiblePaths(src.agents),
+        extra: visiblePaths(src.extra)
     }
 }
 
@@ -1666,15 +1690,10 @@ class GlobalConfig {
                 [BUILTIN_SKILL_ID]: buildBuiltinSkill(),
                 [BUILTIN_CONFIG_SKILL_ID]: buildBuiltinConfigSkill(),
                 [BUILTIN_SESSIONS_SKILL_ID]: buildBuiltinSessionsSkill(),
-                [BUILTIN_AGENT_ORCHESTRATION_SKILL_ID]: buildBuiltinAgentOrchestrationSkill()
+                [BUILTIN_AGENT_ORCHESTRATION_SKILL_ID]: buildBuiltinAgentOrchestrationSkill(),
+                [BUILTIN_SHELL_SKILL_ID]: buildBuiltinShellSkill()
             },
-            mcpServers: {
-                [BUILTIN_MCP_SERVER_ID]: buildBuiltinMcpServer(),
-                [BUILTIN_CONFIG_MCP_SERVER_ID]: buildBuiltinConfigMcpServer(),
-                [BUILTIN_SESSIONS_MCP_SERVER_ID]: buildBuiltinSessionsMcpServer(),
-                [BUILTIN_AGENTS_MCP_SERVER_ID]: buildBuiltinAgentsMcpServer(),
-                [BUILTIN_SHELL_MCP_SERVER_ID]: buildBuiltinShellMcpServer()
-            },
+            mcpServers: {},
             timedTask: {},
             dataStorageRoot: getDefaultUserDataRoot(),
             cloudConfig: this._clone(DEFAULT_CLOUD_CONFIG)
@@ -1685,15 +1704,7 @@ class GlobalConfig {
         if (!this._isPlainObject(config)) return false
         let changed = false
 
-        const builtinMcp = buildBuiltinMcpServer()
-        const builtinConfigMcp = buildBuiltinConfigMcpServer()
-        const builtinSessionsMcp = buildBuiltinSessionsMcpServer()
-        const builtinAgentsMcp = buildBuiltinAgentsMcpServer()
-        const builtinShellMcp = buildBuiltinShellMcpServer()
-        const builtinSkill = buildBuiltinSkill()
-        const builtinConfigSkill = buildBuiltinConfigSkill()
-        const builtinSessionsSkill = buildBuiltinSessionsSkill()
-        const builtinAgentOrchestrationSkill = buildBuiltinAgentOrchestrationSkill()
+        const builtinSkills = buildBuiltinSkillRecords()
         const builtinPrompt = buildBuiltinPrompt()
         const builtinAgent = buildBuiltinAgent()
         const builtinProvider = buildBuiltinProvider()
@@ -1719,37 +1730,35 @@ class GlobalConfig {
             changed = true
         }
 
-        if (!safeJsonEquals(config.mcpServers[BUILTIN_MCP_SERVER_ID], builtinMcp)) {
-            config.mcpServers[BUILTIN_MCP_SERVER_ID] = this._clone(builtinMcp)
-            changed = true
+        for (const legacyId of LEGACY_BUILTIN_MCP_SERVER_IDS) {
+            if (Object.prototype.hasOwnProperty.call(config.mcpServers, legacyId)) {
+                delete config.mcpServers[legacyId]
+                changed = true
+            }
         }
-        if (!safeJsonEquals(config.mcpServers[BUILTIN_CONFIG_MCP_SERVER_ID], builtinConfigMcp)) {
-            config.mcpServers[BUILTIN_CONFIG_MCP_SERVER_ID] = this._clone(builtinConfigMcp)
-            changed = true
+
+        for (const [skillId, skill] of Object.entries(config.skills)) {
+            if (!skill || typeof skill !== 'object') continue
+            const nextMcp = normalizeStringList(skill.mcp).filter((id) => !LEGACY_BUILTIN_MCP_SERVER_IDS.includes(id))
+            if (!safeJsonEquals(nextMcp, normalizeStringList(skill.mcp))) {
+                config.skills[skillId] = { ...skill, mcp: nextMcp }
+                changed = true
+            }
         }
-        if (!safeJsonEquals(config.mcpServers[BUILTIN_SESSIONS_MCP_SERVER_ID], builtinSessionsMcp)) {
-            config.mcpServers[BUILTIN_SESSIONS_MCP_SERVER_ID] = this._clone(builtinSessionsMcp)
-            changed = true
+        for (const [agentId, agent] of Object.entries(config.agents)) {
+            if (!agent || typeof agent !== 'object') continue
+            const nextMcp = normalizeStringList(agent.mcp).filter((id) => !LEGACY_BUILTIN_MCP_SERVER_IDS.includes(id))
+            if (!safeJsonEquals(nextMcp, normalizeStringList(agent.mcp))) {
+                config.agents[agentId] = { ...agent, mcp: nextMcp }
+                changed = true
+            }
         }
-        if (!safeJsonEquals(config.mcpServers[BUILTIN_AGENTS_MCP_SERVER_ID], builtinAgentsMcp)) {
-            config.mcpServers[BUILTIN_AGENTS_MCP_SERVER_ID] = this._clone(builtinAgentsMcp)
-            changed = true
-        }
-        if (!safeJsonEquals(config.skills[BUILTIN_SKILL_ID], builtinSkill)) {
-            config.skills[BUILTIN_SKILL_ID] = this._clone(builtinSkill)
-            changed = true
-        }
-        if (!safeJsonEquals(config.skills[BUILTIN_CONFIG_SKILL_ID], builtinConfigSkill)) {
-            config.skills[BUILTIN_CONFIG_SKILL_ID] = this._clone(builtinConfigSkill)
-            changed = true
-        }
-        if (!safeJsonEquals(config.skills[BUILTIN_SESSIONS_SKILL_ID], builtinSessionsSkill)) {
-            config.skills[BUILTIN_SESSIONS_SKILL_ID] = this._clone(builtinSessionsSkill)
-            changed = true
-        }
-        if (!safeJsonEquals(config.skills[BUILTIN_AGENT_ORCHESTRATION_SKILL_ID], builtinAgentOrchestrationSkill)) {
-            config.skills[BUILTIN_AGENT_ORCHESTRATION_SKILL_ID] = this._clone(builtinAgentOrchestrationSkill)
-            changed = true
+
+        for (const [skillId, builtinSkill] of Object.entries(builtinSkills)) {
+            if (!safeJsonEquals(config.skills[skillId], builtinSkill)) {
+                config.skills[skillId] = this._clone(builtinSkill)
+                changed = true
+            }
         }
         if (!safeJsonEquals(config.prompts[BUILTIN_PROMPT_ID], builtinPrompt)) {
             config.prompts[BUILTIN_PROMPT_ID] = this._clone(builtinPrompt)
@@ -1767,11 +1776,6 @@ class GlobalConfig {
             changed = true
         }
 
-        const nextMcpServers = reorderObjectWithFirstKeys(config.mcpServers, BUILTIN_MCP_SERVER_IDS)
-        if (!safeJsonEquals(nextMcpServers, config.mcpServers)) {
-            config.mcpServers = nextMcpServers
-            changed = true
-        }
         const nextSkills = reorderObjectWithFirstKeys(config.skills, BUILTIN_SKILL_IDS)
         if (!safeJsonEquals(nextSkills, config.skills)) {
             config.skills = nextSkills
@@ -1846,10 +1850,6 @@ class GlobalConfig {
             return fs.existsSync(filePath)
         } catch {
             return false
-        }
-        if (!safeJsonEquals(config.mcpServers[BUILTIN_SHELL_MCP_SERVER_ID], builtinShellMcp)) {
-            config.mcpServers[BUILTIN_SHELL_MCP_SERVER_ID] = this._clone(builtinShellMcp)
-            changed = true
         }
     }
 
@@ -2314,7 +2314,7 @@ class GlobalConfig {
 
     _normalizeSkillInnerPath(filePath, fallback = 'SKILL.md') {
         const raw = typeof filePath === 'string' ? filePath.trim() : ''
-        const normalized = raw ? raw.replace(/\\/g, '/').replace(/^\/+/, '') : fallback
+        const normalized = raw ? raw.replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/^\/+/, '') : fallback
         if (!normalized) throw new Error('filePath cannot be empty')
         if (normalized.includes('\0')) throw new Error('filePath contains illegal character')
         if (normalized.split('/').some((part) => part === '..')) {
@@ -2343,13 +2343,14 @@ class GlobalConfig {
                 if (skipDirs.has(entry.name)) return
                 const relPath = relativeBase ? `${relativeBase}/${entry.name}` : entry.name
                 const nextAbs = path.join(currentAbs, entry.name)
+                const normalized = relPath.replace(/\\/g, '/')
+                if (isSensitiveSkillEnvironmentFilePath(normalized)) return
                 if (entry.isDirectory()) {
                     walk(nextAbs, relPath)
                     return
                 }
                 if (!entry.isFile()) return
 
-                const normalized = relPath.replace(/\\/g, '/')
                 if (normalized === 'SKILL.md') return
                 if (normalized.startsWith('references/')) fileIndex.references.push(normalized)
                 else if (normalized.startsWith('scripts/')) fileIndex.scripts.push(normalized)
@@ -2361,6 +2362,86 @@ class GlobalConfig {
 
         walk(skillRoot)
         return normalizeFileIndex(fileIndex)
+    }
+
+    _scanSkillDirectoryFileDetails(skillRoot, fileIndex) {
+        const index = normalizeFileIndex(fileIndex)
+        const paths = [
+            index.skill,
+            ...index.references,
+            ...index.scripts,
+            ...index.assets,
+            ...index.agents,
+            ...index.extra
+        ]
+        return paths.map((relativePath) => {
+            const resolved = this._resolveSkillFileAbs(skillRoot, relativePath)
+            if (!fs.existsSync(resolved.abs)) return null
+            const stat = fs.statSync(resolved.abs)
+            if (!stat.isFile()) return null
+            const category =
+                resolved.inner === index.skill
+                    ? 'skill'
+                    : ['references', 'scripts', 'assets', 'agents'].find((name) => resolved.inner.startsWith(`${name}/`)) || 'extra'
+            return {
+                path: resolved.inner,
+                category,
+                size: Number(stat.size) || 0,
+                mtimeMs: Number(stat.mtimeMs) || 0
+            }
+        }).filter(Boolean)
+    }
+
+    _readSkillAgentConfig(skillRoot, fileIndex) {
+        const index = normalizeFileIndex(fileIndex)
+        const metadataPath = index.agents.find((item) => item.toLowerCase() === 'agents/openai.yaml') || ''
+        if (!metadataPath) {
+            return {
+                path: '',
+                interface: normalizeSkillInterfaceMetadata(),
+                policy: { allowImplicitInvocation: true },
+                warnings: ['agents/openai.yaml 未提供，将使用默认展示信息。']
+            }
+        }
+
+        const resolved = this._resolveSkillFileAbs(skillRoot, metadataPath)
+        const parsed = parseSkillAgentYaml(fs.readFileSync(resolved.abs, 'utf-8'))
+        const interfaceMetadata = normalizeSkillInterfaceMetadata(parsed.interface)
+        const warnings = []
+        const validateIconPath = (rawPath, fieldName) => {
+            if (!rawPath) return ''
+            const inner = this._normalizeSkillInnerPath(rawPath, '')
+            if (!inner.startsWith('assets/')) {
+                warnings.push(`${fieldName} 必须指向 assets/ 内的文件。`)
+                return ''
+            }
+            const iconFile = this._resolveSkillFileAbs(skillRoot, inner)
+            if (!fs.existsSync(iconFile.abs) || !fs.statSync(iconFile.abs).isFile()) {
+                warnings.push(`${fieldName} 文件不存在：${inner}`)
+                return ''
+            }
+            if (!['.svg', '.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif'].includes(path.extname(iconFile.abs).toLowerCase())) {
+                warnings.push(`${fieldName} 不是受支持的图片格式：${inner}`)
+                return ''
+            }
+            return inner
+        }
+
+        interfaceMetadata.iconSmall = validateIconPath(interfaceMetadata.iconSmall, 'icon_small')
+        interfaceMetadata.iconLarge = validateIconPath(interfaceMetadata.iconLarge, 'icon_large')
+        if (interfaceMetadata.brandColor && !/^#[0-9a-f]{6}$/i.test(interfaceMetadata.brandColor)) {
+            warnings.push('brand_color 应为 6 位十六进制颜色。')
+            interfaceMetadata.brandColor = ''
+        }
+
+        return {
+            path: metadataPath,
+            interface: interfaceMetadata,
+            policy: {
+                allowImplicitInvocation: parsed?.policy?.allow_implicit_invocation !== false
+            },
+            warnings
+        }
     }
 
     _analyzeSkillScriptFile(skillRoot, scriptPath) {
@@ -2634,6 +2715,42 @@ class GlobalConfig {
         return this.refreshSkillFromSource(skill._id)
     }
 
+    _loadSkillDotEnv(skillRoot) {
+        const envPath = path.resolve(skillRoot, SKILL_DOTENV_FILENAME)
+        if (!isPathInside(skillRoot, envPath)) {
+            throw new Error('skill .env path escaped the skill directory')
+        }
+        if (!fs.existsSync(envPath)) return {}
+
+        const stat = fs.lstatSync(envPath)
+        if (stat.isSymbolicLink() || !stat.isFile()) {
+            throw new Error('skill .env must be a regular file')
+        }
+        if (stat.size > MAX_SKILL_DOTENV_BYTES) {
+            throw new Error(`skill .env cannot exceed ${MAX_SKILL_DOTENV_BYTES} bytes`)
+        }
+
+        let parsed
+        try {
+            parsed = parseSkillDotEnv(fs.readFileSync(envPath, 'utf-8'))
+        } catch (error) {
+            throw new Error(`invalid skill .env: ${error?.message || String(error)}`)
+        }
+
+        const safeEnv = {}
+        Object.entries(parsed || {}).forEach(([rawKey, rawValue]) => {
+            const key = String(rawKey || '').trim()
+            if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+                throw new Error(`invalid skill .env variable name: ${key || '(empty)'}`)
+            }
+            if (isReservedSkillEnvironmentKey(key)) {
+                throw new Error(`skill .env cannot override reserved environment variable: ${key}`)
+            }
+            safeEnv[key] = String(rawValue ?? '')
+        })
+        return safeEnv
+    }
+
     _buildSkillRuntimeEnvironment(dataRoot, skill, skillRoot, scriptPath) {
         const safeSkillId = String(skill?._id || 'skill').replace(/[^A-Za-z0-9_-]/g, '_')
         const runtimeRoot = path.resolve(dataRoot, '.ai-tools-settings', 'runtime', 'skills', safeSkillId)
@@ -2646,6 +2763,7 @@ class GlobalConfig {
             fs.mkdirSync(dir, { recursive: true })
         })
 
+        const skillEnv = this._loadSkillDotEnv(skillRoot)
         const env = {}
         ;[
             'PATH',
@@ -2666,6 +2784,7 @@ class GlobalConfig {
         })
 
         return {
+            ...skillEnv,
             ...env,
             HOME: runtimeRoot,
             USERPROFILE: runtimeRoot,
@@ -2701,7 +2820,15 @@ class GlobalConfig {
         const scriptCatalog = Array.isArray(cache?.scriptCatalog) ? cache.scriptCatalog : null
 
         if (!fileIndex) return true
-        if (!scriptCatalog || !scriptCatalog.length) return true
+        if (!Array.isArray(cache?.fileDetails)) return true
+        const cachedPaths = ['references', 'scripts', 'assets', 'agents', 'extra']
+            .flatMap((key) => normalizeStringList(fileIndex?.[key]))
+        if (cachedPaths.some((item) => isSensitiveSkillEnvironmentFilePath(item))) return true
+        if (cache.fileDetails.some((item) => isSensitiveSkillEnvironmentFilePath(item?.path))) return true
+        if (!skill?.interface || typeof skill.interface !== 'object') return true
+        const runnableScripts = normalizeStringList(fileIndex?.scripts).filter((item) => isRunnableSkillScriptPath(item))
+        if (runnableScripts.length && (!scriptCatalog || !scriptCatalog.length)) return true
+        if (!runnableScripts.length) return false
         if (cache?.scriptManifestPath) return false
 
         return scriptCatalog.every((entry) => {
@@ -2724,14 +2851,21 @@ class GlobalConfig {
             try {
                 const skillRoot = this._ensureAbsoluteDirectory(skill.sourcePath, 'sourcePath')
                 const fileIndex = this._scanSkillDirectoryFiles(skillRoot)
+                const fileDetails = this._scanSkillDirectoryFileDetails(skillRoot, fileIndex)
+                const agentConfig = this._readSkillAgentConfig(skillRoot, fileIndex)
                 const { scriptCatalog, scriptManifestPath } = this._loadSkillScriptCatalog(skillRoot, fileIndex)
                 const prevCache = skill?.cache && typeof skill.cache === 'object' ? skill.cache : {}
 
+                skill.interface = agentConfig.interface
+                skill.policy = agentConfig.policy
                 skill.cache = {
                     ...prevCache,
                     fileIndex,
+                    fileDetails,
                     scriptCatalog,
                     scriptManifestPath,
+                    metadataPath: agentConfig.path,
+                    validationWarnings: agentConfig.warnings,
                     refreshedAt: prevCache.refreshedAt || new Date().toISOString()
                 }
             } catch {
@@ -2757,12 +2891,15 @@ class GlobalConfig {
         const baseId = `skill_${slugify(skillName)}`
         const nextId = suggestedId || `${baseId}_${hashString(skillRoot).slice(0, 6)}`
         const fileIndex = this._scanSkillDirectoryFiles(skillRoot)
+        const fileDetails = this._scanSkillDirectoryFileDetails(skillRoot, fileIndex)
+        const agentConfig = this._readSkillAgentConfig(skillRoot, fileIndex)
         const { scriptCatalog, scriptManifestPath } = this._loadSkillScriptCatalog(skillRoot, fileIndex)
 
         return {
             ...(existing && typeof existing === 'object' ? existing : {}),
             _id: nextId,
-            name: skillName,
+            name: agentConfig.interface.displayName || skillName,
+            packageName: skillName,
             description,
             content: '',
             sourceType: 'directory',
@@ -2771,12 +2908,23 @@ class GlobalConfig {
             triggers: existing?.triggers && typeof existing.triggers === 'object' ? { ...existing.triggers } : {},
             mcp: normalizeStringList(existing?.mcp),
             install: existing?.install && typeof existing.install === 'object' ? { ...existing.install } : null,
+            interface: agentConfig.interface,
+            policy: agentConfig.policy,
+            capabilities: {
+                referenceCount: fileIndex.references.length,
+                scriptCount: scriptCatalog.length,
+                assetCount: fileIndex.assets.length,
+                agentMetadataCount: fileIndex.agents.length
+            },
             cache: {
                 frontmatter,
                 summary,
                 fileIndex,
+                fileDetails,
                 scriptCatalog,
                 scriptManifestPath,
+                metadataPath: agentConfig.path,
+                validationWarnings: agentConfig.warnings,
                 refreshedAt: new Date().toISOString()
             }
         }
@@ -2939,9 +3087,6 @@ class GlobalConfig {
                     continue;
                 }
 
-                if (BUILTIN_MCP_SERVER_IDS.includes(id)) {
-                    throw new Error(`内置 MCP 冲突：${id}`);
-                }
                 if (!overwrite) {
                     throw new Error(`MCP server 已存在：${id}（如需覆盖请启用 overwrite）`);
                 }
@@ -3107,7 +3252,7 @@ class GlobalConfig {
         const mcpServers = includeMcpServers
             ? (Array.isArray(skill?.mcp) ? skill.mcp : [])
                 .map((mcpId) => config.mcpServers?.[mcpId])
-                .filter((item) => item && !BUILTIN_MCP_SERVER_IDS.includes(item._id))
+                .filter(Boolean)
             : [];
 
         const payload = buildExportableSkillPackage({
@@ -3187,7 +3332,7 @@ class GlobalConfig {
             throw new Error(`skill id already exists: ${sourceRecord._id}`)
         }
 
-        const managedRoot = this._copySkillDirectoryToManagedRoot(config, absRoot, sourceRecord._id, sourceRecord.name)
+        const managedRoot = this._copySkillDirectoryToManagedRoot(config, absRoot, sourceRecord._id, sourceRecord.packageName)
         const record = this._buildDirectorySkillRecord(managedRoot, {
             id: sourceRecord._id,
             existing
@@ -3286,7 +3431,8 @@ class GlobalConfig {
         if (!skillId) throw new Error('skill id cannot be empty')
         let skill = this.getSkill(skillId)
 
-        if (String(skill?.sourceType || '').trim() !== 'directory') {
+        const sourceType = String(skill?.sourceType || '').trim()
+        if (sourceType !== 'directory' && sourceType !== 'builtin-directory') {
             const inner = this._normalizeSkillInnerPath(filePath)
             if (inner !== 'SKILL.md') throw new Error('inline skill only supports SKILL.md')
             return {
@@ -3297,9 +3443,12 @@ class GlobalConfig {
             }
         }
 
-        skill = this._ensureManagedSkillForUse(skill)
+        if (sourceType === 'directory') skill = this._ensureManagedSkillForUse(skill)
         const skillRoot = this._ensureAbsoluteDirectory(skill.sourcePath, 'sourcePath')
         const resolved = this._resolveSkillFileAbs(skillRoot, filePath || skill.entryFile || 'SKILL.md')
+        if (isSensitiveSkillEnvironmentFilePath(resolved.inner)) {
+            throw new Error('skill environment files cannot be read')
+        }
         if (!fs.existsSync(resolved.abs)) throw new Error(`skill file not found: ${resolved.inner}`)
         const stat = fs.statSync(resolved.abs)
         if (!stat.isFile()) throw new Error(`技能路径不是文件：${resolved.inner}`)
@@ -3311,13 +3460,67 @@ class GlobalConfig {
             '.html', '.css', '.svg', '.xml', '.toml', '.ini', '.cfg', '.conf', '.env',
             '.sql', '.rb', '.go', '.rs', '.java', '.kt', '.kts', '.php'
         ])
-        if (!textExts.has(ext)) throw new Error(`binary skill file is not supported: ${resolved.inner}`)
+        if (!textExts.has(ext) && !isSkillEnvironmentExampleFilePath(resolved.inner)) {
+            throw new Error(`binary skill file is not supported: ${resolved.inner}`)
+        }
 
         return {
             id: skillId,
             path: resolved.inner,
             content: fs.readFileSync(resolved.abs, 'utf-8'),
-            sourceType: 'directory'
+            sourceType
+        }
+    }
+
+    readSkillIcon(id, variant = 'small') {
+        const skillId = typeof id === 'string' ? id.trim() : ''
+        if (!skillId) throw new Error('skill id cannot be empty')
+        let skill = this.getSkill(skillId)
+        const sourceType = String(skill?.sourceType || '').trim()
+        if (sourceType !== 'directory' && sourceType !== 'builtin-directory') return null
+        if (sourceType === 'directory') skill = this._ensureManagedSkillForUse(skill)
+
+        const interfaceMetadata = normalizeSkillInterfaceMetadata(skill?.interface)
+        const requested = String(variant || '').trim().toLowerCase() === 'large'
+            ? interfaceMetadata.iconLarge || interfaceMetadata.iconSmall
+            : interfaceMetadata.iconSmall || interfaceMetadata.iconLarge
+        if (!requested) return null
+
+        const skillRoot = this._ensureAbsoluteDirectory(skill.sourcePath, 'sourcePath')
+        const inner = this._normalizeSkillInnerPath(requested, '')
+        if (!inner.startsWith('assets/')) throw new Error('skill icon must be stored under assets/')
+        const resolved = this._resolveSkillFileAbs(skillRoot, inner)
+        if (!fs.existsSync(resolved.abs)) throw new Error(`skill icon not found: ${inner}`)
+        const stat = fs.statSync(resolved.abs)
+        if (!stat.isFile()) throw new Error(`skill icon is not a file: ${inner}`)
+        if (stat.size > 2 * 1024 * 1024) throw new Error('skill icon cannot exceed 2 MB')
+
+        const ext = path.extname(resolved.abs).toLowerCase()
+        const mimeByExtension = {
+            '.svg': 'image/svg+xml',
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.webp': 'image/webp',
+            '.gif': 'image/gif',
+            '.avif': 'image/avif'
+        }
+        const mime = mimeByExtension[ext]
+        if (!mime) throw new Error(`unsupported skill icon type: ${ext || '(none)'}`)
+        const bytes = fs.readFileSync(resolved.abs)
+        if (ext === '.svg') {
+            const svg = bytes.toString('utf-8')
+            if (/<script\b|on[a-z]+\s*=|(?:href|src)\s*=\s*["'](?:https?:|javascript:|data:)/i.test(svg)) {
+                throw new Error('skill SVG icon contains active or remote content')
+            }
+        }
+
+        return {
+            id: skillId,
+            path: inner,
+            mime,
+            size: Number(stat.size) || 0,
+            dataUrl: `data:${mime};base64,${bytes.toString('base64')}`
         }
     }
 
@@ -3843,6 +4046,10 @@ class GlobalConfig {
     _normalizeCustomMcpServerRecord(item) {
         const record = this._isPlainObject(item) ? { ...item } : {}
         const transportType = String(record.transportType || '').trim()
+        record.icon = normalizeConfigIconValue(record.icon)
+        record.brandColor = /^#[0-9a-f]{6}$/i.test(String(record.brandColor || '').trim())
+            ? String(record.brandColor || '').trim()
+            : ''
         if (transportType === 'stdio') {
             delete record.url
             delete record.headers
@@ -3885,7 +4092,6 @@ class GlobalConfig {
     }
 
     updateMcpServer(id, updatedFields) {
-        if (BUILTIN_MCP_SERVER_IDS.includes(id)) throw new Error('内置 MCP 不可修改');
         const config = this._getRaw();
         if (!config.mcpServers[id]) throw new Error('MCP server not found');
         const merged = { ...config.mcpServers[id], ...updatedFields }
@@ -3899,7 +4105,6 @@ class GlobalConfig {
     }
 
     deleteMcpServer(id) {
-        if (BUILTIN_MCP_SERVER_IDS.includes(id)) throw new Error('内置 MCP 不可删除');
         const config = this._getRaw();
         if (!config.mcpServers[id]) throw new Error('MCP server not found');
         delete config.mcpServers[id];

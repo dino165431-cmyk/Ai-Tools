@@ -1,0 +1,9 @@
+interface:
+  display_name: "超级笔记管理与执行"
+  short_description: "管理 Markdown 与超级笔记，支持检索、读写、移动、删除和执行。"
+  icon_small: "./assets/icon.svg"
+  icon_large: "./assets/icon.svg"
+  brand_color: "#6D5DFB"
+  default_prompt: "Use $manage-notes to find, update, organize, or execute a note."
+policy:
+  allow_implicit_invocation: true

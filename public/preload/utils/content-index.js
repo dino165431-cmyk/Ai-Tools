@@ -7,10 +7,11 @@ const {
   normalizeContentSearchConfig
 } = require('./contentSearchConfig')
 
-const INDEX_VERSION = 2
+const INDEX_VERSION = 3
 const SYSTEM_DIR_NAME = '.ai-tools-settings'
 const INDEX_DIR_NAME = 'indexes'
 const NOTE_CONTENT_SAMPLE_BYTES = 32 * 1024
+const NOTEBOOK_CONTENT_SAMPLE_BYTES = 2 * 1024 * 1024
 const SESSION_CONTENT_SAMPLE_BYTES = 64 * 1024
 const MAX_INDEX_PREVIEW_LENGTH = 320
 const MAX_INDEX_SEARCH_TEXT_LENGTH = 4096
@@ -37,6 +38,7 @@ const INDEX_KINDS = Object.freeze({
     root: 'note',
     entryType: 'note',
     extension: '.md',
+    extensions: Object.freeze(['.md', '.ipynb']),
     source: 'filesystem',
     defaultSearchLimit: 20,
     defaultRecentLimit: 20
@@ -121,6 +123,25 @@ function normalizePreviewText(value, maxLength = MAX_INDEX_PREVIEW_LENGTH) {
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, maxLength)
+}
+
+function getKindFileExtensions(kindConfig) {
+  const configured = Array.isArray(kindConfig?.extensions) ? kindConfig.extensions : [kindConfig?.extension]
+  return configured
+    .map((extension) => String(extension || '').trim().toLowerCase())
+    .filter(Boolean)
+    .sort((left, right) => right.length - left.length)
+}
+
+function getMatchedKindFileExtension(kindConfig, filename) {
+  const normalized = String(filename || '').trim().toLowerCase()
+  return getKindFileExtensions(kindConfig).find((extension) => normalized.endsWith(extension)) || ''
+}
+
+function stripKindFileExtension(kindConfig, filename) {
+  const text = String(filename || '')
+  const extension = getMatchedKindFileExtension(kindConfig, text)
+  return extension ? text.slice(0, -extension.length) : text
 }
 
 function normalizeInlineText(value, maxLength = 240) {
@@ -425,6 +446,52 @@ function extractNoteMetadata(text, entry) {
   return { title, preview, searchText }
 }
 
+function extractNotebookMetadata(text, entry) {
+  let notebook = null
+  try {
+    notebook = JSON.parse(String(text || ''))
+  } catch {
+    return extractNoteMetadata(text, entry)
+  }
+
+  const cells = Array.isArray(notebook?.cells) ? notebook.cells : []
+  const sourceBlocks = cells
+    .map((cell) => Array.isArray(cell?.source) ? cell.source.join('') : String(cell?.source || ''))
+    .map((source) => normalizeSearchText(source, MAX_INDEX_SEARCH_TEXT_LENGTH))
+    .filter(Boolean)
+  const codeCells = cells.filter((cell) => String(cell?.cell_type || '').trim() === 'code')
+  const runtimes = [...new Set(codeCells
+    .map((cell) => String(cell?.metadata?.aiTools?.runtime || notebook?.metadata?.language_info?.name || '').trim().toLowerCase())
+    .filter(Boolean))]
+  const markdownTitle = sourceBlocks
+    .map((source) => source.match(/^\s{0,3}#{1,6}\s+(.+)$/m)?.[1] || '')
+    .find(Boolean)
+  const metadataTitle = String(
+    notebook?.metadata?.title ||
+    notebook?.metadata?.aiTools?.title ||
+    ''
+  ).trim()
+  const title = normalizePreviewText(metadataTitle || markdownTitle || entry?.name || '')
+  const preview = normalizePreviewText(sourceBlocks.join(' '))
+  const searchText = normalizeSearchText([
+    title,
+    preview,
+    sourceBlocks.join('\n'),
+    runtimes.join(' '),
+    entry?.name || '',
+    entry?.path || ''
+  ].join('\n'))
+  return {
+    title,
+    preview,
+    searchText,
+    noteType: 'notebook',
+    cellCount: cells.length,
+    codeCellCount: codeCells.length,
+    runtimes
+  }
+}
+
 function extractJsonStringField(text, key) {
   const source = String(text || '')
   const keyPattern = String(key || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -457,7 +524,12 @@ function extractSessionMetadata(text, entry) {
 }
 
 async function buildEntryMetadata(kind, absPath, entry) {
-  const sampleBytes = kind === 'session' ? SESSION_CONTENT_SAMPLE_BYTES : NOTE_CONTENT_SAMPLE_BYTES
+  const isNotebook = kind === 'note' && String(absPath || '').toLowerCase().endsWith('.ipynb')
+  const sampleBytes = kind === 'session'
+    ? SESSION_CONTENT_SAMPLE_BYTES
+    : isNotebook
+      ? NOTEBOOK_CONTENT_SAMPLE_BYTES
+      : NOTE_CONTENT_SAMPLE_BYTES
   let text = ''
   try {
     text = await readTextSnippet(absPath, sampleBytes)
@@ -472,6 +544,9 @@ async function buildEntryMetadata(kind, absPath, entry) {
 
   if (kind === 'session') {
     return extractSessionMetadata(text, entry)
+  }
+  if (isNotebook) {
+    return extractNotebookMetadata(text, entry)
   }
   return extractNoteMetadata(text, entry)
 }
@@ -664,6 +739,21 @@ async function requestEmbeddingVector(text, selection) {
         json = await response.json()
       } catch {
         throw new Error('Invalid JSON response')
+      }
+      const usage = json?.usage || json?.usageMetadata || json?.usage_metadata
+      if (usage && typeof usage === 'object') {
+        try {
+          const usageStatistics = require('./usage-statistics')
+          await usageStatistics.recordUsage({
+            usage,
+            providerId: String(selection?.providerId || ''),
+            model,
+            endpoint: 'embeddings',
+            purpose: 'content-index-embedding'
+          })
+        } catch (error) {
+          console.warn('[content-index] failed to record embedding usage:', error?.message || String(error))
+        }
       }
 
       return Array.isArray(json?.data?.[0]?.embedding)
@@ -892,7 +982,7 @@ function shouldIndexFile(kind, relativePath) {
   const segments = relInRoot.split('/').filter(Boolean)
   if (!segments.length) return false
   const fileName = segments.at(-1)
-  if (!String(fileName || '').toLowerCase().endsWith(kindConfig.extension)) return false
+  if (!getMatchedKindFileExtension(kindConfig, fileName)) return false
 
   for (let i = 0; i < segments.length - 1; i += 1) {
     if (shouldIgnoreSegment(kindConfig, segments[i], true)) return false
@@ -946,7 +1036,7 @@ function makeEntry(kind, relativePath, statInfo, metadata = {}, options = {}) {
   return {
     type: kindConfig.entryType,
     path: relInRoot,
-    name: filename.slice(0, -kindConfig.extension.length),
+    name: stripKindFileExtension(kindConfig, filename),
     filename,
     dirPath: dirPath === '.' ? '' : dirPath,
     size: Number(statInfo?.size) || 0,
@@ -955,6 +1045,14 @@ function makeEntry(kind, relativePath, statInfo, metadata = {}, options = {}) {
     preview: normalizePreviewText(metadata?.preview || ''),
     searchText: normalizeSearchText(metadata?.searchText || ''),
     embedding: Array.isArray(options?.embedding) ? options.embedding.map((value) => Number(value) || 0) : [],
+    ...(metadata?.noteType
+      ? {
+          noteType: String(metadata.noteType),
+          cellCount: Math.max(0, Math.floor(Number(metadata.cellCount) || 0)),
+          codeCellCount: Math.max(0, Math.floor(Number(metadata.codeCellCount) || 0)),
+          runtimes: normalizeStringList(metadata.runtimes)
+        }
+      : {}),
     ...(
       isPlainObject(options?.extraFields)
         ? options.extraFields
@@ -1212,14 +1310,14 @@ async function scanEntries(kind, options = {}) {
         const statInfo = await fs.stat(nextAbsPath)
         const metadata = await buildEntryMetadata(kindConfig.kind, nextAbsPath, {
           path: nextRelPath.slice(kindConfig.root.length + 1),
-          name: path.posix.basename(nextRelPath).slice(0, -kindConfig.extension.length)
+          name: stripKindFileExtension(kindConfig, path.posix.basename(nextRelPath))
         })
         if (kindConfig.kind === 'note' && metadata?.encrypted) continue
         const embedding = hybridEnabled
           ? await requestEmbeddingVector(
             buildEntryEmbeddingText(kindConfig.kind, metadata, {
               path: nextRelPath.slice(kindConfig.root.length + 1),
-              name: path.posix.basename(nextRelPath).slice(0, -kindConfig.extension.length)
+              name: stripKindFileExtension(kindConfig, path.posix.basename(nextRelPath))
             }),
             searchConfig.embedding
           )
@@ -1536,7 +1634,7 @@ async function upsertPath(relativePath) {
 
   const metadata = await buildEntryMetadata(kind, absPath, {
     path: normalizeRelativePath(relativePath).slice(getKindConfig(kind).root.length + 1),
-    name: path.posix.basename(normalizeRelativePath(relativePath)).slice(0, -getKindConfig(kind).extension.length)
+    name: stripKindFileExtension(getKindConfig(kind), path.posix.basename(normalizeRelativePath(relativePath)))
   })
   if (kind === 'note' && metadata?.encrypted) {
     const relInRoot = normalizeRelativePath(relativePath).slice(getKindConfig(kind).root.length + 1)
@@ -1556,7 +1654,7 @@ async function upsertPath(relativePath) {
     ? await requestEmbeddingVector(
       buildEntryEmbeddingText(kind, metadata, {
         path: normalizeRelativePath(relativePath).slice(getKindConfig(kind).root.length + 1),
-        name: path.posix.basename(normalizeRelativePath(relativePath)).slice(0, -getKindConfig(kind).extension.length)
+        name: stripKindFileExtension(getKindConfig(kind), path.posix.basename(normalizeRelativePath(relativePath)))
       }),
       searchConfig.embedding
     )
@@ -1626,7 +1724,10 @@ function replaceEntryPath(entry, fromRelInRoot, toRelInRoot) {
     path: nextPath,
     dirPath: dirPath === '.' ? '' : dirPath,
     filename,
-    name: filename.slice(0, -(entry?.type === 'session' ? '.json'.length : '.md'.length)),
+    name: stripKindFileExtension(
+      getKindConfig(entry?.type === 'session' ? 'session' : 'note'),
+      filename
+    ),
     searchText: normalizeSearchText(
       String(entry?.searchText || '')
         .replace(new RegExp(String(fromRelInRoot || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), toRelInRoot)
@@ -1684,14 +1785,14 @@ async function movePath(fromRelativePath, toRelativePath, options = {}) {
         if (statInfo.isFile()) {
           const metadata = await buildEntryMetadata(kind, absPath, {
             path: toRelInRoot,
-            name: path.posix.basename(toRelInRoot).slice(0, -getKindConfig(kind).extension.length)
+            name: stripKindFileExtension(getKindConfig(kind), path.posix.basename(toRelInRoot))
           })
           if (!(kind === 'note' && metadata?.encrypted)) {
             const embedding = isHybridSearchEnabled(searchConfig)
               ? await requestEmbeddingVector(
                 buildEntryEmbeddingText(kind, metadata, {
                   path: toRelInRoot,
-                  name: path.posix.basename(toRelInRoot).slice(0, -getKindConfig(kind).extension.length)
+                  name: stripKindFileExtension(getKindConfig(kind), path.posix.basename(toRelInRoot))
                 }),
                 searchConfig.embedding
               )
@@ -1709,14 +1810,14 @@ async function movePath(fromRelativePath, toRelativePath, options = {}) {
         if (statInfo.isFile()) {
           const metadata = await buildEntryMetadata(kind, absPath, {
             path: toRelInRoot,
-            name: path.posix.basename(toRelInRoot).slice(0, -getKindConfig(kind).extension.length)
+            name: stripKindFileExtension(getKindConfig(kind), path.posix.basename(toRelInRoot))
           })
           if (!(kind === 'note' && metadata?.encrypted)) {
             const embedding = isHybridSearchEnabled(searchConfig)
               ? await requestEmbeddingVector(
                 buildEntryEmbeddingText(kind, metadata, {
                   path: toRelInRoot,
-                  name: path.posix.basename(toRelInRoot).slice(0, -getKindConfig(kind).extension.length)
+                  name: stripKindFileExtension(getKindConfig(kind), path.posix.basename(toRelInRoot))
                 }),
                 searchConfig.embedding
               )

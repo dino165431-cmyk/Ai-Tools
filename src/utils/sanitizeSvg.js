@@ -109,7 +109,7 @@ export function sanitizeSvgTree(svgInput, { aggressive = false } = {}) {
         ''
     ).trim()
 
-    if (tagName !== 'image' && isExternalSvgReference(href)) {
+    if ((tagName !== 'image' || aggressive) && isExternalSvgReference(href)) {
       node.removeAttribute('href')
       node.removeAttribute('xlink:href')
       node.removeAttributeNS?.('http://www.w3.org/1999/xlink', 'href')
@@ -132,4 +132,16 @@ export function sanitizeSvgTree(svgInput, { aggressive = false } = {}) {
   })
 
   return svg
+}
+
+export function sanitizeSvgMarkup(svgInput, options = {}) {
+  const svg = sanitizeSvgTree(svgInput, {
+    aggressive: true,
+    ...options
+  })
+  const Serializer = globalThis?.XMLSerializer || globalThis?.window?.XMLSerializer
+  if (typeof Serializer !== 'function') {
+    throw new Error('当前环境不支持 SVG 序列化')
+  }
+  return new Serializer().serializeToString(svg)
 }

@@ -132,6 +132,24 @@ export const routers = [
                 }
             },
             {
+                path: 'skills/new',
+                name: 'skillNew',
+                component: () => import('@/views/pages/setting/skill/SkillDetail.vue'),
+                meta: {
+                    label: '新建技能',
+                    description: '创建内联技能'
+                }
+            },
+            {
+                path: 'skills/:id',
+                name: 'skillDetail',
+                component: () => import('@/views/pages/setting/skill/SkillDetail.vue'),
+                meta: {
+                    label: '技能详情',
+                    description: '查看技能包、界面元数据、文件和绑定'
+                }
+            },
+            {
                 path: 'tools',
                 name: 'mcp',
                 component: () => import('@/views/pages/setting/mcp/Mcp.vue'),
@@ -139,7 +157,7 @@ export const routers = [
                     keepAlive: true,
                     menu: true,
                     label: '扩展工具',
-                    description: '管理 MCP 服务和内置 Bash 工具箱',
+                    description: '管理外部 MCP 服务及其工具权限',
                     icon: BareMetalServer02
                 }
             },

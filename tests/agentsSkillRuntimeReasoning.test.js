@@ -17,7 +17,7 @@ function extractSnippetBetween(source, startMarker, endMarker) {
 }
 
 function loadBuildUtoolsAiMessages() {
-  const filePath = path.resolve('public/preload/builtins/agents-mcp-client.js')
+  const filePath = path.resolve('public/preload/builtin-skills/orchestrate-agents/runtime.js')
   const source = fs.readFileSync(filePath, 'utf8')
   const snippets = [
     extractSnippetBetween(source, 'function cleanString(', 'function isPlainObject('),
@@ -33,7 +33,7 @@ function loadBuildUtoolsAiMessages() {
   return module.exports
 }
 
-test('agents MCP uTools message builder preserves empty assistant reasoning_content fields', () => {
+test('agents Skill runtime uTools message builder preserves empty assistant reasoning_content fields', () => {
   const { buildUtoolsAiMessages, extractReasoningText } = loadBuildUtoolsAiMessages()
   const messages = buildUtoolsAiMessages({
     systemContent: 'system',
@@ -55,7 +55,7 @@ test('agents MCP uTools message builder preserves empty assistant reasoning_cont
   assert.equal(extractReasoningText({ thinking: 'model-thought' }), 'model-thought')
 })
 
-test('agents MCP uTools message builder keeps tool state messages for continuation', () => {
+test('agents Skill runtime uTools message builder keeps tool state messages for continuation', () => {
   const { buildUtoolsAiMessages } = loadBuildUtoolsAiMessages()
   const messages = buildUtoolsAiMessages({
     systemContent: '',
@@ -93,8 +93,8 @@ test('agents MCP uTools message builder keeps tool state messages for continuati
   assert.equal(messages[1]?.content, 'tool result')
 })
 
-test('agents MCP uTools tool registration binds the host object only', async () => {
-  const filePath = path.resolve('public/preload/builtins/agents-mcp-client.js')
+test('agents Skill runtime uTools tool registration binds the host object only', async () => {
+  const filePath = path.resolve('public/preload/builtin-skills/orchestrate-agents/runtime.js')
   const source = fs.readFileSync(filePath, 'utf8')
   const snippets = [
     extractSnippetBetween(source, 'function cleanString(', 'function isPlainObject('),
@@ -117,7 +117,7 @@ test('agents MCP uTools tool registration binds the host object only', async () 
         tools: [
           {
             function: {
-              name: 'mcp__builtin_config_mcp__config_get_system_time'
+              name: 'skill_call'
             }
           }
         ],
@@ -127,20 +127,24 @@ test('agents MCP uTools tool registration binds the host object only', async () 
         }
       })
 
-      globalThis.hasWindow = typeof window.mcp__builtin_config_mcp__config_get_system_time === 'function'
-      await window.mcp__builtin_config_mcp__config_get_system_time({ source: 'window' })
+      globalThis.hasWindow = typeof window.skill_call === 'function'
+      await window.skill_call({
+        skill_id: 'builtin_skill_config',
+        action: 'config_get_system_time',
+        args: { source: 'window' }
+      })
       restore()
 
       globalThis.calls = calls
-      globalThis.afterWindow = typeof window.mcp__builtin_config_mcp__config_get_system_time
-      globalThis.afterGlobal = typeof mcp__builtin_config_mcp__config_get_system_time
+      globalThis.afterWindow = typeof window.skill_call
+      globalThis.afterGlobal = typeof skill_call
     })()
   `
   await new vm.Script(runSource, { filename: 'register-utools-ai-tool-functions.test.js' }).runInContext(context)
 
   assert.equal(context.hasWindow, true)
   assert.equal(context.calls.length, 1)
-  assert.equal(context.calls[0]?.name, 'mcp__builtin_config_mcp__config_get_system_time')
+  assert.equal(context.calls[0]?.name, 'skill_call')
   assert.equal(context.afterWindow, 'undefined')
   assert.equal(context.afterGlobal, 'undefined')
 })

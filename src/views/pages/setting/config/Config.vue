@@ -233,7 +233,7 @@
               <n-text strong>Agent / 笔记 / 会话检索</n-text>
               <n-text depth="3">{{ contentSearchSummary }}</n-text>
               <n-text depth="3" style="font-size: 12px;">
-                默认仅做关键词检索；配置向量模型并切到混合模式后，会对 Agent、笔记和会话索引同时生成 embedding，并在搜索时结合关键词与语义分数。Agent 索引会随智能体、提示词、技能、MCP 和服务商配置变更自动维护；笔记与会话索引会随各自内容的增删改、移动以及配置切换自动维护。加密笔记不会进入笔记索引，也不会出现在搜索和最近列表中。
+                默认仅做关键词检索；配置向量模型并切到混合模式后，会对 Agent、笔记和会话索引同时生成 embedding，并在搜索时结合关键词与语义分数。笔记索引同时覆盖 Markdown 与 .ipynb 超级笔记，会提取标题、正文、Markdown Cell、代码 Cell 和运行时信息；笔记页顶部搜索也会复用同一索引。Agent 索引会随智能体、提示词、技能、MCP 和服务商配置变更自动维护；笔记与会话索引会随各自内容的增删改、移动以及配置切换自动维护。加密笔记不会进入笔记索引，也不会出现在搜索和最近列表中。
               </n-text>
             </n-flex>
             <n-flex align="center" :size="10" wrap>
@@ -369,6 +369,12 @@
           <n-form-item label="最大消息数">
             <n-input-number v-model:value="contextWindowDraft.maxMessages" :min="8" :max="1000" style="width: 220px;" />
           </n-form-item>
+          <n-form-item label="展开 Token 预算">
+            <n-input-number v-model:value="contextWindowDraft.maxTokensExpanded" :min="1000" :max="4000000" :step="1000" style="width: 220px;" />
+          </n-form-item>
+          <n-form-item label="压缩 Token 预算">
+            <n-input-number v-model:value="contextWindowDraft.maxTokensCompact" :min="1000" :max="4000000" :step="1000" style="width: 220px;" />
+          </n-form-item>
           <n-form-item label="展开字符预算">
             <n-input-number v-model:value="contextWindowDraft.maxCharsExpanded" :min="4000" :max="4200000" :step="10000" style="width: 220px;" />
           </n-form-item>
@@ -378,6 +384,9 @@
           <n-form-item label="自动压缩阈值">
             <n-input-number v-model:value="contextWindowDraft.autoCompactTriggerPercent" :min="55" :max="95" :step="1" style="width: 220px;" />
           </n-form-item>
+          <n-text depth="3" style="font-size: 12px;">
+            请求返回输入 Token 时优先使用 Token 预算；未返回 usage 时自动回退到字符预算。
+          </n-text>
         </template>
       </n-form>
       <template #footer>
@@ -1063,7 +1072,7 @@ const contextWindowSummary = computed(() => {
   const normalized = normalizeChatContextWindowConfig(chatConfig.value?.contextWindow)
   const presetLabel = getContextPresetLabel(normalized.preset)
   const focusLabel = getHistoryFocusLabel(normalized.historyFocus)
-  return `${presetLabel} / ${focusLabel} / 最大 ${normalized.maxTurns} 轮，${normalized.maxMessages} 条消息，常规 ${normalized.maxCharsExpanded} 字符，自动压缩 ${normalized.maxCharsCompact} 字符，阈值 ${normalized.autoCompactTriggerPercent}%`
+  return `${presetLabel} / ${focusLabel} / 最大 ${normalized.maxTurns} 轮、${normalized.maxMessages} 条消息；Token ${normalized.maxTokensExpanded}/${normalized.maxTokensCompact}，字符兜底 ${normalized.maxCharsExpanded}/${normalized.maxCharsCompact}，阈值 ${normalized.autoCompactTriggerPercent}%`
 })
 
 const memoryProviderOptions = computed(() => {

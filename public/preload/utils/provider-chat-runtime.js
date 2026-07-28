@@ -478,16 +478,64 @@ async function streamResponsesCompletionWithFallback(args) {
   }
 }
 
+function withChatCompletionStreamUsage(body = {}) {
+  if (!body || typeof body !== 'object' || Array.isArray(body) || body.stream !== true) return body
+  const streamOptions =
+    body.stream_options && typeof body.stream_options === 'object' && !Array.isArray(body.stream_options)
+      ? body.stream_options
+      : {}
+  return {
+    ...body,
+    stream_options: {
+      ...streamOptions,
+      include_usage: true
+    }
+  }
+}
+
+function withoutChatCompletionStreamUsage(body = {}) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return body
+  const streamOptions =
+    body.stream_options && typeof body.stream_options === 'object' && !Array.isArray(body.stream_options)
+      ? { ...body.stream_options }
+      : null
+  if (!streamOptions || !Object.prototype.hasOwnProperty.call(streamOptions, 'include_usage')) return body
+  delete streamOptions.include_usage
+  const next = { ...body }
+  if (Object.keys(streamOptions).length) next.stream_options = streamOptions
+  else delete next.stream_options
+  return next
+}
+
+function shouldRetryWithoutChatCompletionStreamUsage(errorText) {
+  const text = String(errorText || '').toLowerCase()
+  if (!text.includes('stream_options') && !text.includes('include_usage')) return false
+  return /(unsupported|unknown|unrecognized|invalid|not allowed|extra field|unexpected|does not support|不支持|未知参数|非法参数)/i.test(text)
+}
+
 async function streamChatCompletions({ baseUrl, apiKey, body, signal, isAborted, onDelta }) {
   throwIfAborted(signal, isAborted)
-  const { response, usedUrl } = await requestEndpointResponse({
+  const requestArgs = {
     baseUrl,
     apiKey,
     pathName: 'chat/completions',
-    body,
     signal,
     label: 'Chat Completions'
-  })
+  }
+  let responseInfo
+  try {
+    responseInfo = await requestEndpointResponse({
+      ...requestArgs,
+      body: withChatCompletionStreamUsage(body)
+    })
+  } catch (error) {
+    if (!shouldRetryWithoutChatCompletionStreamUsage(error?.message || error)) throw error
+    responseInfo = await requestEndpointResponse({
+      ...requestArgs,
+      body: withoutChatCompletionStreamUsage(body)
+    })
+  }
+  const { response, usedUrl } = responseInfo
   let content = ''
   let reasoning = ''
   let finishReason = null
@@ -606,6 +654,9 @@ module.exports = {
     shouldFallbackChatCompletionsToResponses,
     shouldFallbackResponsesToChatCompletions,
     shouldRetryResponsesWithoutStreaming,
+    withChatCompletionStreamUsage,
+    withoutChatCompletionStreamUsage,
+    shouldRetryWithoutChatCompletionStreamUsage,
     normalizeBaseUrl,
     buildResponsesRequestBodyFromChatBody,
     createResponsesStreamAccumulator,

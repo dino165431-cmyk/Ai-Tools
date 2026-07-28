@@ -293,6 +293,10 @@ export function readSkillFile(id, filePath) {
   return requireGlobalConfigApi().readSkillFile(id, filePath)
 }
 
+export function readSkillIcon(id, variant = 'small') {
+  return requireGlobalConfigApi().readSkillIcon(id, variant)
+}
+
 export function listSkillFiles(id) {
   return requireGlobalConfigApi().listSkillFiles(id)
 }

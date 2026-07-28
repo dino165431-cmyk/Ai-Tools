@@ -1,4 +1,4 @@
-﻿import test from 'node:test'
+import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -19,7 +19,7 @@ if (!globalThis.utools) {
 }
 
 const globalConfig = require('../public/preload/utils/global-config.js')
-const createBuiltinNotesMcpClient = require('../public/preload/builtins/notes-mcp-client.js')
+const createBuiltinNotesSkillRuntime = require('../public/preload/builtin-skills/manage-notes/runtime.js')
 
 import { encryptNoteContent } from '../src/utils/noteEncryption.js'
 
@@ -30,7 +30,7 @@ function createFixtureFile(rootPath, relativePath, content = '') {
   return targetPath
 }
 
-test('notes MCP directory listing skips asset directories and returns direct children only', async (t) => {
+test('notes Skill runtime directory listing skips asset directories and returns direct children only', async (t) => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-notes-mcp-'))
   const originalGetDataStorageRoot = globalConfig.getDataStorageRoot
   globalConfig.getDataStorageRoot = () => tempRoot
@@ -44,8 +44,8 @@ test('notes MCP directory listing skips asset directories and returns direct chi
   createFixtureFile(tempRoot, 'note/Project/todo.assets/image.png', 'binary')
   createFixtureFile(tempRoot, 'note/README.md', '# readme')
 
-  const client = createBuiltinNotesMcpClient({ notesRoot: 'note' })
-  const result = await client.callTool('notes_list_directory', { dirPath: 'Project' })
+  const runtime = createBuiltinNotesSkillRuntime({ notesRoot: 'note' })
+  const result = await runtime.runAction('notes_list_directory', { dirPath: 'Project' })
 
   assert.equal(result.dirPath, 'Project')
   assert.equal(result.items.some((item) => item.path.includes('.assets')), false)
@@ -55,7 +55,7 @@ test('notes MCP directory listing skips asset directories and returns direct chi
   )
 })
 
-test('notes MCP tree defaults to shallow depth and can expand with maxDepth', async (t) => {
+test('notes Skill runtime tree defaults to shallow depth and can expand with maxDepth', async (t) => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-notes-tree-'))
   const originalGetDataStorageRoot = globalConfig.getDataStorageRoot
   globalConfig.getDataStorageRoot = () => tempRoot
@@ -66,8 +66,8 @@ test('notes MCP tree defaults to shallow depth and can expand with maxDepth', as
 
   createFixtureFile(tempRoot, 'note/Area/Sub/leaf.md', '# leaf')
 
-  const client = createBuiltinNotesMcpClient({ notesRoot: 'note' })
-  const shallow = await client.callTool('notes_list_tree', {})
+  const runtime = createBuiltinNotesSkillRuntime({ notesRoot: 'note' })
+  const shallow = await runtime.runAction('notes_list_tree', {})
   const areaNode = shallow.tree.children.find((item) => item.path === 'Area')
   const subNode = areaNode?.children?.find((item) => item.path === 'Area/Sub')
 
@@ -77,7 +77,7 @@ test('notes MCP tree defaults to shallow depth and can expand with maxDepth', as
   assert.equal(subNode.hasMore, true)
   assert.deepEqual(subNode.children, [])
 
-  const deep = await client.callTool('notes_list_tree', { maxDepth: 4 })
+  const deep = await runtime.runAction('notes_list_tree', { maxDepth: 4 })
   const deepAreaNode = deep.tree.children.find((item) => item.path === 'Area')
   const deepSubNode = deepAreaNode?.children?.find((item) => item.path === 'Area/Sub')
 
@@ -85,7 +85,56 @@ test('notes MCP tree defaults to shallow depth and can expand with maxDepth', as
   assert.ok(deepSubNode?.children?.some((item) => item.path === 'Area/Sub/leaf.md'))
 })
 
-test('notes MCP recent listing sorts by mtime descending', async (t) => {
+test('notes Skill runtime manages and executes JavaScript super-note cells', async (t) => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-super-note-'))
+  const originalGetDataStorageRoot = globalConfig.getDataStorageRoot
+  globalConfig.getDataStorageRoot = () => tempRoot
+  t.after(() => {
+    globalConfig.getDataStorageRoot = originalGetDataStorageRoot
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  })
+
+  const runtime = createBuiltinNotesSkillRuntime({ notesRoot: 'note' })
+  const created = await runtime.runAction('notebook_create', {
+    path: 'lab/demo.ipynb',
+    cells: [
+      { cell_type: 'markdown', source: '# Demo' },
+      { cell_type: 'code', runtime: 'javascript', source: 'console.log("native-super-note-ok")' }
+    ]
+  })
+  assert.equal(created.path, 'lab/demo.ipynb')
+  assert.equal(created.type, 'notebook')
+
+  const initial = await runtime.runAction('notebook_read', { path: 'lab/demo.ipynb' })
+  assert.equal(initial.cellCount, 2)
+  assert.equal(initial.codeCellCount, 1)
+  assert.equal(initial.notebook.cells[1].metadata.aiTools.runtime, 'javascript')
+
+  const updated = await runtime.runAction('notebook_update_cell', {
+    path: 'lab/demo.ipynb',
+    cell_index: 0,
+    cell_type: 'markdown',
+    source: '# Updated Demo'
+  })
+  assert.equal(updated.operation, 'replace')
+  assert.equal(updated.cell.source, '# Updated Demo')
+
+  const executed = await runtime.runAction('notebook_execute_cell', {
+    path: 'lab/demo.ipynb',
+    cell_index: 1,
+    save: false,
+    timeout_ms: 10000
+  })
+  assert.equal(executed.ok, true)
+  assert.equal(executed.runtime, 'javascript')
+  assert.equal(executed.saved, false)
+  assert.match(JSON.stringify(executed.outputs), /native-super-note-ok/)
+
+  const afterTransientRun = await runtime.runAction('notebook_read', { path: 'lab/demo.ipynb' })
+  assert.deepEqual(afterTransientRun.notebook.cells[1].outputs, [])
+})
+
+test('notes Skill runtime recent listing sorts by mtime descending', async (t) => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-notes-recent-'))
   const originalGetDataStorageRoot = globalConfig.getDataStorageRoot
   globalConfig.getDataStorageRoot = () => tempRoot
@@ -100,8 +149,8 @@ test('notes MCP recent listing sorts by mtime descending', async (t) => {
   fs.utimesSync(older, now / 1000 - 120, now / 1000 - 120)
   fs.utimesSync(newer, now / 1000, now / 1000)
 
-  const client = createBuiltinNotesMcpClient({ notesRoot: 'note' })
-  const result = await client.callTool('notes_list_recent', { limit: 10 })
+  const runtime = createBuiltinNotesSkillRuntime({ notesRoot: 'note' })
+  const result = await runtime.runAction('notes_list_recent', { limit: 10 })
 
   assert.deepEqual(
     result.items.map((item) => item.path),
@@ -109,7 +158,7 @@ test('notes MCP recent listing sorts by mtime descending', async (t) => {
   )
 })
 
-test('notes MCP search finds notes by name and path fragments', async (t) => {
+test('notes Skill runtime search finds notes by name and path fragments', async (t) => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-notes-search-'))
   const originalGetDataStorageRoot = globalConfig.getDataStorageRoot
   globalConfig.getDataStorageRoot = () => tempRoot
@@ -121,14 +170,14 @@ test('notes MCP search finds notes by name and path fragments', async (t) => {
   createFixtureFile(tempRoot, 'note/projects/api-design.md', '# api')
   createFixtureFile(tempRoot, 'note/projects/ui-plan.md', '# ui')
 
-  const client = createBuiltinNotesMcpClient({ notesRoot: 'note' })
-  const result = await client.callTool('notes_search', { query: 'api' })
+  const runtime = createBuiltinNotesSkillRuntime({ notesRoot: 'note' })
+  const result = await runtime.runAction('notes_search', { query: 'api' })
 
   assert.equal(result.returned, 1)
   assert.equal(result.items[0].path, 'projects/api-design.md')
 })
 
-test('notes MCP search matches note title metadata', async (t) => {
+test('notes Skill runtime search matches note title metadata', async (t) => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-notes-search-title-'))
   const originalGetDataStorageRoot = globalConfig.getDataStorageRoot
   globalConfig.getDataStorageRoot = () => tempRoot
@@ -139,15 +188,15 @@ test('notes MCP search matches note title metadata', async (t) => {
 
   createFixtureFile(tempRoot, 'note/research/weekly.md', '---\ntitle: Weekly Research Digest\n---\n\nStatus update')
 
-  const client = createBuiltinNotesMcpClient({ notesRoot: 'note' })
-  const result = await client.callTool('notes_search', { query: 'research digest' })
+  const runtime = createBuiltinNotesSkillRuntime({ notesRoot: 'note' })
+  const result = await runtime.runAction('notes_search', { query: 'research digest' })
 
   assert.equal(result.returned, 1)
   assert.equal(result.items[0].path, 'research/weekly.md')
   assert.equal(result.items[0].title, 'Weekly Research Digest')
 })
 
-test('notes MCP refuses to read encrypted notes', async (t) => {
+test('notes Skill runtime refuses to read encrypted notes', async (t) => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-notes-read-encrypted-'))
   const originalGetDataStorageRoot = globalConfig.getDataStorageRoot
   globalConfig.getDataStorageRoot = () => tempRoot
@@ -159,9 +208,9 @@ test('notes MCP refuses to read encrypted notes', async (t) => {
   const encrypted = await encryptNoteContent('# hidden\n\nsecret body', { notePassword: 'note-pass-123' })
   createFixtureFile(tempRoot, 'note/secret.md', encrypted)
 
-  const client = createBuiltinNotesMcpClient({ notesRoot: 'note' })
+  const runtime = createBuiltinNotesSkillRuntime({ notesRoot: 'note' })
   await assert.rejects(
-    () => client.callTool('notes_read', { path: 'secret.md' }),
+    () => runtime.runAction('notes_read', { path: 'secret.md' }),
     /\u5df2\u52a0\u5bc6|\u89e3\u9501|\u89e3\u9396/
   )
 })

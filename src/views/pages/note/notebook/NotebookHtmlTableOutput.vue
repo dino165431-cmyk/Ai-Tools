@@ -84,7 +84,7 @@
     <div
       v-else
       class="notebook-html-table-output__raw markdown-body"
-      v-html="html"
+      v-html="sanitizedHtml"
     />
   </div>
 </template>
@@ -95,6 +95,7 @@ import { NButton, NDataTable, NIcon, NTooltip, useMessage } from 'naive-ui'
 import { CopyOutline } from '@vicons/ionicons5'
 import { copyTextToClipboard } from '@/utils/clipboard'
 import { parseNotebookHtmlTable } from '@/utils/notebookHtmlTable'
+import { sanitizeHtml } from '@/utils/sanitizeHtml'
 
 const props = defineProps({
   html: {
@@ -116,7 +117,8 @@ const tableScrollbarProps = {
 const selectedRowIndex = ref(-1)
 const columnWidths = ref([])
 
-const tableModel = computed(() => parseNotebookHtmlTable(props.html))
+const sanitizedHtml = computed(() => sanitizeHtml(props.html))
+const tableModel = computed(() => parseNotebookHtmlTable(sanitizedHtml.value))
 const tableRows = computed(() => tableModel.value?.rows || [])
 const selectedRow = computed(() => {
   if (selectedRowIndex.value < 0) return null

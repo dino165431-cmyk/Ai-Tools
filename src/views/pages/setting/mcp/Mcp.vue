@@ -34,13 +34,22 @@
       >
         <n-flex vertical>
           <n-flex justify="space-between" align="center">
-            <n-text strong depth="1" style="font-size: 16px;">
-              {{ mcp.name || '未命名' }}
-            </n-text>
+            <n-flex align="center" :size="9">
+              <n-avatar
+                :src="isImageIcon(mcp.icon) ? mcp.icon : undefined"
+                :style="{ background: mcp.brandColor || '#64748b' }"
+                round
+                size="small"
+              >
+                {{ isImageIcon(mcp.icon) ? getMcpInitial(mcp) : (mcp.icon || getMcpInitial(mcp)) }}
+              </n-avatar>
+              <n-text strong depth="1" style="font-size: 16px;">
+                {{ mcp.name || '未命名' }}
+              </n-text>
+            </n-flex>
             <n-flex>
               <!-- 管理工具按钮（不触发卡片点击） -->
               <n-button
-                v-if="!mcp.builtin"
                 text
                 size="small"
                 :type="mcp.keepAlive ? 'primary' : 'default'"
@@ -61,7 +70,6 @@
               </n-button>
               <!-- 删除按钮 -->
               <n-button
-                v-if="!mcp.builtin"
                 text
                 size="small"
                 title="删除 MCP 服务器"
@@ -75,10 +83,6 @@
             接入方式：{{ getTransportLabel(mcp.transportType) }}
           </n-text>
           <n-flex align="center" wrap :size="6" style="margin-top: 6px;">
-            <n-tag v-if="mcp.builtin" size="small" type="info" bordered>内置</n-tag>
-            <n-tag v-if="mcp.transportType === 'builtinShell'" size="small" type="warning" bordered>
-              逐命令审批
-            </n-tag>
             <n-tag v-if="mcp.disabled" size="small" bordered>已禁用</n-tag>
             <n-tag v-if="mcp.allowTools && mcp.allowTools.length" size="small" type="warning" bordered>
               工具：{{ mcp.allowTools.length }}
@@ -87,13 +91,6 @@
               工具：全部
             </n-tag>
           </n-flex>
-          <n-text
-            v-if="mcp.transportType === 'builtinShell'"
-            depth="3"
-            class="settings-grid-card__hint"
-          >
-            工作目录固定在所选数据目录；新命令执行前会先请求确认。
-          </n-text>
         </n-flex>
       </n-card>
     </n-flex>
@@ -119,6 +116,17 @@
         <!-- 公共字段 -->
         <n-form-item label="名称" path="name" required>
           <n-input v-model:value="editFormData.name" placeholder="请输入服务器名称（必填）" />
+        </n-form-item>
+
+        <n-form-item label="图标">
+          <n-input
+            v-model:value="editFormData.icon"
+            placeholder="Emoji、短文本、HTTP(S) 图片 URL 或 image data URL"
+          />
+        </n-form-item>
+
+        <n-form-item label="品牌色">
+          <n-input v-model:value="editFormData.brandColor" placeholder="#64748B" />
         </n-form-item>
 
         <n-form-item label="传输类型" path="transportType" required>
@@ -559,7 +567,7 @@
 <script setup>
 import { ref, reactive, computed, watch, h } from 'vue'
 import {
-  NAlert, NCard, NFlex, NIcon, NButton, NInput, NText, NTag, NDivider,
+  NAlert, NAvatar, NCard, NFlex, NIcon, NButton, NInput, NText, NTag, NDivider,
   NModal, NForm, NFormItem, NSelect, NSwitch,
   NInputNumber, NDynamicInput, NDataTable, useDialog, useMessage,
   useThemeVars 
@@ -604,12 +612,7 @@ const transportLabelMap = Object.freeze({
   stdio: '本地命令（Stdio）',
   sse: '旧版 SSE（需迁移）',
   streamableHttp: 'Streamable HTTP',
-  http: '旧版 HTTP（需迁移）',
-  builtinNotes: '内置笔记',
-  builtinConfig: '内置配置',
-  builtinSessions: '内置会话',
-  builtinAgents: '内置智能体',
-  builtinShell: '内置 Bash'
+  http: '旧版 HTTP（需迁移）'
 })
 
 function getTransportLabel(transportType) {
@@ -618,10 +621,15 @@ function getTransportLabel(transportType) {
 }
 
 function getMcpCardHint(mcp) {
-  if (mcp?.transportType === 'builtinShell') {
-    return '打开工具详情。Bash 使用所选数据目录作为工作边界，每条新命令都需要确认。'
-  }
-  return mcp?.builtin ? '打开内置工具详情' : '点击编辑连接；右上角按钮可管理工具'
+  return '点击编辑连接；右上角按钮可管理工具'
+}
+
+function isImageIcon(value) {
+  return /^(?:https?:\/\/|data:image\/)/i.test(String(value || '').trim())
+}
+
+function getMcpInitial(mcp) {
+  return Array.from(String(mcp?.name || mcp?._id || 'M').trim())[0] || 'M'
 }
 
 async function withTransientClient(serverConfig, handler) {
@@ -639,19 +647,11 @@ async function withTransientClient(serverConfig, handler) {
 }
 
 function handleCardClick(mcp) {
-  if (mcp?.builtin) {
-    openToolModal(mcp)
-    return
-  }
   openEditModal(mcp)
 }
 
 async function toggleKeepAlive(mcp) {
   if (!mcp?._id) return
-  if (mcp?.builtin) {
-    message.warning('内置 MCP 不支持修改连接模式')
-    return
-  }
   const next = !mcp.keepAlive
   try {
     await updateMcpServer(mcp._id, { keepAlive: next })
@@ -702,6 +702,8 @@ const transportGuideMap = Object.freeze({
 // 编辑表单数据
 const editFormData = reactive({
   name: '',
+  icon: '',
+  brandColor: '',
   transportType: 'stdio',
   disabled: false,
   // stdio
@@ -759,14 +761,12 @@ function openAddModal() {
 
 // 打开编辑模态框
 function openEditModal(mcp) {
-  if (mcp?.builtin) {
-    message.warning('内置 MCP 不可编辑')
-    return
-  }
   modalMode.value = 'edit'
   currentEditId.value = mcp._id
 
   editFormData.name = mcp.name || ''
+  editFormData.icon = mcp.icon || ''
+  editFormData.brandColor = mcp.brandColor || ''
   const legacyRemoteTransport = mcp.transportType === 'sse' || mcp.transportType === 'http'
   editFormData.transportType = legacyRemoteTransport ? 'streamableHttp' : (mcp.transportType || 'stdio')
   editFormData.disabled = mcp.disabled || false
@@ -794,6 +794,8 @@ function openEditModal(mcp) {
 
 function resetEditForm() {
   editFormData.name = ''
+  editFormData.icon = ''
+  editFormData.brandColor = ''
   editFormData.transportType = 'stdio'
   editFormData.disabled = false
   editFormData.command = ''
@@ -815,14 +817,6 @@ async function handleEditSave() {
       return
     }
 
-    if (modalMode.value === 'edit') {
-      const current = (mcps.value || []).find((x) => x && x._id === currentEditId.value) || null
-      if (current?.builtin) {
-        message.warning('内置 MCP 不可编辑')
-        return
-      }
-    }
-
     if (editFormData.transportType === 'stdio' && !editFormData.command) {
       message.warning('STDIO（标准输入输出）传输方式必须填写命令')
       return
@@ -831,11 +825,17 @@ async function handleEditSave() {
       message.warning('该传输类型必须填写链接地址')
       return
     }
+    if (editFormData.brandColor && !/^#[0-9a-f]{6}$/i.test(editFormData.brandColor.trim())) {
+      message.warning('品牌色必须使用 #RRGGBB 格式')
+      return
+    }
 
     editSaving.value = true
     try {
       const baseData = {
         name: editFormData.name.trim(),
+        icon: editFormData.icon.trim(),
+        brandColor: editFormData.brandColor.trim(),
         transportType: editFormData.transportType,
         disabled: editFormData.disabled
       }
@@ -882,10 +882,6 @@ async function handleEditSave() {
 
 // 删除确认
 function confirmDelete(mcp) {
-  if (mcp?.builtin) {
-    message.warning('内置 MCP 不可删除')
-    return
-  }
   dialog.warning({
     title: '确认删除',
     content: `确定删除 MCP 服务器“${mcp.name || '未命名'}”吗？`,
@@ -941,17 +937,6 @@ function getToolPermissionBadge(tool) {
     return { label: '只读', type: 'success' }
   }
 
-  const transportType = String(currentMcpForTool.value?.transportType || '')
-  const toolName = String(tool?.name || '')
-  if (transportType === 'builtinShell') return { label: '执行命令', type: 'error' }
-  if (transportType === 'builtinConfig') {
-    const readOnly = toolName === 'config_get_system_time' || toolName.startsWith('config_list_')
-    return readOnly ? { label: '只读', type: 'success' } : { label: '会修改', type: 'warning' }
-  }
-  if (transportType === 'builtinNotes') {
-    const readOnly = /^(notes_(list|read|search|get|stat|recent))/.test(toolName)
-    return readOnly ? { label: '只读', type: 'success' } : { label: '会修改', type: 'warning' }
-  }
   return { label: '未声明', type: 'default' }
 }
 
@@ -1480,10 +1465,6 @@ function openToolModal(mcp) {
 // 保存启用工具
 async function saveEnabledTools() {
   if (!currentMcpForTool.value) return
-  if (currentMcpForTool.value?.builtin) {
-    message.warning('内置 MCP 不支持修改启用工具列表')
-    return
-  }
   savingTools.value = true
   try {
     const allowTools = Array.from(enabledTools.value)

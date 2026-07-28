@@ -1,9 +1,14 @@
-const globalConfig = require('../utils/global-config')
-const contentIndex = require('../utils/content-index')
-const usageStatistics = require('../utils/usage-statistics')
-const { streamProviderChatCompletion } = require('../utils/provider-chat-runtime')
+const globalConfig = require('../../utils/global-config')
+const contentIndex = require('../../utils/content-index')
+const usageStatistics = require('../../utils/usage-statistics')
+const { streamProviderChatCompletion } = require('../../utils/provider-chat-runtime')
+const {
+  buildBuiltinSkillGatewayBundle,
+  discoverBuiltinSkillActions,
+  resolveBuiltinSkillCall
+} = require('../action-gateway')
 
-const BUILTIN_AGENTS_MCP_SERVER_ID = 'builtin_agents_mcp'
+const BUILTIN_AGENT_ORCHESTRATION_SKILL_ID = 'builtin_skill_agent_orchestration'
 const UTOOLS_AI_PROVIDER_ID = 'builtin_provider_utools_ai'
 const UTOOLS_AI_PROVIDER_TYPE = 'utools-ai'
 const BUILTIN_AGENTS_TRACE_EVENT = 'builtin-agents-trace'
@@ -18,7 +23,7 @@ const AGENT_REASONING_EFFORT_OPTIONS = [
   'xhigh',
   'max'
 ]
-const TOOL_APPROVAL_MODES = ['auto', 'manual', 'readonly', 'deny']
+const TOOL_APPROVAL_MODES = ['manual', 'safe', 'full', 'deny']
 const MAX_TRACE_ITEMS = 120
 const MAX_EXCERPT_CHARS = 1200
 const MAX_TOOL_RESULT_CHARS = 4000
@@ -26,11 +31,14 @@ const MAX_MODEL_ROUNDS = 24
 const BUILTIN_AGENTS_LIVE_EVENT_THROTTLE_MS = 33
 const BUILTIN_AGENTS_TOOL_APPROVAL_REQUEST_EVENT = 'builtin-agents-tool-approval-request'
 const BUILTIN_AGENTS_TOOL_APPROVAL_RESPONSE_EVENT = 'builtin-agents-tool-approval-response'
+const BUILTIN_AGENTS_TOOL_APPROVAL_MODE_CHANGE_EVENT = 'builtin-agents-tool-approval-mode-change'
 
 const pooledClientsByServerId = new Map()
 const pendingToolApprovalRequests = new Map()
 const pendingBuiltinAgentsLiveByStreamId = new Map()
+const activeRunStatesByTraceStreamId = new Map()
 let builtinAgentsToolApprovalListenerReady = false
+let builtinAgentsToolApprovalModeListenerReady = false
 let pendingBuiltinAgentsLiveFlushTimer = null
 
 function cleanString(val) {
@@ -97,7 +105,9 @@ function normalizeReasoningEffort(value) {
 
 function normalizeToolApprovalMode(value) {
   const normalized = cleanString(value).toLowerCase()
-  return TOOL_APPROVAL_MODES.includes(normalized) ? normalized : 'auto'
+  if (TOOL_APPROVAL_MODES.includes(normalized)) return normalized
+  if (normalized === 'auto' || normalized === 'readonly') return 'safe'
+  return 'safe'
 }
 
 function normalizePromptType(value) {
@@ -135,8 +145,18 @@ function injectTraceStreamIdIntoAgentRunParams(params, traceStreamId) {
 }
 
 function resolveToolApprovalModeFromAgentRunParams(params) {
-  if (!isPlainObject(params)) return 'auto'
+  if (!isPlainObject(params)) return 'safe'
   return normalizeToolApprovalMode(params.__tool_approval_mode || params.tool_approval_mode)
+}
+
+function injectToolApprovalModeIntoAgentRunParams(params, mode) {
+  if (!isPlainObject(params)) return params
+  const normalizedMode = normalizeToolApprovalMode(mode)
+  return {
+    ...params,
+    __tool_approval_mode: normalizedMode,
+    tool_approval_mode: normalizedMode
+  }
 }
 
 function normalizeAgentModelParams(raw) {
@@ -345,7 +365,8 @@ async function recordAgentModelUsage({ profile, result, trace }) {
       usage: result.usage,
       providerId: profile.providerId,
       model: profile.model,
-      endpoint: result.endpoint
+      endpoint: result.endpoint,
+      purpose: 'agent'
     })
   } catch (error) {
     appendTrace(trace, 'usage.record_failed', {
@@ -452,6 +473,38 @@ function ensureBuiltinAgentsToolApprovalListener() {
   try {
     host.addEventListener(BUILTIN_AGENTS_TOOL_APPROVAL_RESPONSE_EVENT, handleBuiltinAgentsToolApprovalResponse)
     builtinAgentsToolApprovalListenerReady = true
+    return true
+  } catch {
+    return false
+  }
+}
+
+function handleBuiltinAgentsToolApprovalModeChange(event) {
+  const detail = isPlainObject(event?.detail) ? event.detail : {}
+  const mode = normalizeToolApprovalMode(detail.toolApprovalMode || detail.tool_approval_mode)
+  const streamIds = Array.isArray(detail.streamIds)
+    ? detail.streamIds.map((item) => cleanString(item)).filter(Boolean)
+    : [cleanString(detail.streamId)].filter(Boolean)
+
+  for (const streamId of streamIds) {
+    const states = activeRunStatesByTraceStreamId.get(streamId)
+    if (!states) continue
+    for (const runState of states) {
+      if (runState && runState.aborted !== true) runState.toolApprovalMode = mode
+    }
+  }
+}
+
+function ensureBuiltinAgentsToolApprovalModeListener() {
+  if (builtinAgentsToolApprovalModeListenerReady) return true
+  const host = getHostGlobal()
+  if (!host?.addEventListener) return false
+  try {
+    host.addEventListener(
+      BUILTIN_AGENTS_TOOL_APPROVAL_MODE_CHANGE_EVENT,
+      handleBuiltinAgentsToolApprovalModeChange
+    )
+    builtinAgentsToolApprovalModeListenerReady = true
     return true
   } catch {
     return false
@@ -727,27 +780,15 @@ function buildProviderToolDescription(server, tool, definition) {
 }
 
 function getMcpToolApprovalPolicy(server, tool) {
-  const transportType = cleanString(server?.transportType)
-  if (transportType === 'builtinShell') {
-    return { forceApproval: true, approvalKind: 'shell' }
-  }
-
   const annotations = isPlainObject(tool?.annotations) ? tool.annotations : {}
-  if (annotations.destructiveHint === true || annotations.readOnlyHint === false) {
-    return { forceApproval: true, approvalKind: 'tool' }
+  const explicitlyReadOnly =
+    annotations.readOnlyHint === true &&
+    annotations.destructiveHint !== true
+  return {
+    forceApproval: !explicitlyReadOnly,
+    approvalKind: 'tool',
+    explicitlyReadOnly
   }
-
-  const toolName = cleanString(tool?.name)
-  if (transportType === 'builtinConfig') {
-    const readOnly = toolName === 'config_get_system_time' || toolName.startsWith('config_list_')
-    return { forceApproval: !readOnly, approvalKind: 'tool' }
-  }
-  if (transportType === 'builtinNotes') {
-    const readOnly = /^(notes_(list|read|search|get|stat|recent))/.test(toolName)
-    return { forceApproval: !readOnly, approvalKind: 'tool' }
-  }
-
-  return { forceApproval: false, approvalKind: 'tool' }
 }
 
 function getSkillDescription(skill) {
@@ -755,7 +796,8 @@ function getSkillDescription(skill) {
 }
 
 function isDirectorySkill(skill) {
-  return cleanString(skill?.sourceType) === 'directory' && !!cleanString(skill?.sourcePath)
+  const sourceType = cleanString(skill?.sourceType)
+  return (sourceType === 'directory' || sourceType === 'builtin-directory') && !!cleanString(skill?.sourcePath)
 }
 
 function getServerConfigFingerprint(serverConfig) {
@@ -960,6 +1002,10 @@ function buildSkillsPromptText(skillObjects, config, trace) {
       const mcpNames = skillMcpIds.map((id) => cleanString(mcpMap[id]?.name) || id)
       parts.push(`MCP: ${mcpNames.map((item) => `\`${item}\``).join(', ')}`)
     }
+    const nativeActions = normalizeStringList(skill?.nativeActions)
+    if (nativeActions.length) {
+      parts.push(`Native actions: ${nativeActions.length} available; schemas are deferred. Use \`skill_discover({"skill_id":"${skill._id}"})\` when needed, then call \`skill_call\`.`)
+    }
 
     let content = ''
     if (isDirectorySkill(skill)) {
@@ -1029,10 +1075,21 @@ async function resolveExecutionProfile({ config, agent, trace }) {
   const skillObjects = skillIds.map((id) => skills[id]).filter(Boolean)
   const manualMcpIds = unionStrings(agent?.mcp)
   const derivedMcpIds = unionStrings(...skillObjects.map((item) => item?.mcp))
-  const activeMcpIds = unionStrings(manualMcpIds, derivedMcpIds).filter((id) => id !== BUILTIN_AGENTS_MCP_SERVER_ID)
+  const activeMcpIds = unionStrings(manualMcpIds, derivedMcpIds)
   const activeMcpServers = activeMcpIds
     .map((id) => mcpServers[id])
-    .filter((server) => server && server._id && !server.disabled && cleanString(server.transportType) !== 'builtinAgents')
+    .filter((server) => server && server._id && !server.disabled)
+  const activeBuiltinSkillIds = skillObjects
+    .filter((skill) => {
+      return (
+        skill?.builtin === true &&
+        cleanString(skill?.sourceType) === 'builtin-directory' &&
+        normalizeStringList(skill?.nativeActions).length > 0 &&
+        cleanString(skill?._id) !== BUILTIN_AGENT_ORCHESTRATION_SKILL_ID
+      )
+    })
+    .map((skill) => cleanString(skill._id))
+    .filter(Boolean)
 
   if (activeMcpIds.length !== activeMcpServers.length) {
     appendTrace(trace, 'mcp.filtered', {
@@ -1056,6 +1113,7 @@ async function resolveExecutionProfile({ config, agent, trace }) {
     systemPrompt,
     skillIds,
     skillObjects,
+    activeBuiltinSkillIds,
     activeMcpIds,
     activeMcpServers,
     modelParams
@@ -1105,30 +1163,22 @@ function filterAllowedMcpTools(server, list) {
   return (Array.isArray(list) ? list : []).filter((tool) => enabledNames.has(cleanString(tool?.name)))
 }
 
-function isReadOnlyToolName(toolName) {
-  const name = cleanString(toolName).toLowerCase()
-  if (!name) return false
-  return /(^|[_:./-])(get|list|read|search|find|query|inspect|describe|discover|fetch|lookup|preview|stat|status|recent)([_:./-]|$)/.test(name)
-}
-
 function shouldAllowToolCallByApprovalMode(runState, mapping) {
   const mode = normalizeToolApprovalMode(runState?.toolApprovalMode)
-  if (mapping?.forceApproval === true) return { allowed: true, mode: 'manual', requiresPrompt: true }
-  if (mode === 'auto') return { allowed: true, mode }
+  if (mode === 'full') return { allowed: true, mode }
+  if (mode === 'safe') {
+    if (mapping?.forceApproval === true) return { allowed: true, mode, requiresPrompt: true }
+    return { allowed: true, mode }
+  }
   if (mode === 'manual') return { allowed: true, mode, requiresPrompt: true }
   if (mode === 'deny') {
     return {
       allowed: false,
       mode,
-      reason: 'Sub-agent tool use is disabled because the parent chat did not enable automatic tool approval.'
+      reason: 'Sub-agent tool use is disabled by the parent context.'
     }
   }
-  if (isReadOnlyToolName(mapping?.toolName)) return { allowed: true, mode }
-  return {
-    allowed: false,
-    mode,
-    reason: 'Sub-agent write/high-risk tools are blocked while the parent chat has automatic tool approval turned off.'
-  }
+  return { allowed: true, mode, requiresPrompt: true }
 }
 
 function findLatestReasoningExcerpt(trace) {
@@ -1189,7 +1239,12 @@ async function requestBuiltinAgentsToolApproval({ mapping, argsText, trace, runS
       argsText,
       reasoningText,
       forceApproval: mapping?.forceApproval === true,
-      approvalKind: mapping?.approvalKind === 'shell' ? 'shell' : 'tool'
+      approvalKind:
+        mapping?.approvalKind === 'shell'
+          ? 'shell'
+          : mapping?.approvalKind === 'execution'
+            ? 'execution'
+            : 'tool'
     })
 
     if (!ok) finish(false)
@@ -1217,6 +1272,7 @@ async function buildMcpToolsBundle(servers, trace, runState) {
       const functionName = makeToolFunctionName(server._id, toolName)
       const approvalPolicy = getMcpToolApprovalPolicy(server, tool)
       map.set(functionName, {
+        type: 'mcp',
         server,
         serverId: server._id,
         serverName: server.name || server._id,
@@ -1239,6 +1295,22 @@ async function buildMcpToolsBundle(servers, trace, runState) {
   }
 
   return { tools, map }
+}
+
+async function buildAgentToolsBundle(profile, trace, runState) {
+  const mcpBundle = await buildMcpToolsBundle(profile?.activeMcpServers, trace, runState)
+  const skillBundle = buildBuiltinSkillGatewayBundle(profile)
+  if (skillBundle.tools.length) {
+    appendTrace(trace, 'skill.gateway_ready', {
+      title: 'Built-in Skill gateway ready',
+      skill_count: normalizeStringList(profile?.activeBuiltinSkillIds).length,
+      tool_count: skillBundle.tools.length
+    })
+  }
+  return {
+    tools: [...mcpBundle.tools, ...skillBundle.tools],
+    map: new Map([...mcpBundle.map, ...skillBundle.map])
+  }
 }
 
 async function executeMcpToolCall({ mapping, argsObj, trace, runState }) {
@@ -1332,7 +1404,10 @@ async function executeMcpToolCall({ mapping, argsObj, trace, runState }) {
     const callTimeoutMs = Number(server?.timeout) || 60000
     const runtimeArgsObj =
       cleanString(mapping?.toolName) === 'agent_run'
-        ? injectTraceStreamIdIntoAgentRunParams(argsObj, runState?.traceStreamId)
+        ? injectToolApprovalModeIntoAgentRunParams(
+            injectTraceStreamIdIntoAgentRunParams(argsObj, runState?.traceStreamId),
+            runState?.toolApprovalMode
+          )
         : argsObj
     const callArgs = typeof mapping?.unwrapArgs === 'function' ? mapping.unwrapArgs(runtimeArgsObj) : runtimeArgsObj
     if (mapping?.requiresWrappedInput && callArgs === undefined) {
@@ -1385,6 +1460,157 @@ async function executeMcpToolCall({ mapping, argsObj, trace, runState }) {
   }
 }
 
+async function executeBuiltinSkillAction({ mapping, argsObj, trace, runState }) {
+  throwIfAborted(runState)
+  const argsText = stableStringify(argsObj || {})
+  const approvalCheck = shouldAllowToolCallByApprovalMode(runState, mapping)
+  if (approvalCheck.requiresPrompt) {
+    const approved = await requestBuiltinAgentsToolApproval({ mapping, argsText, trace, runState })
+    throwIfAborted(runState, 'Aborted while waiting for sub-agent Skill action approval')
+    if (approved !== true) {
+      if (approved === null) throw makeAbortError('Sub-agent Skill action approval was aborted.')
+      const errorText = 'Sub-agent Skill action was rejected by the user.'
+      appendTrace(trace, 'tool.blocked', {
+        title: `Skill action blocked: ${mapping?.serverName} / ${mapping?.toolName}`,
+        server_id: mapping?.skillId,
+        server_name: mapping?.serverName,
+        tool_name: mapping?.toolName,
+        approval_mode: approvalCheck.mode,
+        error: errorText
+      })
+      return { ok: false, content: `Error: ${errorText}` }
+    }
+  }
+
+  if (!approvalCheck.allowed) {
+    appendTrace(trace, 'tool.blocked', {
+      title: `Skill action blocked: ${mapping?.serverName} / ${mapping?.toolName}`,
+      server_id: mapping?.skillId,
+      server_name: mapping?.serverName,
+      tool_name: mapping?.toolName,
+      approval_mode: approvalCheck.mode,
+      error: approvalCheck.reason
+    })
+    return { ok: false, content: `Error: ${approvalCheck.reason}` }
+  }
+
+  appendTrace(trace, 'tool.started', {
+    title: `Skill action: ${mapping?.serverName} / ${mapping?.toolName}`,
+    server_id: mapping?.skillId,
+    server_name: mapping?.serverName,
+    tool_name: mapping?.toolName,
+    args_excerpt: truncateText(argsText, MAX_TOOL_RESULT_CHARS),
+    args_text: truncateText(argsText, MAX_TOOL_RESULT_CHARS)
+  })
+
+  try {
+    let callArgs = typeof mapping?.unwrapArgs === 'function' ? mapping.unwrapArgs(argsObj) : argsObj
+    if (mapping?.requiresWrappedInput && callArgs === undefined) {
+      throw new Error('Skill action input missing. This action requires {"input": ...}.')
+    }
+    if (
+      cleanString(mapping?.skillId) === BUILTIN_AGENT_ORCHESTRATION_SKILL_ID &&
+      cleanString(mapping?.toolName) === 'agent_run'
+    ) {
+      callArgs = injectToolApprovalModeIntoAgentRunParams(
+        injectTraceStreamIdIntoAgentRunParams(callArgs, runState?.traceStreamId),
+        runState?.toolApprovalMode
+      )
+    }
+    const registry = require('..')
+    const result = await registry.runBuiltinSkillAction(mapping.skillId, mapping.toolName, callArgs)
+    throwIfAborted(runState)
+    const resultText = stringifyToolResultContent(result)
+    appendTrace(trace, 'tool.finished', {
+      title: `Skill action finished: ${mapping?.serverName} / ${mapping?.toolName}`,
+      server_id: mapping?.skillId,
+      server_name: mapping?.serverName,
+      tool_name: mapping?.toolName,
+      result_excerpt: truncateText(resultText, MAX_TOOL_RESULT_CHARS),
+      result_text: truncateText(resultText, MAX_TOOL_RESULT_CHARS)
+    })
+    return {
+      ok: result?.ok !== false,
+      content: resultText,
+      serverName: mapping?.serverName,
+      toolName: mapping?.toolName
+    }
+  } catch (err) {
+    if (isAbortError(err) || runState?.aborted) throw err
+    const errorText = err?.message || String(err)
+    appendTrace(trace, 'tool.failed', {
+      title: `Skill action failed: ${mapping?.serverName} / ${mapping?.toolName}`,
+      server_id: mapping?.skillId,
+      server_name: mapping?.serverName,
+      tool_name: mapping?.toolName,
+      error: errorText
+    })
+    return { ok: false, content: `Error: ${errorText}` }
+  }
+}
+
+async function executeBuiltinSkillGateway({ mapping, argsObj, trace, runState }) {
+  throwIfAborted(runState)
+  const registry = require('..')
+
+  if (mapping?.operation === 'discover') {
+    try {
+      const result = await discoverBuiltinSkillActions({
+        profile: mapping.profile,
+        registry,
+        args: argsObj
+      })
+      throwIfAborted(runState)
+      appendTrace(trace, 'skill.discovered', {
+        title: 'Built-in Skill actions discovered',
+        skill_id: cleanString(argsObj?.skill_id),
+        action: cleanString(argsObj?.action),
+        search: cleanString(argsObj?.search)
+      })
+      return {
+        ok: result?.ok !== false,
+        content: stableStringify(result),
+        serverName: 'Skill',
+        toolName: 'skill_discover'
+      }
+    } catch (err) {
+      if (isAbortError(err) || runState?.aborted) throw err
+      return { ok: false, content: `Error: ${err?.message || String(err)}` }
+    }
+  }
+
+  if (mapping?.operation === 'call') {
+    let resolved = null
+    try {
+      resolved = await resolveBuiltinSkillCall({
+        profile: mapping.profile,
+        registry,
+        args: argsObj
+      })
+    } catch (err) {
+      if (isAbortError(err) || runState?.aborted) throw err
+      resolved = { ok: false, error: err?.message || String(err) }
+    }
+    if (!resolved?.ok) {
+      return { ok: false, content: stableStringify(resolved || { ok: false, error: 'Skill Action resolution failed' }) }
+    }
+    return await executeBuiltinSkillAction({
+      mapping: resolved.mapping,
+      argsObj: resolved.args,
+      trace,
+      runState
+    })
+  }
+
+  return { ok: false, content: `Error: Unknown Skill gateway operation: ${mapping?.operation || '(empty)'}` }
+}
+
+async function executeAgentToolCall(context) {
+  if (context?.mapping?.type === 'skill_gateway') return await executeBuiltinSkillGateway(context)
+  if (context?.mapping?.type === 'skill') return await executeBuiltinSkillAction(context)
+  return await executeMcpToolCall(context)
+}
+
 function safeJsonParse(text) {
   try {
     return { ok: true, value: JSON.parse(text) }
@@ -1403,7 +1629,7 @@ async function invokeUtoolsAiTool({ name, argsObj, map, trace, runState }) {
     return `Error: Tool mapping missing: ${name}`
   }
 
-  const exec = await executeMcpToolCall({ mapping, argsObj, trace, runState })
+  const exec = await executeAgentToolCall({ mapping, argsObj, trace, runState })
   const resultText = String(exec?.content || '')
   const parsed = safeJsonParse(resultText)
   return parsed.ok ? parsed.value : resultText
@@ -1412,7 +1638,7 @@ async function invokeUtoolsAiTool({ name, argsObj, map, trace, runState }) {
 async function runAgentWithUtoolsAi({ profile, task, trace, runState, maxRounds = 12 }) {
   if (!canUseUtoolsAi()) throw new Error('Current environment does not support uTools AI')
   const api = getUtoolsApi()
-  const { tools, map } = await buildMcpToolsBundle(profile.activeMcpServers, trace, runState)
+  const { tools, map } = await buildAgentToolsBundle(profile, trace, runState)
   const unregisterToolFns = registerUtoolsAiToolFunctions({
     tools,
     invokeTool: (name, argsObj) => invokeUtoolsAiTool({
@@ -1552,7 +1778,7 @@ async function runAgentWithUtoolsAi({ profile, task, trace, runState, maxRounds 
         const mapping = map.get(toolCall?.function?.name)
         const argsParsed = safeJsonParse(toolCall?.function?.arguments || '')
         const argsObj = argsParsed.ok && isPlainObject(argsParsed.value) ? argsParsed.value : {}
-        const exec = await executeMcpToolCall({ mapping, argsObj, trace, runState })
+        const exec = await executeAgentToolCall({ mapping, argsObj, trace, runState })
         utoolsToolFallbackRecords.push({
           name: toolCall?.function?.name || '',
           serverName: exec?.serverName || mapping?.serverName || '',
@@ -1584,7 +1810,7 @@ async function runAgentWithOpenAICompatible({ profile, task, trace, runState, ma
   const apiKey = cleanString(profile.provider?.apikey)
   if (!baseUrl || !apiKey) throw new Error('Provider baseurl/apikey is not configured')
 
-  const { tools, map } = await buildMcpToolsBundle(profile.activeMcpServers, trace, runState)
+  const { tools, map } = await buildAgentToolsBundle(profile, trace, runState)
   const apiMessages = [{ role: 'user', content: String(task || '') }]
   const requestOverrides = buildRequestOverridesFromAgentModelParams(profile.modelParams, { includeReasoningEffort: true })
 
@@ -1706,7 +1932,7 @@ async function runAgentWithOpenAICompatible({ profile, task, trace, runState, ma
       const mapping = map.get(toolCall?.function?.name)
       const argsParsed = safeJsonParse(toolCall?.function?.arguments || '')
       const argsObj = argsParsed.ok && isPlainObject(argsParsed.value) ? argsParsed.value : {}
-      const exec = await executeMcpToolCall({ mapping, argsObj, trace, runState })
+      const exec = await executeAgentToolCall({ mapping, argsObj, trace, runState })
       throwIfAborted(runState)
       apiMessages.push(createToolResultMessage(toolCall, exec?.content))
     }
@@ -1718,11 +1944,12 @@ async function runAgentWithOpenAICompatible({ profile, task, trace, runState, ma
 function createRunState(owner, options = {}) {
   const activeClients = new Set()
   const abortListeners = new Set()
+  const traceStreamId = cleanString(options.traceStreamId)
   const runState = {
     aborted: false,
     currentRequest: null,
     toolApprovalMode: normalizeToolApprovalMode(options.toolApprovalMode),
-    traceStreamId: cleanString(options.traceStreamId),
+    traceStreamId,
     agentName: cleanString(options.agentName),
     registerClient(server, client, pooled) {
       const entry = { server, client, pooled: !!pooled }
@@ -1751,6 +1978,11 @@ function createRunState(owner, options = {}) {
     },
     dispose() {
       this.aborted = true
+      if (traceStreamId) {
+        const states = activeRunStatesByTraceStreamId.get(traceStreamId)
+        states?.delete?.(this)
+        if (!states?.size) activeRunStatesByTraceStreamId.delete(traceStreamId)
+      }
       for (const listener of Array.from(abortListeners)) {
         try {
           listener()
@@ -1771,6 +2003,12 @@ function createRunState(owner, options = {}) {
     }
   }
 
+  ensureBuiltinAgentsToolApprovalModeListener()
+  if (traceStreamId) {
+    const states = activeRunStatesByTraceStreamId.get(traceStreamId) || new Set()
+    states.add(runState)
+    activeRunStatesByTraceStreamId.set(traceStreamId, states)
+  }
   owner?._activeRuns?.add?.(runState)
   return runState
 }
@@ -1791,6 +2029,7 @@ function buildAgentRunResponse({ ok, status, agent, profile, content, reasoning,
           prompt_id: cleanString(profile.prompt?._id),
           prompt_name: cleanString(profile.prompt?.name || profile.prompt?._id),
           skill_ids: profile.skillIds,
+          native_skill_ids: profile.activeBuiltinSkillIds,
           mcp_ids: profile.activeMcpIds
         }
       : null,
@@ -1818,7 +2057,7 @@ function clampInteger(value, options = {}) {
   return Math.max(min, Math.min(max, int))
 }
 
-const TOOLS = [
+const ACTIONS = [
   {
     name: 'agents_list',
     description: 'List available Agents configured in the app. With query, it searches Agent id/name/provider/model/prompt/skills/MCP; default is keyword search and it automatically becomes hybrid semantic search when the global Agent/Notes/Sessions search config enables embeddings. The result includes searchMode and semanticUsed.',
@@ -1857,17 +2096,17 @@ const TOOLS = [
   }
 ]
 
-class BuiltinAgentsMcpClient {
-  constructor(serverConfig) {
-    this.config = serverConfig || {}
+class BuiltinAgentsSkillRuntime {
+  constructor(skillConfig) {
+    this.config = skillConfig || {}
     this._activeRuns = new Set()
   }
 
-  async listTools() {
-    return TOOLS
+  async listActions() {
+    return ACTIONS
   }
 
-  async callTool(toolName, args) {
+  async runAction(toolName, args) {
     const name = cleanString(toolName)
     const params = isPlainObject(args) ? args : {}
     const config = globalConfig.getConfig()
@@ -1937,6 +2176,7 @@ class BuiltinAgentsMcpClient {
           provider_name: cleanString(profile.provider?.name || profile.providerId),
           model: profile.model,
           skill_count: profile.skillIds.length,
+          native_skill_count: profile.activeBuiltinSkillIds.length,
           mcp_count: profile.activeMcpIds.length
         })
 
@@ -2034,6 +2274,8 @@ class BuiltinAgentsMcpClient {
   }
 }
 
-module.exports = function createBuiltinAgentsMcpClient(serverConfig) {
-  return new BuiltinAgentsMcpClient(serverConfig)
+module.exports = function createBuiltinAgentsSkillRuntime(skillConfig) {
+  return new BuiltinAgentsSkillRuntime(skillConfig)
 }
+
+module.exports.ACTIONS = ACTIONS
