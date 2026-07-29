@@ -15,7 +15,7 @@ test('tool activity describes sandbox work instead of generic tool execution', (
     toolArgsText: JSON.stringify({ command: 'Compress-Archive -Path * -DestinationPath output/result.zip' })
   }
   assert.equal(getToolActivityLabel(message, 'running'), '正在沙盒中执行命令')
-  assert.match(getToolActivityMeta(message), /Compress-Archive/)
+  assert.equal(getToolActivityMeta(message), '')
 })
 
 test('tool activity summarizes returned files', () => {
@@ -30,7 +30,7 @@ test('tool activity summarizes returned files', () => {
   assert.equal(getToolActivityMeta(message), 'result.zip 等 2 个文件')
 })
 
-test('MCP activity prioritizes the concrete action and keeps tool identity visible', () => {
+test('MCP activity keeps technical identity available without showing it as default metadata', () => {
   const message = {
     role: 'tool',
     toolName: 'get_my_accounts',
@@ -41,7 +41,7 @@ test('MCP activity prioritizes the concrete action and keeps tool identity visib
   assert.equal(getToolActivityLabel(message, 'success'), '已获取我的账户')
   assert.equal(getToolActivityToolName(message), 'get_my_accounts')
   assert.equal(getToolActivitySource(message), 'facebook-marketing-api')
-  assert.equal(getToolActivityMeta(message), 'Returns the ad accounts available to the current user.')
+  assert.equal(getToolActivityMeta(message), '')
 })
 
 test('generic tool activity keeps unknown action names instead of falling back to the MCP server', () => {

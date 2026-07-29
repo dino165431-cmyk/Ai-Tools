@@ -117,7 +117,7 @@ export const AGENT_SKILL_LAZY_LOAD_GUIDANCE_LINES = Object.freeze([
   '- `assets/` 只应在其中存放文本模板、SVG、HTML、CSS、JSON 等可读文本时再读取；二进制图片、字体、压缩包等资产不要用 `read_skill_file`。',
   '- 优先使用技能块展示的 id，不要传空对象，也不要猜不存在的技能。',
   '- 单个技能用：`use_skill({"id":"..."})`；多个技能再用：`use_skills({"ids":["...","..."]})`。',
-  '- 内置 Skill 的 Action Schema 不会全量注册。需要查看动作时调用 `skill_discover({"skill_id":"..."})`；需要完整参数 Schema 时再传 `action`。',
+  '- `skill_discover` 可检索当前可用的目录 Skill 和内置 Skill。只知道任务意图时传 `search`；找到目录 Skill 后用 `use_skill` 加载正文。内置 Action Schema 不会全量注册，需要查看动作时传 `skill_id`，需要完整参数 Schema 时再传 `action`。',
   '- 调用内置动作前必须先加载对应 Skill，然后使用 `skill_call({"skill_id":"...","action":"...","args":{...}})`。不要猜 Action 名称或参数。',
   '- 外部 MCP 绑定仍会随 Skill 选择挂载；`use_skill` / `use_skills` 负责把技能正文加入上下文。'
 ])
@@ -221,17 +221,17 @@ export const INTERNAL_TOOL_SPECS = Object.freeze({
   },
   skillDiscover: {
     description:
-      '按需发现当前会话已选择的内置 Skill 及其 Action。默认只返回动作名称、简述和审批类型；查询一个 Action 时同时传 skill_id 和 action，会返回完整 inputSchema。不要把它用于外部 MCP。',
+      '按需发现并检索当前会话可用的目录 Skill、内置 Skill 及其 Action。只知道任务意图时传 search，会结合名称、描述、触发词、脚本元数据和本地能力索引返回相关 Skill；目录 Skill 找到后用 use_skill 加载。查询内置 Action 时同时传 skill_id 和 action，可返回完整 inputSchema。不要把它用于外部 MCP。',
     parameters: {
       type: 'object',
       properties: {
-        skill_id: { type: 'string', description: '内置 Skill _id。查询具体 Action 时必填。' },
+        skill_id: { type: 'string', description: 'Skill _id。查询具体内置 Action 时必填。' },
         skill_name: { type: 'string', description: 'Skill 名称兜底字段，不推荐；优先使用 skill_id。' },
         action: { type: 'string', description: 'Action 精确名称。提供后返回该 Action 的完整 inputSchema。' },
-        search: { type: 'string', description: '按 Skill 名称、描述、Action 名称或描述搜索。' },
+        search: { type: 'string', description: '按任务意图搜索 Skill 名称、描述、触发词、脚本和内置 Action；支持多关键词长句。' },
         with_schema: { type: 'boolean', description: '列表模式下是否同时返回每个 Action 的 inputSchema；默认 false。' },
         refresh: { type: 'boolean', description: '是否跳过本地缓存并重新读取 Action 目录。' },
-        limit: { type: 'integer', description: '每个 Skill 最多返回的 Action 数量，默认 30，最大 100。' }
+        limit: { type: 'integer', description: '最多返回的 Skill 数量，以及每个内置 Skill 的 Action 数量，默认 30，最大 100。' }
       },
       additionalProperties: false
     }

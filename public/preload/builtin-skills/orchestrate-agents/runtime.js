@@ -23,7 +23,7 @@ const AGENT_REASONING_EFFORT_OPTIONS = [
   'xhigh',
   'max'
 ]
-const TOOL_APPROVAL_MODES = ['manual', 'safe', 'full', 'deny']
+const TOOL_APPROVAL_MODES = ['manual', 'safe', 'full', 'trusted', 'deny']
 const MAX_TRACE_ITEMS = 120
 const MAX_EXCERPT_CHARS = 1200
 const MAX_TOOL_RESULT_CHARS = 4000
@@ -949,7 +949,8 @@ function buildAgentListItemFromSearchEntry(config, entry) {
 async function resolveAgentTarget(config, params) {
   const agentId = cleanString(params?.agent_id ?? params?.id ?? params?.agentId)
   const agentName = cleanString(params?.agent_name ?? params?.name ?? params?.agentName)
-  const list = Object.values(isPlainObject(config?.agents) ? config.agents : {}).filter(Boolean)
+  const list = Object.values(isPlainObject(config?.agents) ? config.agents : {})
+    .filter((agent) => agent && agent.builtin !== true)
 
   if (agentId) {
     const byId = list.find((item) => cleanString(item?._id) === agentId)
@@ -983,7 +984,7 @@ async function resolveAgentTarget(config, params) {
 async function listAgentItems(config, query = '') {
   const normalizedQuery = cleanString(query)
   const list = Object.values(isPlainObject(config?.agents) ? config.agents : {})
-    .filter(Boolean)
+    .filter((agent) => agent && agent.builtin !== true)
     .map((agent) => buildAgentBrief(agent, config))
     .sort((a, b) => a.name.localeCompare(b.name))
 
@@ -1004,9 +1005,17 @@ async function listAgentItems(config, query = '') {
     query: normalizedQuery,
     limit: 200
   })
+  const items = (Array.isArray(result?.items) ? result.items : [])
+    .filter((entry) => {
+      const agentId = cleanString(entry?.agentId || entry?.path)
+      return agentId && config?.agents?.[agentId]?.builtin !== true
+    })
+    .map((entry) => buildAgentListItemFromSearchEntry(config, entry))
   return {
     ...result,
-    items: (Array.isArray(result?.items) ? result.items : []).map((entry) => buildAgentListItemFromSearchEntry(config, entry))
+    returned: items.length,
+    total: Math.max(items.length, Number(result?.total || 0) - ((result?.items?.length || 0) - items.length)),
+    items
   }
 }
 
@@ -1186,10 +1195,36 @@ function filterAllowedMcpTools(server, list) {
   return (Array.isArray(list) ? list : []).filter((tool) => enabledNames.has(cleanString(tool?.name)))
 }
 
-function shouldAllowToolCallByApprovalMode(runState, mapping) {
+function isDangerousShellApprovalCommand(args) {
+  const command = cleanString(isPlainObject(args) ? args.command : '')
+    .replace(/\\\r?\n/g, ' ')
+    .trim()
+  if (!command) return false
+
+  return [
+    /\b(?:rm|rmdir|rd|del|erase|remove-item|clear-content)\b/i,
+    /\bfind\b[\s\S]*\s-delete(?:\s|$)/i,
+    /(?:^|[\r\n;&|]\s*)(?:sudo\s+|doas\s+)?(?:format|mkfs(?:\.\w+)?|diskpart|shred|truncate)\b/i,
+    /\b(?:format-volume|clear-disk|initialize-disk)\b/i,
+    /\bdd\b[\s\S]*\bof\s*=/i,
+    /\b(?:shutdown|reboot|halt|poweroff|stop-computer|restart-computer)\b/i,
+    /\b(?:kill|killall|pkill|taskkill|stop-process)\b/i,
+    /\bgit\s+(?:reset\s+--hard|clean\b|restore\b|checkout\s+--|branch\s+-D\b|stash\s+(?:drop|clear)\b|push\b[\s\S]*(?:--force|-f(?:\s|$)))/i,
+    /\b(?:docker\s+(?:system|image|container|volume)\s+prune|kubectl\s+delete)\b/i,
+    /\b(?:drop\s+(?:database|schema|table)|truncate\s+table)\b/i,
+    /\breg(?:\.exe)?\s+delete\b/i,
+    /\b(?:shutil\.rmtree|os\.(?:remove|unlink)|fs\.(?:rm|rmSync|rmdir|rmdirSync|unlink|unlinkSync)|\.unlink\s*\()\b/i
+  ].some((pattern) => pattern.test(command))
+}
+
+function shouldAllowToolCallByApprovalMode(runState, mapping, argsObj = {}) {
   const mode = normalizeToolApprovalMode(runState?.toolApprovalMode)
-  if (mapping?.hardApproval === true) {
-    return { allowed: true, mode, requiresPrompt: true }
+  const hardApproval =
+    mapping?.hardApproval === true ||
+    (mapping?.approvalKind === 'shell' && isDangerousShellApprovalCommand(argsObj))
+  if (mode === 'trusted') return { allowed: true, mode }
+  if (hardApproval) {
+    return { allowed: true, mode, requiresPrompt: true, hardApproval: true }
   }
   if (mode === 'full') return { allowed: true, mode }
   if (mode === 'safe') {
@@ -1357,9 +1392,15 @@ async function executeMcpToolCall({ mapping, argsObj, trace, runState }) {
   }
 
   const argsText = stableStringify(argsObj || {})
-  const approvalCheck = shouldAllowToolCallByApprovalMode(runState, mapping)
+  const approvalCheck = shouldAllowToolCallByApprovalMode(runState, mapping, argsObj)
   if (approvalCheck.requiresPrompt) {
-    const approved = await requestBuiltinAgentsToolApproval({ mapping, argsText, trace, runState })
+    const approvalMapping = approvalCheck.hardApproval ? { ...mapping, hardApproval: true } : mapping
+    const approved = await requestBuiltinAgentsToolApproval({
+      mapping: approvalMapping,
+      argsText,
+      trace,
+      runState
+    })
     throwIfAborted(runState, 'Aborted while waiting for sub-agent tool approval')
 
     appendTrace(trace, 'tool.approval_resolved', {
@@ -1491,9 +1532,15 @@ async function executeMcpToolCall({ mapping, argsObj, trace, runState }) {
 async function executeBuiltinSkillAction({ mapping, argsObj, trace, runState }) {
   throwIfAborted(runState)
   const argsText = stableStringify(argsObj || {})
-  const approvalCheck = shouldAllowToolCallByApprovalMode(runState, mapping)
+  const approvalCheck = shouldAllowToolCallByApprovalMode(runState, mapping, argsObj)
   if (approvalCheck.requiresPrompt) {
-    const approved = await requestBuiltinAgentsToolApproval({ mapping, argsText, trace, runState })
+    const approvalMapping = approvalCheck.hardApproval ? { ...mapping, hardApproval: true } : mapping
+    const approved = await requestBuiltinAgentsToolApproval({
+      mapping: approvalMapping,
+      argsText,
+      trace,
+      runState
+    })
     throwIfAborted(runState, 'Aborted while waiting for sub-agent Skill action approval')
     if (approved !== true) {
       if (approved === null) throw makeAbortError('Sub-agent Skill action approval was aborted.')

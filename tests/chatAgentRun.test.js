@@ -215,9 +215,9 @@ test('agent run timeline folds MCP readiness under the runtime card', () => {
   assert.equal(
     JSON.stringify(runtimeItem.children.map((child) => child.title)),
     JSON.stringify([
-      'MCP tools ready: notes',
-      'MCP tools ready: config',
-      'MCP tools ready: sessions'
+      '已连接 notes',
+      '已连接 config',
+      '已连接 sessions'
     ])
   )
   assert.ok(responseItem)
@@ -225,7 +225,8 @@ test('agent run timeline folds MCP readiness under the runtime card', () => {
 
   const chips = getAgentRunOverviewChips(msg)
   assert.ok(chips.some((chip) => chip.includes('Ai Tools Helper')))
-  assert.ok(chips.some((chip) => chip.includes('deepseek-v4-pro')))
+  assert.ok(chips.some((chip) => chip.includes('3 项操作')))
+  assert.equal(chips.some((chip) => chip.includes('deepseek-v4-pro')), false)
 })
 
 test('agent run abort closes open assistant and tool steps as stopped', () => {

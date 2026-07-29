@@ -282,7 +282,9 @@ const cardStyle = computed(() => ({
 const theme = getTheme()
 
 const providersRef = getProviders()
-const providers = computed(() => providersRef.value || [])
+const providers = computed(() =>
+  (providersRef.value || []).filter((provider) => provider?.builtin !== true)
+)
 
 const dialog = useDialog()
 const message = useMessage()

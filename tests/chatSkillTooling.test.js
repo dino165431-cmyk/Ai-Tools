@@ -92,6 +92,37 @@ test('built-in Skill actions use two gateway tools instead of one schema per act
   assert.equal(bundle.stats.nativeSkillCount, 1)
 })
 
+test('directory Skills expose discovery and match multi-term capability queries', async () => {
+  const skill = makeBuiltinSkill({
+    _id: 'skill_adjust',
+    name: '移动端 Adjust 分析',
+    description: '使用 mitmproxy 抓包分析 Android APK 的 Adjust 动态请求并生成 Java 和 SQL。',
+    builtin: false,
+    sourceType: 'directory',
+    sourcePath: 'D:/skills/mobile-adjust',
+    nativeActions: [],
+    triggers: undefined
+  })
+  const bundle = buildSkillToolsBundle({
+    selectedSkills: [skill],
+    agentSkillIds: []
+  })
+
+  assert.ok(bundle.tools.some((tool) => tool.function.name === 'skill_discover'))
+  assert.equal(bundle.tools.some((tool) => tool.function.name === 'skill_call'), false)
+
+  const result = await discoverBuiltinSkillActions({
+    selectedSkills: [skill],
+    args: { search: 'mitmproxy Adjust Android APK 动态抓包分析' }
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.total_skills, 1)
+  assert.equal(result.returned_skills, 1)
+  assert.equal(result.skills[0].id, 'skill_adjust')
+  assert.equal(result.skills[0].kind, 'directory')
+})
+
 test('action catalog caches local runtime metadata and discovery returns schema only on demand', async () => {
   let calls = 0
   const catalog = createBuiltinSkillActionCatalog(async () => {
@@ -270,4 +301,26 @@ test('auto activation can transiently mount an implicit installed Skill outside 
   assert.deepEqual(plan.activatedSkillIds, [installed._id])
   assert.deepEqual(plan.addedSelectedSkillIds, [installed._id])
   assert.deepEqual(plan.addedAgentSkillIds, [installed._id])
+})
+
+test('auto activation accepts a persistent capability-index match', () => {
+  const installed = makeBuiltinSkill({
+    _id: 'skill-adjust',
+    name: 'Mobile Adjust Analysis',
+    description: 'Authorized mobile analytics workflow',
+    triggers: undefined
+  })
+  const plan = buildAutoSkillActivationPlan({
+    skills: [installed],
+    text: 'inspect the app traffic',
+    retrievalMatches: [{
+      capabilityType: 'skill',
+      skillId: installed._id,
+      score: 4.2,
+      searchMode: 'hybrid'
+    }]
+  })
+
+  assert.deepEqual(plan.picked.map((item) => item.id), [installed._id])
+  assert.ok(plan.picked[0].matched.includes('index:hybrid'))
 })

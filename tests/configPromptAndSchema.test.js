@@ -255,6 +255,11 @@ test('builtin assistant prompt mentions skill import priority and compatibility 
   assert.ok(prompt.content.includes('sessions_list_directory'))
   assert.ok(prompt.content.includes('sessions_list_recent'))
   assert.ok(prompt.content.includes('sessions_search'))
+  assert.ok(prompt.content.includes('默认通用 Agent 可按需使用全部已安装 Skill 和已启用 MCP'))
+  assert.ok(prompt.content.includes('config_read_prompt'))
+  assert.ok(prompt.content.includes('bundle_id'))
+  assert.ok(prompt.content.includes('Compress-Archive'))
+  assert.ok(prompt.content.includes('临时 `.zip` 再重命名'))
 })
 
 test('builtin notes and sessions skills prefer lightweight discovery tools first', () => {
@@ -335,6 +340,9 @@ test('config Skill action schemas expose strict config-specific descriptions', a
   const listPrompts = toolMap.get('config_list_prompts')
   assert.ok(listPrompts)
   assert.ok(listPrompts.description.includes('type'))
+  const readPrompt = toolMap.get('config_read_prompt')
+  assert.ok(readPrompt)
+  assert.deepEqual(readPrompt.inputSchema.required, ['id'])
 
   const addAgent = toolMap.get('config_add_agent')
   assert.ok(addAgent)
@@ -344,6 +352,8 @@ test('config Skill action schemas expose strict config-specific descriptions', a
   const addTask = toolMap.get('config_add_timed_task')
   assert.ok(addTask)
   assert.ok(addTask.description.includes('trigger'))
+  assert.equal(addTask.inputSchema.required.includes('agentId'), false)
+  assert.ok(addTask.inputSchema.properties.agentId.description.includes('默认通用'))
   assert.equal(addTask.inputSchema.properties.trigger.additionalProperties, false)
   assert.equal(addTask.inputSchema.properties.options.additionalProperties, false)
 
@@ -370,6 +380,23 @@ test('config prompt tools preserve prompt type metadata', async () => {
   const item = listed.items.find((entry) => entry._id === added.id)
   assert.ok(item)
   assert.equal(item.type, 'user')
+  assert.equal(listed.items.some((entry) => entry.builtin === true), false)
+  assert.equal(listed.items.some((entry) => entry._id === 'builtin_prompt_notes'), false)
+
+  const listedAgents = await runtime.runAction('config_list_agents', {})
+  assert.equal(listedAgents.items.some((entry) => entry._id === 'builtin_agent_notes'), false)
+
+  const listedProviders = await runtime.runAction('config_list_providers', {})
+  assert.equal(listedProviders.items.some((entry) => entry._id === 'builtin_provider_utools_ai'), false)
+
+  const read = await runtime.runAction('config_read_prompt', { id: added.id })
+  assert.equal(read.ok, true)
+  assert.equal(read.prompt.content, '你好 {{name}}')
+
+  await assert.rejects(
+    runtime.runAction('config_read_prompt', { id: 'builtin_prompt_notes' }),
+    /未找到用户提示词/
+  )
 
   await runtime.runAction('config_update_prompt', {
     id: added.id,

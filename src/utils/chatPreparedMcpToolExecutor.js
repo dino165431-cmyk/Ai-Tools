@@ -9,6 +9,36 @@ import { stableStringify } from './chatProviderStreaming.js'
 import { stringifyToolResultForModel as stringifyToolResultForLlm } from './toolResultForModel.js'
 import { truncateInlineText } from './chatAttachmentUtils.js'
 
+function tokenizeDiscoveryText(value) {
+  const raw = String(value || '').trim().toLowerCase()
+  const tokens = new Set(raw.match(/[a-z0-9][a-z0-9_+.-]{1,}/g) || [])
+  const cjkGroups = raw.match(/[\u3400-\u9fff]{2,}/g) || []
+  cjkGroups.forEach((group) => {
+    if (group.length <= 8) tokens.add(group)
+    for (let size = 2; size <= Math.min(4, group.length); size += 1) {
+      for (let index = 0; index <= group.length - size; index += 1) {
+        tokens.add(group.slice(index, index + size))
+      }
+    }
+  })
+  return Array.from(tokens)
+}
+
+function scoreDiscoveryText(query, haystack) {
+  const normalizedQuery = String(query || '').trim().toLowerCase()
+  const normalizedHaystack = String(haystack || '').trim().toLowerCase()
+  if (!normalizedQuery) return 1
+  if (!normalizedHaystack) return 0
+  if (normalizedHaystack.includes(normalizedQuery)) return 100
+  const haystackTokens = new Set(tokenizeDiscoveryText(normalizedHaystack))
+  return tokenizeDiscoveryText(normalizedQuery)
+    .filter((token) => haystackTokens.has(token))
+    .reduce(
+      (score, token) => score + (/[\u3400-\u9fff]/.test(token) && token.length >= 3 ? 2 : 1),
+      0
+    )
+}
+
 export function createPreparedMcpToolExecutor(runtime) {
   const {
     activeMcpServers,
@@ -314,11 +344,20 @@ export function createPreparedMcpToolExecutor(runtime) {
       }
       let allowedTools = filterAllowedMcpTools(server, result.tools)
       if (searchLower) {
-        allowedTools = allowedTools.filter((tool) => {
-          const name = String(tool?.name || '').toLowerCase()
-          const description = String(tool?.description || '').toLowerCase()
-          return name.includes(searchLower) || description.includes(searchLower)
-        })
+        allowedTools = allowedTools
+          .map((tool) => ({
+            tool,
+            score: scoreDiscoveryText(searchLower, [
+              server?._id,
+              server?.name,
+              server?.description,
+              tool?.name,
+              tool?.description
+            ].filter(Boolean).join('\n'))
+          }))
+          .filter((item) => item.score > 0)
+          .sort((a, b) => b.score - a.score)
+          .map((item) => item.tool)
       }
       const tools = allowedTools.slice(0, limit).map((tool) => ({
         name: tool?.name,

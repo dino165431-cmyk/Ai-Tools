@@ -292,6 +292,7 @@ test('buildChatContextWindow tightens the latest attachment turn when the first 
 
 test('buildChatContextWindow truncates compact attachment text instead of dropping the turn', () => {
   const longAttachmentText = 'continue with attachment\n\n' + attachmentHeader + '\n' + attachmentPrefix + 'manual.pdf\n' + 'A'.repeat(5000)
+    + '\nsandbox_workspace_id: chat-history-1\nsandbox_path: inbox/manual.pdf'
   const messages = [
     { role: 'user', content: longAttachmentText },
     { role: 'assistant', content: 'old answer' },
@@ -310,6 +311,8 @@ test('buildChatContextWindow truncates compact attachment text instead of droppi
   assert.equal(result[0].role, 'user')
   assert.equal(typeof result[0].content, 'string')
   assert.ok(result[0].content.includes('manual.pdf'))
+  assert.ok(result[0].content.includes('sandbox_workspace_id: chat-history-1'))
+  assert.ok(result[0].content.includes('sandbox_path: inbox/manual.pdf'))
   assert.ok(result[0].content.length < longAttachmentText.length)
   assert.deepEqual(result.slice(-2).map((item) => item.content), ['latest user', 'latest answer'])
 })

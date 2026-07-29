@@ -2,12 +2,35 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  isExpectedChatProgrammaticScroll,
+  resolveChatBottomScrollTarget,
   resolveChatViewportCompensation,
   resolveChatHeavyRenderTuning,
   resolveChatVirtualItemGap,
   resolveChatVirtualItemHeight,
   shouldDeferChatHeavyBlockLayout
 } from '../src/utils/chatPerformance.js'
+
+test('programmatic scroll recognition rejects a user drag during the guard window', () => {
+  assert.equal(isExpectedChatProgrammaticScroll({
+    now: 100,
+    until: 700,
+    scrollTop: 500,
+    targetScrollTop: 500
+  }), true)
+  assert.equal(isExpectedChatProgrammaticScroll({
+    now: 100,
+    until: 700,
+    scrollTop: 320,
+    targetScrollTop: 500
+  }), false)
+  assert.equal(isExpectedChatProgrammaticScroll({
+    now: 701,
+    until: 700,
+    scrollTop: 500,
+    targetScrollTop: 500
+  }), false)
+})
 
 test('resolveChatHeavyRenderTuning keeps the default window for short chats', () => {
   assert.deepEqual(resolveChatHeavyRenderTuning(0), {
@@ -158,5 +181,33 @@ test('resolveChatVirtualItemGap mirrors the tighter CSS gap between activity row
       consecutiveActivityGap: 5
     }),
     14
+  )
+})
+
+test('resolveChatBottomScrollTarget skips no-op tail commits', () => {
+  assert.deepEqual(
+    resolveChatBottomScrollTarget({
+      scrollHeight: 1200,
+      clientHeight: 400,
+      scrollTop: 799.5,
+      tolerance: 1
+    }),
+    {
+      targetScrollTop: 800,
+      distancePx: 0.5,
+      shouldScroll: false
+    }
+  )
+  assert.deepEqual(
+    resolveChatBottomScrollTarget({
+      scrollHeight: 1200,
+      clientHeight: 400,
+      scrollTop: 620
+    }),
+    {
+      targetScrollTop: 800,
+      distancePx: 180,
+      shouldScroll: true
+    }
   )
 })

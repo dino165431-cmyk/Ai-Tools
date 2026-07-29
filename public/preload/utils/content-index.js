@@ -33,6 +33,15 @@ const INDEX_KINDS = Object.freeze({
     defaultSearchLimit: 20,
     defaultRecentLimit: 20
   }),
+  capability: Object.freeze({
+    kind: 'capability',
+    root: 'capability',
+    entryType: 'capability',
+    extension: '',
+    source: 'config',
+    defaultSearchLimit: 20,
+    defaultRecentLimit: 20
+  }),
   note: Object.freeze({
     kind: 'note',
     root: 'note',
@@ -56,15 +65,18 @@ const INDEX_KINDS = Object.freeze({
 
 const INDEX_FILE_NAMES = Object.freeze({
   agent: `agents-index-v${INDEX_VERSION}.json`,
+  capability: `capabilities-index-v${INDEX_VERSION}.json`,
   note: `notes-index-v${INDEX_VERSION}.json`,
   session: `sessions-index-v${INDEX_VERSION}.json`
 })
 
 const rebuildPromises = new Map()
 const maintenanceTimers = new Map()
+const indexCacheCleanupPromises = new Map()
 const INDEX_MAINTENANCE_DEBOUNCE_MS = 1200
 let lastObservedContentSearchConfigSignature = ''
 let lastObservedAgentConfigSignature = ''
+let lastObservedCapabilityConfigSignature = ''
 let globalConfigMaintenanceListener = null
 let contentIndexInitialized = false
 const embeddingFailureLogTimes = new Map()
@@ -648,8 +660,77 @@ function getAgentConfigSignature(rawConfig = getCurrentConfig()) {
   return JSON.stringify(getAgentIndexConfigPayload(rawConfig))
 }
 
+function getCapabilityIndexConfigPayload(rawConfig = getCurrentConfig()) {
+  const config = isPlainObject(rawConfig) ? rawConfig : {}
+  const skills = Object.values(isPlainObject(config.skills) ? config.skills : {})
+    .filter(Boolean)
+    .map((skill) => {
+      const triggers = isPlainObject(skill?.triggers) ? skill.triggers : {}
+      const scriptCatalog = Array.isArray(skill?.cache?.scriptCatalog)
+        ? skill.cache.scriptCatalog
+        : Array.isArray(skill?.scriptCatalog)
+          ? skill.scriptCatalog
+          : []
+      return {
+        _id: cleanString(skill?._id),
+        name: cleanString(skill?.name),
+        description: cleanString(skill?.description),
+        sourceType: cleanString(skill?.sourceType),
+        entryFile: cleanString(skill?.entryFile),
+        nativeActions: normalizeStringList(skill?.nativeActions),
+        mcp: normalizeStringList(skill?.mcp),
+        triggers: {
+          tags: normalizeStringList(triggers.tags),
+          keywords: normalizeStringList(triggers.keywords),
+          regex: normalizeStringList(triggers.regex),
+          intents: normalizeStringList(triggers.intents)
+        },
+        scripts: scriptCatalog
+          .map((script) => ({
+            path: cleanString(script?.path),
+            name: cleanString(script?.name),
+            description: cleanString(script?.description),
+            whenToUse: cleanString(script?.whenToUse),
+            argsHelp: cleanString(script?.argsHelp)
+          }))
+          .filter((script) => script.path || script.name)
+          .slice(0, 100),
+        builtin: skill?.builtin === true,
+        allowImplicitInvocation: !(
+          skill?.allowImplicitInvocation === false ||
+          skill?.policy?.allowImplicitInvocation === false ||
+          skill?.policy?.allow_implicit_invocation === false
+        )
+      }
+    })
+    .filter((skill) => skill._id)
+    .sort(sortById)
+
+  const mcpServers = Object.values(isPlainObject(config.mcpServers) ? config.mcpServers : {})
+    .filter(Boolean)
+    .map((server) => ({
+      _id: cleanString(server?._id),
+      name: cleanString(server?.name),
+      description: cleanString(server?.description),
+      transportType: cleanString(server?.transportType),
+      allowTools: normalizeStringList(server?.allowTools),
+      disabled: server?.disabled === true,
+      builtin: server?.builtin === true
+    }))
+    .filter((server) => server._id)
+    .sort(sortById)
+
+  return { skills, mcpServers }
+}
+
+function getCapabilityConfigSignature(rawConfig = getCurrentConfig()) {
+  return JSON.stringify(getCapabilityIndexConfigPayload(rawConfig))
+}
+
 function getIndexSourceSignature(kind, rawConfig = getCurrentConfig()) {
-  return kind === 'agent' ? getAgentConfigSignature(rawConfig) : ''
+  if (kind === 'agent') return getAgentConfigSignature(rawConfig)
+  if (kind === 'capability') return getCapabilityConfigSignature(rawConfig)
+  return ''
 }
 
 function getProviderInfo(providerId) {
@@ -690,7 +771,13 @@ function buildEntryEmbeddingText(kind, metadata = {}, entry = {}) {
     metadata.searchText,
     entry?.name || '',
     entry?.path || '',
-    kind === 'session' ? 'session' : kind === 'agent' ? 'agent' : 'note'
+    kind === 'session'
+      ? 'session'
+      : kind === 'agent'
+        ? 'agent'
+        : kind === 'capability'
+          ? 'capability skill mcp 技能 工具'
+          : 'note'
   ]
     .filter(Boolean)
     .join('\n')
@@ -870,20 +957,35 @@ function syncMaintenanceForAgentConfigChange(config = getCurrentConfig()) {
   })
 }
 
+function syncMaintenanceForCapabilityConfigChange(config = getCurrentConfig()) {
+  const signature = getCapabilityConfigSignature(config)
+  if (signature === lastObservedCapabilityConfigSignature) return
+  lastObservedCapabilityConfigSignature = signature
+  scheduleIndexMaintenance('capability', {
+    reason: 'capability_config_changed',
+    searchConfig: normalizeContentSearchConfig(config?.contentSearchConfig || DEFAULT_CONTENT_SEARCH_CONFIG)
+  })
+}
+
 function init() {
   if (contentIndexInitialized) return dispose
   contentIndexInitialized = true
   try {
-    if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return
+    if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return dispose
+    void ensureIndexCacheCleanup().catch((err) => {
+      console.warn?.('[Content index] cache cleanup failed:', err)
+    })
     globalConfigMaintenanceListener = (event) => {
       const nextConfig = event?.detail
       if (!nextConfig || typeof nextConfig !== 'object') return
       syncMaintenanceForConfigChange(nextConfig.contentSearchConfig)
       syncMaintenanceForAgentConfigChange(nextConfig)
+      syncMaintenanceForCapabilityConfigChange(nextConfig)
     }
     window.addEventListener('globalConfigChanged', globalConfigMaintenanceListener)
     syncMaintenanceForConfigChange(getCurrentConfig().contentSearchConfig)
     syncMaintenanceForAgentConfigChange(getCurrentConfig())
+    syncMaintenanceForCapabilityConfigChange(getCurrentConfig())
   } catch (err) {
     console.warn?.('[Content index] config maintenance listener failed:', err)
   }
@@ -895,6 +997,8 @@ function dispose() {
   clearAllMaintenanceTimers()
   lastObservedContentSearchConfigSignature = ''
   lastObservedAgentConfigSignature = ''
+  lastObservedCapabilityConfigSignature = ''
+  indexCacheCleanupPromises.clear()
   try {
     if (globalConfigMaintenanceListener && typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
       window.removeEventListener('globalConfigChanged', globalConfigMaintenanceListener)
@@ -952,6 +1056,103 @@ function getIndexRelPath(kind) {
 
 function getIndexAbsPath(kind) {
   return path.join(getDataStorageRootAbs(), ...getIndexRelPath(kind).split('/'))
+}
+
+function classifyIndexCacheFileName(filename) {
+  const name = String(filename || '').trim()
+  const canonicalMatch = name.match(/^(agents|capabilities|notes|sessions)-index-v(\d+)\.json$/i)
+  const conflictMatch = name.match(
+    /^(agents|capabilities|notes|sessions)-index-v(\d+)\s+\([^)]*(?:sfconflict|conflict)[^)]*\)\.json$/i
+  )
+  const match = canonicalMatch || conflictMatch
+  if (!match) return null
+
+  const kindByPrefix = {
+    agents: 'agent',
+    capabilities: 'capability',
+    notes: 'note',
+    sessions: 'session'
+  }
+  return {
+    filename: name,
+    kind: kindByPrefix[String(match[1] || '').toLowerCase()] || '',
+    version: Number(match[2]),
+    conflictCopy: !!conflictMatch,
+    canonical: !!canonicalMatch
+  }
+}
+
+function indexHasAnyEmbedding(indexData) {
+  return (Array.isArray(indexData?.entries) ? indexData.entries : [])
+    .some((entry) => Array.isArray(entry?.embedding) && entry.embedding.length > 0)
+}
+
+async function cleanupIndexCacheFiles(options = {}) {
+  const indexDir = path.join(getDataStorageRootAbs(), ...getIndexDirRelPath().split('/'))
+  const searchConfig = getContentSearchConfig(options)
+  let entries = []
+  try {
+    entries = await fs.readdir(indexDir, { withFileTypes: true })
+  } catch (err) {
+    if (err?.code === 'ENOENT') return { removed: [], rebuildKinds: [] }
+    throw err
+  }
+
+  const removed = []
+  const rebuildKinds = new Set()
+  for (const dirEntry of entries) {
+    const filename = typeof dirEntry === 'string' ? dirEntry : String(dirEntry?.name || '')
+    if (!filename || (typeof dirEntry?.isFile === 'function' && !dirEntry.isFile())) continue
+    const classified = classifyIndexCacheFileName(filename)
+    if (!classified?.kind) continue
+
+    let reason = ''
+    if (classified.conflictCopy) reason = 'sync_conflict_copy'
+    else if (classified.version !== INDEX_VERSION) reason = 'obsolete_version'
+    else if (classified.canonical) {
+      try {
+        const raw = await fs.readFile(path.join(indexDir, filename), 'utf-8')
+        const parsed = parseRecoverableJsonText(String(raw || ''))
+        const payload = parsed.ok ? parsed.value : null
+        if (!payload || payload.version !== INDEX_VERSION || payload.kind !== classified.kind) {
+          reason = 'invalid_cache'
+        } else if (
+          isHybridSearchEnabled(searchConfig) &&
+          Array.isArray(payload.entries) &&
+          payload.entries.length > 0 &&
+          !indexHasAnyEmbedding(payload)
+        ) {
+          reason = 'hybrid_without_embeddings'
+          rebuildKinds.add(classified.kind)
+        }
+      } catch (err) {
+        if (err?.code !== 'ENOENT') reason = 'invalid_cache'
+      }
+    }
+
+    if (!reason) continue
+    try {
+      await fs.unlink(path.join(indexDir, filename))
+      removed.push({ filename, kind: classified.kind, reason })
+    } catch (err) {
+      if (err?.code !== 'ENOENT') throw err
+    }
+  }
+
+  return { removed, rebuildKinds: Array.from(rebuildKinds) }
+}
+
+function ensureIndexCacheCleanup(options = {}) {
+  const searchConfig = getContentSearchConfig(options)
+  const key = [
+    path.join(getDataStorageRootAbs(), ...getIndexDirRelPath().split('/')),
+    getContentSearchConfigSignature(searchConfig)
+  ].join('|')
+  if (indexCacheCleanupPromises.has(key)) return indexCacheCleanupPromises.get(key)
+
+  const promise = cleanupIndexCacheFiles({ searchConfig })
+  indexCacheCleanupPromises.set(key, promise)
+  return promise
 }
 
 function shouldIgnoreSegment(kindConfig, segment, isLastDirectory = false) {
@@ -1177,6 +1378,142 @@ async function scanEntries(kind, options = {}) {
   const hybridEnabled = isHybridSearchEnabled(searchConfig)
   if (kindConfig.source === 'config') {
     const config = getCurrentConfig()
+    if (kindConfig.kind === 'capability') {
+      const payload = getCapabilityIndexConfigPayload(config)
+      const entries = []
+
+      for (const skill of payload.skills) {
+        const displayName = skill.name || skill._id
+        const triggerValues = [
+          ...skill.triggers.tags,
+          ...skill.triggers.keywords,
+          ...skill.triggers.regex,
+          ...skill.triggers.intents
+        ]
+        const scriptValues = skill.scripts.flatMap((script) => [
+          script.path,
+          script.name,
+          script.description,
+          script.whenToUse,
+          script.argsHelp
+        ])
+        const preview = normalizePreviewText([
+          skill.description,
+          skill.sourceType ? `Source ${skill.sourceType}` : '',
+          skill.nativeActions.length ? `Actions ${skill.nativeActions.join(', ')}` : '',
+          skill.scripts.length ? `Scripts ${skill.scripts.map((script) => script.path || script.name).filter(Boolean).join(', ')}` : '',
+          triggerValues.length ? `Triggers ${triggerValues.join(', ')}` : ''
+        ].filter(Boolean).join(' / '))
+        const searchText = normalizeSearchText([
+          skill._id,
+          displayName,
+          skill.description,
+          skill.sourceType,
+          skill.entryFile,
+          ...skill.nativeActions,
+          ...triggerValues,
+          ...scriptValues,
+          ...skill.mcp,
+          'skill skills 技能 能力 工作流 脚本 action'
+        ].filter(Boolean).join('\n'))
+        const metadata = {
+          title: displayName,
+          preview,
+          searchText
+        }
+        const entryPath = `skill:${skill._id}`
+        const embedding = hybridEnabled
+          ? await requestEmbeddingVector(
+            buildEntryEmbeddingText(kindConfig.kind, metadata, {
+              path: entryPath,
+              name: displayName
+            }),
+            searchConfig.embedding
+          )
+          : []
+
+        entries.push({
+          type: kindConfig.entryType,
+          path: entryPath,
+          name: displayName,
+          filename: skill._id,
+          dirPath: 'skill',
+          size: 0,
+          mtimeMs: 0,
+          title: metadata.title,
+          preview: metadata.preview,
+          searchText: metadata.searchText,
+          embedding,
+          capabilityType: 'skill',
+          capabilityId: skill._id,
+          skillId: skill._id,
+          sourceType: skill.sourceType,
+          entryFile: skill.entryFile,
+          nativeActions: skill.nativeActions,
+          mcpIds: skill.mcp,
+          builtin: skill.builtin,
+          allowImplicitInvocation: skill.allowImplicitInvocation
+        })
+      }
+
+      for (const server of payload.mcpServers) {
+        const displayName = server.name || server._id
+        const preview = normalizePreviewText([
+          server.description,
+          server.transportType ? `Transport ${server.transportType}` : '',
+          server.allowTools.length ? `Tools ${server.allowTools.join(', ')}` : '',
+          server.disabled ? 'Disabled' : 'Enabled'
+        ].filter(Boolean).join(' / '))
+        const searchText = normalizeSearchText([
+          server._id,
+          displayName,
+          server.description,
+          server.transportType,
+          ...server.allowTools,
+          'mcp server tools 工具 服务 连接器 扩展'
+        ].filter(Boolean).join('\n'))
+        const metadata = {
+          title: displayName,
+          preview,
+          searchText
+        }
+        const entryPath = `mcp:${server._id}`
+        const embedding = hybridEnabled
+          ? await requestEmbeddingVector(
+            buildEntryEmbeddingText(kindConfig.kind, metadata, {
+              path: entryPath,
+              name: displayName
+            }),
+            searchConfig.embedding
+          )
+          : []
+
+        entries.push({
+          type: kindConfig.entryType,
+          path: entryPath,
+          name: displayName,
+          filename: server._id,
+          dirPath: 'mcp',
+          size: 0,
+          mtimeMs: 0,
+          title: metadata.title,
+          preview: metadata.preview,
+          searchText: metadata.searchText,
+          embedding,
+          capabilityType: 'mcp',
+          capabilityId: server._id,
+          mcpId: server._id,
+          transportType: server.transportType,
+          allowTools: server.allowTools,
+          disabled: server.disabled,
+          builtin: server.builtin
+        })
+      }
+
+      entries.sort(compareByPath)
+      return entries
+    }
+
     const providers = isPlainObject(config.providers) ? config.providers : {}
     const prompts = isPlainObject(config.prompts) ? config.prompts : {}
     const skills = isPlainObject(config.skills) ? config.skills : {}
@@ -1367,6 +1704,7 @@ async function rebuildIndex(kind, options = {}) {
 
 async function ensureIndex(kind, options = {}) {
   const currentSearchConfig = getContentSearchConfig(options)
+  await ensureIndexCacheCleanup({ searchConfig: currentSearchConfig })
   const index = await readIndex(kind)
   if (!index) return rebuildIndex(kind, { reason: 'missing', searchConfig: currentSearchConfig })
   const currentSourceSignature = getIndexSourceSignature(kind)
@@ -1452,12 +1790,26 @@ function filterEntriesByDir(entries, dirPath) {
 }
 
 function buildSearchTokens(queryRaw) {
-  return String(queryRaw || '')
-    .trim()
-    .toLowerCase()
-    .split(/\s+/)
-    .map((item) => item.trim())
-    .filter(Boolean)
+  const source = String(queryRaw || '').trim().toLowerCase()
+  if (!source) return []
+
+  const tokens = new Set()
+  source.split(/\s+/).forEach((item) => {
+    const token = item.trim()
+    if (token) tokens.add(token)
+  })
+  ;(source.match(/[a-z0-9][a-z0-9_+.-]{1,}/g) || []).forEach((token) => tokens.add(token))
+  ;(source.match(/[\u3400-\u9fff]{2,}/g) || []).forEach((group) => {
+    if (group.length <= 12) tokens.add(group)
+    for (let size = 2; size <= Math.min(4, group.length); size += 1) {
+      for (let index = 0; index <= group.length - size; index += 1) {
+        tokens.add(group.slice(index, index + size))
+        if (tokens.size >= 96) return
+      }
+      if (tokens.size >= 96) return
+    }
+  })
+  return Array.from(tokens).slice(0, 96)
 }
 
 function computeSearchScore(entry, queryLower, tokens) {
@@ -1869,7 +2221,12 @@ module.exports = {
     scheduleIndexMaintenance,
     cancelIndexMaintenance,
     syncMaintenanceForConfigChange,
-    clearAllMaintenanceTimers
+    syncMaintenanceForCapabilityConfigChange,
+    clearAllMaintenanceTimers,
+    classifyIndexCacheFileName,
+    cleanupIndexCacheFiles,
+    ensureIndexCacheCleanup,
+    indexHasAnyEmbedding
   }
 }
 

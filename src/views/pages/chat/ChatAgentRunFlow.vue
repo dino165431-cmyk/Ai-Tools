@@ -11,7 +11,7 @@
     </div>
 
     <div v-if="timelineItems.length" class="agent-run-flow__section">
-      <div class="agent-run-flow__section-title">执行过程</div>
+      <div class="agent-run-flow__section-title">子任务进度</div>
       <div class="agent-run-flow__timeline">
         <div
           v-for="step in timelineItems"
@@ -63,6 +63,13 @@
             <div v-if="isStepExpanded(step) && step.reasoningText" class="agent-run-step__section">
               <div class="agent-run-step__section-title">推理过程</div>
               <pre class="agent-run-step__thinking">{{ step.reasoningText }}</pre>
+            </div>
+            <div
+              v-if="isStepExpanded(step) && step.kind === 'tool' && (step.serverName || step.toolName)"
+              class="agent-run-step__section"
+            >
+              <div class="agent-run-step__section-title">技术信息</div>
+              <pre class="agent-run-step__code">{{ [step.serverName, step.toolName].filter(Boolean).join(' / ') }}</pre>
             </div>
             <div v-if="isStepExpanded(step) && step.contentText" class="agent-run-step__section">
               <div class="agent-run-step__section-title">内容</div>
@@ -200,34 +207,32 @@ function stepSummary(step) {
 .agent-run-flow {
   position: relative;
   overflow: hidden;
-  padding-left: 14px;
+  padding-left: 9px;
 }
 
 .agent-run-flow::before {
   content: '';
   position: absolute;
-  inset: 10px auto 10px 0;
-  width: 3px;
+  inset: 8px auto 8px 0;
+  width: 2px;
   border-radius: 999px;
   background: linear-gradient(180deg, rgba(42, 148, 125, 0.9), rgba(68, 114, 196, 0.2));
-  box-shadow: 0 0 18px rgba(42, 148, 125, 0.22);
 }
 
 .agent-run-flow__chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 10px;
+  gap: 5px;
+  margin-bottom: 7px;
 }
 
 .agent-run-flow__chip {
   border-radius: 999px;
-  padding: 4px 10px;
-  font-size: 12px;
+  padding: 2px 8px;
+  font-size: 11px;
   color: #17624f;
   background: rgba(255, 255, 255, 0.7);
   border: 1px solid rgba(45, 132, 109, 0.2);
-  box-shadow: 0 8px 20px rgba(28, 62, 56, 0.08);
 }
 
 .agent-run-flow.is-dark .agent-run-flow__chip {
@@ -237,7 +242,7 @@ function stepSummary(step) {
 }
 
 .agent-run-flow__section {
-  margin-top: 12px;
+  margin-top: 8px;
 }
 
 .agent-run-flow__section-title,
@@ -245,7 +250,7 @@ function stepSummary(step) {
   font-size: 12px;
   font-weight: 600;
   color: #4f6f67;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
 .agent-run-step__thinking,
@@ -256,9 +261,12 @@ function stepSummary(step) {
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 12px;
-  line-height: 1.6;
-  border-radius: 14px;
-  padding: 12px 14px;
+  line-height: 1.5;
+  max-height: min(280px, 38vh);
+  overflow: auto;
+  overscroll-behavior: contain;
+  border-radius: 8px;
+  padding: 8px 10px;
   background: rgba(255, 255, 255, 0.66);
   border: 1px solid rgba(69, 105, 99, 0.14);
 }
@@ -282,20 +290,25 @@ function stepSummary(step) {
 .agent-run-flow__timeline {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 6px;
+  max-height: min(440px, 54vh);
+  padding-right: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
 
 .agent-run-step {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr);
-  gap: 10px;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 6px;
   align-items: start;
   animation: agent-run-step-enter 220ms ease;
 }
 
 .agent-run-step__marker {
-  width: 22px;
-  height: 22px;
+  width: 18px;
+  height: 18px;
   border-radius: 999px;
   display: flex;
   align-items: center;
@@ -303,7 +316,6 @@ function stepSummary(step) {
   background: rgba(42, 148, 125, 0.12);
   color: #1f7d67;
   border: 1px solid rgba(45, 132, 109, 0.18);
-  box-shadow: 0 8px 18px rgba(45, 132, 109, 0.14);
 }
 
 .agent-run-step__marker.is-pending,
@@ -371,17 +383,15 @@ function stepSummary(step) {
 }
 
 .agent-run-step__card {
-  border-radius: 18px;
-  padding: 12px 14px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.84), rgba(243, 248, 246, 0.86));
+  border-radius: 10px;
+  padding: 7px 9px;
+  background: rgba(255, 255, 255, 0.58);
   border: 1px solid rgba(82, 121, 113, 0.16);
-  box-shadow: 0 14px 28px rgba(25, 48, 46, 0.08);
-  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+  transition: background 0.18s ease, border-color 0.18s ease;
 }
 
 .agent-run-step__card:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 16px 32px rgba(25, 48, 46, 0.12);
+  background: rgba(255, 255, 255, 0.78);
 }
 
 .agent-run-step__card.is-running {
@@ -409,9 +419,12 @@ function stepSummary(step) {
 }
 
 .agent-run-flow.is-dark .agent-run-step__card {
-  background: linear-gradient(180deg, rgba(18, 27, 30, 0.94), rgba(20, 31, 36, 0.92));
+  background: rgba(18, 27, 30, 0.74);
   border-color: rgba(117, 157, 170, 0.16);
-  box-shadow: 0 14px 28px rgba(3, 10, 14, 0.34);
+}
+
+.agent-run-flow.is-dark .agent-run-step__card:hover {
+  background: rgba(22, 34, 38, 0.9);
 }
 
 .agent-run-flow.is-dark .agent-run-step__card.is-running {
@@ -438,7 +451,7 @@ function stepSummary(step) {
 .agent-run-step__header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
 }
 
@@ -457,19 +470,20 @@ function stepSummary(step) {
 }
 
 .agent-run-step__title {
+  font-size: 12px;
   font-weight: 600;
   color: #27423d;
 }
 
 .agent-run-step__time {
-  font-size: 12px;
+  font-size: 11px;
   color: #6a807a;
 }
 
 .agent-run-step__summary {
   min-width: 0;
   flex: 1;
-  font-size: 12px;
+  font-size: 11px;
   color: #6a807a;
   white-space: nowrap;
   overflow: hidden;
@@ -478,9 +492,9 @@ function stepSummary(step) {
 
 .agent-run-step__status {
   flex: none;
-  padding: 2px 8px;
+  padding: 1px 6px;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 600;
   background: rgba(42, 148, 125, 0.12);
   color: #1f7d67;
@@ -524,29 +538,29 @@ function stepSummary(step) {
 }
 
 .agent-run-step__meta {
-  margin-top: 6px;
-  font-size: 12px;
+  margin-top: 3px;
+  font-size: 11px;
   color: #6f847f;
 }
 
 .agent-run-step__children {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-top: 10px;
-  padding-left: 4px;
+  gap: 4px;
+  margin-top: 6px;
+  padding-left: 2px;
 }
 
 .agent-run-step__child {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 6px;
   align-items: start;
 }
 
 .agent-run-step__child-marker {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   border-radius: 999px;
   display: flex;
   align-items: center;
@@ -564,8 +578,8 @@ function stepSummary(step) {
 
 .agent-run-step__child-body {
   min-width: 0;
-  padding: 8px 10px;
-  border-radius: 14px;
+  padding: 5px 7px;
+  border-radius: 8px;
   background: rgba(255, 255, 255, 0.6);
   border: 1px solid rgba(69, 105, 99, 0.12);
 }
@@ -579,7 +593,7 @@ function stepSummary(step) {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
 }
 
 .agent-run-step__child-title {
@@ -655,7 +669,7 @@ function stepSummary(step) {
 }
 
 .agent-run-step__section {
-  margin-top: 10px;
+  margin-top: 6px;
 }
 
 @keyframes agent-run-step-enter {

@@ -49,6 +49,7 @@ function getDefaultChatConfig() {
     defaultProviderId: '',
     defaultModel: '',
     defaultSystemPrompt: DEFAULT_SYSTEM_PROMPT,
+    toolApprovalMode: 'safe',
     imageGenerationMode: 'auto',
     videoGenerationMode: 'auto',
     contextWindow: { ...DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG },

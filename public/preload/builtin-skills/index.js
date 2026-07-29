@@ -54,6 +54,7 @@ const DEFINITIONS = Object.freeze([
       'config_update_skill',
       'config_delete_skill',
       'config_list_prompts',
+      'config_read_prompt',
       'config_add_prompt',
       'config_update_prompt',
       'config_delete_prompt',
@@ -334,6 +335,7 @@ function normalizeActionSpec(skillId, action) {
     skillId === BUILTIN_SKILL_IDS.sessions ||
     name === 'agents_list' ||
     name === 'config_get_system_time' ||
+    name === 'config_read_prompt' ||
     name.startsWith('config_list_') ||
     /^(notes_(list|read|search)|notebook_read)/.test(name) ||
     isSandboxReadOnly
@@ -359,7 +361,6 @@ function normalizeActionSpec(skillId, action) {
     forceApproval: isExecution || !readOnly,
     hardApproval:
       source.hardApproval === true ||
-      isShell ||
       name === 'sandbox_reset' ||
       source.annotations?.destructiveHint === true,
     approvalKind: isShell ? 'shell' : isExecution ? 'execution' : 'tool'

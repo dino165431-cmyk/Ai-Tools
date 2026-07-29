@@ -68,6 +68,36 @@ export function resolveChatViewportCompensation(options = {}) {
   }
 }
 
+export function isExpectedChatProgrammaticScroll(options = {}) {
+  const now = Number(options.now)
+  const until = Number(options.until)
+  if (!Number.isFinite(now) || !Number.isFinite(until) || now > until) return false
+
+  const targetScrollTop = Number(options.targetScrollTop)
+  if (!Number.isFinite(targetScrollTop)) return true
+  const scrollTop = Number(options.scrollTop)
+  const tolerance = Math.max(0, Number(options.tolerance) || 2)
+  return Number.isFinite(scrollTop) && Math.abs(scrollTop - targetScrollTop) <= tolerance
+}
+
+export function resolveChatBottomScrollTarget(options = {}) {
+  const scrollHeight = Number(options.scrollHeight)
+  const clientHeight = Number(options.clientHeight)
+  const scrollTop = Number(options.scrollTop)
+  const tolerance = Math.max(0, Number(options.tolerance) || 1)
+  const safeScrollHeight = Number.isFinite(scrollHeight) ? Math.max(0, scrollHeight) : 0
+  const safeClientHeight = Number.isFinite(clientHeight) ? Math.max(0, clientHeight) : 0
+  const safeScrollTop = Number.isFinite(scrollTop) ? Math.max(0, scrollTop) : 0
+  const targetScrollTop = Math.max(0, safeScrollHeight - safeClientHeight)
+  const distancePx = targetScrollTop - safeScrollTop
+
+  return {
+    targetScrollTop,
+    distancePx,
+    shouldScroll: Math.abs(distancePx) > tolerance
+  }
+}
+
 export function resolveChatVirtualItemHeight(options = {}) {
   const minimumHeight = Number(options.minimumHeight)
   const measuredHeight = Number(options.measuredHeight)

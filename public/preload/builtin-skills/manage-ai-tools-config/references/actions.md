@@ -24,7 +24,7 @@ Standard directory imports parse `SKILL.md`, `agents/openai.yaml`, `references/`
 
 ## Prompts, agents, providers, and tasks
 
-- Prompts: `config_list_prompts`, `config_add_prompt`, `config_update_prompt`, `config_delete_prompt`
+- Prompts: `config_list_prompts`, `config_read_prompt`, `config_add_prompt`, `config_update_prompt`, `config_delete_prompt`
 - Agents: `config_list_agents`, `config_add_agent`, `config_update_agent`, `config_delete_agent`
 - Providers: `config_list_providers`, `config_add_provider`, `config_update_provider`, `config_delete_provider`
 - Timed tasks: `config_list_timed_tasks`, `config_add_timed_task`, `config_update_timed_task`, `config_delete_timed_task`

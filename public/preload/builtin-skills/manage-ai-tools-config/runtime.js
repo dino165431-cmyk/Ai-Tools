@@ -580,7 +580,7 @@ const TIMED_TASK_FIELDS = {
   name: { type: 'string', description: '任务名称。' },
   description: { type: 'string', description: '任务描述，可选。' },
   enabled: { type: 'boolean', description: '是否启用。若启用 once 任务，执行时间必须晚于当前系统时间。' },
-  agentId: { type: 'string', description: '必填；Agent 的 _id。新增或启用任务前，先确保该 Agent 存在。' },
+  agentId: { type: ['string', 'null'], description: '可选；用户 Agent 的 _id。省略或传 null 时使用后台默认通用 Agent。' },
   content: { type: 'string', description: '必填；交给 Agent 执行的内容。' },
   trigger: {
     type: 'object',
@@ -747,6 +747,16 @@ const ACTIONS = [
     inputSchema: { type: 'object', properties: {}, additionalProperties: false }
   },
   {
+    name: 'config_read_prompt',
+    description: '读取一个用户提示词的完整内容，用于复用已有模板或工作方法。内置提示词不会通过此动作暴露。',
+    inputSchema: {
+      type: 'object',
+      properties: { id: TARGET_ID_SCHEMA },
+      required: ['id'],
+      additionalProperties: false
+    }
+  },
+  {
     name: 'config_add_prompt',
     description: '新增提示词（不允许覆盖内置）。' + CONFIG_ADD_FULL_OBJECT_NOTE,
     inputSchema: {
@@ -899,7 +909,7 @@ const ACTIONS = [
         id: OPTIONAL_ID_SCHEMA,
         ...TIMED_TASK_FIELDS
       },
-      required: ['name', 'agentId', 'content'],
+      required: ['name', 'content'],
       additionalProperties: false
     }
   },
@@ -1145,14 +1155,31 @@ class BuiltinConfigSkillRuntime {
     // Prompts
     if (name === 'config_list_prompts') {
       const cfg = globalConfig.getConfig()
-      const list = listMapValues(cfg.prompts).map((p) => ({
-        _id: p?._id,
-        name: p?.name,
-        description: p?.description,
-        type: normalizePromptType(p?.type),
-        builtin: !!p?.builtin
-      }))
+      const list = listMapValues(cfg.prompts)
+        .filter((prompt) => prompt?.builtin !== true)
+        .map((p) => ({
+          _id: p?._id,
+          name: p?.name,
+          description: p?.description,
+          type: normalizePromptType(p?.type)
+        }))
       return { ok: true, items: list }
+    }
+    if (name === 'config_read_prompt') {
+      const id = cleanString(params.id)
+      if (!id) throw new Error('id 必填')
+      const prompt = globalConfig.getConfig()?.prompts?.[id]
+      if (!prompt || prompt.builtin) throw new Error('未找到用户提示词')
+      return {
+        ok: true,
+        prompt: {
+          _id: prompt._id,
+          name: prompt.name,
+          description: prompt.description,
+          type: normalizePromptType(prompt.type),
+          content: typeof prompt.content === 'string' ? prompt.content : ''
+        }
+      }
     }
     if (name === 'config_add_prompt') {
       const id = cleanString(params.id) || randomId('prompt')
@@ -1183,16 +1210,17 @@ class BuiltinConfigSkillRuntime {
     // Agents
     if (name === 'config_list_agents') {
       const cfg = globalConfig.getConfig()
-      const list = listMapValues(cfg.agents).map((a) => ({
-        _id: a?._id,
-        name: a?.name,
-        provider: a?.provider || null,
-        model: a?.model || null,
-        skills: Array.isArray(a?.skills) ? a.skills : [],
-        mcp: Array.isArray(a?.mcp) ? a.mcp : [],
-        prompt: a?.prompt || null,
-        builtin: !!a?.builtin
-      }))
+      const list = listMapValues(cfg.agents)
+        .filter((agent) => agent?.builtin !== true)
+        .map((a) => ({
+          _id: a?._id,
+          name: a?.name,
+          provider: a?.provider || null,
+          model: a?.model || null,
+          skills: Array.isArray(a?.skills) ? a.skills : [],
+          mcp: Array.isArray(a?.mcp) ? a.mcp : [],
+          prompt: a?.prompt || null
+        }))
       return { ok: true, items: list }
     }
     if (name === 'config_add_agent') {
@@ -1229,7 +1257,9 @@ class BuiltinConfigSkillRuntime {
     // Providers
     if (name === 'config_list_providers') {
       const cfg = globalConfig.getConfig()
-      const list = listMapValues(cfg.providers).map(stripProviderSecrets)
+      const list = listMapValues(cfg.providers)
+        .filter((provider) => provider?.builtin !== true)
+        .map(stripProviderSecrets)
       return { ok: true, items: list }
     }
     if (name === 'config_add_provider') {
@@ -1284,7 +1314,6 @@ class BuiltinConfigSkillRuntime {
     if (name === 'config_add_timed_task') {
       const id = cleanString(params.id) || randomId('task')
       const agentId = normalizeOptionalString(params.agentId)
-      if (!agentId) throw new Error('agentId 必填（Agent 的 _id）')
 
       const content = typeof params.content === 'string' ? params.content : String(params.content || '')
       if (!String(content || '').trim()) throw new Error('content 必填（需要让 Agent 执行的内容）')
@@ -1411,8 +1440,6 @@ class BuiltinConfigSkillRuntime {
         const next = { ...(current || {}), ...patch }
         const enabled = next.enabled !== false
         if (enabled) {
-          const agentId = normalizeOptionalString(next.agentId)
-          if (!agentId) throw new Error('agentId 必填（Agent 的 _id）')
           const content = String(next.content || '').trim()
           if (!content) throw new Error('content 必填（需要让 Agent 执行的内容）')
           const trigger = normalizeTimedTaskTrigger(next.trigger)

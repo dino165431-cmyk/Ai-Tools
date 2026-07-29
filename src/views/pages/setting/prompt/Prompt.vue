@@ -21,7 +21,7 @@
 
     <n-flex wrap :size="16" justify="flex-start" class="settings-grid" style="width: 100%; margin-top: 8px;">
       <n-card
-        v-for="prompt in prompts"
+        v-for="prompt in visiblePrompts"
         :key="prompt._id"
         hoverable
         size="small"
@@ -171,6 +171,7 @@ import {
 const prompts = getPrompts()
 const theme = getTheme()
 const promptTypeOptions = PROMPT_TYPE_OPTIONS
+const visiblePrompts = computed(() => (prompts.value || []).filter((prompt) => prompt?.builtin !== true))
 
 const dialog = useDialog()
 const message = useMessage()

@@ -88,6 +88,7 @@ class FileOperations {
         FileOperations.instance = this
         this._disposed = false
         this._imageBlobCache = new Map()
+        this._fileWriteQueues = new Map()
         this._cloudAutomationInitialized = false
         this._cloudAutoBackupReady = false
         this._cloudAutoBackupSignature = ''
@@ -113,6 +114,22 @@ class FileOperations {
         this._globalConfigChangedListener = null
         this._recursiveExternalWatchSupported = null
         this._pendingCloudDeleteStorageKey = CLOUD_DELETE_QUEUE_STORAGE_KEY
+    }
+
+    _enqueueFileWrite(fullPath, operation) {
+        const key = process.platform === 'win32'
+            ? String(fullPath || '').toLowerCase()
+            : String(fullPath || '')
+        const previous = this._fileWriteQueues.get(key) || Promise.resolve()
+        const pending = previous
+            .catch(() => undefined)
+            .then(operation)
+        this._fileWriteQueues.set(key, pending)
+        return pending.finally(() => {
+            if (this._fileWriteQueues.get(key) === pending) {
+                this._fileWriteQueues.delete(key)
+            }
+        })
     }
 
     _revokeCachedBlobUrl(cacheKey) {
@@ -1494,14 +1511,16 @@ class FileOperations {
 
     async writeFile(relativePath, data) {
         const fullPath = this._resolvePath(relativePath)
-        await fs.mkdir(path.dirname(fullPath), { recursive: true })
-        this._clearPendingCloudDeleteQueueForPath(relativePath)
-        this._markInternalMutation(relativePath)
-        await fs.writeFile(fullPath, data)
-        this._clearBlobCacheForRelativePath(relativePath)
-        await this._updateContentIndexAfterWrite(relativePath)
-        this._scheduleCloudAutoBackupAfterMutation()
-        return true
+        return this._enqueueFileWrite(fullPath, async () => {
+            await fs.mkdir(path.dirname(fullPath), { recursive: true })
+            this._clearPendingCloudDeleteQueueForPath(relativePath)
+            this._markInternalMutation(relativePath)
+            await fs.writeFile(fullPath, data)
+            this._clearBlobCacheForRelativePath(relativePath)
+            await this._updateContentIndexAfterWrite(relativePath)
+            this._scheduleCloudAutoBackupAfterMutation()
+            return true
+        })
     }
 
     async writeAbsoluteFile(filePath, data) {
@@ -1961,6 +1980,7 @@ class FileOperations {
         }
         this._externalWatchDebounceTimers.clear()
         this._internalMutationSuppressUntil.clear()
+        this._fileWriteQueues.clear()
         this._lastWatcherRootSignature = ''
         if (this._globalConfigChangedListener && typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
             try {

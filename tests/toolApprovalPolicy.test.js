@@ -5,6 +5,7 @@ import {
   buildSessionToolApprovalKey,
   evaluateToolApproval,
   getToolApprovalModeLabel,
+  isDangerousShellApprovalCommand,
   normalizeShellApprovalCommand,
   normalizeSkillScriptApprovalArgs,
   normalizeToolApprovalMode,
@@ -103,13 +104,16 @@ test('tool approval modes preserve legacy values and expose clear labels', () =>
   assert.equal(normalizeToolApprovalMode('auto'), 'safe')
   assert.equal(normalizeToolApprovalMode('readonly'), 'safe')
   assert.equal(normalizeToolApprovalMode('full'), 'full')
+  assert.equal(normalizeToolApprovalMode('trusted'), 'trusted')
   assert.equal(getToolApprovalModeLabel('safe'), '低风险自动')
-  assert.equal(getToolApprovalModeLabel('full'), '高风险自动（强制确认除外）')
+  assert.equal(getToolApprovalModeLabel('full'), '高风险自动（危险操作确认）')
+  assert.equal(getToolApprovalModeLabel('trusted'), '完全信任（全部直接批准）')
 })
 
 test('unattended mode never leaves a task waiting for manual confirmation', () => {
   assert.equal(normalizeUnattendedToolApprovalMode('safe'), 'safe')
   assert.equal(normalizeUnattendedToolApprovalMode('full'), 'full')
+  assert.equal(normalizeUnattendedToolApprovalMode('trusted'), 'trusted')
   assert.equal(normalizeUnattendedToolApprovalMode('deny'), 'deny')
   assert.equal(normalizeUnattendedToolApprovalMode('manual'), 'safe')
   assert.equal(normalizeUnattendedToolApprovalMode('unknown'), 'safe')
@@ -121,7 +125,22 @@ test('interactive approval policy distinguishes manual, safe and full modes', ()
   assert.equal(evaluateToolApproval({ mode: 'safe', forceApproval: true }).action, 'prompt')
   assert.equal(evaluateToolApproval({ mode: 'full', forceApproval: true }).action, 'allow')
   assert.equal(evaluateToolApproval({ mode: 'full', hardApproval: true }).action, 'prompt')
+  assert.equal(evaluateToolApproval({ mode: 'trusted', hardApproval: true }).action, 'allow')
   assert.equal(evaluateToolApproval({ mode: 'deny' }).action, 'deny')
+})
+
+test('dangerous shell detection keeps ordinary commands automatic in high-risk mode', () => {
+  assert.equal(isDangerousShellApprovalCommand({ command: 'npm test' }), false)
+  assert.equal(isDangerousShellApprovalCommand({ command: 'npm run format' }), false)
+  assert.equal(isDangerousShellApprovalCommand({ command: 'uv run python scripts/check.py' }), false)
+  assert.equal(isDangerousShellApprovalCommand({ command: 'git status --short' }), false)
+  assert.equal(isDangerousShellApprovalCommand({ command: 'Remove-Item output -Recurse -Force' }), true)
+  assert.equal(isDangerousShellApprovalCommand({ command: 'git reset --hard HEAD~1' }), true)
+  assert.equal(isDangerousShellApprovalCommand({ command: 'find output -type f -delete' }), true)
+  assert.equal(
+    isDangerousShellApprovalCommand({ command: 'node -e "fs.rmSync(\'output\', { recursive: true })"' }),
+    true
+  )
 })
 
 test('unattended approval policy blocks calls that would require confirmation', () => {

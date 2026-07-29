@@ -53,7 +53,7 @@
               触发：{{ formatTrigger(task) }}
             </n-text>
             <n-text depth="3" style="font-size: 12px;">
-              智能体：{{ getAgentLabel(task.agentId) }}
+              执行方式：{{ getAgentLabel(task.agentId) }}
             </n-text>
             <n-text depth="3" style="font-size: 12px;">
               工具权限：{{ getToolApprovalModeLabel(task?.options?.toolApprovalMode) }}
@@ -158,8 +158,17 @@
 
         <n-divider style="margin: 16px 0;">执行内容</n-divider>
 
-        <n-form-item label="智能体" path="agentId" required>
-          <n-select v-model:value="formData.agentId" :options="agentOptions" filterable placeholder="选择一个智能体" />
+        <n-form-item label="智能体" path="agentId">
+          <n-select
+            v-model:value="formData.agentId"
+            :options="agentOptions"
+            filterable
+            clearable
+            placeholder="留空使用默认通用 Agent"
+          />
+          <n-text depth="3" style="margin-top: 6px; font-size: 12px;">
+            未指定时由后台默认通用 Agent 执行；这里只显示你创建的智能体。
+          </n-text>
         </n-form-item>
 
         <n-form-item label="执行内容" path="content" required>
@@ -179,7 +188,7 @@
           style="margin-bottom: 16px;"
         >
           {{ formData.toolApprovalMode === 'full'
-            ? '高风险自动模式可执行普通写入；命令、代码执行和明确标记为破坏性的操作仍会被无人值守策略阻止。'
+          ? '高风险自动模式可执行普通写入、常规命令和一般代码；明显破坏性的操作仍会被无人值守策略阻止。'
             : formData.toolApprovalMode === 'deny'
               ? '当前任务不会执行任何工具调用。'
               : '低风险模式只自动执行明确标注为只读的工具；写入、脚本、命令及未标注工具会被阻止并写入会话结果。' }}
@@ -312,7 +321,6 @@ const formData = reactive({
 const rules = {
   name: { required: true, message: '名字为必填项', trigger: ['blur', 'input'] },
   triggerType: { required: true, message: '请选择触发类型', trigger: ['change'] },
-  agentId: { required: true, message: '请选择智能体', trigger: ['change'] },
   content: { required: true, message: '请输入执行内容', trigger: ['blur', 'input'] }
 }
 
@@ -340,10 +348,14 @@ const monthDayOptions = Array.from({ length: 31 }).map((_, idx) => ({ label: Str
 const toolApprovalModeOptions = [
   { label: '低风险只读（推荐）', value: 'safe' },
   { label: '禁止工具', value: 'deny' },
-  { label: '高风险自动（强制确认类仍阻止）', value: 'full' }
+  { label: '高风险自动（明显危险操作仍阻止）', value: 'full' }
 ]
 
-const agentOptions = computed(() => (agents.value || []).map((a) => ({ label: a.name || a._id, value: a._id })))
+const agentOptions = computed(() =>
+  (agents.value || [])
+    .filter((agent) => agent?.builtin !== true)
+    .map((agent) => ({ label: agent.name || agent._id, value: agent._id }))
+)
 const skillOptions = computed(() => (skills.value || []).map((s) => ({ label: s.name || s._id, value: s._id })))
 const mcpOptions = computed(() =>
   (mcpServers.value || []).map((s) => ({ label: s.name || s._id, value: s._id, disabled: !!s.disabled }))
@@ -414,13 +426,14 @@ function openEditModal(task) {
 
 function getAgentLabel(agentId) {
   const id = String(agentId || '').trim()
-  if (!id) return '—'
+  if (!id) return '默认通用 Agent'
   const a = (agents.value || []).find((x) => x?._id === id)
+  if (a?.builtin) return '默认通用 Agent'
   return a?.name || id
 }
 
 function getToolApprovalModeLabel(value) {
-  if (value === 'full') return '高风险自动（强制确认除外）'
+  if (value === 'full') return '高风险自动（危险操作除外）'
   if (value === 'deny') return '禁止工具'
   return '低风险只读'
 }
@@ -531,7 +544,7 @@ function buildSubmitData() {
     description,
     enabled: !!formData.enabled,
     trigger,
-    agentId: formData.agentId,
+    agentId: String(formData.agentId || '').trim() || null,
     content: formData.content,
     mcpIds: Array.isArray(formData.mcpIds) ? formData.mcpIds : [],
     skillIds: Array.isArray(formData.skillIds) ? formData.skillIds : [],

@@ -25,6 +25,33 @@ function joinAgentRunMeta(parts) {
   return (Array.isArray(parts) ? parts : []).map((part) => String(part || '').trim()).filter(Boolean).join(' · ')
 }
 
+const AGENT_RUN_TOOL_LABELS = Object.freeze({
+  agents_list: ['查找可用智能体', '已查找可用智能体'],
+  agent_run: ['推进子任务', '已完成子任务'],
+  mcp_discover: ['查找可用工具', '已查找可用工具'],
+  mcp_call: ['使用外部能力', '已使用外部能力'],
+  notes_search: ['搜索笔记', '已搜索笔记'],
+  notes_read: ['读取笔记', '已读取笔记'],
+  notebook_read: ['读取超级笔记', '已读取超级笔记'],
+  notebook_execute_all: ['运行超级笔记', '已运行超级笔记'],
+  notebook_execute_cell: ['运行超级笔记步骤', '已运行超级笔记步骤'],
+  sessions_search: ['搜索会话记录', '已搜索会话记录'],
+  sessions_read: ['读取会话记录', '已读取会话记录'],
+  skill_discover: ['查看可用能力', '已查看可用能力'],
+  skill_call: ['处理任务', '已完成处理'],
+  use_skill: ['准备相关能力', '已准备相关能力'],
+  use_skills: ['准备相关能力', '已准备相关能力']
+})
+
+function agentRunToolTitle(toolName, status = 'running') {
+  const raw = String(toolName || '').trim()
+  const known = AGENT_RUN_TOOL_LABELS[raw]
+  if (known) return known[status === 'success' ? 1 : 0]
+  const readable = raw.replace(/^mcp__[^_]+__/, '').replace(/[_-]+/g, ' ').trim()
+  if (!readable) return status === 'success' ? '已完成操作' : '执行操作'
+  return status === 'success' ? `已完成 ${readable}` : `执行 ${readable}`
+}
+
 export function mergeAgentRunTraceEntries(...inputs) {
   const out = []
   const seen = new Set()
@@ -71,7 +98,7 @@ function createAgentRunToolStep(entry, index) {
     status: 'running',
     completed: false,
     timeLabel: formatAgentRunStepTime(entry?.at),
-    title: [serverName, toolName].filter(Boolean).join(' / ') || String(entry?.title || 'Tool Call').trim(),
+    title: agentRunToolTitle(toolName),
     metaText: '',
     serverName,
     toolName,
@@ -93,7 +120,7 @@ function createAgentRunMcpReadyStep(entry, index) {
     status: 'success',
     completed: true,
     timeLabel: formatAgentRunStepTime(entry?.at),
-    title: `MCP tools ready: ${serverName || String(entry?.title || 'MCP').trim()}`,
+    title: `已连接 ${serverName || String(entry?.title || '外部能力').trim()}`,
     metaText: joinAgentRunMeta([
       Number(entry?.tool_count) > 0 ? `工具 ${entry.tool_count}` : ''
     ]),
@@ -267,12 +294,10 @@ export function buildAgentRunTimelineItems(msg) {
         status: 'success',
         completed: true,
         timeLabel,
-        title: '运行环境已就绪',
+        title: '能力准备完成',
         metaText: joinAgentRunMeta([
-          providerName,
-          model,
-          Number(entry?.skill_count) > 0 ? `技能 ${entry.skill_count}` : '',
-          Number(entry?.mcp_count) > 0 ? `MCP ${entry.mcp_count}` : ''
+          Number(entry?.skill_count) > 0 ? `${entry.skill_count} 项技能` : '',
+          Number(entry?.mcp_count) > 0 ? `${entry.mcp_count} 项外部能力` : ''
         ]),
         children: [],
         contentText: '',
@@ -285,7 +310,7 @@ export function buildAgentRunTimelineItems(msg) {
     }
 
     if (phase === 'mcp.tools_ready') {
-      const profileStep = findLatestAgentRunStep(items, (item) => item.kind === 'system' && item.title === '运行环境已就绪')
+      const profileStep = findLatestAgentRunStep(items, (item) => item.kind === 'system' && item.title === '能力准备完成')
       const childStep = createAgentRunMcpReadyStep(entry, index)
       if (profileStep) {
         if (!Array.isArray(profileStep.children)) profileStep.children = []
@@ -303,11 +328,10 @@ export function buildAgentRunTimelineItems(msg) {
         status: 'running',
         completed: false,
         timeLabel,
-        title: Number.isFinite(round) && round > 0 ? `模型请求 #${round}` : '模型请求',
+        title: '处理任务',
         metaText: joinAgentRunMeta([
-          providerName,
-          model,
-          Number(entry?.tool_count) > 0 ? `工具 ${entry.tool_count}` : ''
+          Number.isFinite(round) && round > 0 ? `第 ${round} 轮` : '',
+          Number(entry?.tool_count) > 0 ? `${entry.tool_count} 项可用能力` : ''
         ]),
         contentText: '',
         reasoningText: '',
@@ -330,7 +354,7 @@ export function buildAgentRunTimelineItems(msg) {
         status: 'success',
         completed: true,
         timeLabel,
-        title: Number.isFinite(round) && round > 0 ? `模型响应 #${round}` : '模型响应',
+        title: '完成一轮处理',
         metaText: '',
         contentText: '',
         reasoningText: '',
@@ -343,12 +367,11 @@ export function buildAgentRunTimelineItems(msg) {
       next.status = 'success'
       next.completed = true
       next.timeLabel = timeLabel || next.timeLabel
-      next.title = Number.isFinite(round) && round > 0 ? `模型响应 #${round}` : '模型响应'
       next.toolCallCount = Number(entry?.tool_call_count) || 0
+      next.title = next.toolCallCount > 0 ? '准备调用能力' : '完成一轮处理'
       next.metaText = joinAgentRunMeta([
-        providerName,
-        model,
-        next.toolCallCount > 0 ? `工具调用 ${next.toolCallCount}` : ''
+        Number.isFinite(round) && round > 0 ? `第 ${round} 轮` : '',
+        next.toolCallCount > 0 ? `${next.toolCallCount} 项操作` : ''
       ])
       const responseContent = String(entry?.content_text || entry?.content_excerpt || '').trim()
       next.contentText = next.toolCallCount > 0
@@ -390,8 +413,6 @@ export function buildAgentRunTimelineItems(msg) {
         ) || createAgentRunToolStep(entry, index)
 
       current.timeLabel = timeLabel || current.timeLabel
-      current.title = [serverName, toolName].filter(Boolean).join(' / ') || current.title
-
       if (phase === 'tool.approval_required') {
         current.status = 'pending'
         current.approvalStatus = 'pending'
@@ -439,6 +460,7 @@ export function buildAgentRunTimelineItems(msg) {
         current.status === 'running' ? '运行中' : '',
         current.status === 'paused' ? '已暂停' : ''
       ])
+      current.title = agentRunToolTitle(toolName, current.status)
 
       if (!items.includes(current)) items.push(current)
       return
@@ -493,21 +515,11 @@ export function buildAgentRunTimelineItems(msg) {
 export function getAgentRunOverviewChips(msg) {
   const payload = getAgentRunResultPayload(msg)
   const agentName = getAgentRunAgentName(msg)
-  const traceCount = getAgentRunTraceEntries(msg).length
-  const rounds = Number(payload?.metrics?.rounds)
   const toolCalls = Number(payload?.metrics?.tool_calls)
-  const durationMs = Number(payload?.metrics?.duration_ms)
-  const runtimeLabel = [payload?.runtime?.provider_name || payload?.runtime?.provider_id || '', payload?.runtime?.model || '']
-    .filter(Boolean)
-    .join(' / ')
 
   return [
-    agentName ? `智能体：${agentName}` : '',
-    runtimeLabel ? `运行时：${runtimeLabel}` : '',
-    Number.isFinite(rounds) && rounds > 0 ? `轮次：${rounds}` : '',
-    Number.isFinite(toolCalls) && toolCalls > 0 ? `工具：${toolCalls}` : '',
-    traceCount > 0 ? `步骤：${traceCount}` : '',
-    Number.isFinite(durationMs) && durationMs > 0 ? `${durationMs} ms` : ''
+    agentName ? `由 ${agentName} 处理` : '',
+    Number.isFinite(toolCalls) && toolCalls > 0 ? `${toolCalls} 项操作` : ''
   ].filter(Boolean)
 }
 

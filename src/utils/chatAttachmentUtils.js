@@ -3,12 +3,17 @@ import {
   buildImageGenerationManualRequestOptions,
   buildVideoGenerationManualRequestOptions
 } from './chatMediaGenerationParams.js'
+import { extractChatSandboxDescriptors } from './chatSandboxWorkspace.js'
 
 export const MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024
 // Keep current-turn text near the largest commonly available long-context models
 // (~1M tokens, approximated as 4.2 characters per token).
 export const MAX_ATTACHMENT_TEXT_CHARS = 4_200_000
 export const MAX_IMAGE_BYTES = 6 * 1024 * 1024
+export const CHAT_LONG_TEXT_ATTACHMENT_THRESHOLD_CHARS = 12_000
+export const CHAT_LONG_TEXT_ATTACHMENT_MIN_CHARS = 6_000
+export const CHAT_LONG_TEXT_ATTACHMENT_THRESHOLD_LINES = 160
+export const CHAT_LONG_TEXT_ATTACHMENT_DISPLAY_TEXT = '长文本已自动作为 Markdown 附件发送，请读取附件内容。'
 
 const DIRECT_TEXT_ATTACHMENT_EXTENSIONS = new Set([
   'txt', 'md', 'markdown', 'mdx', 'json', 'jsonc', 'jsonl', 'yaml', 'yml',
@@ -123,6 +128,103 @@ export function truncateInlineText(text, maxChars = 160) {
   return `${raw.slice(0, maxChars)}...`
 }
 
+function countTextLinesUpTo(text, limit) {
+  const raw = String(text || '')
+  const safeLimit = Math.max(1, Math.floor(Number(limit) || 1))
+  let count = 1
+  for (let index = 0; index < raw.length && count < safeLimit; index += 1) {
+    if (raw.charCodeAt(index) === 10) count += 1
+  }
+  return count
+}
+
+export function shouldWrapChatLongTextAsAttachment(text, options = {}) {
+  const raw = String(text || '').trim()
+  if (!raw) return false
+
+  const thresholdChars = Math.max(
+    1,
+    Math.floor(Number(options.thresholdChars) || CHAT_LONG_TEXT_ATTACHMENT_THRESHOLD_CHARS)
+  )
+  if (raw.length >= thresholdChars) return true
+
+  const minimumChars = Math.max(
+    1,
+    Math.min(
+      thresholdChars,
+      Math.floor(Number(options.minimumChars) || CHAT_LONG_TEXT_ATTACHMENT_MIN_CHARS)
+    )
+  )
+  if (raw.length < minimumChars) return false
+
+  // A fenced Markdown/code block is comparatively expensive even before the
+  // general character threshold because syntax highlighting creates many nodes.
+  if (/^(?:```|~~~)/m.test(raw)) return true
+
+  const thresholdLines = Math.max(
+    2,
+    Math.floor(Number(options.thresholdLines) || CHAT_LONG_TEXT_ATTACHMENT_THRESHOLD_LINES)
+  )
+  return countTextLinesUpTo(raw, thresholdLines) >= thresholdLines
+}
+
+export function getUtf8TextByteLength(text) {
+  const raw = String(text || '')
+  if (typeof TextEncoder === 'function') return new TextEncoder().encode(raw).byteLength
+  return unescape(encodeURIComponent(raw)).length
+}
+
+export function buildChatLongTextAttachmentName(now = Date.now()) {
+  const date = now instanceof Date ? now : new Date(now)
+  const safeDate = Number.isFinite(date.getTime()) ? date : new Date()
+  const pad = (value) => String(value).padStart(2, '0')
+  return [
+    'long-message-',
+    safeDate.getFullYear(),
+    pad(safeDate.getMonth() + 1),
+    pad(safeDate.getDate()),
+    '-',
+    pad(safeDate.getHours()),
+    pad(safeDate.getMinutes()),
+    pad(safeDate.getSeconds()),
+    '.md'
+  ].join('')
+}
+
+export function resolveChatLongTextAttachmentPlan(text, attachments = [], options = {}) {
+  const raw = String(text || '').trim()
+  const list = Array.isArray(attachments) ? attachments : []
+  if (!shouldWrapChatLongTextAsAttachment(raw, options)) {
+    return {
+      wrapped: false,
+      text: raw,
+      attachments: list
+    }
+  }
+
+  const byteLength = getUtf8TextByteLength(raw)
+  const existingBytes = list.reduce((total, attachment) => total + Math.max(0, Number(attachment?.size) || 0), 0)
+  const maxBytes = Math.max(1, Number(options.maxBytes) || MAX_ATTACHMENT_BYTES)
+  if (existingBytes + byteLength > maxBytes) {
+    return {
+      wrapped: false,
+      text: raw,
+      attachments: list,
+      error: `长文本与现有附件合计超过 ${Math.ceil(maxBytes / 1024 / 1024)}MB，无法自动包装为附件。`
+    }
+  }
+
+  return {
+    wrapped: true,
+    text: String(options.displayText || CHAT_LONG_TEXT_ATTACHMENT_DISPLAY_TEXT),
+    attachments: list,
+    attachmentText: raw,
+    attachmentName: buildChatLongTextAttachmentName(options.now),
+    attachmentMime: 'text/markdown',
+    attachmentBytes: byteLength
+  }
+}
+
 export function truncateAttachmentContextForRequest(leadText, attachmentBlock, maxChars) {
   const lead = String(leadText || '').trim()
   const attachment = String(attachmentBlock || '').trim()
@@ -132,6 +234,34 @@ export function truncateAttachmentContextForRequest(leadText, attachmentBlock, m
   if (!attachment || !Number.isFinite(limit) || limit <= 0 || combined.length <= limit) return combined
 
   const suffix = `(attachment content truncated for current request budget, total ${combined.length} chars)`
+  const sandboxDescriptors = extractChatSandboxDescriptors(attachment)
+  if (sandboxDescriptors) {
+    const fixedParts = [lead, suffix, sandboxDescriptors].filter(Boolean)
+    const separatorChars = Math.max(0, fixedParts.length - 1) * 2
+    const fixedChars = fixedParts.reduce((total, part) => total + part.length, 0) + separatorChars
+    if (fixedChars >= limit) {
+      const descriptorBudget = Math.max(0, limit - suffix.length - 2)
+      return [
+        suffix,
+        sandboxDescriptors.slice(0, descriptorBudget).trimEnd()
+      ].filter(Boolean).join('\n\n').slice(0, limit)
+    }
+
+    const descriptorLines = new Set(sandboxDescriptors.split(/\r?\n/).filter(Boolean))
+    const attachmentWithoutDescriptors = attachment
+      .split(/\r?\n/)
+      .filter((line) => !descriptorLines.has(String(line).trim()))
+      .join('\n')
+      .trim()
+    const remaining = Math.max(0, limit - fixedChars - 2)
+    return [
+      lead,
+      attachmentWithoutDescriptors.slice(0, remaining).trimEnd(),
+      suffix,
+      sandboxDescriptors
+    ].filter(Boolean).join('\n\n').slice(0, limit)
+  }
+
   if (!lead) return truncateText(attachment, limit, suffix)
 
   const reserved = lead.length + suffix.length + 4

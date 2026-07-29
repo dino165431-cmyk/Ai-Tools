@@ -7,12 +7,6 @@
         :class="['tool-message__state-icon', { 'is-spinning': helpers.getToolMessageStatus(msg) === 'running' }]"
       />
       <span class="tool-message__label">{{ helpers.toolMessageLabel(msg) }}</span>
-      <code v-if="helpers.toolActivityToolName(msg)" class="tool-message__tool-name">
-        {{ helpers.toolActivityToolName(msg) }}
-      </code>
-      <span v-if="helpers.toolActivitySource(msg)" class="tool-message__source">
-        {{ helpers.toolActivitySource(msg) }}
-      </span>
       <span
         v-if="helpers.shouldShowToolActivityStatus(msg)"
         class="tool-message__status"
@@ -27,6 +21,14 @@
       {{ helpers.toolActivityMeta(msg) }}
     </p>
     <div v-if="msg.toolExpanded" class="tool-message__body">
+      <div
+        v-if="helpers.toolActivityToolName(msg) || helpers.toolActivitySource(msg)"
+        class="tool-message__technical"
+      >
+        <span>技术详情</span>
+        <code v-if="helpers.toolActivityToolName(msg)">{{ helpers.toolActivityToolName(msg) }}</code>
+        <span v-if="helpers.toolActivitySource(msg)">{{ helpers.toolActivitySource(msg) }}</span>
+      </div>
       <div v-if="previewableImages.length" class="tool-message__media">
         <div class="tool-message__media-meta">
           <span class="tool-message__media-title">相关图片</span>
@@ -558,6 +560,33 @@ async function handleSandboxFileMenuSelect(key) {
   color: rgba(203, 213, 225, 0.72);
 }
 
+.tool-message__technical {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+  color: rgba(71, 85, 105, 0.66);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.tool-message__technical code {
+  max-width: 100%;
+  padding: 1px 5px;
+  overflow: hidden;
+  border-radius: 5px;
+  background: rgba(100, 116, 139, 0.09);
+  color: inherit;
+  font-family: var(--code-font-family, "Fira Code", monospace);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-message.is-dark .tool-message__technical {
+  color: rgba(203, 213, 225, 0.62);
+}
+
 .tool-message__body {
   width: 100%;
   min-width: 0;
@@ -621,6 +650,7 @@ async function handleSandboxFileMenuSelect(key) {
   overflow: auto;
   box-sizing: border-box;
   overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .tool-message__details :deep(.md-editor-code pre) {

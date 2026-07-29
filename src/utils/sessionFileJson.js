@@ -79,9 +79,37 @@ export function parseSessionJsonText(text) {
     }
 
     try {
+      const value = JSON.parse(range.jsonText)
+      const trailingText = String(range.trailingText || '')
+      const trailingTrimmed = trailingText.trimStart()
+      if (
+        value &&
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        trailingTrimmed.startsWith('"')
+      ) {
+        for (const candidate of [`{${trailingTrimmed}`, `{${trailingTrimmed}}`]) {
+          try {
+            const continuation = JSON.parse(candidate)
+            if (continuation && typeof continuation === 'object' && !Array.isArray(continuation)) {
+              const mergedValue = { ...value, ...continuation }
+              return {
+                ok: true,
+                value: mergedValue,
+                recovered: true,
+                normalizedText: JSON.stringify(mergedValue),
+                trailingText,
+                error
+              }
+            }
+          } catch {
+            // Try the variant with a synthetic root closing brace.
+          }
+        }
+      }
       return {
         ok: true,
-        value: JSON.parse(range.jsonText),
+        value,
         recovered: true,
         normalizedText: range.jsonText,
         trailingText: range.trailingText,

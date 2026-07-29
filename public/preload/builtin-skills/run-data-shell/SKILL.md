@@ -16,6 +16,7 @@ The host exposes actions progressively. Use `skill_discover` for exact schemas, 
 - Call `sandbox_status` before a build or runtime task when tool availability is unknown. It reports the real isolation level and discovers Python, uv, Node, npm, Git, and Bash from a refreshed user/machine PATH.
 - Prefer `sandbox_read_file` and `sandbox_write_file` for source code, README files, JSON, and other text. These actions validate relative paths and symlinks structurally, so content containing `/`, URLs, or absolute-path examples is not mistaken for a command escape.
 - Use `sandbox_run` only when a process really needs to run. On Windows its `auto` shell uses PowerShell, so built-in commands such as `Compress-Archive`, `Expand-Archive`, and `Get-ChildItem` are available without extra packages.
+- PowerShell `Compress-Archive` accepts only a `.zip` destination. For ZIP-based formats with another extension (for example `.apks`, `.jar`, `.docx`, or `.xlsx`), create a temporary `.zip` and rename it to the requested extension after success, or use the .NET compression API. Do not intentionally trigger the known extension error first.
 - Use `bash_run` or `sandbox_run` with `shell: bash` only when Bash syntax or Git tools are specifically useful.
 - When an attachment block contains `沙盒工作区` and `沙盒文件`, pass that workspace id to the run action and use the listed relative file path.
 - Use `sandbox_import` only when the user explicitly supplied an external absolute path and wants that file copied into the workspace.

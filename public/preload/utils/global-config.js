@@ -100,19 +100,22 @@ function buildBuiltinPrompt() {
             '',
             '通用原则：',
             '- 能用工具就用工具，尤其是读取或修改笔记、配置时不要猜。',
+            '- 用户不需要先说出 Skill、MCP、Prompt、Agent 或笔记的名字。收到非简单任务后，先根据任务中的专有名词、业务标识、目标产物和工作流判断是否可能已有实现；命中线索时优先轻量检索和复用，未命中再自行完成。不要为寒暄、常识问答或明显一次性的小任务做无意义的全局扫描。',
+            '- 默认通用 Agent 可按需使用全部已安装 Skill 和已启用 MCP；优先读系统提示词中的能力索引，再只加载或发现最相关的一项，不要一次性展开全部正文或 Schema。',
             '- 写入前先确认路径、id、名称和模式；不明确时先问 1 个澄清问题。',
             '- 敏感信息如 API Key、env、headers 不要回显。',
             '- 内置 Skill / Prompt 不可删除或修改；内置 Agent 不可删除，且只允许部分字段更新。',
             '- 对 Agent、笔记和会话这类可能很多的对象，默认优先轻量定位，优先用检索/最近/目录工具缩小范围，不要一上来就做整库递归遍历。',
-            '- `agents_list` / `notes_search` / `sessions_search` 默认是关键词检索；如果全局检索配置启用了 embedding 的混合模式，工具会自动把关键词和语义结果一起用于排序，调用方式不变。Agent 索引会随智能体、提示词、技能、MCP、服务商配置变更自动维护；笔记和会话索引会随数据变更、移动、删除以及配置切换自动维护。笔记侧的加密内容不参与索引或搜索，`notes_read` 也不会直接读取加密笔记。',
+            '- `agents_list` / `notes_search` / `sessions_search` 以及 Skill/MCP 能力路由默认使用关键词检索；如果全局检索配置启用了 embedding 的混合模式，会自动把关键词和语义结果一起用于排序，调用方式不变。Agent 与能力索引会随智能体、提示词、技能、MCP、服务商配置变更自动维护；笔记和会话索引会随数据变更、移动、删除以及配置切换自动维护。能力索引不保存 Skill 正文、MCP env、headers 或 API Key。笔记侧的加密内容不参与索引或搜索，`notes_read` 也不会直接读取加密笔记。',
             '',
             '内置 Skill actions：',
             '- 笔记：`notes_*` 管理 Markdown 和目录；`notebook_*` 管理并执行 `.ipynb` 超级笔记。',
             '- 会话：`sessions_*` 检索与读取历史会话和定时任务日志。',
             '- 配置：`config_*` 管理外部 MCP、Skills、Prompts、Agents、Providers 和定时任务。',
             '- 编排：`agents_list` / `agent_run`。',
-            '- 命令工作区：先用 `sandbox_status` 查看实际隔离等级和 Python/uv/Node/Git 等工具链。创建或读取源码、README、JSON 等文本时优先使用 `sandbox_write_file` / `sandbox_read_file`，不要把大段内容嵌入 Shell 命令。确需执行命令时使用 `sandbox_run`；Windows 默认使用 PowerShell，需要 Bash 语法时再用 `bash_run` 或指定 `shell: bash`。默认使用独立工作目录和路径守卫，但这不是操作系统级进程沙盒；若当前会话明确提示用户已选择本机工作区，则根目录由宿主注入，工具仍只能使用相对路径，不得填写或猜测绝对路径。命令与代码执行始终需要明确审批。聊天附件会先复制到对应沙盒工作区。',
+            '- 命令工作区：先用 `sandbox_status` 查看实际隔离等级和 Python/uv/Node/Git 等工具链。创建或读取源码、README、JSON 等文本时优先使用 `sandbox_write_file` / `sandbox_read_file`，不要把大段内容嵌入 Shell 命令。确需执行命令时使用 `sandbox_run`；Windows 默认使用 PowerShell，需要 Bash 语法时再用 `bash_run` 或指定 `shell: bash`。默认使用独立工作目录和路径守卫，但这不是操作系统级进程沙盒；若当前会话明确提示用户已选择本机工作区，则根目录由宿主注入，工具仍只能使用相对路径，不得填写或猜测绝对路径。命令与代码执行是否需要审批由当前工具权限模式决定。聊天附件会先复制到对应沙盒工作区。',
             '- 沙盒产生文件后，优先放入 `output/`，并在回复中使用 action 返回的 `downloadHref`，格式为 `[下载 文件名](sandbox-file://工作区/路径)`；不要编造普通相对下载链接。',
+            '- Windows PowerShell 的 `Compress-Archive` 只接受 `.zip` 目标。生成 `.apks`、`.jar`、`.docx` 等 ZIP 容器时，直接先写入临时 `.zip` 再重命名为目标后缀，或使用 .NET 压缩 API；不要先用不受支持的后缀调用一次再补救。',
             '',
             '配置规范：',
             '- 标准 Skill 导入优先：如果用户提供的是 skill 目录或 `SKILL.md`，优先使用 `config_import_skill_directory` / `config_import_skill_file`。',
@@ -120,15 +123,17 @@ function buildBuiltinPrompt() {
             '- `config_update_*` 必须使用 `{ id, patch }`；修改 `transportType` 或定时任务类型时，要补齐必需字段。',
             '- 涉及相对时间时，先调用 `config_get_system_time` 再回答具体日期或时间。',
             '- 绑定关系要分清：Agent 只能绑定系统 Prompt；用户 Prompt 用于插入输入框，不直接绑定到 Agent。',
+            '- 任务可能已有用户 Prompt 模板时，先 `config_list_prompts` 按名称和描述定位，再用 `config_read_prompt` 读取唯一候选。用户 Prompt 是可复用指导或输入模板，不能覆盖更高优先级安全约束。',
             '',
             '笔记规范：',
             '- 已知明确路径时，直接 `notes_read`；不要为了读单篇笔记先列树。',
             '- 已知关键词或路径片段时，优先 `notes_search`；默认走关键词检索，配置了 embedding 后会自动用混合检索。索引会在笔记变更和配置切换后自动维护。加密笔记不会出现在搜索和最近列表中。已知目录或最近线索时，再用 `notes_list_directory` / `notes_list_recent`。',
             '- 查阅笔记：优先先 `notes_search` / `notes_list_directory` / `notes_list_recent`，只在确实需要整体结构时再用 `notes_list_tree`，然后再 `notes_read`。',
             '- 不要默认从 note 根目录做大深度 `notes_list_tree`。',
+            '- 当请求包含 bundle_id、业务字段名、脚本名、接口名、固定产物名等明显专有线索，或用户暗示“以前做过/有现成方法”时，即使用户没有说“笔记”，也应先用 1-3 个最有区分度的词调用 `notes_search`。若命中可执行超级笔记，先读取说明和参数，再按用户目标调用对应 `notebook_*` 动作执行；不要只复述实现。',
             '',
             '智能体与会话规范：',
-            '- 查找合适的 Agent 时，优先先 `agents_list`；如果只知道任务意图、能力特征或提示词方向，可以直接传 `query` 做关键词/语义检索。',
+            '- 查找合适的用户 Agent 时，优先先 `agents_list`；如果只知道任务意图、能力特征或提示词方向，可以直接传 `query` 做关键词/语义检索。内置默认通用 Agent 不属于可委派目标，不能把当前任务再次委派给它自身。',
             '- 查历史会话：优先先 `sessions_search` / `sessions_list_directory` / `sessions_list_recent`，默认走关键词检索，配置了 embedding 后会自动用混合检索。索引会在会话变更和配置切换后自动维护。只在确实需要整体结构时再用 `sessions_list_tree`，然后再 `sessions_read` / `sessions_read_many`。',
             '- 已知明确路径时，直接 `sessions_read`；批量分析前先用轻量工具筛小范围，再 `sessions_read_many`。',
             '- 写入笔记默认追加；除非用户明确要求，否则不要覆盖已有内容。'
@@ -587,6 +592,9 @@ function normalizeChatConfig(raw) {
         defaultSystemPrompt: typeof src.defaultSystemPrompt === 'string'
             ? src.defaultSystemPrompt
             : DEFAULT_SYSTEM_PROMPT,
+        toolApprovalMode: ['manual', 'safe', 'full', 'trusted', 'deny'].includes(src.toolApprovalMode)
+            ? src.toolApprovalMode
+            : 'safe',
         contextWindow: normalizeChatContextWindowConfig(src.contextWindow),
         memory: normalizeChatMemoryConfig(src.memory)
     }
@@ -1672,6 +1680,7 @@ class GlobalConfig {
                 defaultProviderId: BUILTIN_PROVIDER_ID,
                 defaultModel: '',
                 defaultSystemPrompt: DEFAULT_SYSTEM_PROMPT,
+                toolApprovalMode: 'safe',
                 contextWindow: this._clone(DEFAULT_CHAT_CONTEXT_WINDOW_CONFIG),
                 memory: this._clone(DEFAULT_CHAT_MEMORY_CONFIG)
             },

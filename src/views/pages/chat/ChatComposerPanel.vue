@@ -307,7 +307,7 @@
                 size="small"
                 tertiary
                 circle
-                :type="toolApprovalMode === 'full' ? 'error' : autoApproveTools ? 'primary' : 'default'"
+              :type="toolApprovalMode === 'full' || toolApprovalMode === 'trusted' ? 'error' : autoApproveTools ? 'primary' : 'default'"
                 :title="`工具调用控制：${toolApprovalModeLabel}`"
               >
                 <template #icon>

@@ -629,3 +629,44 @@ test('readonly notes and sessions Skill actions do not create directories', asyn
 
   assert.equal(createDirectoryCalls, 0)
 })
+
+test('content index cleanup removes obsolete, conflict, and hybrid caches without embeddings', async (t) => {
+  const { tempRoot } = setupIndexTest(t)
+  const indexDir = path.join(tempRoot, '.ai-tools-settings', 'indexes')
+  fs.mkdirSync(indexDir, { recursive: true })
+
+  const writeIndexFixture = (filename, kind, embeddings) => {
+    fs.writeFileSync(path.join(indexDir, filename), JSON.stringify({
+      version: 3,
+      kind,
+      root: kind,
+      dirty: false,
+      entries: [{ path: 'demo', embedding: embeddings }]
+    }))
+  }
+
+  fs.writeFileSync(path.join(indexDir, 'notes-index-v2.json'), '{}')
+  fs.writeFileSync(path.join(indexDir, 'sessions-index-v3 (SFConflict Dino 2026-07-29).json'), '{}')
+  writeIndexFixture('notes-index-v3.json', 'note', [])
+  writeIndexFixture('sessions-index-v3.json', 'session', [0.1, 0.2])
+  fs.writeFileSync(path.join(indexDir, 'keep-me.json'), '{}')
+
+  const result = await contentIndex._internal.cleanupIndexCacheFiles({
+    searchConfig: {
+      searchMode: 'hybrid',
+      embedding: { providerId: 'provider', model: 'embedding-model' }
+    }
+  })
+
+  assert.deepEqual(
+    result.removed.map((item) => item.filename).sort(),
+    [
+      'notes-index-v2.json',
+      'notes-index-v3.json',
+      'sessions-index-v3 (SFConflict Dino 2026-07-29).json'
+    ]
+  )
+  assert.deepEqual(result.rebuildKinds, ['note'])
+  assert.equal(fs.existsSync(path.join(indexDir, 'sessions-index-v3.json')), true)
+  assert.equal(fs.existsSync(path.join(indexDir, 'keep-me.json')), true)
+})

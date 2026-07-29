@@ -159,3 +159,69 @@ test('content index can keyword-search agents by prompt and skill metadata', asy
   assert.equal(result.items[0]?.mcpNames?.[0], 'Git 工具')
   assert.match(result.items[0]?.preview || '', /Prompt|Skills|Provider|MCP/)
 })
+
+test('content index searches Skill and MCP metadata without persisting secrets', async () => {
+  const contentIndex = loadContentIndexModule({
+    globalConfig: {
+      getDataStorageRoot() {
+        return path.resolve('.tmp-utools')
+      },
+      getConfig() {
+        return {
+          contentSearchConfig: {
+            searchMode: 'keyword',
+            embedding: { providerId: '', model: '' }
+          },
+          skills: {
+            skill_adjust: {
+              _id: 'skill_adjust',
+              name: '移动端 Adjust 分析',
+              description: '使用 mitmproxy 抓包分析 Android APK 的 Adjust 动态请求并生成 Java 和 SQL。',
+              content: 'never index this secret: SKILL_SECRET_123',
+              sourceType: 'directory',
+              entryFile: 'SKILL.md',
+              triggers: {
+                keywords: ['Adjust', '抓包', 'APK']
+              },
+              cache: {
+                scriptCatalog: [{
+                  path: 'scripts/capture.py',
+                  name: 'capture',
+                  description: 'Capture Adjust requests'
+                }]
+              }
+            }
+          },
+          mcpServers: {
+            mcp_mobile: {
+              _id: 'mcp_mobile',
+              name: 'Mobile Device Tools',
+              description: 'Manage authorized Android devices',
+              transportType: 'stdio',
+              allowTools: ['device_install', 'device_capture'],
+              env: { API_TOKEN: 'MCP_SECRET_456' },
+              headers: { Authorization: 'Bearer MCP_SECRET_789' }
+            }
+          }
+        }
+      }
+    }
+  })
+
+  assert.equal(
+    contentIndex.getIndexRelPath('capability'),
+    '.ai-tools-settings/indexes/capabilities-index-v3.json'
+  )
+
+  const result = await contentIndex.searchIndex('capability', {
+    query: 'mitmproxy Adjust Android APK 动态抓包分析',
+    limit: 10
+  })
+
+  assert.equal(result.root, 'capability')
+  assert.ok(result.returned >= 1)
+  const skillResult = result.items.find((item) => item.capabilityType === 'skill')
+  assert.equal(skillResult?.skillId, 'skill_adjust')
+  const serialized = JSON.stringify(result.items)
+  assert.doesNotMatch(serialized, /SKILL_SECRET_123|MCP_SECRET_456|MCP_SECRET_789/)
+})

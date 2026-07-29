@@ -184,6 +184,9 @@ const notebookApi = bindMethods(notebookRuntime, [
 const contentSearchApi = Object.freeze({
   searchNotes(options = {}) {
     return contentIndex.searchIndex('note', options)
+  },
+  searchCapabilities(options = {}) {
+    return contentIndex.searchIndex('capability', options)
   }
 })
 

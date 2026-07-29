@@ -16,12 +16,13 @@ function loadApprovalHelpers() {
   const filePath = path.resolve('public/preload/builtin-skills/orchestrate-agents/runtime.js')
   const source = fs.readFileSync(filePath, 'utf8')
   const snippets = [
-    "const TOOL_APPROVAL_MODES = ['manual', 'safe', 'full', 'deny']",
+    "const TOOL_APPROVAL_MODES = ['manual', 'safe', 'full', 'trusted', 'deny']",
     extractSnippetBetween(source, 'function cleanString(', 'function isPlainObject('),
     extractSnippetBetween(source, 'function isPlainObject(', 'function stableStringify('),
     extractSnippetBetween(source, 'function normalizeToolApprovalMode(', 'function normalizePromptType('),
     extractSnippetBetween(source, 'function injectToolApprovalModeIntoAgentRunParams(', 'function normalizeAgentModelParams('),
     extractSnippetBetween(source, 'function getMcpToolApprovalPolicy(', 'function getSkillDescription('),
+    extractSnippetBetween(source, 'function isDangerousShellApprovalCommand(', 'function shouldAllowToolCallByApprovalMode('),
     extractSnippetBetween(source, 'function shouldAllowToolCallByApprovalMode(', 'function findLatestReasoningExcerpt(')
   ]
   const module = { exports: {} }
@@ -37,10 +38,35 @@ test('sub-agent approval modes match the parent chat semantics', () => {
   const { normalizeToolApprovalMode, shouldAllowToolCallByApprovalMode } = loadApprovalHelpers()
 
   assert.equal(normalizeToolApprovalMode('auto'), 'safe')
+  assert.equal(normalizeToolApprovalMode('trusted'), 'trusted')
   assert.equal(shouldAllowToolCallByApprovalMode({ toolApprovalMode: 'safe' }, { forceApproval: false }).allowed, true)
   assert.equal(shouldAllowToolCallByApprovalMode({ toolApprovalMode: 'safe' }, { forceApproval: true }).requiresPrompt, true)
   assert.equal(shouldAllowToolCallByApprovalMode({ toolApprovalMode: 'full' }, { forceApproval: true }).requiresPrompt, undefined)
   assert.equal(shouldAllowToolCallByApprovalMode({ toolApprovalMode: 'full' }, { hardApproval: true }).requiresPrompt, true)
+  assert.equal(
+    shouldAllowToolCallByApprovalMode(
+      { toolApprovalMode: 'full' },
+      { forceApproval: true, approvalKind: 'shell' },
+      { command: 'npm test' }
+    ).requiresPrompt,
+    undefined
+  )
+  assert.equal(
+    shouldAllowToolCallByApprovalMode(
+      { toolApprovalMode: 'full' },
+      { forceApproval: true, approvalKind: 'shell' },
+      { command: 'Remove-Item output -Recurse -Force' }
+    ).requiresPrompt,
+    true
+  )
+  assert.equal(
+    shouldAllowToolCallByApprovalMode(
+      { toolApprovalMode: 'trusted' },
+      { hardApproval: true, approvalKind: 'shell' },
+      { command: 'Remove-Item output -Recurse -Force' }
+    ).requiresPrompt,
+    undefined
+  )
   assert.equal(shouldAllowToolCallByApprovalMode({ toolApprovalMode: 'manual' }, { forceApproval: false }).requiresPrompt, true)
   assert.equal(shouldAllowToolCallByApprovalMode({ toolApprovalMode: 'deny' }, { forceApproval: false }).allowed, false)
 })

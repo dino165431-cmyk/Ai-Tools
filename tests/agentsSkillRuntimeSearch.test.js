@@ -160,3 +160,61 @@ test('agents_list surfaces indexed search mode and semantic flags', async () => 
   assert.equal(result.items[0]?.mcp?.[0], 'Git 工具')
   assert.equal(result.items[0]?.preview, 'Provider OpenAI Compatible / Prompt 发布排查 / Skills 发布巡检 / MCP Git 工具')
 })
+
+test('agents_list never exposes the builtin default Agent as a delegation target', async () => {
+  const config = {
+    agents: {
+      builtin_agent_notes: {
+        _id: 'builtin_agent_notes',
+        name: 'Ai Tools 助手（内置）',
+        builtin: true,
+        skills: [],
+        mcp: []
+      },
+      agent_user: {
+        _id: 'agent_user',
+        name: '用户智能体',
+        provider: '',
+        model: '',
+        skills: [],
+        mcp: []
+      }
+    },
+    providers: {},
+    prompts: {},
+    skills: {},
+    mcpServers: {}
+  }
+  const createBuiltinAgentsSkillRuntime = loadAgentsSkillRuntimeFactory({
+    globalConfig: {
+      getConfig() {
+        return config
+      }
+    },
+    contentIndex: {
+      async ensureIndex() {},
+      async searchIndex() {
+        return {
+          query: '助手',
+          searchMode: 'keyword',
+          semanticUsed: false,
+          returned: 2,
+          total: 2,
+          hasMore: false,
+          items: [
+            { path: 'builtin_agent_notes', agentId: 'builtin_agent_notes', title: 'Ai Tools 助手（内置）' },
+            { path: 'agent_user', agentId: 'agent_user', title: '用户智能体' }
+          ]
+        }
+      }
+    }
+  })
+  const runtime = createBuiltinAgentsSkillRuntime({})
+
+  const listed = await runtime.runAction('agents_list', {})
+  assert.equal(JSON.stringify(listed.items.map((item) => item.id)), JSON.stringify(['agent_user']))
+
+  const searched = await runtime.runAction('agents_list', { query: '助手' })
+  assert.equal(JSON.stringify(searched.items.map((item) => item.id)), JSON.stringify(['agent_user']))
+  assert.equal(searched.total, 1)
+})

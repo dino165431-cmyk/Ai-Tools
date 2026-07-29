@@ -52,6 +52,7 @@ export function createPreparedSkillToolExecutor(runtime) {
     prepareBuiltinAgentToolCallArgs,
     resolveSelectedSkillTarget,
     resolveSkillScriptTarget,
+    searchCapabilities,
     selectedSkillObjects
   } = runtime
 
@@ -91,7 +92,8 @@ export function createPreparedSkillToolExecutor(runtime) {
           discoverBuiltinSkillActions({
             selectedSkills: selectedSkillObjects.value,
             catalog: builtinSkillActionCatalog,
-            args: argsObj
+            args: argsObj,
+            searchCapabilities
           }),
           abortState
         )

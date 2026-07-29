@@ -44,9 +44,11 @@ import {
 import { extractAssistantTextFromPayload } from '@/utils/chatAssistantResponse'
 import { stringifyToolResultForModel } from '@/utils/toolResultForModel'
 import { createDirectory, exists, writeFile } from '@/utils/fileOperations'
+import { searchCapabilities } from '@/utils/contentSearch'
 import { getOrCreateMCPClient, releaseMCPClient, closePooledMCPClient } from '@/utils/mcpClient'
 import { isSystemPrompt } from '@/utils/promptConfig'
 import {
+  buildAutoSkillActivationPlan,
   buildSkillToolsBundle,
   createBuiltinSkillActionCatalog,
   discoverBuiltinSkillActions,
@@ -54,10 +56,12 @@ import {
 } from '@/utils/chatSkillTooling'
 import {
   evaluateToolApproval,
+  isDangerousShellApprovalCommand,
   normalizeUnattendedToolApprovalMode,
   resolveMcpToolApprovalPolicy,
   TOOL_APPROVAL_MODE_FULL,
-  TOOL_APPROVAL_MODE_SAFE
+  TOOL_APPROVAL_MODE_SAFE,
+  TOOL_APPROVAL_MODE_TRUSTED
 } from '@/utils/toolApprovalPolicy'
 
 const SESSION_ROOT = 'session'
@@ -562,8 +566,17 @@ function unionStrings(...lists) {
 }
 
 async function resolveExecutionProfile(task) {
-  const agent = getAgentById(task?.agentId)
-  if (!agent) throw new Error('未找到智能体：' + String(task?.agentId || ''))
+  const requestedAgentId = String(task?.agentId || '').trim()
+  const agent = requestedAgentId
+    ? getAgentById(requestedAgentId)
+    : (agentsRef.value || []).find((item) => item?.builtin === true)
+  if (!agent) {
+    throw new Error(
+      requestedAgentId
+        ? `未找到智能体：${requestedAgentId}`
+        : '默认通用 Agent 不可用'
+    )
+  }
 
   const cfg = chatConfigRef.value || {}
   const fallbackProviderId = String(cfg.defaultProviderId || '').trim()
@@ -601,10 +614,51 @@ async function resolveExecutionProfile(task) {
   const prompt = agent.prompt ? getPromptById(agent.prompt) : null
   const basePromptText = prompt ? String(prompt.content || '').trim() : fallbackSystemPrompt
 
-  const skillIds = unionStrings(agent.skills, task?.skillIds)
+  const isDefaultGeneralAgent = agent.builtin === true
+  const configuredSkillIds = unionStrings(agent.skills, task?.skillIds)
+  const capabilitySearchResult = isDefaultGeneralAgent
+    ? await searchCapabilities({
+        query: String(task?.content || ''),
+        limit: 18
+      }).catch(() => null)
+    : null
+  const capabilityMatches = Array.isArray(capabilitySearchResult?.items)
+    ? capabilitySearchResult.items
+    : []
+  const routedSkills = isDefaultGeneralAgent
+    ? buildAutoSkillActivationPlan({
+        skills: skillsRef.value || [],
+        text: String(task?.content || ''),
+        selectedSkillIds: configuredSkillIds,
+        agentSkillIds: agent.skills,
+        retrievalMatches: capabilityMatches,
+        minimumScore: 2,
+        limit: 3
+      }).picked.map((item) => item.id)
+    : []
+  const skillIds = unionStrings(configuredSkillIds, routedSkills)
   const skillObjects = skillIds.map((id) => getSkillById(id)).filter(Boolean)
 
-  const manualMcpIds = unionStrings(agent.mcp, task?.mcpIds)
+  const enabledMcpServers = (mcpServersRef.value || []).filter((server) => server?._id && !server.disabled)
+  const routedMcpIds = isDefaultGeneralAgent
+    ? buildAutoSkillActivationPlan({
+        skills: enabledMcpServers.map((server) => ({
+          _id: server._id,
+          name: server.name || server._id,
+          description: [
+            server.description,
+            server.command,
+            server.url
+          ].filter(Boolean).join(' ')
+        })),
+        text: String(task?.content || ''),
+        retrievalMatches: capabilityMatches,
+        retrievalCapabilityType: 'mcp',
+        minimumScore: 2,
+        limit: 3
+      }).picked.map((item) => item.id)
+    : []
+  const manualMcpIds = unionStrings(agent.mcp, task?.mcpIds, routedMcpIds)
   const derivedMcpIds = unionStrings(...skillObjects.map((s) => s?.mcp))
   const activeMcpIds = unionStrings(manualMcpIds, derivedMcpIds)
   const activeMcpServers = activeMcpIds
@@ -633,7 +687,9 @@ async function resolveExecutionProfile(task) {
     activatedAgentSkillIds: agentSkillIds,
     manualMcpIds,
     toolApprovalMode,
-    autoApproveTools: toolApprovalMode === TOOL_APPROVAL_MODE_FULL,
+    autoApproveTools:
+      toolApprovalMode === TOOL_APPROVAL_MODE_FULL ||
+      toolApprovalMode === TOOL_APPROVAL_MODE_TRUSTED,
     autoActivateAgentSkills: false,
     toolMode: 'expanded',
     effectiveToolMode: 'expanded',
@@ -792,14 +848,19 @@ async function executeBuiltinSkillToolCall({ profile, mapping, argsObj }) {
       const permission = evaluateToolApproval({
         mode: profile?.toolApprovalMode,
         forceApproval: resolved.mapping?.forceApproval === true,
-        hardApproval: resolved.mapping?.hardApproval === true,
+        hardApproval:
+          resolved.mapping?.hardApproval === true ||
+          (
+            resolved.mapping?.approvalKind === 'shell' &&
+            isDangerousShellApprovalCommand(resolved.args)
+          ),
         interactive: false
       })
       if (permission.action !== 'allow') {
         return {
           ok: false,
           blocked: true,
-          content: `定时任务工具权限已阻止：${resolved.mapping?.serverName || resolved.mapping?.serverId || 'Skill'} / ${resolved.mapping?.toolName || 'unknown'}。强制确认类操作不能在无人值守任务中执行；其他写入操作可使用“高风险自动”模式。`,
+          content: `定时任务工具权限已阻止：${resolved.mapping?.serverName || resolved.mapping?.serverId || 'Skill'} / ${resolved.mapping?.toolName || 'unknown'}。明显破坏性操作不能在无人值守任务中执行；普通写入、常规命令与代码可使用“高风险自动”模式。`,
           serverName: resolved.mapping?.serverName,
           toolName: resolved.mapping?.toolName
         }
@@ -839,14 +900,19 @@ async function executeTimedTaskToolCall({ profile, toolCall, mapping, argsObj })
   const permission = evaluateToolApproval({
     mode: profile?.toolApprovalMode,
     forceApproval: mapping?.forceApproval === true,
-    hardApproval: mapping?.hardApproval === true,
+    hardApproval:
+      mapping?.hardApproval === true ||
+      (
+        mapping?.approvalKind === 'shell' &&
+        isDangerousShellApprovalCommand(argsObj)
+      ),
     interactive: false
   })
   if (permission.action !== 'allow') {
     return {
       ok: false,
       blocked: true,
-      content: `定时任务工具权限已阻止：${mapping?.serverName || mapping?.serverId || '未知'} / ${mapping?.toolName || 'unknown'}。强制确认类操作不能在无人值守任务中执行；其他写入操作可使用“高风险自动”模式。`
+      content: `定时任务工具权限已阻止：${mapping?.serverName || mapping?.serverId || '未知'} / ${mapping?.toolName || 'unknown'}。明显破坏性操作不能在无人值守任务中执行；普通写入、常规命令与代码可使用“高风险自动”模式。`
     }
   }
 

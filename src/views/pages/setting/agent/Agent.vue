@@ -21,7 +21,7 @@
 
     <n-flex wrap :size="16" justify="flex-start" style="width: 100%; margin-top: 8px;">
       <n-card
-        v-for="agent in agents"
+        v-for="agent in visibleAgents"
         :key="agent._id"
         hoverable
         size="small"
@@ -80,7 +80,7 @@
             </n-tag>
           </n-flex>
 
-          <n-ellipsis v-if="agent.prompt" class="settings-card__meta" :line-clamp="2">
+          <n-ellipsis v-if="getPromptName(agent.prompt)" class="settings-card__meta" :line-clamp="2">
             提示词：{{ getPromptName(agent.prompt) }}
           </n-ellipsis>
           <div v-else class="settings-card__meta settings-card__meta--subtle">未选择提示词</div>
@@ -353,10 +353,15 @@ const providers = getProviders()
 const prompts = getPrompts()
 const skills = getSkills()
 const mcps = getMcpServers()
+const visibleAgents = computed(() => (agents.value || []).filter((agent) => agent?.builtin !== true))
 
 // 选择器选项
-const providerOptions = computed(() => providers.value || [])
-const promptOptions = computed(() => (prompts.value || []).filter((prompt) => isSystemPrompt(prompt)))
+const providerOptions = computed(() =>
+  (providers.value || []).filter((provider) => provider?.builtin !== true)
+)
+const promptOptions = computed(() =>
+  (prompts.value || []).filter((prompt) => prompt?.builtin !== true && isSystemPrompt(prompt))
+)
 const skillOptions = computed(() => skills.value || [])
 const mcpOptions = computed(() => mcps.value || [])
 
@@ -366,14 +371,19 @@ const getProviderName = (id) => {
   return p ? p.name : id
 }
 const getPromptName = (id) => {
-  const p = prompts.value.find(p => p._id === id && isSystemPrompt(p))
-  return p ? p.name : id
+  const p = prompts.value.find(p => p._id === id && p?.builtin !== true && isSystemPrompt(p))
+  return p?.name || ''
 }
 
 const getSystemPromptById = (id) => {
   const promptId = String(id || '').trim()
   if (!promptId) return null
-  return prompts.value.find((prompt) => prompt && prompt._id === promptId && isSystemPrompt(prompt)) || null
+  return prompts.value.find((prompt) =>
+    prompt &&
+    prompt._id === promptId &&
+    prompt.builtin !== true &&
+    isSystemPrompt(prompt)
+  ) || null
 }
 
 // UI ״̬

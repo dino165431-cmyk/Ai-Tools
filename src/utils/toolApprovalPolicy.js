@@ -112,12 +112,14 @@ function hasConventionalReadOnlyName(tool) {
 export const TOOL_APPROVAL_MODE_MANUAL = 'manual'
 export const TOOL_APPROVAL_MODE_SAFE = 'safe'
 export const TOOL_APPROVAL_MODE_FULL = 'full'
+export const TOOL_APPROVAL_MODE_TRUSTED = 'trusted'
 export const TOOL_APPROVAL_MODE_DENY = 'deny'
 
 export const TOOL_APPROVAL_MODES = Object.freeze([
   TOOL_APPROVAL_MODE_MANUAL,
   TOOL_APPROVAL_MODE_SAFE,
   TOOL_APPROVAL_MODE_FULL,
+  TOOL_APPROVAL_MODE_TRUSTED,
   TOOL_APPROVAL_MODE_DENY
 ])
 
@@ -141,6 +143,7 @@ export function normalizeUnattendedToolApprovalMode(value, fallback = TOOL_APPRO
   const normalized = normalizeToolApprovalMode(value, fallback)
   if (
     normalized === TOOL_APPROVAL_MODE_FULL ||
+    normalized === TOOL_APPROVAL_MODE_TRUSTED ||
     normalized === TOOL_APPROVAL_MODE_DENY ||
     normalized === TOOL_APPROVAL_MODE_SAFE
   ) {
@@ -152,7 +155,8 @@ export function normalizeUnattendedToolApprovalMode(value, fallback = TOOL_APPRO
 export function getToolApprovalModeLabel(value) {
   const mode = normalizeToolApprovalMode(value)
   if (mode === TOOL_APPROVAL_MODE_MANUAL) return '每次确认'
-  if (mode === TOOL_APPROVAL_MODE_FULL) return '高风险自动（强制确认除外）'
+  if (mode === TOOL_APPROVAL_MODE_FULL) return '高风险自动（危险操作确认）'
+  if (mode === TOOL_APPROVAL_MODE_TRUSTED) return '完全信任（全部直接批准）'
   if (mode === TOOL_APPROVAL_MODE_DENY) return '禁止调用'
   return '低风险自动'
 }
@@ -170,6 +174,14 @@ export function evaluateToolApproval({
       action: 'deny',
       mode: normalizedMode,
       reason: 'tool_calls_disabled'
+    }
+  }
+
+  if (normalizedMode === TOOL_APPROVAL_MODE_TRUSTED) {
+    return {
+      action: 'allow',
+      mode: normalizedMode,
+      reason: 'trusted_auto'
     }
   }
 
@@ -267,6 +279,28 @@ export function normalizeShellApprovalCommand(args, argsText = '') {
     command: cleanText(normalizedArgs.command).replace(/\r\n?/g, '\n'),
     cwd: (cleanText(normalizedArgs.cwd) || '.').replace(/\\/g, '/')
   }
+}
+
+export function isDangerousShellApprovalCommand(args, argsText = '') {
+  const command = normalizeShellApprovalCommand(args, argsText).command
+    .replace(/\\\r?\n/g, ' ')
+    .trim()
+  if (!command) return false
+
+  return [
+    /\b(?:rm|rmdir|rd|del|erase|remove-item|clear-content)\b/i,
+    /\bfind\b[\s\S]*\s-delete(?:\s|$)/i,
+    /(?:^|[\r\n;&|]\s*)(?:sudo\s+|doas\s+)?(?:format|mkfs(?:\.\w+)?|diskpart|shred|truncate)\b/i,
+    /\b(?:format-volume|clear-disk|initialize-disk)\b/i,
+    /\bdd\b[\s\S]*\bof\s*=/i,
+    /\b(?:shutdown|reboot|halt|poweroff|stop-computer|restart-computer)\b/i,
+    /\b(?:kill|killall|pkill|taskkill|stop-process)\b/i,
+    /\bgit\s+(?:reset\s+--hard|clean\b|restore\b|checkout\s+--|branch\s+-D\b|stash\s+(?:drop|clear)\b|push\b[\s\S]*(?:--force|-f(?:\s|$)))/i,
+    /\b(?:docker\s+(?:system|image|container|volume)\s+prune|kubectl\s+delete)\b/i,
+    /\b(?:drop\s+(?:database|schema|table)|truncate\s+table)\b/i,
+    /\breg(?:\.exe)?\s+delete\b/i,
+    /\b(?:shutil\.rmtree|os\.(?:remove|unlink)|fs\.(?:rm|rmSync|rmdir|rmdirSync|unlink|unlinkSync)|\.unlink\s*\()\b/i
+  ].some((pattern) => pattern.test(command))
 }
 
 export function normalizeSkillScriptApprovalArgs(

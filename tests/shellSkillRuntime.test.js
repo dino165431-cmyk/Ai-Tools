@@ -50,12 +50,14 @@ test('shell Skill runtime exposes explicit sandbox lifecycle actions', () => {
   assert.match(runAction.description, /not an OS-level process sandbox/i)
 })
 
-test('shell action policy separates read-only workspace operations from hard-gated execution', async () => {
+test('shell action policy lets approval mode distinguish ordinary from dangerous execution', async () => {
   const actions = await builtinSkills.listBuiltinSkillActions(builtinSkills.BUILTIN_SKILL_IDS.shell)
   const byName = new Map(actions.map((action) => [action.name, action]))
   assert.equal(byName.get('sandbox_status').forceApproval, false)
   assert.equal(byName.get('sandbox_read_file').forceApproval, false)
-  assert.equal(byName.get('sandbox_run').hardApproval, true)
+  assert.equal(byName.get('sandbox_run').forceApproval, true)
+  assert.equal(byName.get('sandbox_run').hardApproval, false)
+  assert.equal(byName.get('sandbox_run').approvalKind, 'shell')
   assert.equal(byName.get('sandbox_write_file').forceApproval, true)
   assert.equal(byName.get('sandbox_write_file').hardApproval, false)
   assert.equal(byName.get('sandbox_reset').hardApproval, true)

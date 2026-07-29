@@ -65,3 +65,41 @@ test('prepared MCP executor keeps mapped missing-server failures local and non-s
   assert.equal(context.targetSession.messages[0].toolStatus, 'error')
   assert.equal(scrollCount, 0)
 })
+
+test('prepared MCP discovery ranks tools for multi-term searches instead of whole-string matching', async () => {
+  const server = {
+    _id: 'github',
+    name: 'GitHub',
+    description: 'Repository collaboration service',
+    disabled: false
+  }
+  const execute = createPreparedMcpToolExecutor({
+    activeMcpServers: { value: [server] },
+    filterAllowedMcpTools: (_server, tools) => tools,
+    listActiveMcpServersBrief: () => [{ id: server._id, name: server.name }],
+    listMcpToolsForServer: async () => ({
+      ok: true,
+      tools: [
+        { name: 'create_issue', description: 'Create an issue in a repository' },
+        { name: 'list_calendars', description: 'List calendar resources' }
+      ]
+    }),
+    maybeScrollToBottomForRun: async () => {},
+    resolveActiveMcpServer: () => null
+  })
+  const context = createExecutionContext()
+
+  const result = await execute(
+    {
+      mapping: { type: 'internal', internal: 'mcp_discover' },
+      serverName: 'MCP',
+      toolName: 'mcp_discover',
+      argsObj: { search: 'GitHub repository create issue' }
+    },
+    context
+  )
+
+  assert.equal(result.ok, true)
+  const payload = JSON.parse(result.content)
+  assert.equal(payload.servers[0].tools[0].name, 'create_issue')
+})

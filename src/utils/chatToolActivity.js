@@ -14,8 +14,17 @@ const TOOL_LABELS = {
   sessions_read: ['正在读取会话记录', '已读取会话记录'],
   agents_list: ['正在查找可用智能体', '已查找可用智能体'],
   agent_run: ['正在推进子任务', '已完成子任务'],
+  use_skill: ['正在准备相关能力', '已准备相关能力'],
+  use_skills: ['正在准备相关能力', '已准备相关能力'],
+  read_skill_file: ['正在读取能力资料', '已读取能力资料'],
+  run_skill_script: ['正在执行能力流程', '已执行能力流程'],
   skill_discover: ['正在查看可用能力', '已查看可用能力'],
-  skill_call: ['正在处理任务', '已完成处理']
+  skill_call: ['正在处理任务', '已完成处理'],
+  mcp_discover: ['正在查找可用工具', '已查找可用工具'],
+  mcp_call: ['正在使用外部能力', '已使用外部能力'],
+  notebook_read: ['正在读取超级笔记', '已读取超级笔记'],
+  notebook_execute_all: ['正在运行超级笔记', '已运行超级笔记'],
+  notebook_execute_cell: ['正在运行超级笔记步骤', '已运行超级笔记步骤']
 }
 
 const TOOL_ACTION_VERBS = {
@@ -184,9 +193,6 @@ export function getToolActivityMeta(message) {
     return compactText(files.length === 1 ? firstName : `${firstName} 等 ${files.length} 个文件`, 88)
   }
 
-  const command = args.command
-  if (command) return compactText(command, 100)
-
   const query = args.query || args.keyword || payload.query
   if (query) return compactText(query, 80)
 
@@ -201,10 +207,5 @@ export function getToolActivityMeta(message) {
     return compactText(files.length === 1 ? firstName : `${firstName} 等 ${files.length} 个文件`, 88)
   }
 
-  const description = compactText(message?.toolDescription, 100)
-  if (description) return description
-
-  const subMeta = compactText(message?.toolSubMeta, 88)
-  const identity = [message?.toolServerName, message?.toolName].filter(Boolean).join(' / ').toLowerCase()
-  return subMeta.toLowerCase() === identity ? '' : subMeta
+  return ''
 }

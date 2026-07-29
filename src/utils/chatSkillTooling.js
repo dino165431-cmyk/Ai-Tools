@@ -137,6 +137,7 @@ export function buildSkillToolsBundle({
     const id = normalizeText(skill?._id)
     return !!id && (agentSet.has(id) || isDirectorySkill(skill))
   })
+  const hasDiscoverableSkills = skills.some((skill) => normalizeText(skill?._id))
   const hasNativeSkills = skills.some(isBuiltinNativeSkill)
   const tools = []
   const map = new Map()
@@ -165,8 +166,10 @@ export function buildSkillToolsBundle({
       createInternalMapping('run_skill_script', 'run_skill_script', { approvalKind: 'execution' })
     )
   }
-  if (hasNativeSkills) {
+  if (hasDiscoverableSkills) {
     register('skill_discover', 'skillDiscover', createInternalMapping('skill_discover'))
+  }
+  if (hasNativeSkills) {
     register('skill_call', 'skillCall', createInternalMapping('skill_call'))
   }
 
@@ -257,11 +260,23 @@ function compactAction(action, { withSchema = false } = {}) {
 }
 
 function skillSearchText(skill) {
+  const triggers = skill?.triggers && typeof skill.triggers === 'object' ? skill.triggers : {}
   return [
     skill?._id,
     skill?.name,
     getSkillDescription(skill),
-    ...normalizeStringList(skill?.nativeActions)
+    skill?.content,
+    ...normalizeStringList(skill?.nativeActions),
+    ...normalizeStringList(skill?.mcp),
+    ...normalizeStringList(triggers?.tags),
+    ...normalizeStringList(triggers?.keywords),
+    ...normalizeStringList(triggers?.intents),
+    ...getSkillScriptCatalog(skill).flatMap((script) => [
+      script?.name,
+      script?.path,
+      script?.description,
+      script?.whenToUse
+    ])
   ]
     .map((item) => normalizeText(item).toLowerCase())
     .filter(Boolean)
@@ -275,15 +290,67 @@ function actionSearchText(action) {
     .join('\n')
 }
 
+function scoreSearchText(query, haystack) {
+  const normalizedQuery = normalizeText(query).toLowerCase()
+  const normalizedHaystack = normalizeText(haystack).toLowerCase()
+  if (!normalizedQuery) return 1
+  if (!normalizedHaystack) return 0
+  if (normalizedHaystack.includes(normalizedQuery)) return 100
+
+  const queryTokens = Array.from(tokenizeRoutingText(normalizedQuery))
+  const haystackTokens = tokenizeRoutingText(normalizedHaystack)
+  const matches = queryTokens
+    .filter((token) => haystackTokens.has(token))
+    .sort((a, b) => b.length - a.length)
+  const accepted = []
+  for (const token of matches) {
+    if (accepted.some((item) => item.includes(token) || token.includes(item))) continue
+    accepted.push(token)
+    if (accepted.length >= 8) break
+  }
+  return accepted.reduce(
+    (score, token) => score + (/[\u3400-\u9fff]/.test(token) && token.length >= 3 ? 2 : 1),
+    0
+  )
+}
+
+function compactSkillDiscoveryEntry(skill) {
+  const id = normalizeText(skill?._id)
+  const scripts = getSkillScriptCatalog(skill)
+  return {
+    id,
+    name: normalizeText(skill?.name || id),
+    description: getSkillDescription(skill),
+    source_type: normalizeText(skill?.sourceType),
+    kind: isBuiltinNativeSkill(skill) ? 'native' : isDirectorySkill(skill) ? 'directory' : 'metadata',
+    entry_file: normalizeText(skill?.entryFile),
+    script_count: scripts.length,
+    scripts: scripts.slice(0, 20).map((script) => ({
+      name: normalizeText(script?.name || script?.path),
+      path: normalizeText(script?.path),
+      description: normalizeText(script?.description || script?.whenToUse)
+    })),
+    mcp: normalizeStringList(skill?.mcp)
+  }
+}
+
+function normalizeCapabilitySearchItems(result) {
+  const items = Array.isArray(result?.items)
+    ? result.items
+    : Array.isArray(result?.results)
+      ? result.results
+      : []
+  return items.filter((item) => String(item?.capabilityType || '').trim() === 'skill')
+}
+
 export async function discoverBuiltinSkillActions({
   selectedSkills = [],
   catalog,
-  args = {}
+  args = {},
+  searchCapabilities = null
 } = {}) {
-  if (!catalog || typeof catalog.list !== 'function') {
-    throw new Error('内置 Skill 动作目录不可用')
-  }
-
+  const availableSkills = (Array.isArray(selectedSkills) ? selectedSkills : [])
+    .filter((skill) => normalizeText(skill?._id))
   const nativeSkills = listBuiltinNativeSkills(selectedSkills)
   const skillId = normalizeText(args?.skill_id ?? args?.skillId ?? args?.id)
   const skillName = normalizeText(args?.skill_name ?? args?.skillName ?? args?.name)
@@ -295,18 +362,18 @@ export async function discoverBuiltinSkillActions({
   const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.floor(rawLimit), 100) : 30
   const hasSkillSelector = !!skillId || !!skillName
   const targetSkill = hasSkillSelector
-    ? resolveSelectedSkillTarget(nativeSkills, {
+    ? resolveSelectedSkillTarget(availableSkills, {
         idCandidate: skillId,
         nameCandidate: skillName,
-        nativeOnly: true
+        nativeOnly: actionName.length > 0
       })
     : null
 
   if (hasSkillSelector && !targetSkill) {
     return {
       ok: false,
-      error: '未找到可用的内置 Skill',
-      available_skills: listSelectedSkillsBrief(nativeSkills)
+      error: actionName ? '未找到可调用动作的内置 Skill' : '未找到可用的 Skill',
+      available_skills: listSelectedSkillsBrief(actionName ? nativeSkills : availableSkills)
     }
   }
   if (actionName && !targetSkill) {
@@ -317,13 +384,56 @@ export async function discoverBuiltinSkillActions({
     }
   }
 
+  let capabilitySearchResult = null
+  if (search && typeof searchCapabilities === 'function') {
+    try {
+      capabilitySearchResult = await searchCapabilities({
+        query: search,
+        limit: Math.max(limit, 30)
+      })
+    } catch {
+      // Persistent hybrid retrieval is an enhancement; local matching remains available.
+    }
+  }
+  const capabilityItems = normalizeCapabilitySearchItems(capabilitySearchResult)
+  const capabilityScoreById = new Map(
+    capabilityItems.map((item) => [
+      normalizeText(item?.skillId || item?.capabilityId),
+      Math.max(1, Number(item?.score) || 1)
+    ])
+  )
   const targetSkills = targetSkill
     ? [targetSkill]
-    : nativeSkills.filter((skill) => !search || skillSearchText(skill).includes(search))
+    : availableSkills
+        .map((skill) => {
+          const id = normalizeText(skill?._id)
+          const localScore = search ? scoreSearchText(search, skillSearchText(skill)) : 1
+          const retrievalScore = capabilityScoreById.get(id) || 0
+          return { skill, score: Math.max(localScore, retrievalScore) }
+        })
+        .filter((item) => item.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .map((item) => item.skill)
   const skillEntries = []
 
   for (const skill of targetSkills) {
     const id = normalizeText(skill?._id)
+    if (!isBuiltinNativeSkill(skill)) {
+      skillEntries.push(compactSkillDiscoveryEntry(skill))
+      if (skillEntries.length >= limit) break
+      continue
+    }
+    if (!catalog || typeof catalog.list !== 'function') {
+      skillEntries.push({
+        ...compactSkillDiscoveryEntry(skill),
+        action_count: normalizeStringList(skill?.nativeActions).length,
+        returned: 0,
+        actions: [],
+        action_catalog_error: '内置 Skill 动作目录不可用'
+      })
+      if (skillEntries.length >= limit) break
+      continue
+    }
     const actions = await catalog.list(id, { refresh })
     if (actionName) {
       const exact =
@@ -345,23 +455,30 @@ export async function discoverBuiltinSkillActions({
     }
 
     const matchedActions = actions
-      .filter((action) => !search || actionSearchText(action).includes(search))
+      .map((action) => ({
+        action,
+        score: search ? scoreSearchText(search, actionSearchText(action)) : 1
+      }))
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score)
       .slice(0, limit)
-    if (search && !matchedActions.length && !skillSearchText(skill).includes(search)) continue
+      .map((item) => item.action)
+    if (search && !matchedActions.length && scoreSearchText(search, skillSearchText(skill)) <= 0) continue
     skillEntries.push({
-      id,
-      name: normalizeText(skill?.name || id),
-      description: getSkillDescription(skill),
+      ...compactSkillDiscoveryEntry(skill),
       action_count: actions.length,
       returned: matchedActions.length,
       actions: matchedActions.map((action) => compactAction(action, { withSchema }))
     })
+    if (skillEntries.length >= limit) break
   }
 
   return {
     ok: true,
-    total_skills: nativeSkills.length,
+    total_skills: availableSkills.length,
     returned_skills: skillEntries.length,
+    search_mode: capabilitySearchResult?.searchMode || (search ? 'keyword' : 'list'),
+    semantic_used: capabilitySearchResult?.semanticUsed === true,
     skills: skillEntries
   }
 }
@@ -696,8 +813,33 @@ export function scoreSkillByTriggers(skill, text) {
 export function pickSkillsByTriggers(skills, text, options = {}) {
   const minimumScore = Math.max(1, Number(options.minimumScore) || 2)
   const limit = Math.max(1, Number(options.limit) || 2)
+  const retrievalItems = Array.isArray(options.retrievalMatches) ? options.retrievalMatches : []
+  const retrievalCapabilityType = normalizeText(options.retrievalCapabilityType || 'skill')
+  const retrievalById = new Map(
+    retrievalItems
+      .filter((item) => !item?.capabilityType || item.capabilityType === retrievalCapabilityType)
+      .map((item) => [
+        normalizeText(item?.skillId || item?.capabilityId || item?._id || item?.id),
+        item
+      ])
+      .filter(([id]) => id)
+  )
   return (Array.isArray(skills) ? skills : [])
-    .map((skill) => scoreSkillByTriggers(skill, text))
+    .map((skill) => {
+      const result = scoreSkillByTriggers(skill, text)
+      const retrieval = retrievalById.get(result.id)
+      if (!retrieval || !allowsImplicitSkillInvocation(skill)) return result
+      const retrievalScore = Math.max(2, Math.min(5, Math.ceil(Number(retrieval?.score) || 0)))
+      return {
+        ...result,
+        ok: true,
+        score: result.score + retrievalScore,
+        matched: [
+          ...result.matched,
+          `index:${normalizeText(retrieval?.searchMode || retrieval?.mode || 'hybrid')}`
+        ]
+      }
+    })
     .filter((result) => result.ok && result.id && result.score >= minimumScore)
     .sort((a, b) => b.score - a.score || b.matched.length - a.matched.length)
     .slice(0, limit)
@@ -710,6 +852,8 @@ export function buildAutoSkillActivationPlan({
   agentSkillIds = [],
   activatedSkillIds = [],
   loadedSkillIds = [],
+  retrievalMatches = [],
+  retrievalCapabilityType = 'skill',
   minimumScore = 2,
   limit = 2
 } = {}) {
@@ -723,7 +867,12 @@ export function buildAutoSkillActivationPlan({
     const id = normalizeText(skill?._id)
     return !!id && !activated.has(id) && !loaded.has(id)
   })
-  const picked = pickSkillsByTriggers(candidates, text, { minimumScore, limit })
+  const picked = pickSkillsByTriggers(candidates, text, {
+    minimumScore,
+    limit,
+    retrievalMatches,
+    retrievalCapabilityType
+  })
   const addedSelectedSkillIds = []
   const addedAgentSkillIds = []
 

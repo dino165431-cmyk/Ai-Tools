@@ -17,7 +17,7 @@
       :session-media-item-count="sessionMediaItemCount"
       :selected-provider="selectedProvider"
       :selected-model="selectedModel"
-      :selected-agent="selectedAgent"
+      :selected-agent="visibleSelectedAgent"
       :selected-agent-hover-text="selectedAgentHoverText"
       :active-prompt-label="activePromptLabel"
       :selected-skill-count="selectedSkillObjects.length"
@@ -62,7 +62,14 @@
             </div>
           </div>
 
-          <n-scrollbar ref="scrollbarRef" style="height: 100%;" @scroll="handleChatScroll" @wheel.passive="handleChatWheel">
+          <n-scrollbar
+            ref="scrollbarRef"
+            class="chat-main-scrollbar"
+            @scroll="handleChatScroll"
+            @wheel.passive="handleChatWheel"
+            @pointerdown="handleChatPointerDown"
+            @touchstart.passive="handleChatPointerDown"
+          >
             <div
               ref="chatListRef"
               class="chat-list"
@@ -210,12 +217,6 @@
                         :class="['chat-tool-compact__state-icon', { 'is-spinning': getToolMessageStatus(msg) === 'running' }]"
                       />
                       <span class="chat-tool-compact__label">{{ toolMessageLabel(msg) }}</span>
-                      <code v-if="toolActivityToolName(msg)" class="chat-tool-compact__tool-name">
-                        {{ toolActivityToolName(msg) }}
-                      </code>
-                      <span v-if="toolActivitySource(msg)" class="chat-tool-compact__source">
-                        {{ toolActivitySource(msg) }}
-                      </span>
                       <span v-if="toolActivityMeta(msg)" class="chat-tool-compact__meta">{{ toolActivityMeta(msg) }}</span>
                       <span
                         v-if="shouldShowToolActivityStatus(msg)"
@@ -812,8 +813,8 @@
 
       <template #footer>
         <n-flex justify="space-between" align="center" :size="12">
-          <n-button size="small" @click="clearSelectedAgent" :disabled="!selectedAgentId">
-            清除智能体
+          <n-button size="small" @click="clearSelectedAgent" :disabled="!visibleSelectedAgent">
+            恢复默认
           </n-button>
           <n-flex justify="flex-end" :size="12">
             <n-button @click="showAgentModal = false">取消</n-button>
@@ -1269,12 +1270,19 @@ import {
   resolveSandboxFileLink
 } from '@/utils/chatSandboxFileLink'
 import {
+  buildChatAttachmentReferenceBlock,
+  buildChatSandboxWorkspaceId,
+  withDefaultChatSandboxWorkspaceId
+} from '@/utils/chatSandboxWorkspace'
+import {
   getToolActivityLabel,
   getToolActivityMeta,
   getToolActivitySource,
   getToolActivityToolName
 } from '@/utils/chatToolActivity'
 import {
+  isExpectedChatProgrammaticScroll,
+  resolveChatBottomScrollTarget,
   resolveChatHeavyRenderTuning,
   resolveChatViewportCompensation,
   resolveChatVirtualItemGap,
@@ -1302,7 +1310,7 @@ import {
   isWorkerParsedAttachmentExtension,
   normalizeAttachmentName,
   normalizeMediaReferenceImagesForRequest,
-  truncateAttachmentContextForRequest,
+  resolveChatLongTextAttachmentPlan,
   truncateInlineText,
   truncateText
 } from '@/utils/chatAttachmentUtils'
@@ -1332,6 +1340,8 @@ import {
 import { buildChatRequestMessages } from '@/utils/chatRequestMessages'
 import { createPreparedSkillToolExecutor } from '@/utils/chatPreparedSkillToolExecutor'
 import { createPreparedMcpToolExecutor } from '@/utils/chatPreparedMcpToolExecutor'
+import { createRepeatedToolCallGuard } from '@/utils/chatToolLoopGuard'
+import { searchCapabilities } from '@/utils/contentSearch'
 import {
   normalizeChatProviderBaseUrl as normalizeBaseUrl,
   safeJsonParse,
@@ -1348,12 +1358,14 @@ import {
   buildSessionToolApprovalKey,
   evaluateToolApproval,
   getToolApprovalModeLabel,
+  isDangerousShellApprovalCommand,
   normalizeSkillScriptApprovalArgs,
   normalizeToolApprovalMode,
   resolveMcpToolApprovalPolicy,
   TOOL_APPROVAL_MODE_FULL,
   TOOL_APPROVAL_MODE_MANUAL,
-  TOOL_APPROVAL_MODE_SAFE
+  TOOL_APPROVAL_MODE_SAFE,
+  TOOL_APPROVAL_MODE_TRUSTED
 } from '@/utils/toolApprovalPolicy'
 import { createChatToolApprovalController } from '@/utils/chatToolApprovalController'
 import {
@@ -1522,7 +1534,7 @@ watch(
 const selectedSkillIds = ref([])
 const manualMcpIds = ref([])
 const webSearchEnabled = ref(false)
-const toolApprovalMode = ref(TOOL_APPROVAL_MODE_SAFE)
+const toolApprovalMode = ref(normalizeToolApprovalMode(chatConfig.value?.toolApprovalMode))
 const autoApproveTools = computed({
   get: () => toolApprovalMode.value !== TOOL_APPROVAL_MODE_MANUAL,
   set: (value) => {
@@ -1541,13 +1553,18 @@ const chatToolApprovalModeOptions = [
     key: TOOL_APPROVAL_MODE_SAFE
   },
   {
-    label: '高风险自动（强制确认除外）',
+    label: '高风险自动（普通命令与代码自动，危险操作确认）',
     key: TOOL_APPROVAL_MODE_FULL
+  },
+  {
+    label: '完全信任（任何工具都直接批准）',
+    key: TOOL_APPROVAL_MODE_TRUSTED
   }
 ]
 const toolApprovalModeLabel = computed(() => getToolApprovalModeLabel(toolApprovalMode.value))
 const toolApprovalModeButtonType = computed(() => (
-  toolApprovalMode.value === TOOL_APPROVAL_MODE_FULL
+  toolApprovalMode.value === TOOL_APPROVAL_MODE_FULL ||
+  toolApprovalMode.value === TOOL_APPROVAL_MODE_TRUSTED
     ? 'error'
     : toolApprovalMode.value === TOOL_APPROVAL_MODE_SAFE
       ? 'primary'
@@ -2144,11 +2161,12 @@ function buildMemoryRecallQueryFromAttachments(attachments = []) {
   list.forEach((attachment) => {
     if (!attachment || typeof attachment !== 'object') return
     const name = String(attachment.name || '').trim()
-    const body = String(attachment.text || '').trim()
+    const body = String(attachment?.sandboxPath ? '' : attachment.text || '').trim()
     if (!name && !body) return
     blocks.push(
       [
         name ? `附件：${name}` : '附件内容',
+        attachment?.sandboxPath ? `沙盒文件：${attachment.sandboxPath}` : '',
         body ? truncateText(body, 1000, '（附件内容已截断）') : ''
       ].filter(Boolean).join('\n')
     )
@@ -2409,7 +2427,7 @@ const CHAT_HEAVY_RENDER_SEED_COUNT = 12
 const CHAT_HEAVY_RENDER_WARM_BUFFER_EXTRA = 2
 const CHAT_SCROLL_COMPENSATION_SUSPEND_MS = 640
 const CHAT_SCROLL_COMPENSATION_MARK_MS = 96
-const CHAT_USER_SCROLL_ACTIVE_MS = 160
+const CHAT_USER_SCROLL_ACTIVE_MS = 480
 const CHAT_TOOL_COMPACT_MIN_MESSAGES = 120
 const CHAT_TOOL_COMPACT_MIN_TOOL_MESSAGES = 32
 const CHAT_TOOL_COMPACT_ITEM_FIXED_HEIGHT = 26
@@ -2616,6 +2634,60 @@ async function ensureAttachmentParsed(att) {
   return p
 }
 
+function createPendingAttachment(file, options = {}) {
+  const normalizedName = normalizeAttachmentName(file, options)
+  return reactive({
+    id: newId(),
+    name: normalizedName,
+    ext: getFileExt(normalizedName) || guessExtensionFromMime(file?.type),
+    mime: file?.type || '',
+    size: file?.size || 0,
+    file,
+    kind: '',
+    text: '',
+    dataUrl: '',
+    width: 0,
+    height: 0,
+    metaLine: '',
+    svgTextPreview: '',
+    status: 'pending', // pending | processing | ready | error
+    error: '',
+    autoWrappedLongText: options.autoWrappedLongText === true
+  })
+}
+
+function createLongTextAttachmentFile(plan) {
+  try {
+    return new File([plan.attachmentText], plan.attachmentName, {
+      type: plan.attachmentMime,
+      lastModified: Date.now()
+    })
+  } catch {
+    try {
+      const file = new Blob([plan.attachmentText], { type: plan.attachmentMime })
+      Object.defineProperty(file, 'name', {
+        configurable: true,
+        enumerable: true,
+        value: plan.attachmentName
+      })
+      return file
+    } catch {
+      return null
+    }
+  }
+}
+
+function createPendingLongTextAttachment(plan) {
+  const file = createLongTextAttachmentFile(plan)
+  if (!file) return null
+  const attachment = createPendingAttachment(file, {
+    name: plan.attachmentName,
+    autoWrappedLongText: true
+  })
+  void ensureAttachmentParsed(attachment)
+  return attachment
+}
+
 function appendPendingFiles(files, options = {}) {
   const list = Array.isArray(files) ? files.filter(Boolean) : []
   if (!list.length) return 0
@@ -2627,26 +2699,7 @@ function appendPendingFiles(files, options = {}) {
     return 0
   }
 
-  const added = list.map((file) => {
-    const normalizedName = normalizeAttachmentName(file, options)
-    return reactive({
-      id: newId(),
-      name: normalizedName,
-      ext: getFileExt(normalizedName) || guessExtensionFromMime(file?.type),
-      mime: file?.type || '',
-      size: file?.size || 0,
-      file,
-      kind: '',
-      text: '',
-      dataUrl: '',
-      width: 0,
-      height: 0,
-      metaLine: '',
-      svgTextPreview: '',
-      status: 'pending', // pending | processing | ready | error
-      error: ''
-    })
-  })
+  const added = list.map((file) => createPendingAttachment(file, options))
   pendingAttachments.value = [...current, ...added]
 
   // 异步解析，避免阻塞 UI
@@ -2680,13 +2733,34 @@ function getSupportedClipboardFiles(e) {
 
 function handleComposerPaste(e) {
   const files = getSupportedClipboardFiles(e)
-  if (!files.length) return
+  if (files.length) {
+    e.preventDefault()
+    const addedCount = appendPendingFiles(files)
+    if (addedCount > 0) {
+      message.success(`Added ${addedCount} attachments`)
+    }
+    return
+  }
+
+  const pastedText = String(e?.clipboardData?.getData?.('text/plain') || '')
+  const current = Array.isArray(pendingAttachments.value) ? pendingAttachments.value : []
+  const plan = resolveChatLongTextAttachmentPlan(pastedText, current)
+  if (!plan.wrapped) {
+    if (plan.error) {
+      e.preventDefault()
+      message.warning(plan.error)
+    }
+    return
+  }
 
   e.preventDefault()
-  const addedCount = appendPendingFiles(files)
-  if (addedCount > 0) {
-    message.success(`Added ${addedCount} attachments`)
+  const attachment = createPendingLongTextAttachment(plan)
+  if (!attachment) {
+    message.warning('当前环境无法创建长文本附件，请改为手动上传 Markdown 文件。')
+    return
   }
+  pendingAttachments.value = [...current, attachment]
+  message.success('粘贴内容较长，已自动添加为 Markdown 附件')
 }
 
 async function handleFileInputChange(e) {
@@ -2736,19 +2810,21 @@ async function handleFileInputChange(e) {
 const scrollbarRef = ref(null)
 
 const agentOptions = computed(() => {
-  return (agents.value || []).map((a) => ({ label: a.name || a._id, value: a._id }))
+  return (agents.value || [])
+    .filter((agent) => agent?.builtin !== true)
+    .map((agent) => ({ label: agent.name || agent._id, value: agent._id }))
 })
 
 const promptOptions = computed(() => {
   const localSystemOptions = (prompts.value || [])
-    .filter((p) => isSystemPrompt(p))
+    .filter((prompt) => prompt?.builtin !== true && isSystemPrompt(prompt))
     .map((p) => ({
       label: p.name || p._id,
       value: makeLocalPromptOptionValue(p._id)
     }))
 
   const localUserOptions = (prompts.value || [])
-    .filter((p) => isUserPrompt(p))
+    .filter((prompt) => prompt?.builtin !== true && isUserPrompt(prompt))
     .map((p) => ({
       label: p.name || p._id,
       value: makeLocalPromptOptionValue(p._id)
@@ -2841,6 +2917,10 @@ const selectedAgent = computed(() => {
   if (!selectedAgentId.value) return null
   return (agents.value || []).find((a) => a._id === selectedAgentId.value) || null
 })
+const visibleSelectedAgent = computed(() => (
+  selectedAgent.value?.builtin === true ? null : selectedAgent.value
+))
+const isDefaultGeneralAgent = computed(() => selectedAgent.value?.builtin === true)
 
 const inlineAgentPickerHeaderText = computed(() => {
   const query = String(inlineAgentQuery.value || '').trim()
@@ -2865,7 +2945,7 @@ const inlineCommandPickerHeaderText = computed(() => {
 })
 
 const inlineAgentSuggestions = computed(() => {
-  const list = Array.isArray(agents.value) ? agents.value : []
+  const list = (Array.isArray(agents.value) ? agents.value : []).filter((agent) => agent?.builtin !== true)
   const query = String(inlineAgentQuery.value || '').trim()
 
   return list
@@ -2930,6 +3010,7 @@ const inlineCommandSuggestions = computed(() => {
 
   if (kind === 'prompt') {
     const localItems = (prompts.value || [])
+      .filter((prompt) => prompt?.builtin !== true)
       .map((prompt) => {
         const id = String(prompt?._id || '').trim()
         if (!id) return null
@@ -3114,6 +3195,11 @@ const selectedSkillObjects = computed(() => {
   return selectSkillsByIds(selectedSkillIds.value, skills.value)
 })
 
+const runtimeSkillObjects = computed(() => {
+  if (!isDefaultGeneralAgent.value) return selectedSkillObjects.value
+  return (skills.value || []).filter((skill) => skill?._id)
+})
+
 function formatDisplayNameWithId(entity) {
   const id = String(entity?._id || '').trim()
   const name = String(entity?.name || '').trim()
@@ -3130,7 +3216,13 @@ function joinAsLines(items = [], emptyText = '无') {
   return list.map((item) => `- ${item}`).join('\n')
 }
 
+const runtimeAgentSkillIds = computed(() => {
+  if (!isDefaultGeneralAgent.value) return normalizeStringList(agentSkillIds.value)
+  return normalizeStringList((runtimeSkillObjects.value || []).map((skill) => skill?._id))
+})
+
 const agentSkillIdSet = computed(() => new Set(Array.isArray(agentSkillIds.value) ? agentSkillIds.value : []))
+const runtimeAgentSkillIdSet = computed(() => new Set(runtimeAgentSkillIds.value))
 const activatedAgentSkillIdSet = computed(() =>
   new Set(Array.isArray(activatedAgentSkillIds.value) ? activatedAgentSkillIds.value : [])
 )
@@ -3157,16 +3249,16 @@ function isSkillPromptContentLoaded(skill) {
   const id = String(skill?._id || '').trim()
   if (!id) return false
   if (isDirectorySkill(skill)) {
-    if (agentSkillIdSet.value.has(id) && !activatedAgentSkillIdSet.value.has(id)) return false
+    if (runtimeAgentSkillIdSet.value.has(id) && !activatedAgentSkillIdSet.value.has(id)) return false
     return hasLoadedSkillMainContent(id, skill?.entryFile || 'SKILL.md')
   }
-  if (!agentSkillIdSet.value.has(id)) return true
+  if (!runtimeAgentSkillIdSet.value.has(id)) return true
   return activatedAgentSkillIdSet.value.has(id)
 }
 
 const loadedSkillIdSet = computed(() => {
   const set = new Set()
-  ;(Array.isArray(selectedSkillObjects.value) ? selectedSkillObjects.value : []).forEach((skill) => {
+  ;(Array.isArray(runtimeSkillObjects.value) ? runtimeSkillObjects.value : []).forEach((skill) => {
     const id = String(skill?._id || '').trim()
     if (id && isSkillPromptContentLoaded(skill)) set.add(id)
   })
@@ -3298,6 +3390,10 @@ async function autoActivateAgentSkillsFromText(textRaw) {
   const raw = String(textRaw || '').trim()
   if (!raw) return []
 
+  const capabilitySearchResult = await searchCapabilities({
+    query: raw,
+    limit: 12
+  }).catch(() => null)
   const plan = buildAutoSkillActivationPlan({
     skills: skills.value,
     text: raw,
@@ -3305,6 +3401,9 @@ async function autoActivateAgentSkillsFromText(textRaw) {
     agentSkillIds: agentSkillIds.value,
     activatedSkillIds: activatedAgentSkillIds.value,
     loadedSkillIds: loadedSkillIdSet.value,
+    retrievalMatches: Array.isArray(capabilitySearchResult?.items)
+      ? capabilitySearchResult.items
+      : [],
     minimumScore: 2,
     limit: 2
   })
@@ -3325,12 +3424,6 @@ async function autoActivateAgentSkillsFromText(textRaw) {
     })
   }))
 
-  try {
-    message.info(`已自动启用技能：${picked.map((x) => x.name).join('、')}`)
-  } catch {
-    // ignore
-  }
-
   return picked
 }
 
@@ -3343,7 +3436,7 @@ function markSkillActivationPersistent(skillIds = []) {
 }
 
 const derivedMcpIds = computed(() => {
-  return collectDerivedMcpIds(selectedSkillObjects.value, {
+  return collectDerivedMcpIds(runtimeSkillObjects.value, {
     activeSkillIds: loadedSkillIdSet.value
   })
 })
@@ -3358,6 +3451,11 @@ const activeMcpIds = computed(() => {
 const activeMcpServers = computed(() => {
   const all = mcpServers.value || []
   return activeMcpIds.value.map((id) => all.find((s) => s._id === id)).filter(Boolean)
+})
+
+const runtimeMcpServers = computed(() => {
+  if (!isDefaultGeneralAgent.value) return activeMcpServers.value
+  return (mcpServers.value || []).filter((server) => server?._id && !server.disabled)
 })
 
 const activeMcpPromptCatalogKey = computed(() => {
@@ -3423,7 +3521,7 @@ function findLocalPromptById(promptId) {
 
 const selectedAgentHoverText = computed(() => {
   const agent = selectedAgent.value
-  if (!agent) return '未选择智能体'
+  if (!agent || agent.builtin) return ''
   const provider = (providers.value || []).find((item) => item?._id === agent?.provider) || null
   const providerLabel = provider ? formatDisplayNameWithId(provider) : String(agent?.provider || '').trim() || '未配置'
   const modelLabel = String(agent?.model || '').trim() || '未配置'
@@ -3531,7 +3629,7 @@ const activePromptLabel = computed(() => {
   if (basePromptMode.value === 'custom') return customSystemPrompt.value ? '临时' : ''
   if (!selectedPromptId.value) return ''
   const p = findLocalPromptById(selectedPromptId.value)
-  if (!p || !isSystemPrompt(p)) return ''
+  if (!p || p.builtin || !isSystemPrompt(p)) return ''
   return p?.name || p?._id || 'Prompt'
 })
 
@@ -3560,8 +3658,8 @@ const agentPromptText = computed(() => {
 
 const skillsPromptText = computed(() => {
   return buildProgressiveSkillsPromptText({
-    selectedSkills: selectedSkillObjects.value,
-    agentSkillIds: agentSkillIds.value,
+    selectedSkills: runtimeSkillObjects.value,
+    agentSkillIds: runtimeAgentSkillIds.value,
     loadedSkillIds: loadedSkillIdSet.value,
     mcpServers: mcpServers.value,
     getLoadedSkillContent
@@ -3570,7 +3668,7 @@ const skillsPromptText = computed(() => {
 
 const mcpToolCatalogPromptText = computed(() => {
   if (effectiveToolMode.value !== 'compact') return ''
-  const servers = (Array.isArray(activeMcpServers.value) ? activeMcpServers.value : []).filter((s) => s && s._id && !s.disabled)
+  const servers = (Array.isArray(runtimeMcpServers.value) ? runtimeMcpServers.value : []).filter((s) => s && s._id && !s.disabled)
   if (!servers.length) return ''
 
   // 触发依赖，确保 catalog / pinned 更新后 system prompt 会刷新。
@@ -3594,15 +3692,21 @@ const mcpToolCatalogPromptText = computed(() => {
             .slice(0, MCP_PINNED_TOOL_HINTS_MAX_PER_SERVER)
         : []
 
-      const base = entry || {
-        ok: false,
+      const identity = {
         server_id: id,
         server_name: s.name || id,
-        keepAlive: !!s.keepAlive,
-        ...allowInfo(s),
-        error: 'not_loaded',
-        updated_at: 0
+        description: String(s.description || '').trim() || undefined
       }
+      const base = entry
+        ? { ...identity, ...entry }
+        : {
+            ok: false,
+            ...identity,
+            keepAlive: !!s.keepAlive,
+            ...allowInfo(s),
+            error: 'not_loaded',
+            updated_at: 0
+          }
       if (!pinnedHints.length) return base
       return { ...base, pinned_tool_hints: pinnedHints }
     })
@@ -3622,7 +3726,7 @@ const mcpToolCatalogPromptText = computed(() => {
 
 const toolModePromptText = computed(() => {
   if (effectiveToolMode.value !== 'compact') return ''
-  if (!activeMcpServers.value?.length) return ''
+  if (!runtimeMcpServers.value?.length) return ''
   return COMPACT_MCP_TOOL_GUIDANCE_LINES.join('\n')
 })
 
@@ -4732,7 +4836,7 @@ const chatEmptyStateDescription = computed(() => {
 const chatSetupSummaryItems = computed(() => {
   const providerName = selectedProvider.value?.name || selectedProvider.value?._id || '未选择'
   const modelName = String(selectedModel.value || '').trim() || '未选择'
-  const agentName = selectedAgent.value?.name || selectedAgent.value?._id || '未设置'
+  const agentName = visibleSelectedAgent.value?.name || visibleSelectedAgent.value?._id || '默认通用'
   const promptName = activePromptLabel.value || basePromptSourceText.value || '未设置'
   const skillText = selectedSkillObjects.value.length ? `已启用 ${selectedSkillObjects.value.length} 个` : '未启用'
   const mcpText = activeMcpServers.value.length
@@ -6306,8 +6410,14 @@ function prepareBuiltinAgentToolCallArgs(skillId, toolName, argsObj, pendingMess
       pendingMessage?.toolAbortState || abortController.value || null
     ) || getActiveMemorySession()
     const workspacePath = resolveSessionHostWorkspacePath(targetRecord)
-    if (workspacePath) nextArgs.__host_workspace_path = workspacePath
-    return nextArgs
+    if (workspacePath) {
+      nextArgs.__host_workspace_path = workspacePath
+      return nextArgs
+    }
+    return withDefaultChatSandboxWorkspaceId(
+      nextArgs,
+      targetRecord?.id || activeMemorySessionId.value || 'default'
+    )
   }
 
   const isBuiltinAgentsSkill = normalizedSkillId === BUILTIN_AGENT_ORCHESTRATION_SKILL_ID
@@ -6835,6 +6945,7 @@ let pendingChatScrollCompensationRafId = 0
 let lastProcessedChatScrollTop = 0
 let didProcessChatScroll = false
 let programmaticChatScrollUntil = 0
+let programmaticChatScrollTop = Number.NaN
 let userChatScrollActiveUntil = 0
 let sessionResetPromise = null
 
@@ -7359,9 +7470,26 @@ function shouldFollowStreamingScroll(options = {}) {
   return distanceFromBottom <= followThreshold
 }
 
-function markProgrammaticChatScroll(durationMs = CHAT_SCROLL_COMPENSATION_SUSPEND_MS) {
+function markProgrammaticChatScroll(durationMs = CHAT_SCROLL_COMPENSATION_SUSPEND_MS, targetScrollTop = Number.NaN) {
   const duration = Math.max(120, Number(durationMs) || 0)
   programmaticChatScrollUntil = Date.now() + duration
+  programmaticChatScrollTop = Number.isFinite(Number(targetScrollTop))
+    ? Math.max(0, Number(targetScrollTop))
+    : Number.NaN
+}
+
+function isExpectedProgrammaticChatScroll(scrollTop) {
+  return isExpectedChatProgrammaticScroll({
+    now: Date.now(),
+    until: programmaticChatScrollUntil,
+    scrollTop,
+    targetScrollTop: programmaticChatScrollTop
+  })
+}
+
+function clearProgrammaticChatScrollMark() {
+  programmaticChatScrollUntil = 0
+  programmaticChatScrollTop = Number.NaN
 }
 
 function maybeScheduleStreamingScroll(options = {}) {
@@ -7651,7 +7779,7 @@ function queueChatScrollCompensation(deltaPx) {
     if (didProcessChatScroll && Number.isFinite(compensation.nextLastProcessedScrollTop)) {
       lastProcessedChatScrollTop = compensation.nextLastProcessedScrollTop
     }
-    markProgrammaticChatScroll(CHAT_SCROLL_COMPENSATION_MARK_MS)
+    markProgrammaticChatScroll(CHAT_SCROLL_COMPENSATION_MARK_MS, compensation.nextScrollTop)
     el.scrollTop = compensation.nextScrollTop
     updateAtBottomState(el)
   })
@@ -7667,6 +7795,7 @@ function clearQueuedChatScrollCompensation() {
 
 function shouldApplyChatScrollCompensation() {
   if (isAtBottom.value) return false
+  if (autoScrollEnabled.value && !autoScrollSuspendedByUser.value) return false
   if (Date.now() <= userChatScrollActiveUntil) return false
   const el = chatScrollEl.value || resolveScrollbarContainerEl()
   return !!el
@@ -8176,7 +8305,7 @@ function handleChatScroll(e) {
   const targetEl = resolveScrollbarContainerEl() || e?.target
   const currentTop = Number(targetEl?.scrollTop || 0)
   const previousTop = didProcessChatScroll ? lastProcessedChatScrollTop : Number(chatScrollTop.value || 0)
-  const isProgrammaticScroll = Date.now() <= programmaticChatScrollUntil
+  const isProgrammaticScroll = isExpectedProgrammaticChatScroll(currentTop)
   if (!isProgrammaticScroll && Math.abs(currentTop - previousTop) > 0.5) {
     userChatScrollActiveUntil = Date.now() + CHAT_USER_SCROLL_ACTIVE_MS
   }
@@ -8190,11 +8319,17 @@ function handleChatScroll(e) {
 function handleChatWheel(e) {
   const deltaY = Number(e?.deltaY || 0)
   if (!deltaY) return
+  clearProgrammaticChatScrollMark()
   userChatScrollActiveUntil = Date.now() + CHAT_USER_SCROLL_ACTIVE_MS
   if (deltaY < 0) {
     autoScrollSuspendedByUser.value = true
     autoScrollEnabled.value = false
   }
+}
+
+function handleChatPointerDown() {
+  clearProgrammaticChatScrollMark()
+  userChatScrollActiveUntil = Date.now() + CHAT_USER_SCROLL_ACTIVE_MS
 }
 
 let pendingChatScrollEl = null
@@ -8212,7 +8347,7 @@ function processChatScroll(elMaybe) {
   const { distanceFromBottom, atBottom } = updateAtBottomState(el)
   primeHydratedRenderedChatMessages()
   const nextScrollTop = Number(chatScrollTop.value || 0)
-  const isProgrammaticScroll = Date.now() <= programmaticChatScrollUntil
+  const isProgrammaticScroll = isExpectedProgrammaticChatScroll(nextScrollTop)
   const isUserScrollingUp = didProcessChatScroll && (nextScrollTop + 1 < prevScrollTop)
   const isUserScrollingDown = didProcessChatScroll && (nextScrollTop > prevScrollTop + 1)
   lastProcessedChatScrollTop = nextScrollTop
@@ -8222,10 +8357,8 @@ function processChatScroll(elMaybe) {
     autoScrollSuspendedByUser.value = true
     autoScrollEnabled.value = false
   } else if (atBottom) {
-    const wasDisabled = !autoScrollEnabled.value || autoScrollSuspendedByUser.value
     autoScrollSuspendedByUser.value = false
     autoScrollEnabled.value = true
-    if (wasDisabled) scrollToBottom({ force: true })
   } else if (!isProgrammaticScroll && autoScrollEnabled.value && distanceFromBottom > SCROLL_AUTO_DISABLE_DISTANCE_PX) {
     autoScrollEnabled.value = false
   }
@@ -8258,54 +8391,72 @@ function clearQueuedChatScrollProcessing() {
   pendingChatScrollEl = null
   lastProcessedChatScrollTop = 0
   didProcessChatScroll = false
-  programmaticChatScrollUntil = 0
+  clearProgrammaticChatScrollMark()
   userChatScrollActiveUntil = 0
 }
 
+let scrollScheduled = false
+let scrollToBottomPromise = null
+let scrollScheduledForce = false
+let scrollToBottomFollowUpRequested = false
+let scrollToBottomFollowUpForce = false
+
 async function scrollToBottom(options = {}) {
-  if (options.force) scrollToBottomForcePending = true
-  if (scrollToBottomPromise) return scrollToBottomPromise
+  const force = options.force === true
+  if (scrollToBottomPromise) {
+    scrollToBottomFollowUpRequested = true
+    if (force) scrollToBottomFollowUpForce = true
+    return scrollToBottomPromise
+  }
 
   scrollToBottomPromise = (async () => {
     await nextTick()
     await waitForLayoutFrame()
-
-    const force = scrollToBottomForcePending
-    scrollToBottomForcePending = false
 
     if (!force && (!autoScrollEnabled.value || autoScrollSuspendedByUser.value)) return
 
     const el = chatScrollEl.value || resolveScrollbarContainerEl()
     if (!el) return
 
-    const nextTop = Math.max(0, el.scrollHeight - el.clientHeight)
-    markProgrammaticChatScroll()
-    try {
-      el.scrollTo({ top: nextTop, behavior: 'auto' })
-    } catch {
-      el.scrollTop = nextTop
+    const target = resolveChatBottomScrollTarget({
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+      scrollTop: el.scrollTop
+    })
+    if (target.shouldScroll) {
+      markProgrammaticChatScroll(CHAT_SCROLL_COMPENSATION_SUSPEND_MS, target.targetScrollTop)
+      try {
+        el.scrollTo({ top: target.targetScrollTop, behavior: 'auto' })
+      } catch {
+        el.scrollTop = target.targetScrollTop
+      }
     }
 
     updateAtBottomState(el)
     primeHydratedRenderedChatMessages()
   })().finally(() => {
     scrollToBottomPromise = null
+    if (scrollToBottomFollowUpRequested) {
+      const followUpForce = scrollToBottomFollowUpForce
+      scrollToBottomFollowUpRequested = false
+      scrollToBottomFollowUpForce = false
+      scheduleScrollToBottom({ force: followUpForce })
+    }
   })
 
   return scrollToBottomPromise
 }
 
-let scrollScheduled = false
-let scrollToBottomPromise = null
-let scrollToBottomForcePending = false
 function scheduleScrollToBottom(options = {}) {
-  if (options.force) scrollToBottomForcePending = true
+  if (options.force) scrollScheduledForce = true
   if (scrollScheduled) return
   scrollScheduled = true
   const raf = window?.requestAnimationFrame || ((cb) => window.setTimeout(cb, 16))
   raf(() => {
     scrollScheduled = false
-    void scrollToBottom()
+    const force = scrollScheduledForce
+    scrollScheduledForce = false
+    void scrollToBottom({ force })
   })
 }
 
@@ -9265,7 +9416,10 @@ function serializeDisplayMessageForSave(msg) {
           size: a.size,
           kind: a.kind,
           status: a.status,
-          error: a.error
+          error: a.error,
+          sandboxWorkspaceId: a.sandboxWorkspaceId,
+          sandboxPath: a.sandboxPath,
+          sandboxDataPath: a.sandboxDataPath
         }
       })
       .filter(Boolean)
@@ -9358,8 +9512,8 @@ function buildDefaultChatState() {
     manualMcpIds: [],
     sandboxHostWorkspacePath: '',
     webSearchEnabled: false,
-    toolApprovalMode: TOOL_APPROVAL_MODE_SAFE,
-    autoApproveTools: true,
+    toolApprovalMode: normalizeToolApprovalMode(chatConfig.value?.toolApprovalMode),
+    autoApproveTools: normalizeToolApprovalMode(chatConfig.value?.toolApprovalMode) !== TOOL_APPROVAL_MODE_MANUAL,
     autoActivateAgentSkills: true,
     toolMode: 'auto',
     effectiveToolMode: 'expanded',
@@ -10078,7 +10232,12 @@ function applyLoadedChatState(state) {
       ? deepCopyJson(normalizeChatContextWindowConfig(hydratedState.contextWindow), null)
       : null
 
-  selectedAgentId.value = hydratedState.selectedAgentId || null
+  const hydratedAgentId = String(hydratedState.selectedAgentId || '').trim()
+  const hydratedAgent = hydratedAgentId
+    ? (agents.value || []).find((agent) => agent?._id === hydratedAgentId)
+    : null
+  const builtinAgent = (agents.value || []).find((agent) => agent?.builtin === true)
+  selectedAgentId.value = hydratedAgent?._id || builtinAgent?._id || null
   selectedProviderId.value = hydratedState.selectedProviderId || null
   selectedModel.value = String(hydratedState.selectedModel || '').trim()
 
@@ -10109,6 +10268,7 @@ function applyLoadedChatState(state) {
   if (Array.isArray(hydratedState.agentSkillIds)) agentSkillIds.value = normalizeStringList(hydratedState.agentSkillIds)
   if (Array.isArray(hydratedState.activatedAgentSkillIds)) activatedAgentSkillIds.value = normalizeStringList(hydratedState.activatedAgentSkillIds)
   if (Array.isArray(hydratedState.manualMcpIds)) manualMcpIds.value = normalizeStringList(hydratedState.manualMcpIds)
+  if (!hydratedAgent) applyDefaultGeneralAgent()
   sandboxHostWorkspacePath.value = normalizeSelectedHostWorkspacePath(
     hydratedState.sandboxHostWorkspacePath
   )
@@ -10649,6 +10809,26 @@ function applyAgent(agentId) {
   selectedSkillIds.value = nextAgentSkills
   manualMcpIds.value = Array.isArray(agent.mcp) ? [...agent.mcp] : []
   if (reasoningEffortOverride) thinkingEffort.value = reasoningEffortOverride
+}
+
+function applyDefaultGeneralAgent() {
+  const builtinAgent = (agents.value || []).find((agent) => agent?.builtin === true)
+  if (!builtinAgent?._id) {
+    selectedAgentId.value = null
+    agentSkillIds.value = []
+    activatedAgentSkillIds.value = []
+    return false
+  }
+
+  const builtinSkillIds = normalizeStringList(builtinAgent.skills)
+  selectedAgentId.value = builtinAgent._id
+  agentSkillIds.value = builtinSkillIds
+  activatedAgentSkillIds.value = []
+  selectedSkillIds.value = normalizeStringList([
+    ...(selectedSkillIds.value || []),
+    ...builtinSkillIds
+  ])
+  return true
 }
 
 function resolveDefaultModelSelectionFromConfig() {
@@ -11290,6 +11470,7 @@ async function runChatRounds({
   let compatFcToolCallId = isFcToolCallIdCompatEnabled(baseUrl)
   let plainTextToolFallback = false
   let parallelToolCallsMode = 'enabled'
+  const repeatedToolCallGuard = createRepeatedToolCallGuard({ maxConsecutive: 3 })
 
   for (let round = 0; round < maxRounds; round++) {
     throwIfAborted(abortState)
@@ -11506,6 +11687,18 @@ async function runChatRounds({
 
     if (round === maxRounds - 1) {
       targetSession.messages.push(createDisplayMessage('assistant', '工具调用轮次已达到上限。'))
+      break
+    }
+
+    const repeatedToolCallState = repeatedToolCallGuard.observe(normalizedToolCalls)
+    if (repeatedToolCallState.blocked) {
+      const stopText = '检测到相同工具和参数连续调用 3 次，已停止重复执行。请调整操作方式，或直接说明当前阻塞原因。'
+      normalizedToolCalls.forEach((toolCall) => {
+        targetSession.apiMessages.push(createToolResultApiMessage(toolCall, stopText))
+      })
+      targetSession.apiMessages.push({ role: 'assistant', content: stopText })
+      targetSession.messages.push(createDisplayMessage('assistant', stopText))
+      await maybeScrollToBottomForRun(abortState)
       break
     }
 
@@ -13412,6 +13605,70 @@ async function runChatSession({
   return succeeded
 }
 
+async function stageChatAttachmentsInSandbox(attachments, sessionTarget = null) {
+  const list = Array.isArray(attachments) ? attachments : []
+  const sandboxWorkspaceId = buildChatSandboxWorkspaceId(
+    sessionTarget?.id || activeMemorySessionId.value || 'default'
+  )
+  const unstagedAttachments = list.filter((attachment) =>
+    attachment?.file &&
+    typeof attachment.file.arrayBuffer === 'function' &&
+    !String(attachment?.sandboxPath || '').trim()
+  )
+  if (!unstagedAttachments.length) return sandboxWorkspaceId
+
+  let imported
+  try {
+    imported = await importFilesToSandbox(
+      sandboxWorkspaceId,
+      await Promise.all(unstagedAttachments.map(async (attachment) => ({
+        name: attachment.name || attachment.file?.name || 'attachment',
+        data: new Uint8Array(await attachment.file.arrayBuffer())
+      })))
+    )
+  } catch (error) {
+    throw new Error(`附件写入聊天沙盒失败：${error?.message || String(error)}`)
+  }
+
+  const entries = Array.isArray(imported?.imported) ? imported.imported : []
+  if (entries.length !== unstagedAttachments.length || entries.some((entry) => !String(entry?.path || '').trim())) {
+    throw new Error('附件写入聊天沙盒不完整，请重试')
+  }
+
+  unstagedAttachments.forEach((attachment, index) => {
+    const entry = entries[index]
+    attachment.sandboxWorkspaceId = imported.workspaceId || sandboxWorkspaceId
+    attachment.sandboxPath = entry.path
+    attachment.sandboxDataPath = entry.dataPath || ''
+  })
+  // File objects are not serializable. Release them only after every import is verified.
+  unstagedAttachments.forEach((attachment) => {
+    attachment.file = null
+  })
+  return imported.workspaceId || sandboxWorkspaceId
+}
+
+async function ensureAttachmentSandboxSkillAvailable(attachments = []) {
+  if (!(Array.isArray(attachments) && attachments.some((item) => String(item?.sandboxPath || '').trim()))) return false
+  const skill = (skills.value || []).find((item) => String(item?._id || '').trim() === BUILTIN_SHELL_SKILL_ID)
+  if (!skill) return false
+
+  if (!normalizeStringList(selectedSkillIds.value).includes(BUILTIN_SHELL_SKILL_ID)) {
+    selectedSkillIds.value = normalizeStringList([...selectedSkillIds.value, BUILTIN_SHELL_SKILL_ID])
+    routerAddedSelectedSkillIds.add(BUILTIN_SHELL_SKILL_ID)
+  }
+  if (!normalizeStringList(agentSkillIds.value).includes(BUILTIN_SHELL_SKILL_ID)) {
+    agentSkillIds.value = normalizeStringList([...agentSkillIds.value, BUILTIN_SHELL_SKILL_ID])
+    routerAddedAgentSkillIds.add(BUILTIN_SHELL_SKILL_ID)
+  }
+  if (!normalizeStringList(activatedAgentSkillIds.value).includes(BUILTIN_SHELL_SKILL_ID)) {
+    activatedAgentSkillIds.value = normalizeStringList([...activatedAgentSkillIds.value, BUILTIN_SHELL_SKILL_ID])
+    routerActivatedAgentSkillIds.add(BUILTIN_SHELL_SKILL_ID)
+  }
+  if (isDirectorySkill(skill)) await loadSkillMainContent(BUILTIN_SHELL_SKILL_ID)
+  return true
+}
+
 async function prepareUserApiMessage({
   text,
   attachments,
@@ -13428,70 +13685,36 @@ async function prepareUserApiMessage({
     await Promise.all(list.map((a) => ensureAttachmentParsed(a)))
   }
 
-  const sandboxWorkspaceId = `chat-${String(sessionTarget?.id || activeMemorySessionId.value || 'default')}`
-    .replace(/[^a-zA-Z0-9._-]/g, '-')
-    .slice(0, 80)
-  const unstagedAttachments = list.filter((attachment) =>
-    attachment?.file &&
-    typeof attachment.file.arrayBuffer === 'function' &&
-    !String(attachment?.sandboxPath || '').trim()
-  )
-  if (unstagedAttachments.length) {
-    try {
-      const imported = await importFilesToSandbox(
-        sandboxWorkspaceId,
-        await Promise.all(unstagedAttachments.map(async (attachment) => ({
-          name: attachment.name || attachment.file?.name || 'attachment',
-          data: new Uint8Array(await attachment.file.arrayBuffer())
-        })))
-      )
-      const entries = Array.isArray(imported?.imported) ? imported.imported : []
-      unstagedAttachments.forEach((attachment, index) => {
-        const entry = entries[index]
-        if (!entry?.path) return
-        attachment.sandboxWorkspaceId = imported.workspaceId || sandboxWorkspaceId
-        attachment.sandboxPath = entry.path
-        attachment.sandboxDataPath = entry.dataPath || ''
-      })
-    } catch (error) {
-      console.warn('stage chat attachments in sandbox failed:', error)
-    }
-  }
-
-  try {
-    list.forEach((a) => {
-      if (a && typeof a === 'object') a.file = null
-    })
-  } catch {
-    // ignore
-  }
+  await stageChatAttachmentsInSandbox(list, targetSession)
+  await ensureAttachmentSandboxSkillAvailable(list)
 
   const attachmentContextBlocksForVision = []
   const attachmentContextBlocksTextOnly = []
   const imageAttachments = []
 
   for (const a of list) {
-    const sandboxDescriptor = a?.sandboxPath
-      ? `\n沙盒工作区：${a.sandboxWorkspaceId || sandboxWorkspaceId}\n沙盒文件：${a.sandboxPath}`
-      : ''
+    const referenceBlock = buildChatAttachmentReferenceBlock(a, {
+      sessionId: targetSession?.id || activeMemorySessionId.value || 'default'
+    })
     if (a.status === 'ready' && a.kind === 'image' && a.dataUrl) {
       imageAttachments.push(a)
       if (!imageAttachmentsAsMediaReferences) {
-        const metaText = String(a.text || '').trim() || `附件：${a.name}\n图片元数据不可用`
-        attachmentContextBlocksForVision.push(`${metaText}\n（图片已随消息发送）${sandboxDescriptor}`)
-        attachmentContextBlocksTextOnly.push(`${metaText}\n（当前提供商不会直接接收图片二进制，模型只能看到这些元数据）${sandboxDescriptor}`)
+        attachmentContextBlocksForVision.push(`${referenceBlock}\nThe image is also attached to this request for visual input.`)
+        attachmentContextBlocksTextOnly.push(`${referenceBlock}\nThe current provider receives only this file reference, not image pixels.`)
       }
       continue
     }
     if (a.status === 'ready') {
-      const attachmentText = String(a.text || '').trim()
-      const block = `附件：${a.name}\n${attachmentText || '（内容为空）'}${sandboxDescriptor}`
+      const fallbackPreview = a?.sandboxPath
+        ? ''
+        : truncateText(String(a.text || '').trim(), 8000, '（附件预览已截断）')
+      const block = [referenceBlock, fallbackPreview].filter(Boolean).join('\n')
       attachmentContextBlocksForVision.push(block)
       attachmentContextBlocksTextOnly.push(block)
       continue
     }
     if (a.status === 'error') {
-      const block = `附件：${a.name}\n（解析失败：${a.error || '未知错误'}）${sandboxDescriptor}`
+      const block = `${referenceBlock}\nLocal preview parsing failed: ${a.error || 'unknown error'}. Read the sandbox file directly.`
       attachmentContextBlocksForVision.push(block)
       attachmentContextBlocksTextOnly.push(block)
     }
@@ -13513,7 +13736,6 @@ async function prepareUserApiMessage({
     // ignore
   }
 
-  const currentTurnAttachmentBudget = await getCurrentTurnAttachmentCharBudget(providerKind, { sessionTarget: targetSession })
   const attachmentBlockForVision = attachmentContextBlocksForVision.length
     ? `【附件内容】\n${attachmentContextBlocksForVision.join('\n\n')}`
     : ''
@@ -13521,8 +13743,8 @@ async function prepareUserApiMessage({
     ? `【附件内容】\n${attachmentContextBlocksTextOnly.join('\n\n')}`
     : ''
 
-  const combinedTextForVision = truncateAttachmentContextForRequest(text, attachmentBlockForVision, currentTurnAttachmentBudget)
-  const combinedTextTextOnly = truncateAttachmentContextForRequest(text, attachmentBlockTextOnly, currentTurnAttachmentBudget)
+  const combinedTextForVision = [String(text || '').trim(), attachmentBlockForVision].filter(Boolean).join('\n\n')
+  const combinedTextTextOnly = [String(text || '').trim(), attachmentBlockTextOnly].filter(Boolean).join('\n\n')
 
   const userApiMessage = { role: 'user', content: combinedTextTextOnly }
   if (preferVision && imageAttachments.length) {
@@ -13739,6 +13961,13 @@ async function submitUserEdit(msg) {
 function commitToolApprovalMode(value) {
   const nextMode = normalizeToolApprovalMode(value)
   toolApprovalMode.value = nextMode
+  try {
+    void Promise.resolve(updateChatConfig({ toolApprovalMode: nextMode })).catch((error) => {
+      console.warn('保存工具调用控制选项失败:', error)
+    })
+  } catch (error) {
+    console.warn('保存工具调用控制选项失败:', error)
+  }
   const record = getActiveMemorySession()
   if (record) {
     record.toolApprovalMode = nextMode
@@ -13748,10 +13977,10 @@ function commitToolApprovalMode(value) {
       record.activeRequestAbortState.autoApproveTools = nextMode !== TOOL_APPROVAL_MODE_MANUAL
     }
     dispatchBuiltinAgentsToolApprovalModeChange(record, nextMode)
-    if (nextMode === TOOL_APPROVAL_MODE_FULL) {
+    if (nextMode === TOOL_APPROVAL_MODE_FULL || nextMode === TOOL_APPROVAL_MODE_TRUSTED) {
       pendingToolApprovals.value
         .filter((request) => (
-          request?.hardApproval !== true &&
+          (nextMode === TOOL_APPROVAL_MODE_TRUSTED || request?.hardApproval !== true) &&
           (!request?.sessionId || String(request.sessionId) === String(record.id))
         ))
         .forEach((request) => request?.settle?.('once'))
@@ -13765,10 +13994,20 @@ function commitToolApprovalMode(value) {
 function setToolApprovalMode(value) {
   const nextMode = normalizeToolApprovalMode(value)
   if (nextMode === toolApprovalMode.value) return
+  if (nextMode === TOOL_APPROVAL_MODE_TRUSTED) {
+    dialog.error({
+      title: '启用完全信任？',
+      content: '此模式会记住为后续新会话的默认选项，并直接批准所有工具调用，包括命令、代码执行、删除及其他破坏性操作；子 Agent 也会继承。请仅在当前智能体、技能和 MCP 服务全部可信时启用。',
+      positiveText: '完全信任并记住',
+      negativeText: '取消',
+      onPositiveClick: () => commitToolApprovalMode(nextMode)
+    })
+    return
+  }
   if (nextMode === TOOL_APPROVAL_MODE_FULL) {
     dialog.warning({
       title: '启用高风险自动调用？',
-      content: '此模式会直接执行普通写入，子 Agent 也会继承；命令、代码执行及明确标记为破坏性的操作仍需逐次确认。请只挂载可信的智能体、技能和 MCP 服务。',
+      content: '此模式会记住为后续新会话的默认选项，并直接执行普通写入、常规命令和一般代码；明显破坏性的命令，以及删除、付款、发布等危险操作仍需确认。子 Agent 也会继承。',
       positiveText: '启用高风险自动',
       negativeText: '取消',
       onPositiveClick: () => commitToolApprovalMode(nextMode)
@@ -14323,7 +14562,7 @@ function selectProviderModel(providerId, model) {
 
 function openAgentModal() {
   clearInlinePickers()
-  agentModalSelectedId.value = selectedAgentId.value
+  agentModalSelectedId.value = visibleSelectedAgent.value?._id || null
   showAgentModal.value = true
 }
 
@@ -14339,56 +14578,7 @@ function resetChatSetupUiState() {
   showSkillModal.value = false
   showMcpModal.value = false
 
-  // 清除智能体、提示词、技能、MCP 选择及相关草稿。
-  selectedAgentId.value = null
-  agentModalSelectedId.value = null
-
-  selectedPromptId.value = null
-  promptModalSelectedId.value = null
-  basePromptMode.value = 'custom'
-  const rawDefaultSystemPrompt = String(chatConfig.value?.defaultSystemPrompt || '')
-  customSystemPrompt.value = rawDefaultSystemPrompt
-  customSystemPromptExplicit.value = false
-  lastLoadedDefaultSystemPrompt.value = normalizePromptText(rawDefaultSystemPrompt)
-  hasInitializedDefaultSystemPrompt.value = true
-  systemPromptDraft.value = ''
-
-  selectedSkillIds.value = []
-  skillModalSelectedIds.value = []
-  agentSkillIds.value = []
-  activatedAgentSkillIds.value = []
-
-  manualMcpIds.value = []
-  mcpModalSelectedIds.value = []
-
-  // 其他开关回到初始值。
-  webSearchEnabled.value = false
-  toolApprovalMode.value = TOOL_APPROVAL_MODE_SAFE
-  autoActivateAgentSkills.value = true
-  toolMode.value = 'auto'
-  effectiveToolMode.value = 'expanded'
-  thinkingEffort.value = 'auto'
-  imageGenerationMode.value = normalizeImageGenerationMode(chatConfig.value?.imageGenerationMode)
-  videoGenerationMode.value = normalizeImageGenerationMode(chatConfig.value?.videoGenerationMode)
-  setImageGenerationParamsEnabled(false)
-  resetImageGenerationParams()
-  setVideoGenerationParamsEnabled(false)
-  resetVideoGenerationParams()
-  try {
-    mcpListToolsCache.clear()
-    mcpListToolsInFlight.clear()
-    mcpToolsRevision.value += 1
-    clearMcpToolCatalog()
-    clearPinnedMcpToolHints()
-  } catch {
-    // ignore
-  }
-
-  // 重置模型到默认配置（若有）。
-  selectedProviderId.value = null
-  selectedModel.value = ''
-  hasAppliedDefaultModel.value = false
-  tryApplyDefaultModelFromConfig({ force: true })
+  applyDefaultChatState()
 }
 
 function clearSelectedAgent() {
@@ -14406,10 +14596,8 @@ function clearSelectedAgent() {
     manualMcpIds.value = normalizeStringList((manualMcpIds.value || []).filter((id) => !mcpIdsToRemove.has(id)))
   }
 
-  selectedAgentId.value = null
+  applyDefaultGeneralAgent()
   agentModalSelectedId.value = null
-  agentSkillIds.value = []
-  activatedAgentSkillIds.value = []
   showAgentModal.value = false
 }
 
@@ -14567,20 +14755,6 @@ function resolveHistoryContextBudgetState(options = {}) {
 
 function getHistoryContextCharBudget(options = {}) {
   return resolveHistoryContextBudgetState(options).historyBudget
-}
-
-async function getCurrentTurnAttachmentCharBudget(providerKind = 'openai-compatible', options = {}) {
-  let tools = []
-  try {
-    const bundle = await buildToolsBundle({ sessionTarget: options?.sessionTarget || null })
-    tools = Array.isArray(bundle?.tools) ? bundle.tools : []
-  } catch {
-    tools = []
-  }
-
-  const historyBudget = getHistoryContextCharBudget({ tools })
-  const boundedBudget = Math.max(4000, Math.floor(historyBudget * (providerKind === 'utools-ai' ? 0.8 : 0.85)))
-  return Math.min(MAX_ATTACHMENT_TEXT_CHARS, boundedBudget)
 }
 
 function buildRequestApiMessages(providerKind = 'openai-compatible', options = {}) {
@@ -14896,6 +15070,11 @@ async function prepareChatRequestContext({
       await enrichImageAttachmentsForMemoryRecall(safeAttachments, cfg)
     } catch {
       // ignore attachment parsing failure for recall
+    }
+    preparingSendStage.value = '正在写入聊天沙盒'
+    await stageChatAttachmentsInSandbox(safeAttachments, targetRecord)
+    if (cfg?.requestMode === 'chat') {
+      await ensureAttachmentSandboxSkillAvailable(safeAttachments)
     }
   }
 
@@ -15884,14 +16063,14 @@ async function buildToolsBundle(options = {}) {
   }
 
   const skillBundle = buildSkillToolsBundle({
-    selectedSkills: selectedSkillObjects.value,
-    agentSkillIds: agentSkillIds.value,
+    selectedSkills: runtimeSkillObjects.value,
+    agentSkillIds: runtimeAgentSkillIds.value,
     internalToolSpecs: INTERNAL_TOOL_SPECS
   })
   skillBundle.tools.forEach((tool) => tools.push(tool))
   skillBundle.map.forEach((mapping, name) => functionMap.set(name, mapping))
 
-  const servers = activeMcpServers.value.filter((s) => s && !s.disabled && s._id)
+  const servers = runtimeMcpServers.value.filter((s) => s && !s.disabled && s._id)
 
   const desiredMode = String(toolMode.value || 'auto')
   let mode = desiredMode
@@ -15919,6 +16098,12 @@ async function buildToolsBundle(options = {}) {
         }
       }
     )
+  }
+
+  if (isDefaultGeneralAgent.value && servers.length) {
+    effectiveToolMode.value = 'compact'
+    addCompactMcpTools()
+    return finalizeBundle()
   }
 
   if (mode === 'compact') {
@@ -16059,14 +16244,14 @@ function createDisplayMessage(role, content = '', extra = {}) {
 }
 
 function resolveSelectedSkillTarget({ idCandidate = '', nameCandidate = '' } = {}) {
-  return resolveSelectedSkillTargetFromList(selectedSkillObjects.value, {
+  return resolveSelectedSkillTargetFromList(runtimeSkillObjects.value, {
     idCandidate,
     nameCandidate
   })
 }
 
 function listSelectedSkillsBrief(limit = 30) {
-  return listSelectedSkillsBriefFromList(selectedSkillObjects.value, limit)
+  return listSelectedSkillsBriefFromList(runtimeSkillObjects.value, limit)
 }
 
 function normalizeSkillScriptPathCandidate(value) {
@@ -16191,7 +16376,7 @@ function resolveSkillScriptTarget(skill, pathCandidate = '') {
 }
 
 function resolveActiveMcpServer({ idCandidate = '', nameCandidate = '' } = {}) {
-  const list = Array.isArray(activeMcpServers.value) ? activeMcpServers.value : []
+  const list = Array.isArray(runtimeMcpServers.value) ? runtimeMcpServers.value : []
 
   const id = String(idCandidate || '').trim()
   if (id) {
@@ -16214,7 +16399,7 @@ function resolveActiveMcpServer({ idCandidate = '', nameCandidate = '' } = {}) {
 }
 
 function listActiveMcpServersBrief(limit = 30) {
-  const list = Array.isArray(activeMcpServers.value) ? activeMcpServers.value : []
+  const list = Array.isArray(runtimeMcpServers.value) ? runtimeMcpServers.value : []
   return list
     .filter((s) => s && s._id && !s.disabled)
     .map((s) => ({
@@ -16456,7 +16641,7 @@ function resolveToolApprovalTarget(context = {}) {
   let toolName = String(mapping.toolName || context.toolName || '').trim() || 'unknown'
   let argsObj = context.argsObj && typeof context.argsObj === 'object' ? context.argsObj : {}
   let argsText = String(context.argsText || '{}').trim() || '{}'
-  let server = serverId ? activeMcpServers.value.find((item) => String(item?._id || '') === serverId) : null
+  let server = serverId ? runtimeMcpServers.value.find((item) => String(item?._id || '') === serverId) : null
 
   if (mapping?.type === 'internal' && mapping.internal === 'mcp_call') {
     const wrapperArgs = argsObj
@@ -16526,18 +16711,19 @@ function resolveToolApprovalTarget(context = {}) {
     mapping.forceApproval === true ||
     resolvedPolicy.forceApproval === true
   const hardApproval =
-    isShell ||
-    configuredApprovalKind === 'execution' ||
     mapping.hardApproval === true ||
-    resolvedPolicy.hardApproval === true
+    resolvedPolicy.hardApproval === true ||
+    (isShell && isDangerousShellApprovalCommand(argsObj, argsText))
   const approvalReason =
-    isShell
-      ? '命令执行始终需要确认具体命令和工作目录'
-      : configuredApprovalKind === 'execution'
-        ? '技能脚本或代码执行需要确认具体脚本和参数'
-        : String(mapping.approvalReason || resolvedPolicy.approvalReason || (
-            mapping.forceApproval === true ? '技能将写入数据或改变外部状态' : ''
-          )).trim()
+    isShell && hardApproval
+      ? '命令包含删除、系统修改或其他明显破坏性操作'
+      : isShell
+        ? '低风险模式下，命令执行需要确认具体命令和工作目录'
+        : configuredApprovalKind === 'execution'
+          ? '低风险模式下，技能脚本或代码执行需要确认具体脚本和参数'
+          : String(mapping.approvalReason || resolvedPolicy.approvalReason || (
+              mapping.forceApproval === true ? '技能将写入数据或改变外部状态' : ''
+            )).trim()
 
   return {
     server,
@@ -16702,7 +16888,7 @@ function getToolCallParallelExecutionKey(prepared = {}) {
   }
 
   if (mapping?.type === 'mcp') {
-    const server = activeMcpServers.value.find((s) => s._id === mapping.serverId)
+    const server = runtimeMcpServers.value.find((s) => s._id === mapping.serverId)
     if (server?.keepAlive && server?._id) return `mcp:${server._id}`
     return `parallel:${newId()}`
   }
@@ -16716,7 +16902,7 @@ function getToolCallParallelExecutionKey(prepared = {}) {
 
 const executePreparedSkillTool = createPreparedSkillToolExecutor({
   activatedAgentSkillIds,
-  agentSkillIdSet,
+  agentSkillIdSet: runtimeAgentSkillIdSet,
   buildToolExecutionResultSubMeta,
   buildWebToolSubMeta,
   builtinSkillActionCatalog,
@@ -16737,11 +16923,12 @@ const executePreparedSkillTool = createPreparedSkillToolExecutor({
   prepareBuiltinAgentToolCallArgs,
   resolveSelectedSkillTarget,
   resolveSkillScriptTarget,
-  selectedSkillObjects
+  searchCapabilities,
+  selectedSkillObjects: runtimeSkillObjects
 })
 
 const executePreparedMcpTool = createPreparedMcpToolExecutor({
-  activeMcpServers,
+  activeMcpServers: runtimeMcpServers,
   buildMcpToolCatalogEntry,
   buildToolExecutionResultSubMeta,
   closeMcpClientSafely,
@@ -16824,9 +17011,30 @@ const queuedInputDrainTimers = new Map()
 const queuedInputDrainInFlight = new Set()
 
 function getComposerDraft() {
+  const text = String(input.value || '').trim()
+  const attachments = Array.isArray(pendingAttachments.value) ? pendingAttachments.value.slice() : []
+  const plan = resolveChatLongTextAttachmentPlan(text, attachments)
+  if (!plan.wrapped) {
+    return {
+      text,
+      attachments,
+      validationError: String(plan.error || '')
+    }
+  }
+
+  const longTextAttachment = createPendingLongTextAttachment(plan)
+  if (!longTextAttachment) {
+    return {
+      text,
+      attachments,
+      validationError: '当前环境无法创建长文本附件，请改为手动上传 Markdown 文件。'
+    }
+  }
   return {
-    text: String(input.value || '').trim(),
-    attachments: Array.isArray(pendingAttachments.value) ? pendingAttachments.value.slice() : []
+    text: plan.text,
+    attachments: [...attachments, longTextAttachment],
+    autoWrappedLongText: true,
+    validationError: ''
   }
 }
 
@@ -16839,6 +17047,10 @@ function clearComposerDraft() {
 function enqueueComposerDraft(mode = CHAT_RUN_INPUT_MODE_QUEUE) {
   if (preparingSend.value) return null
   const draft = getComposerDraft()
+  if (draft.validationError) {
+    message.warning(draft.validationError)
+    return null
+  }
   if (!draft.text && !draft.attachments.length) return null
 
   clearAllUserEditingState()
@@ -17042,6 +17254,10 @@ async function send() {
   }
 
   const draft = getComposerDraft()
+  if (draft.validationError) {
+    message.warning(draft.validationError)
+    return
+  }
   if (!draft.text && !draft.attachments.length) return
   clearAllUserEditingState()
   clearComposerDraft()

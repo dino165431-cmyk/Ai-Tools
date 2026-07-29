@@ -32,6 +32,7 @@ The host exposes actions progressively. Use `skill_discover` for an action schem
 - Keep `env` and `headers` as objects.
 - When changing `transportType`, provide all required fields for the new transport in the same patch.
 - When changing a timed-task trigger type, provide the complete compatible `trigger`.
+- `agentId` is optional for timed tasks. Omit it or set it to `null` to use the hidden default general Agent.
 - Use an absolute path for Skill imports.
 
 ## Security

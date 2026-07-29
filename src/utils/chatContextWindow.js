@@ -1,3 +1,5 @@
+import { extractChatSandboxDescriptors } from './chatSandboxWorkspace.js'
+
 export const CHAT_CONTEXT_WINDOW_PRESETS = Object.freeze({
   aggressive: Object.freeze({
     label: '紧凑',
@@ -794,13 +796,20 @@ function truncateAttachmentText(text, limit = COMPACT_ATTACHMENT_TEXT_LIMIT) {
   if (!normalized) return ''
   if (!Number.isFinite(limit) || limit <= 0 || normalized.length <= limit) return normalized
 
+  const sandboxDescriptors = extractChatSandboxDescriptors(normalized)
   const marker = '【附件内容】'
   const suffix = '（历史附件内容已截断）'
   const markerIndex = normalized.indexOf(marker)
 
   if (markerIndex === -1) {
     const head = Math.max(200, limit - suffix.length - 1)
-    return `${normalized.slice(0, head).trimEnd()}\n${suffix}`
+    const compact = `${normalized.slice(0, head).trimEnd()}\n${suffix}`
+    if (!sandboxDescriptors || compact.includes(sandboxDescriptors)) return compact
+    const bodyBudget = Math.max(0, limit - sandboxDescriptors.length - 2)
+    return [
+      compact.slice(0, bodyBudget).trimEnd(),
+      sandboxDescriptors
+    ].filter(Boolean).join('\n\n').slice(0, limit)
   }
 
   const lead = normalized.slice(0, markerIndex).trim()
@@ -810,7 +819,13 @@ function truncateAttachmentText(text, limit = COMPACT_ATTACHMENT_TEXT_LIMIT) {
   const compactLead = reservedLead ? lead.slice(0, reservedLead).trimEnd() : ''
   const compactAttachment = attachmentBlock.slice(0, remaining).trimEnd()
 
-  return [compactLead, compactAttachment, suffix].filter(Boolean).join('\n\n')
+  const compact = [compactLead, compactAttachment, suffix].filter(Boolean).join('\n\n')
+  if (!sandboxDescriptors || compact.includes(sandboxDescriptors)) return compact
+  const bodyBudget = Math.max(0, limit - sandboxDescriptors.length - 2)
+  return [
+    compact.slice(0, bodyBudget).trimEnd(),
+    sandboxDescriptors
+  ].filter(Boolean).join('\n\n').slice(0, limit)
 }
 
 function compactAttachmentUserMessage(message, limit = COMPACT_ATTACHMENT_TEXT_LIMIT) {
