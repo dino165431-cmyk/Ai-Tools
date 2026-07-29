@@ -117,6 +117,7 @@
 
       <ChatRunInputQueue
         :entries="queuedInputs"
+        @steer="emit('steer-queued-input', $event)"
         @remove="emit('remove-queued-input', $event)"
       />
 
@@ -244,6 +245,38 @@
               </n-button>
             </template>
             添加附件（图片 / 文件）
+          </n-tooltip>
+
+          <n-tooltip trigger="hover">
+            <template #trigger>
+              <n-dropdown
+                trigger="click"
+                placement="top-start"
+                :options="hostWorkspaceMenuOptions"
+                :disabled="busy"
+                @select="handleHostWorkspaceMenuSelect"
+              >
+                <n-button
+                  size="small"
+                  tertiary
+                  circle
+                  :type="hostWorkspacePath ? 'primary' : 'default'"
+                  :disabled="busy"
+                  aria-label="选择命令工作区"
+                >
+                  <template #icon>
+                    <n-icon :component="FolderOpenOutline" size="12" />
+                  </template>
+                </n-button>
+              </n-dropdown>
+            </template>
+            <div class="chat-composer-workspace-tooltip">
+              <strong>{{ hostWorkspacePath ? '本机工作区' : '默认隔离沙盒' }}</strong>
+              <span v-if="hostWorkspacePath">{{ hostWorkspacePath }}</span>
+              <span>
+                {{ hostWorkspacePath ? '点击可更换目录或恢复默认沙盒' : '点击选择本机目录作为当前会话工作区' }}
+              </span>
+            </div>
           </n-tooltip>
 
           <n-tooltip trigger="hover">
@@ -572,7 +605,7 @@
                 </template>
               </n-button>
             </template>
-            {{ sending ? '发送到当前任务' : '发送' }}
+            {{ sending ? '加入队列' : '发送' }}
           </n-tooltip>
         </n-flex>
       </n-flex>
@@ -603,7 +636,8 @@ import {
   HardwareChipOutline,
   EarthOutline,
   RefreshOutline,
-  EllipsisHorizontalOutline
+  EllipsisHorizontalOutline,
+  FolderOpenOutline
 } from '@vicons/ionicons5'
 
 import ChatPendingAttachments from './ChatPendingAttachments.vue'
@@ -838,6 +872,10 @@ const props = defineProps({
     type: Array,
     default: () => []
   },
+  hostWorkspacePath: {
+    type: String,
+    default: ''
+  },
   footerHint: {
     type: String,
     default: ''
@@ -869,6 +907,8 @@ const emit = defineEmits([
   'open-agent-modal',
   'insert-inline-command-trigger',
   'open-file-picker',
+  'choose-host-workspace',
+  'clear-host-workspace',
   'toggle-web-search',
   'set-tool-approval-mode',
   'toggle-auto-activate-agent-skills',
@@ -880,6 +920,7 @@ const emit = defineEmits([
   'apply-media-preset',
   'stop',
   'steer',
+  'steer-queued-input',
   'remove-queued-input',
   'send'
 ])
@@ -894,6 +935,18 @@ const showExpandedToolbar = false
 
 const busy = computed(() => props.sending || props.preparingSend)
 const interactionLocked = computed(() => props.preparingSend)
+const normalizedHostWorkspacePath = computed(() => String(props.hostWorkspacePath || '').trim())
+const hostWorkspaceMenuOptions = computed(() => [
+  {
+    label: normalizedHostWorkspacePath.value ? '更换工作区…' : '选择工作区…',
+    key: 'choose'
+  },
+  {
+    label: '使用默认沙盒',
+    key: 'clear',
+    disabled: !normalizedHostWorkspacePath.value
+  }
+])
 
 const composerPlaceholder = computed(() => {
   if (props.preparingSend) return '正在准备发送，请稍候…'
@@ -904,6 +957,11 @@ const composerPlaceholder = computed(() => {
 function handleInputValueUpdate(value) {
   emit('update:inputValue', value)
   emit('update:input-value', value)
+}
+
+function handleHostWorkspaceMenuSelect(key) {
+  if (key === 'choose') emit('choose-host-workspace')
+  if (key === 'clear') emit('clear-host-workspace')
 }
 
 function runMoreAction(eventName, payload) {
@@ -1007,6 +1065,18 @@ defineExpose({
 
 .chat-file-input {
   display: none;
+}
+
+.chat-composer-workspace-tooltip {
+  display: flex;
+  max-width: min(420px, calc(100vw - 40px));
+  flex-direction: column;
+  gap: 3px;
+  line-height: 1.35;
+}
+
+.chat-composer-workspace-tooltip span {
+  overflow-wrap: anywhere;
 }
 
 .chat-composer {

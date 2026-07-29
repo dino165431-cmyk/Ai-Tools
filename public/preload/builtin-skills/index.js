@@ -357,7 +357,43 @@ async function runBuiltinSkillAction(skillId, actionName, args = {}) {
   if (typeof runtime?.runAction !== 'function') {
     throw new Error(`Built-in skill runtime cannot execute actions: ${id}`)
   }
-  return await runtime.runAction(name, args)
+  const sanitizedArgs = args && typeof args === 'object' && !Array.isArray(args)
+    ? { ...args }
+    : {}
+  delete sanitizedArgs.__host_workspace_path
+  return await runtime.runAction(name, sanitizedArgs)
+}
+
+async function runBuiltinSkillActionWithHostContext(
+  skillId,
+  actionName,
+  args = {},
+  context = {}
+) {
+  const id = String(skillId || '').trim()
+  const name = String(actionName || '').trim()
+  const sanitizedArgs = args && typeof args === 'object' && !Array.isArray(args)
+    ? { ...args }
+    : {}
+  delete sanitizedArgs.__host_workspace_path
+  if (
+    id === BUILTIN_SKILL_IDS.shell &&
+    (name === 'sandbox_run' || name === 'bash_run')
+  ) {
+    const hostWorkspacePath = String(context?.hostWorkspacePath || '').trim()
+    if (hostWorkspacePath) sanitizedArgs.__host_workspace_path = hostWorkspacePath
+  }
+
+  const definition = definitionById.get(id)
+  if (!name) throw new Error('Built-in skill action name cannot be empty')
+  if (!definition?.actionNames.includes(name)) {
+    throw new Error(`Action is not registered for built-in skill ${id}: ${name}`)
+  }
+  const runtime = loadRuntime(id)
+  if (typeof runtime?.runAction !== 'function') {
+    throw new Error(`Built-in skill runtime cannot execute actions: ${id}`)
+  }
+  return await runtime.runAction(name, sanitizedArgs)
 }
 
 async function closeBuiltinSkillRuntimes() {
@@ -371,6 +407,7 @@ module.exports = {
   buildBuiltinSkillRecords,
   listBuiltinSkillActions,
   runBuiltinSkillAction,
+  runBuiltinSkillActionWithHostContext,
   closeBuiltinSkillRuntimes,
   isBuiltinSkillId(id) {
     return definitionById.has(String(id || '').trim())

@@ -1705,6 +1705,39 @@ class FileOperations {
         return entries.map((entry) => path.join(relativePath, entry.name).replace(/\\/g, '/'))
     }
 
+    async listDirectoryWithStats(relativePath) {
+        const fullPath = this._resolvePath(relativePath)
+        const entries = await fs.readdir(fullPath, { withFileTypes: true })
+        const results = []
+        const batchSize = 32
+
+        for (let start = 0; start < entries.length; start += batchSize) {
+            const batch = entries.slice(start, start + batchSize)
+            const resolved = await Promise.all(batch.map(async (entry) => {
+                const relativeEntryPath = path.join(relativePath, entry.name).replace(/\\/g, '/')
+                const absoluteEntryPath = path.join(fullPath, entry.name)
+                try {
+                    const statInfo = await fs.stat(absoluteEntryPath)
+                    return {
+                        path: relativeEntryPath,
+                        name: entry.name,
+                        isDirectory: statInfo.isDirectory(),
+                        isFile: statInfo.isFile(),
+                        size: Number(statInfo.size || 0),
+                        mtimeMs: Number(statInfo.mtimeMs || 0),
+                        ctimeMs: Number(statInfo.ctimeMs || 0),
+                        birthtimeMs: Number(statInfo.birthtimeMs || 0)
+                    }
+                } catch {
+                    return null
+                }
+            }))
+            results.push(...resolved.filter(Boolean))
+        }
+
+        return results
+    }
+
     async exists(relativePath) {
         const fullPath = this._resolvePath(relativePath)
         try {

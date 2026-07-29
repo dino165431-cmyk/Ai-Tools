@@ -12,17 +12,29 @@
         <span class="chat-run-input-queue__text" :title="entry.text || attachmentSummary(entry)">
           {{ entry.text || attachmentSummary(entry) }}
         </span>
-        <n-button
-          size="tiny"
-          tertiary
-          circle
-          title="移除"
-          @click="emit('remove', entry.id)"
-        >
-          <template #icon>
-            <n-icon :component="CloseOutline" size="12" />
-          </template>
-        </n-button>
+        <div class="chat-run-input-queue__actions">
+          <n-button
+            v-if="entry.mode !== 'steer'"
+            size="tiny"
+            tertiary
+            type="info"
+            title="改为引导当前任务"
+            @click="emit('steer', entry.id)"
+          >
+            引导
+          </n-button>
+          <n-button
+            size="tiny"
+            tertiary
+            circle
+            title="移除"
+            @click="emit('remove', entry.id)"
+          >
+            <template #icon>
+              <n-icon :component="CloseOutline" size="12" />
+            </template>
+          </n-button>
+        </div>
       </div>
     </div>
   </div>
@@ -39,7 +51,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['remove'])
+const emit = defineEmits(['remove', 'steer'])
 
 function queuePosition(entry, index) {
   if (entry?.mode === 'steer') return ''
@@ -85,8 +97,8 @@ function attachmentSummary(entry) {
 }
 
 .chat-run-input-queue__item {
-  min-width: 120px;
-  max-width: 260px;
+  flex: 1 0 min(320px, 100%);
+  min-width: 180px;
 }
 
 .chat-run-input-queue__text {
@@ -97,5 +109,13 @@ function attachmentSummary(entry) {
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.chat-run-input-queue__actions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+  flex: 0 0 auto;
 }
 </style>

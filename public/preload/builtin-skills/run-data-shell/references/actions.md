@@ -7,7 +7,9 @@ Runs a command inside one sandbox workspace. Accepts:
 - `command`: required command;
 - `shell`: optional `auto`, `powershell`, or `bash`; Windows `auto` uses PowerShell;
 - `workspace_id`: optional workspace id, especially the id provided with a chat attachment;
-- `cwd`: optional directory relative to that workspace;
+- `cwd`: optional directory relative to the active workspace. When the user selected a host
+  workspace in chat, the host injects that root internally; the model must still use only a
+  relative `cwd`;
 - `timeout_ms`: bounded timeout.
 
 Returns the selected shell, exit status, stdout/stderr, timeout state, workspace id, resolved relative working directory, and `changedFiles`. Each changed file includes a workspace-relative `path`, a data-root-relative `dataPath`, and a `downloadHref` used by Markdown and the result UI.

@@ -9,6 +9,7 @@ import createShellSkillRuntime from '../public/preload/builtin-skills/run-data-s
 
 const require = createRequire(import.meta.url)
 const globalConfig = require('../public/preload/utils/global-config.js')
+const builtinSkills = require('../public/preload/builtin-skills/index.js')
 
 test('shell Skill runtime clamps timeout to safe bounds', () => {
   assert.equal(createShellSkillRuntime._test.clampTimeout(1), 1000)
@@ -40,6 +41,65 @@ test('shell Skill runtime exposes explicit sandbox lifecycle actions', () => {
   assert.match(runAction.description, /isolated/i)
 })
 
+test('shell Skill runtime decodes UTF-8 across chunk boundaries and falls back to GB18030 on Windows', () => {
+  const helpers = createShellSkillRuntime._test
+  const utf8 = Buffer.from('命令输出：中文', 'utf8')
+  const collector = helpers.createOutputCollector()
+  helpers.appendOutputChunk(collector, utf8.subarray(0, 2))
+  helpers.appendOutputChunk(collector, utf8.subarray(2, 7))
+  helpers.appendOutputChunk(collector, utf8.subarray(7))
+  assert.equal(helpers.finishOutputCollector(collector).text, '命令输出：中文')
+
+  const gb18030Chinese = Buffer.from([0xd6, 0xd0, 0xce, 0xc4])
+  assert.equal(
+    helpers.decodeCommandOutput(gb18030Chinese, { platform: 'win32' }),
+    '中文'
+  )
+})
+
+test('PowerShell launch forces UTF-8 output with an encoded command', {
+  skip: process.platform !== 'win32'
+}, () => {
+  const launch = createShellSkillRuntime._test.resolveShellLaunch('powershell', 'Write-Output "中文"')
+  const encodedIndex = launch.args.indexOf('-EncodedCommand')
+  assert.ok(encodedIndex >= 0)
+  const decoded = Buffer.from(launch.args[encodedIndex + 1], 'base64').toString('utf16le')
+  assert.match(decoded, /Console\]::OutputEncoding/)
+  assert.match(decoded, /Write-Output "中文"/)
+})
+
+test('shell Skill runtime resolves an explicitly selected host workspace and relative cwd', async (t) => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-shell-data-'))
+  const hostRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-host-workspace-'))
+  const nested = path.join(hostRoot, 'nested')
+  fs.mkdirSync(nested)
+  const originalGetDataStorageRoot = globalConfig.getDataStorageRoot
+  globalConfig.getDataStorageRoot = () => tempRoot
+  t.after(() => {
+    globalConfig.getDataStorageRoot = originalGetDataStorageRoot
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+    fs.rmSync(hostRoot, { recursive: true, force: true })
+  })
+
+  const resolved = await createShellSkillRuntime._test.resolveWorkingDirectory(
+    'nested',
+    'host-workspace-test',
+    hostRoot
+  )
+  assert.equal(resolved.workspaceKind, 'host')
+  assert.equal(resolved.workspacePath, fs.realpathSync(hostRoot))
+  assert.equal(resolved.cwd, fs.realpathSync(nested))
+  assert.equal(resolved.relative, 'nested')
+  await assert.rejects(
+    createShellSkillRuntime._test.resolveWorkingDirectory(
+      '../outside',
+      'host-workspace-test',
+      hostRoot
+    ),
+    /离开当前工作区/
+  )
+})
+
 test('sandbox_run uses PowerShell commands on Windows and reports generated files', {
   skip: process.platform !== 'win32'
 }, async (t) => {
@@ -65,4 +125,94 @@ test('sandbox_run uses PowerShell commands on Windows and reports generated file
     result.changedFiles[0].downloadHref,
     'sandbox-file://powershell-test/output/result.txt'
   )
+})
+
+test('sandbox_run preserves Chinese text in the PowerShell error stream', {
+  skip: process.platform !== 'win32'
+}, async (t) => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-shell-error-'))
+  const originalGetDataStorageRoot = globalConfig.getDataStorageRoot
+  globalConfig.getDataStorageRoot = () => tempRoot
+  t.after(() => {
+    globalConfig.getDataStorageRoot = originalGetDataStorageRoot
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  })
+
+  const runtime = createShellSkillRuntime()
+  const result = await runtime.runAction('sandbox_run', {
+    workspace_id: 'powershell-error-test',
+    command: "Write-Error '中文错误'; exit 1"
+  })
+
+  assert.equal(result.ok, false)
+  assert.match(result.stderr, /中文错误/)
+  assert.doesNotMatch(result.stderr, /\uFFFD/)
+})
+
+test('sandbox_run executes in a user-selected host workspace without scanning the whole project', {
+  skip: process.platform !== 'win32'
+}, async (t) => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-shell-data-'))
+  const hostRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-host-workspace-'))
+  const originalGetDataStorageRoot = globalConfig.getDataStorageRoot
+  globalConfig.getDataStorageRoot = () => tempRoot
+  t.after(() => {
+    globalConfig.getDataStorageRoot = originalGetDataStorageRoot
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+    fs.rmSync(hostRoot, { recursive: true, force: true })
+  })
+
+  const runtime = createShellSkillRuntime()
+  const result = await runtime.runAction('sandbox_run', {
+    workspace_id: 'host-run-test',
+    __host_workspace_path: hostRoot,
+    command: "Set-Content -Path result.txt -Value 'ok' -Encoding UTF8; Write-Output '完成'"
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.workspaceKind, 'host')
+  assert.equal(result.workspacePath, fs.realpathSync(hostRoot))
+  assert.equal(result.tracksChanges, false)
+  assert.deepEqual(result.changedFiles, [])
+  assert.match(result.stdout, /完成/)
+  assert.equal(fs.existsSync(path.join(hostRoot, 'result.txt')), true)
+})
+
+test('built-in Skill registry ignores model-supplied host paths and accepts only host context', {
+  skip: process.platform !== 'win32'
+}, async (t) => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-shell-registry-'))
+  const hostRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-host-registry-'))
+  const originalGetDataStorageRoot = globalConfig.getDataStorageRoot
+  globalConfig.getDataStorageRoot = () => tempRoot
+  t.after(async () => {
+    await builtinSkills.closeBuiltinSkillRuntimes()
+    globalConfig.getDataStorageRoot = originalGetDataStorageRoot
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+    fs.rmSync(hostRoot, { recursive: true, force: true })
+  })
+
+  const forged = await builtinSkills.runBuiltinSkillAction(
+    builtinSkills.BUILTIN_SKILL_IDS.shell,
+    'sandbox_run',
+    {
+      workspace_id: 'registry-default-test',
+      __host_workspace_path: hostRoot,
+      command: "Set-Content -Path forged.txt -Value 'no' -Encoding UTF8"
+    }
+  )
+  assert.equal(forged.workspaceKind, 'sandbox')
+  assert.equal(fs.existsSync(path.join(hostRoot, 'forged.txt')), false)
+
+  const authorized = await builtinSkills.runBuiltinSkillActionWithHostContext(
+    builtinSkills.BUILTIN_SKILL_IDS.shell,
+    'sandbox_run',
+    {
+      workspace_id: 'registry-host-test',
+      command: "Set-Content -Path authorized.txt -Value 'yes' -Encoding UTF8"
+    },
+    { hostWorkspacePath: hostRoot }
+  )
+  assert.equal(authorized.workspaceKind, 'host')
+  assert.equal(fs.existsSync(path.join(hostRoot, 'authorized.txt')), true)
 })

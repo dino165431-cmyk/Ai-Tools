@@ -2,6 +2,95 @@ function cleanText(value) {
   return typeof value === 'string' ? value.trim() : ''
 }
 
+const READ_ONLY_TOOL_VERBS = new Set([
+  'browse',
+  'check',
+  'count',
+  'describe',
+  'discover',
+  'fetch',
+  'find',
+  'get',
+  'inspect',
+  'list',
+  'lookup',
+  'preview',
+  'query',
+  'read',
+  'retrieve',
+  'search',
+  'status',
+  'view'
+])
+
+const MUTATING_TOOL_VERBS = new Set([
+  'add',
+  'approve',
+  'archive',
+  'book',
+  'cancel',
+  'comment',
+  'connect',
+  'copy',
+  'create',
+  'delete',
+  'disable',
+  'disconnect',
+  'edit',
+  'enable',
+  'execute',
+  'follow',
+  'import',
+  'install',
+  'invite',
+  'like',
+  'login',
+  'logout',
+  'move',
+  'order',
+  'patch',
+  'pay',
+  'publish',
+  'purchase',
+  'reject',
+  'remove',
+  'rename',
+  'reply',
+  'run',
+  'save',
+  'schedule',
+  'send',
+  'set',
+  'share',
+  'start',
+  'stop',
+  'submit',
+  'subscribe',
+  'uninstall',
+  'update',
+  'upload',
+  'write'
+])
+
+function splitToolIdentifier(value) {
+  return cleanText(value)
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+}
+
+function hasMutatingToolName(tool) {
+  const tokens = splitToolIdentifier(tool?.name || tool?.toolName)
+  return tokens.some((token) => MUTATING_TOOL_VERBS.has(token))
+}
+
+function hasConventionalReadOnlyName(tool) {
+  const tokens = splitToolIdentifier(tool?.name || tool?.toolName)
+  if (!tokens.length || !READ_ONLY_TOOL_VERBS.has(tokens[0])) return false
+  return !hasMutatingToolName(tool)
+}
+
 export const TOOL_APPROVAL_MODE_MANUAL = 'manual'
 export const TOOL_APPROVAL_MODE_SAFE = 'safe'
 export const TOOL_APPROVAL_MODE_FULL = 'full'
@@ -100,11 +189,33 @@ export function resolveMcpToolApprovalPolicy(tool) {
   const explicitlyReadOnly =
     annotations.readOnlyHint === true &&
     annotations.destructiveHint !== true
+  const explicitlyMutating =
+    annotations.readOnlyHint === false ||
+    annotations.destructiveHint === true
+  const inferredReadOnly =
+    !explicitlyMutating &&
+    !explicitlyReadOnly &&
+    hasConventionalReadOnlyName(tool)
+  const mutatingName = hasMutatingToolName(tool)
+  const approvalReason =
+    annotations.destructiveHint === true
+      ? '服务声明此工具可能产生破坏性修改'
+      : annotations.readOnlyHint === false
+        ? '服务声明此工具并非只读操作'
+        : mutatingName
+          ? '工具名称表明它可能写入或改变外部状态'
+          : explicitlyReadOnly
+            ? '服务已声明此工具为只读操作'
+            : inferredReadOnly
+              ? '根据工具名称判定为只读查询'
+              : '工具未声明只读，且无法可靠判定为查询操作'
 
   return {
-    forceApproval: !explicitlyReadOnly,
+    forceApproval: !(explicitlyReadOnly || inferredReadOnly),
     approvalKind: 'tool',
-    explicitlyReadOnly
+    explicitlyReadOnly,
+    inferredReadOnly,
+    approvalReason
   }
 }
 

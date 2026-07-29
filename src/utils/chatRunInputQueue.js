@@ -81,6 +81,15 @@ export function createChatRunInputQueue({
     return removed || null
   }
 
+  function setMode(sessionId, entryId, mode) {
+    const entries = getMutableEntries(sessionId)
+    if (!entries?.length) return null
+    const entry = entries.find((item) => String(item?.id || '') === String(entryId || ''))
+    if (!entry) return null
+    entry.mode = normalizeMode(mode)
+    return entry
+  }
+
   function takeSteering(sessionId) {
     const entries = list(sessionId).filter((entry) => entry.mode === CHAT_RUN_INPUT_MODE_STEER)
     entries.forEach((entry) => remove(sessionId, entry.id))
@@ -145,6 +154,7 @@ export function createChatRunInputQueue({
     list,
     count,
     remove,
+    setMode,
     takeSteering,
     takeNext,
     restore,

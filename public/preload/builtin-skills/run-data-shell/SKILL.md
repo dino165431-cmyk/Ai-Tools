@@ -5,7 +5,11 @@ description: Work on files in an isolated command workspace with explicit file i
 
 # Sandboxed Command Workspace
 
-Use this skill for command-line file work. Commands run in a dedicated workspace under the AI Tools data directory rather than in the user's note, session, or configuration directories.
+Use this skill for command-line file work. By default, commands run in a dedicated workspace
+under the AI Tools data directory rather than in the user's note, session, or configuration
+directories. If the current chat explicitly says that the user selected a host workspace,
+`sandbox_run` and `bash_run` run there instead. The host injects that root internally; keep
+`cwd` relative and never invent or pass an absolute workspace path.
 
 The host exposes actions progressively. Use `skill_discover` for exact schemas, then call them through `skill_call`.
 
@@ -21,6 +25,9 @@ The host exposes actions progressively. Use `skill_discover` for exact schemas, 
 - Treat timeout or non-zero exit as failure even if partial output exists.
 - Mention generated files in the final response. Use each returned file's `downloadHref` for Markdown downloads, for example `[下载 result.zip](sandbox-file://chat-id/output/result.zip)`. Do not invent a plain relative link. The UI lets the user open, locate, copy the path of, or save a copy of returned files.
 
-The workspace boundary is a filesystem guard, not a virtual machine. Do not attempt to bypass it with another interpreter, encoded paths, symlinks, environment tricks, or network access.
+The workspace boundary is a filesystem guard, not a virtual machine. A user-selected host
+workspace can directly modify that directory. Keep changes within the user's request and do not
+attempt to bypass either workspace boundary with another interpreter, encoded paths, symlinks,
+environment tricks, or network access.
 
 For the action contracts and output behavior, read [references/actions.md](references/actions.md).

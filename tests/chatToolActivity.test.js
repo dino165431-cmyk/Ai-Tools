@@ -1,7 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { getToolActivityLabel, getToolActivityMeta } from '../src/utils/chatToolActivity.js'
+import {
+  getToolActivityLabel,
+  getToolActivityMeta,
+  getToolActivitySource,
+  getToolActivityToolName
+} from '../src/utils/chatToolActivity.js'
 
 test('tool activity describes sandbox work instead of generic tool execution', () => {
   const message = {
@@ -23,4 +28,28 @@ test('tool activity summarizes returned files', () => {
   }
   assert.equal(getToolActivityLabel(message, 'success'), '已在沙盒中执行命令')
   assert.equal(getToolActivityMeta(message), 'result.zip 等 2 个文件')
+})
+
+test('MCP activity prioritizes the concrete action and keeps tool identity visible', () => {
+  const message = {
+    role: 'tool',
+    toolName: 'get_my_accounts',
+    toolServerName: 'facebook-marketing-api',
+    toolDescription: 'Returns the ad accounts available to the current user.'
+  }
+
+  assert.equal(getToolActivityLabel(message, 'success'), '已获取我的账户')
+  assert.equal(getToolActivityToolName(message), 'get_my_accounts')
+  assert.equal(getToolActivitySource(message), 'facebook-marketing-api')
+  assert.equal(getToolActivityMeta(message), 'Returns the ad accounts available to the current user.')
+})
+
+test('generic tool activity keeps unknown action names instead of falling back to the MCP server', () => {
+  const message = {
+    role: 'tool_call',
+    toolName: 'calculate_reach_projection',
+    toolServerName: 'facebook-marketing-api'
+  }
+
+  assert.equal(getToolActivityLabel(message, 'running'), '正在调用 Calculate Reach Projection')
 })

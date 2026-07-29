@@ -138,14 +138,28 @@ test('unattended approval policy blocks calls that would require confirmation', 
   )
 })
 
-test('safe mode treats unannotated MCP tools as high risk', () => {
-  assert.deepEqual(resolveMcpToolApprovalPolicy({}), {
-    forceApproval: true,
-    approvalKind: 'tool',
-    explicitlyReadOnly: false
-  })
+test('safe mode auto-approves declared or conventionally named read-only MCP tools', () => {
+  const unknown = resolveMcpToolApprovalPolicy({})
+  assert.equal(unknown.forceApproval, true)
+  assert.equal(unknown.explicitlyReadOnly, false)
+  assert.equal(unknown.inferredReadOnly, false)
+  assert.match(unknown.approvalReason, /无法可靠判定/)
+
+  const inferredRead = resolveMcpToolApprovalPolicy({ name: 'get_my_accounts' })
+  assert.equal(inferredRead.forceApproval, false)
+  assert.equal(inferredRead.explicitlyReadOnly, false)
+  assert.equal(inferredRead.inferredReadOnly, true)
+  assert.match(inferredRead.approvalReason, /工具名称判定为只读/)
+
+  const misleadingRead = resolveMcpToolApprovalPolicy({ name: 'get_and_delete_account' })
+  assert.equal(misleadingRead.forceApproval, true)
+  assert.match(misleadingRead.approvalReason, /写入或改变外部状态/)
+
   assert.equal(
-    resolveMcpToolApprovalPolicy({ annotations: { readOnlyHint: false } }).forceApproval,
+    resolveMcpToolApprovalPolicy({
+      name: 'get_my_accounts',
+      annotations: { readOnlyHint: false }
+    }).forceApproval,
     true
   )
   assert.equal(
@@ -154,16 +168,14 @@ test('safe mode treats unannotated MCP tools as high risk', () => {
     }).forceApproval,
     true
   )
-  assert.deepEqual(
-    resolveMcpToolApprovalPolicy({
-      annotations: { readOnlyHint: true, destructiveHint: false }
-    }),
-    {
-      forceApproval: false,
-      approvalKind: 'tool',
-      explicitlyReadOnly: true
-    }
-  )
+  const declaredRead = resolveMcpToolApprovalPolicy({
+    name: 'custom_operation',
+    annotations: { readOnlyHint: true, destructiveHint: false }
+  })
+  assert.equal(declaredRead.forceApproval, false)
+  assert.equal(declaredRead.approvalKind, 'tool')
+  assert.equal(declaredRead.explicitlyReadOnly, true)
+  assert.equal(declaredRead.inferredReadOnly, false)
 })
 
 test('skill script approval normalizes aliases to the resolved execution identity', () => {

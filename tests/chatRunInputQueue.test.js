@@ -60,3 +60,17 @@ test('restores claimed entries without duplicating them', () => {
   assert.equal(queue.count('session-a'), 1)
   assert.equal(queue.takeNext('session-a').text, 'guide')
 })
+
+test('promotes an existing queued entry to steering without changing its identity or order', () => {
+  const queue = createQueue()
+  const first = queue.enqueue('session-a', { text: 'queued first' }, CHAT_RUN_INPUT_MODE_QUEUE)
+  const second = queue.enqueue('session-a', { text: 'queued second' }, CHAT_RUN_INPUT_MODE_QUEUE)
+
+  const promoted = queue.setMode('session-a', second.id, CHAT_RUN_INPUT_MODE_STEER)
+
+  assert.equal(promoted, second)
+  assert.equal(promoted.mode, CHAT_RUN_INPUT_MODE_STEER)
+  assert.deepEqual(queue.list('session-a').map((entry) => entry.id), [first.id, second.id])
+  assert.equal(queue.takeNext('session-a').id, second.id)
+  assert.equal(queue.takeNext('session-a').id, first.id)
+})

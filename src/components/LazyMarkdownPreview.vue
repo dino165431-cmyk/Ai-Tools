@@ -1,18 +1,19 @@
 <template>
-  <MarkdownPreviewRenderer v-bind="props" />
+  <pre
+    v-if="!runtimeReady"
+    class="lazy-markdown-preview__fallback"
+    aria-busy="true"
+  >{{ props.modelValue }}</pre>
+  <component :is="MarkdownPreviewRenderer" v-else v-bind="props" />
 </template>
 
 <script setup>
-import { defineAsyncComponent } from 'vue'
+import { onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import { ensureMarkdownPreviewRuntime } from '@/utils/mdEditorRuntime'
 
-const MarkdownPreviewRenderer = defineAsyncComponent({
-  loader: async () => {
-    await ensureMarkdownPreviewRuntime()
-    return import('./MarkdownPreviewRenderer.vue')
-  },
-  suspensible: false
-})
+const runtimeReady = ref(false)
+const MarkdownPreviewRenderer = shallowRef(null)
+let disposed = false
 
 const props = defineProps({
   editorId: {
@@ -60,4 +61,37 @@ const props = defineProps({
     default: true
   }
 })
+
+onMounted(() => {
+  void Promise.all([
+    ensureMarkdownPreviewRuntime(),
+    import('./MarkdownPreviewRenderer.vue')
+  ])
+    .then(([, rendererModule]) => {
+      if (disposed) return
+      MarkdownPreviewRenderer.value = rendererModule.default
+      runtimeReady.value = true
+    })
+    .catch((err) => {
+      console.warn('[markdown preview] runtime load failed:', err)
+    })
+})
+
+onBeforeUnmount(() => {
+  disposed = true
+})
 </script>
+
+<style scoped>
+.lazy-markdown-preview__fallback {
+  min-height: 1.5em;
+  margin: 0;
+  overflow: hidden;
+  color: inherit;
+  font: inherit;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  contain: layout paint;
+}
+</style>

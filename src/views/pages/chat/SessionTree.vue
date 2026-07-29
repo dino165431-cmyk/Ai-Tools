@@ -35,6 +35,21 @@
       @dragleave="handleBlankAreaDragLeave"
       @drop.prevent="handleBlankAreaDrop"
     >
+      <div
+        v-if="directoryLoadState.active"
+        class="session-tree__loading"
+        role="status"
+        aria-live="polite"
+      >
+        <n-spin size="small" />
+        <div class="session-tree__loading-copy">
+          <strong>{{ directoryLoadingLabel }}</strong>
+          <span v-if="directoryLoadState.total > 0">
+            {{ directoryLoadState.processed }}/{{ directoryLoadState.total }}
+          </span>
+        </div>
+      </div>
+
       <n-tree
         class="session-tree__list"
         block-line
@@ -125,11 +140,22 @@
 </template>
 
 <script setup>
-import { ref, h, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { ref, reactive, h, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import path from 'path-browserify'
 import { FileTrayFullOutline, Folder, FolderOpenOutline, RefreshOutline, CreateOutline, TrashOutline } from '@vicons/ionicons5'
-import { NIcon, NTree, NDropdown, useMessage, useDialog, NInput, NButton, NModal, NTooltip, NAlert } from 'naive-ui'
-import { createDirectory, writeFile, listDirectory, exists, stat, deleteItem, moveItem, openInFileManager, describeFileOperationsError } from '@/utils/fileOperations'
+import { NIcon, NTree, NDropdown, useMessage, useDialog, NInput, NButton, NModal, NTooltip, NAlert, NSpin } from 'naive-ui'
+import {
+  createDirectory,
+  writeFile,
+  listDirectory,
+  listDirectoryWithStats,
+  exists,
+  stat,
+  deleteItem,
+  moveItem,
+  openInFileManager,
+  describeFileOperationsError
+} from '@/utils/fileOperations'
 import { buildChatSessionAssetsDirectory, isChatSessionAssetsDirectoryPath } from '@/utils/chatMediaAssets.js'
 import { resolveChatSessionCreatedTimeMs } from '@/utils/chatSessionCreatedTime.js'
 import { readSessionJsonFile } from '@/utils/sessionFileJson.js'
@@ -156,6 +182,18 @@ const selectedKeys = ref([])
 const loadedPaths = new Set()
 const refreshing = ref(false)
 const runtimeIssue = ref('')
+const directoryLoadState = reactive({
+  active: false,
+  path: '',
+  processed: 0,
+  total: 0
+})
+const directoryLoadingLabel = computed(() => {
+  if (directoryLoadState.total > 0) return '正在整理会话列表'
+  return '正在扫描会话目录'
+})
+const directoryLoadPromises = new Map()
+let activeDirectoryLoadCount = 0
 let pendingRefreshRequested = false
 let pendingRefreshSilent = true
 let refreshPromise = null
@@ -642,37 +680,32 @@ function statTimeMs(statInfo) {
   return parseTimeMs(statInfo?.mtime)
 }
 
+function statBirthTimeMs(statInfo) {
+  const direct = Number(statInfo?.birthtimeMs)
+  if (Number.isFinite(direct) && direct > 0) return direct
+  return parseTimeMs(statInfo?.birthtime)
+}
+
 function parseSessionCreatedTimeMs(value) {
   return parseTimeMs(value)
 }
 
 function resolveSessionCreatedTimeMs(data, statInfo) {
-  return resolveChatSessionCreatedTimeMs(data)
+  return resolveChatSessionCreatedTimeMs(data) || statBirthTimeMs(statInfo) || statTimeMs(statInfo)
 }
 
-async function readSessionFileMeta(entryPath, statInfo) {
+function readSessionFileMeta(entryPath, statInfo) {
   const fileName = String(entryPath || '').split('/').pop() || ''
   const fallbackName = String(fileName || '').replace(/\.json$/i, '')
-  const maxMetaReadBytes = 1024 * 1024
   const cachedMeta = getCachedSessionFileMeta(entryPath, statInfo)
   if (cachedMeta) return cachedMeta
-  let data = null
 
-  try {
-    const size = Number(statInfo?.size)
-    if (!Number.isFinite(size) || size <= maxMetaReadBytes) {
-      const parsed = await readSessionJsonFile(entryPath)
-      data = parsed.ok ? parsed.value : null
-    }
-  } catch {
-    data = null
-  }
-
-  const timedTask = isTimedTaskPath(entryPath, data)
-  const autoChat = isAutoChatPath(entryPath, data)
-  const titleRaw = String(data?.title || '').trim()
-  const title = titleRaw || stripGeneratedTimePrefix(fallbackName)
-  const timeMs = resolveSessionCreatedTimeMs(data, statInfo)
+  // 列表首屏只使用文件名和一次目录扫描返回的 stat 元数据。标题写入文件名，
+  // 不需要为了侧栏展示读取并解析每一份完整会话 JSON。
+  const timedTask = isTimedTaskPath(entryPath)
+  const autoChat = isAutoChatPath(entryPath)
+  const title = stripGeneratedTimePrefix(fallbackName)
+  const timeMs = resolveSessionCreatedTimeMs(null, statInfo)
 
   const metaLabel = formatTreeMetaDate(timeMs)
 
@@ -684,19 +717,79 @@ async function readSessionFileMeta(entryPath, statInfo) {
   })
 }
 
-async function loadDirectory(relativePath, parentNode) {
+function createDirectoryEntryStat(entry = {}) {
+  return {
+    size: Number(entry?.size || 0),
+    mtimeMs: Number(entry?.mtimeMs || 0),
+    ctimeMs: Number(entry?.ctimeMs || 0),
+    birthtimeMs: Number(entry?.birthtimeMs || 0),
+    isDirectory: () => entry?.isDirectory === true,
+    isFile: () => entry?.isFile !== false
+  }
+}
+
+async function mapWithConcurrency(items, concurrency, mapper, onProgress) {
+  const list = Array.isArray(items) ? items : []
+  const results = new Array(list.length)
+  let cursor = 0
+  let processed = 0
+
+  const worker = async () => {
+    while (cursor < list.length) {
+      const index = cursor
+      cursor += 1
+      results[index] = await mapper(list[index], index)
+      processed += 1
+      onProgress?.(processed, list.length)
+    }
+  }
+
+  const workerCount = Math.min(list.length, Math.max(1, Number(concurrency) || 1))
+  await Promise.all(Array.from({ length: workerCount }, () => worker()))
+  return results
+}
+
+async function listDirectoryEntries(relativePath) {
+  const enrichedEntries = await listDirectoryWithStats(relativePath)
+  if (Array.isArray(enrichedEntries)) {
+    directoryLoadState.total = enrichedEntries.length
+    directoryLoadState.processed = enrichedEntries.length
+    return enrichedEntries.map((entry) => ({
+      path: String(entry?.path || '').replace(/\\/g, '/'),
+      statInfo: createDirectoryEntryStat(entry)
+    }))
+  }
+
+  const entries = await listDirectory(relativePath)
+  directoryLoadState.total = entries.length
+  directoryLoadState.processed = 0
+  return mapWithConcurrency(
+    entries,
+    12,
+    async (entry) => ({
+      path: entry,
+      statInfo: await stat(entry)
+    }),
+    (processed, total) => {
+      if (processed === total || processed % 8 === 0) {
+        directoryLoadState.processed = processed
+      }
+    }
+  )
+}
+
+async function loadDirectoryInternal(relativePath, parentNode) {
   try {
-    const entries = await listDirectory(relativePath)
-    const children = (await Promise.all(entries.map(async (entry) => {
+    const entries = await listDirectoryEntries(relativePath)
+    const children = entries.map(({ path: entry, statInfo }) => {
       if (isChatSessionAssetsDirectoryPath(entry)) return null
 
-      const statInfo = await stat(entry)
       const isDirectory = statInfo.isDirectory()
       const fileName = entry.split('/').pop()
 
       if (!isDirectory && !String(fileName || '').endsWith('.json')) return null
 
-      const fileMeta = isDirectory ? null : await readSessionFileMeta(entry, statInfo)
+      const fileMeta = isDirectory ? null : readSessionFileMeta(entry, statInfo)
       const label = isDirectory ? displaySystemDirName(fileName) : fileMeta.label
       return {
         key: entry,
@@ -707,7 +800,7 @@ async function loadDirectory(relativePath, parentNode) {
         isLeaf: !isDirectory,
         children: isDirectory ? [] : undefined
       }
-    }))).filter(Boolean)
+    }).filter(Boolean)
 
     children.sort(compareTreeNodes)
 
@@ -718,6 +811,32 @@ async function loadDirectory(relativePath, parentNode) {
   } catch (err) {
     message.error('加载目录失败：' + (err?.message || String(err)))
   }
+}
+
+async function loadDirectory(relativePath, parentNode) {
+  const normalizedPath = normalizeTreePath(relativePath)
+  if (!normalizedPath) return
+  const existing = directoryLoadPromises.get(normalizedPath)
+  if (existing) return existing
+
+  activeDirectoryLoadCount += 1
+  directoryLoadState.active = true
+  directoryLoadState.path = normalizedPath
+  directoryLoadState.processed = 0
+  directoryLoadState.total = 0
+
+  const task = loadDirectoryInternal(normalizedPath, parentNode).finally(() => {
+    directoryLoadPromises.delete(normalizedPath)
+    activeDirectoryLoadCount = Math.max(0, activeDirectoryLoadCount - 1)
+    if (activeDirectoryLoadCount === 0) {
+      directoryLoadState.active = false
+      directoryLoadState.path = ''
+      directoryLoadState.processed = 0
+      directoryLoadState.total = 0
+    }
+  })
+  directoryLoadPromises.set(normalizedPath, task)
+  return task
 }
 
 function nodeProps({ option }) {
@@ -1748,12 +1867,58 @@ defineExpose({
 }
 
 .session-tree__scroll {
+  position: relative;
   flex: 1 1 0;
   display: flex;
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
   overscroll-behavior: contain;
+}
+
+.session-tree__loading {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  max-width: calc(100% - 24px);
+  padding: 8px 12px;
+  border: 1px solid rgba(55, 128, 138, 0.16);
+  border-radius: 12px;
+  color: rgba(31, 41, 55, 0.9);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.1);
+  transform: translateX(-50%);
+  backdrop-filter: blur(10px);
+}
+
+.session-tree__loading-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.session-tree__loading-copy strong {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-tree__loading-copy span {
+  opacity: 0.65;
+}
+
+.session-tree.is-dark .session-tree__loading {
+  border-color: rgba(125, 211, 252, 0.16);
+  color: rgba(226, 232, 240, 0.94);
+  background: rgba(15, 23, 42, 0.92);
+  box-shadow: 0 12px 28px rgba(2, 6, 23, 0.36);
 }
 
 .session-tree__scroll.is-drop-root-target {

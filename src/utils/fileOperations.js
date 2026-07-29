@@ -86,6 +86,20 @@ export function listDirectory(relativePath) {
     return callFileOpsAsync('listDirectory', relativePath);
 }
 
+export function listDirectoryWithStats(relativePath) {
+    const api = getFileOperationsApi();
+    const fn = api?.listDirectoryWithStats;
+    if (typeof fn !== 'function') return Promise.resolve(null);
+
+    try {
+        const result = fn.call(api, relativePath);
+        if (result && typeof result.then === 'function') return result;
+        return Promise.resolve(result);
+    } catch (err) {
+        return Promise.reject(err);
+    }
+}
+
 export function exists(relativePath) {
     return callFileOpsAsync('exists', relativePath);
 }

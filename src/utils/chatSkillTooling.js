@@ -137,7 +137,10 @@ export function buildSkillToolsBundle({
   const register = (name, specKey, mapping) => {
     const spec = internalToolSpecs?.[specKey]
     if (!spec) return
-    map.set(name, mapping)
+    map.set(name, {
+      ...mapping,
+      toolDescription: normalizeText(mapping?.toolDescription || spec.description)
+    })
     tools.push(createFunctionTool(name, spec))
   }
 
@@ -430,6 +433,8 @@ export async function resolveBuiltinSkillCall({
       serverId: id,
       serverName: normalizeText(skill?.name || id) || id,
       toolName: action.name,
+      toolTitle: normalizeText(action?.title || action?.annotations?.title),
+      toolDescription: normalizeText(action.description),
       forceApproval: action.forceApproval === true,
       approvalKind: normalizeText(action.approvalKind || 'tool') || 'tool',
       annotations: action.annotations || null,

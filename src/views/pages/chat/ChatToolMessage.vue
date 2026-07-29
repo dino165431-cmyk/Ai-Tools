@@ -1,13 +1,31 @@
 <template>
-  <div :class="['tool-message', 'chat-page', theme, { 'is-dark': theme === 'dark' }]">
+  <div :class="['tool-message', 'chat-page', theme, { 'is-dark': theme === 'dark', 'is-expanded': msg.toolExpanded }]">
     <div class="tool-message__toggle" @click="actions.toggleToolExpanded(msg)">
-      <n-icon :component="msg.toolExpanded ? ChevronUpOutline : ChevronDownOutline" size="14" />
+      <n-icon
+        :component="helpers.toolActivityIcon(msg)"
+        size="15"
+        :class="['tool-message__state-icon', { 'is-spinning': helpers.getToolMessageStatus(msg) === 'running' }]"
+      />
       <span class="tool-message__label">{{ helpers.toolMessageLabel(msg) }}</span>
-      <span class="tool-message__status" :class="`is-${helpers.getToolMessageStatus(msg)}`">{{ helpers.toolMessageStatusLabel(msg) }}</span>
-      <span v-if="msg.toolSubMeta" class="tool-message__submeta">{{ msg.toolSubMeta }}</span>
-      <span v-if="msg.toolMeta" class="tool-message__meta">{{ msg.toolMeta }}</span>
-      <span class="tool-message__hint">{{ msg.toolExpanded ? '点击收起' : '点击展开' }}</span>
+      <code v-if="helpers.toolActivityToolName(msg)" class="tool-message__tool-name">
+        {{ helpers.toolActivityToolName(msg) }}
+      </code>
+      <span v-if="helpers.toolActivitySource(msg)" class="tool-message__source">
+        {{ helpers.toolActivitySource(msg) }}
+      </span>
+      <span
+        v-if="helpers.shouldShowToolActivityStatus(msg)"
+        class="tool-message__status"
+        :class="`is-${helpers.getToolMessageStatus(msg)}`"
+      >
+        {{ helpers.toolMessageStatusLabel(msg) }}
+      </span>
+      <span class="tool-message__hint">收起</span>
+      <n-icon :component="ChevronUpOutline" size="14" class="tool-message__chevron" />
     </div>
+    <p v-if="helpers.toolActivityMeta(msg)" class="tool-message__summary">
+      {{ helpers.toolActivityMeta(msg) }}
+    </p>
     <div v-if="msg.toolExpanded" class="tool-message__body">
       <div v-if="previewableImages.length" class="tool-message__media">
         <div class="tool-message__media-meta">
@@ -50,9 +68,14 @@
       >
         <div class="tool-message__sandbox-header">
           <div>
-            <div class="tool-message__sandbox-title">命令沙盒</div>
+            <div class="tool-message__sandbox-title">
+              {{ sandboxToolPayload.workspaceKind === 'host' ? '本机命令工作区' : '命令沙盒' }}
+            </div>
             <div class="tool-message__sandbox-meta">
-              <span>工作区：{{ sandboxToolPayload.workspaceId || 'default' }}</span>
+              <span v-if="sandboxToolPayload.workspaceKind === 'host'">
+                工作区：{{ sandboxToolPayload.workspacePath || '用户选择的本机目录' }}
+              </span>
+              <span v-else>工作区：{{ sandboxToolPayload.workspaceId || 'default' }}</span>
               <span v-if="sandboxToolPayload.cwd">目录：{{ sandboxToolPayload.cwd }}</span>
               <span v-if="Number.isInteger(sandboxToolPayload.exitCode)">
                 退出码：{{ sandboxToolPayload.exitCode }}
@@ -78,7 +101,11 @@
           </button>
         </div>
         <div v-else class="tool-message__sandbox-empty">
-          本次操作没有返回新增或修改后的文件。
+          {{
+            sandboxToolPayload.workspaceKind === 'host' && sandboxToolPayload.tracksChanges === false
+              ? '本机工作区模式不自动扫描全部文件变化；命令输出仍显示在下方。'
+              : '本次操作没有返回新增或修改后的文件。'
+          }}
         </div>
 
         <details v-if="sandboxToolPayload.stdout || sandboxToolPayload.stderr" class="tool-message__sandbox-log">
@@ -172,20 +199,20 @@
           <div v-else class="tool-message__web-empty">没有解析到可用正文。</div>
         </template>
       </div>
-      <template v-else>
-        <pre v-if="msg.render === 'text'" class="chat-plain">{{ msg.content }}</pre>
+      <div v-else class="tool-message__details">
+        <pre v-if="msg.render === 'text'" class="chat-plain">{{ expandedDisplayContent }}</pre>
         <LazyMarkdownPreview
           v-else-if="helpers.shouldRenderHeavyChatMessage(msg)"
           :editorId="`msg-${msg.id}`"
-          :modelValue="msg.content"
+          :modelValue="expandedDisplayContent"
           previewTheme="github"
           :theme="theme"
           :deferBlockLayout="false"
           :code-foldable="true"
           :auto-fold-threshold="CHAT_CODE_AUTO_FOLD_THRESHOLD"
         />
-        <pre v-else class="chat-plain chat-plain--deferred">{{ msg.content }}</pre>
-      </template>
+        <pre v-else class="chat-plain chat-plain--deferred">{{ expandedDisplayContent }}</pre>
+      </div>
     </div>
     <n-dropdown
       placement="bottom-start"
@@ -205,7 +232,8 @@ import { computed, ref } from 'vue'
 import { NDropdown, NIcon, NImage, NImageGroup, useMessage } from 'naive-ui'
 import LazyMarkdownPreview from '@/components/LazyMarkdownPreview.vue'
 import { CHAT_CODE_AUTO_FOLD_THRESHOLD } from '@/utils/chatMarkdownPreview'
-import { ChevronDownOutline, ChevronUpOutline } from '@vicons/ionicons5'
+import { stripToolIdentityFromDisplayContent } from '@/utils/chatToolDisplay'
+import { ChevronUpOutline } from '@vicons/ionicons5'
 import ChatAgentRunFlow from './ChatAgentRunFlow.vue'
 import { openFile, saveFileAs, showItemInFolder } from '@/utils/fileOperations'
 import { copyTextToClipboard } from '@/utils/clipboard'
@@ -235,6 +263,9 @@ const previewableImages = computed(() =>
   toolImages.value.filter((img) => String(img?.src || '').trim())
 )
 const hiddenImageCount = computed(() => Math.max(0, toolImages.value.length - previewableImages.value.length))
+const expandedDisplayContent = computed(() =>
+  stripToolIdentityFromDisplayContent(props.msg?.content)
+)
 const webToolPayload = computed(() => {
   const payload = props.msg?.toolResultPayload
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null
@@ -367,6 +398,30 @@ async function handleSandboxFileMenuSelect(key) {
 </script>
 
 <style scoped>
+.tool-message {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.tool-message.is-expanded {
+  width: min(100%, 780px);
+  max-width: 100%;
+  padding: 9px 10px 10px;
+  overflow: hidden;
+  box-sizing: border-box;
+  border: 1px solid rgba(148, 163, 184, 0.20);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.72);
+  box-shadow: 0 5px 16px rgba(15, 23, 42, 0.04);
+}
+
+.tool-message.is-expanded.is-dark {
+  border-color: rgba(148, 163, 184, 0.18);
+  background: rgba(15, 23, 42, 0.44);
+  box-shadow: 0 7px 20px rgba(2, 6, 23, 0.14);
+}
+
 .tool-message__toggle {
   display: flex;
   align-items: center;
@@ -378,6 +433,21 @@ async function handleSandboxFileMenuSelect(key) {
   font-size: 12px;
   line-height: 1.2;
   color: rgba(0, 0, 0, 0.65);
+}
+
+.tool-message__state-icon {
+  flex: 0 0 auto;
+  opacity: 0.82;
+}
+
+.tool-message__state-icon.is-spinning {
+  animation: tool-message-icon-spin 0.9s linear infinite;
+}
+
+@keyframes tool-message-icon-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .tool-message.is-dark .tool-message__toggle,
@@ -392,7 +462,39 @@ async function handleSandboxFileMenuSelect(key) {
   white-space: nowrap;
 }
 
+.tool-message__tool-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 220px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  color: inherit;
+  background: rgba(100, 116, 139, 0.10);
+  font-family: var(--code-font-family, "Fira Code", monospace);
+  font-size: 11px;
+  line-height: 18px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-message__source {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 190px;
+  opacity: 0.62;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-message__source::before {
+  content: "·";
+  margin-right: 6px;
+}
+
 .tool-message__status {
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   height: 20px;
@@ -419,11 +521,6 @@ async function handleSandboxFileMenuSelect(key) {
   background: rgba(100, 116, 139, 0.12);
 }
 
-.tool-message__status.is-success {
-  color: rgb(8, 145, 178);
-  background: rgba(14, 165, 233, 0.12);
-}
-
 .tool-message__status.is-error {
   color: rgb(208, 48, 80);
   background: rgba(208, 48, 80, 0.10);
@@ -434,27 +531,6 @@ async function handleSandboxFileMenuSelect(key) {
   background: rgba(100, 116, 139, 0.12);
 }
 
-.tool-message__submeta {
-  min-width: 0;
-  flex: 0 1 auto;
-  opacity: 0.82;
-  font-size: 12px;
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.tool-message__meta {
-  min-width: 0;
-  flex: 1 1 auto;
-  opacity: 0.75;
-  font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .tool-message__hint {
   margin-left: auto;
   flex: 0 0 auto;
@@ -463,8 +539,97 @@ async function handleSandboxFileMenuSelect(key) {
   white-space: nowrap;
 }
 
+.tool-message__chevron {
+  flex: 0 0 auto;
+  opacity: 0.56;
+}
+
+.tool-message__summary {
+  margin: 5px 20px 0;
+  color: rgba(71, 85, 105, 0.82);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-message.is-dark .tool-message__summary {
+  color: rgba(203, 213, 225, 0.72);
+}
+
 .tool-message__body {
-  margin-top: 8px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  margin-top: 9px;
+  padding-top: 9px;
+  overflow: hidden;
+  box-sizing: border-box;
+  border-top: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.tool-message.is-dark .tool-message__body {
+  border-top-color: rgba(148, 163, 184, 0.14);
+}
+
+.tool-message__details {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.tool-message__details :deep(.markdown-preview-renderer),
+.tool-message__details :deep(.md-editor),
+.tool-message__details :deep(.md-editor-content),
+.tool-message__details :deep(.md-editor-preview-wrapper),
+.tool-message__details :deep(.md-editor-preview) {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.tool-message__details :deep(h4) {
+  margin: 8px 0 6px;
+  color: rgba(51, 65, 85, 0.88);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.tool-message.is-dark .tool-message__details :deep(h4) {
+  color: rgba(226, 232, 240, 0.84);
+}
+
+.tool-message__details :deep(pre) {
+  width: 100%;
+  max-width: 100%;
+  max-height: 360px;
+  margin: 6px 0 8px;
+  overflow: auto;
+  box-sizing: border-box;
+  border-radius: 8px;
+  font-size: 11px;
+}
+
+.tool-message__details :deep(.md-editor-code) {
+  width: 100%;
+  max-width: 100%;
+  max-height: min(360px, 52vh);
+  overflow: auto;
+  box-sizing: border-box;
+  overscroll-behavior: contain;
+}
+
+.tool-message__details :deep(.md-editor-code pre) {
+  width: max-content;
+  min-width: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  overflow: visible;
 }
 
 .tool-message__sandbox {

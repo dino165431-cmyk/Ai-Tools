@@ -4,6 +4,8 @@ import assert from 'node:assert/strict'
 import {
   resolveChatViewportCompensation,
   resolveChatHeavyRenderTuning,
+  resolveChatVirtualItemGap,
+  resolveChatVirtualItemHeight,
   shouldDeferChatHeavyBlockLayout
 } from '../src/utils/chatPerformance.js'
 
@@ -97,5 +99,64 @@ test('resolveChatViewportCompensation reports the clamped applied delta', () => 
       appliedDelta: -20,
       nextLastProcessedScrollTop: 0
     }
+  )
+})
+
+test('resolveChatVirtualItemHeight keeps compact activity rows below the regular message minimum', () => {
+  assert.equal(
+    resolveChatVirtualItemHeight({
+      estimatedHeight: 26,
+      minimumHeight: 26,
+      fallbackHeight: 180
+    }),
+    26
+  )
+  assert.equal(
+    resolveChatVirtualItemHeight({
+      measuredHeight: 44,
+      estimatedHeight: 26,
+      minimumHeight: 26,
+      fallbackHeight: 180
+    }),
+    44
+  )
+  assert.equal(
+    resolveChatVirtualItemHeight({
+      estimatedHeight: 40,
+      minimumHeight: 96,
+      fallbackHeight: 180
+    }),
+    96
+  )
+})
+
+test('resolveChatVirtualItemGap mirrors the tighter CSS gap between activity rows', () => {
+  assert.equal(
+    resolveChatVirtualItemGap({
+      hasPrevious: false,
+      defaultGap: 14,
+      consecutiveActivityGap: 5
+    }),
+    0
+  )
+  assert.equal(
+    resolveChatVirtualItemGap({
+      hasPrevious: true,
+      previousIsActivity: true,
+      currentIsActivity: true,
+      defaultGap: 14,
+      consecutiveActivityGap: 5
+    }),
+    5
+  )
+  assert.equal(
+    resolveChatVirtualItemGap({
+      hasPrevious: true,
+      previousIsActivity: true,
+      currentIsActivity: false,
+      defaultGap: 14,
+      consecutiveActivityGap: 5
+    }),
+    14
   )
 })

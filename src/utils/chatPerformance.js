@@ -67,3 +67,34 @@ export function resolveChatViewportCompensation(options = {}) {
       : lastProcessedScrollTop
   }
 }
+
+export function resolveChatVirtualItemHeight(options = {}) {
+  const minimumHeight = Number(options.minimumHeight)
+  const measuredHeight = Number(options.measuredHeight)
+  const estimatedHeight = Number(options.estimatedHeight)
+  const fallbackHeight = Number(options.fallbackHeight)
+  const safeMinimumHeight = Number.isFinite(minimumHeight) ? Math.max(0, minimumHeight) : 0
+  const preferredHeight = Number.isFinite(measuredHeight) && measuredHeight > 0
+    ? measuredHeight
+    : Number.isFinite(estimatedHeight) && estimatedHeight > 0
+      ? estimatedHeight
+      : Number.isFinite(fallbackHeight) && fallbackHeight > 0
+        ? fallbackHeight
+        : safeMinimumHeight
+
+  return Math.max(safeMinimumHeight, Math.ceil(preferredHeight))
+}
+
+export function resolveChatVirtualItemGap(options = {}) {
+  if (!options.hasPrevious) return 0
+  const defaultGap = Number(options.defaultGap)
+  const consecutiveActivityGap = Number(options.consecutiveActivityGap)
+  const safeDefaultGap = Number.isFinite(defaultGap) ? Math.max(0, defaultGap) : 0
+  const safeActivityGap = Number.isFinite(consecutiveActivityGap)
+    ? Math.max(0, consecutiveActivityGap)
+    : safeDefaultGap
+
+  return options.previousIsActivity && options.currentIsActivity
+    ? safeActivityGap
+    : safeDefaultGap
+}

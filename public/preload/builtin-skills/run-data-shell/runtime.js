@@ -16,6 +16,7 @@ const {
 } = require('../../utils/sandbox-workspace')
 
 const MAX_OUTPUT_CHARS = 20000
+const MAX_OUTPUT_BYTES = MAX_OUTPUT_CHARS * 6
 const DEFAULT_TIMEOUT_MS = 30000
 const MAX_TIMEOUT_MS = 120000
 const SUPPORTED_SHELLS = new Set(['auto', 'powershell', 'bash'])
@@ -45,25 +46,51 @@ function isPathInside(root, target) {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
 }
 
-async function resolveWorkingDirectory(relativePath = '.', workspaceId = DEFAULT_WORKSPACE_ID) {
+function normalizeHostWorkspacePath(value) {
+  const raw = cleanString(value)
+  if (!raw) return ''
+  if (raw.includes('\0') || !path.isAbsolute(raw)) {
+    throw new Error('本机工作区必须是用户选择的绝对目录')
+  }
+  assertDirectory(raw, '本机工作区')
+  const realRoot = realpathExisting(raw)
+  assertDirectory(realRoot, '本机工作区')
+  return realRoot
+}
+
+async function resolveWorkingDirectory(
+  relativePath = '.',
+  workspaceId = DEFAULT_WORKSPACE_ID,
+  hostWorkspacePath = ''
+) {
   const workspace = await ensureWorkspace(workspaceId)
   const requested = cleanString(relativePath) || '.'
   const safeRelativePath = requested === '.'
     ? ''
     : normalizeSandboxRelativePath(requested, { allowEmpty: true })
-  const resolved = resolveWorkspacePath(workspace.workspaceId, safeRelativePath)
+  const hostRoot = normalizeHostWorkspacePath(hostWorkspacePath)
+  const workspaceRoot = hostRoot || workspace.workspaceRoot
+  const resolved = hostRoot
+    ? path.resolve(hostRoot, safeRelativePath)
+    : resolveWorkspacePath(workspace.workspaceId, safeRelativePath)
+  if (!isPathInside(workspaceRoot, resolved)) {
+    throw new Error('cwd 不能离开当前工作区')
+  }
   assertDirectory(resolved, 'cwd')
   const realCwd = realpathExisting(resolved)
-  const realRoot = realpathExisting(workspace.workspaceRoot)
+  const realRoot = realpathExisting(workspaceRoot)
   if (!isPathInside(realRoot, realCwd)) {
-    throw new Error('cwd 不能通过符号链接离开命令沙盒')
+    throw new Error('cwd 不能通过符号链接离开当前工作区')
   }
   const relative = path.relative(realRoot, realCwd).replace(/\\/g, '/')
   return {
     workspaceId: workspace.workspaceId,
     root: realRoot,
+    runtimeRoot: realpathExisting(workspace.workspaceRoot),
     cwd: realCwd,
-    relative: relative || '.'
+    relative: relative || '.',
+    workspaceKind: hostRoot ? 'host' : 'sandbox',
+    workspacePath: hostRoot || ''
   }
 }
 
@@ -149,6 +176,16 @@ function resolvePowerShellExecutable() {
   return resolved
 }
 
+function buildPowerShellEncodedCommand(command) {
+  const utf8Setup = [
+    '$__aiToolsUtf8 = [System.Text.UTF8Encoding]::new($false)',
+    '[Console]::InputEncoding = $__aiToolsUtf8',
+    '[Console]::OutputEncoding = $__aiToolsUtf8',
+    '$OutputEncoding = $__aiToolsUtf8'
+  ].join('; ')
+  return Buffer.from(`${utf8Setup}; ${command}`, 'utf16le').toString('base64')
+}
+
 function resolveShellLaunch(shellRaw, command) {
   const shell = normalizeShell(shellRaw)
   if (shell === 'powershell') {
@@ -161,8 +198,8 @@ function resolveShellLaunch(shellRaw, command) {
         '-NonInteractive',
         '-ExecutionPolicy',
         'Bypass',
-        '-Command',
-        command
+        '-EncodedCommand',
+        buildPowerShellEncodedCommand(command)
       ]
     }
   }
@@ -173,11 +210,69 @@ function resolveShellLaunch(shellRaw, command) {
   }
 }
 
-function appendLimited(state, chunk) {
-  const text = String(chunk || '')
-  if (!text || state.text.length >= MAX_OUTPUT_CHARS) return
-  state.text += text.slice(0, MAX_OUTPUT_CHARS - state.text.length)
-  if (state.text.length >= MAX_OUTPUT_CHARS) state.truncated = true
+function createOutputCollector() {
+  return {
+    chunks: [],
+    byteLength: 0,
+    truncated: false
+  }
+}
+
+function appendOutputChunk(state, chunk) {
+  const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk || '')
+  if (!bytes.length || state.byteLength >= MAX_OUTPUT_BYTES) {
+    if (bytes.length) state.truncated = true
+    return
+  }
+  const remaining = MAX_OUTPUT_BYTES - state.byteLength
+  const accepted = bytes.length > remaining ? bytes.subarray(0, remaining) : bytes
+  state.chunks.push(accepted)
+  state.byteLength += accepted.length
+  if (accepted.length < bytes.length) state.truncated = true
+}
+
+function looksLikeUtf16Le(bytes) {
+  if (!bytes?.length || bytes.length < 4) return false
+  let oddNulls = 0
+  let pairs = 0
+  for (let index = 1; index < bytes.length; index += 2) {
+    pairs += 1
+    if (bytes[index] === 0) oddNulls += 1
+  }
+  return pairs > 0 && oddNulls / pairs >= 0.35
+}
+
+function decodeCommandOutput(bytes, options = {}) {
+  const buffer = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes || '')
+  if (!buffer.length) return ''
+  if (buffer[0] === 0xff && buffer[1] === 0xfe) {
+    return buffer.subarray(2).toString('utf16le')
+  }
+  if (looksLikeUtf16Le(buffer)) return buffer.toString('utf16le')
+
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(buffer).replace(/^\uFEFF/, '')
+  } catch {
+    if ((options.platform || process.platform) === 'win32') {
+      try {
+        return new TextDecoder('gb18030', { fatal: false }).decode(buffer)
+      } catch {
+        // Fall through to Node's best-effort UTF-8 decoding.
+      }
+    }
+    return buffer.toString('utf8')
+  }
+}
+
+function finishOutputCollector(state, options = {}) {
+  const decoded = decodeCommandOutput(Buffer.concat(state.chunks, state.byteLength), options)
+  if (decoded.length <= MAX_OUTPUT_CHARS) {
+    return { text: decoded, truncated: state.truncated }
+  }
+  return {
+    text: decoded.slice(0, MAX_OUTPUT_CHARS),
+    truncated: true
+  }
 }
 
 async function runSandboxCommand(command, options = {}) {
@@ -185,18 +280,21 @@ async function runSandboxCommand(command, options = {}) {
   const launch = resolveShellLaunch(options.shell, safeCommand)
   const workspaceId = normalizeWorkspaceId(options.workspaceId)
   const {
-    root,
+    runtimeRoot,
     cwd,
-    relative
-  } = await resolveWorkingDirectory(options.cwd, workspaceId)
+    relative,
+    workspaceKind,
+    workspacePath
+  } = await resolveWorkingDirectory(options.cwd, workspaceId, options.hostWorkspacePath)
   const timeoutMs = clampTimeout(options.timeoutMs)
-  const tempDirectory = path.join(root, '.runtime', 'tmp')
+  const tempDirectory = path.join(runtimeRoot, '.runtime', 'tmp')
   fsSync.mkdirSync(tempDirectory, { recursive: true })
-  const beforeFiles = await snapshotWorkspace(workspaceId)
+  const tracksChanges = workspaceKind === 'sandbox'
+  const beforeFiles = tracksChanges ? await snapshotWorkspace(workspaceId) : null
 
   return new Promise((resolve, reject) => {
-    const stdout = { text: '', truncated: false }
-    const stderr = { text: '', truncated: false }
+    const stdout = createOutputCollector()
+    const stderr = createOutputCollector()
     const child = spawn(launch.executable, launch.args, {
       cwd,
       windowsHide: true,
@@ -205,19 +303,21 @@ async function runSandboxCommand(command, options = {}) {
         PATH: process.env.PATH || '',
         Path: process.env.Path || '',
         SystemRoot: process.env.SystemRoot || '',
-        HOME: root,
-        USERPROFILE: root,
+        HOME: runtimeRoot,
+        USERPROFILE: runtimeRoot,
         TEMP: tempDirectory,
         TMP: tempDirectory,
-        XDG_CONFIG_HOME: path.join(root, '.runtime', 'config'),
+        XDG_CONFIG_HOME: path.join(runtimeRoot, '.runtime', 'config'),
         GIT_CONFIG_NOSYSTEM: '1',
-        GIT_CONFIG_GLOBAL: path.join(root, '.runtime', 'config', 'gitconfig'),
+        GIT_CONFIG_GLOBAL: path.join(runtimeRoot, '.runtime', 'config', 'gitconfig'),
         LANG: process.env.LANG || 'C.UTF-8',
+        LC_ALL: process.env.LC_ALL || 'C.UTF-8',
         PYTHONUTF8: '1',
         PYTHONIOENCODING: 'utf-8',
         AI_TOOLS_SANDBOX: '1',
         AI_TOOLS_SANDBOX_WORKSPACE: workspaceId,
-        AI_TOOLS_SANDBOX_SHELL: launch.shell
+        AI_TOOLS_SANDBOX_SHELL: launch.shell,
+        AI_TOOLS_WORKSPACE_KIND: workspaceKind
       }
     })
 
@@ -227,13 +327,16 @@ async function runSandboxCommand(command, options = {}) {
       if (settled) return
       settled = true
       try {
-        const afterFiles = await snapshotWorkspace(workspaceId)
+        const afterFiles = tracksChanges ? await snapshotWorkspace(workspaceId) : null
         resolve({
           kind: 'sandbox_shell_result',
           workspaceId,
+          workspaceKind,
+          workspacePath,
+          tracksChanges,
           shell: launch.shell,
           ...result,
-          changedFiles: collectChangedFiles(beforeFiles, afterFiles)
+          changedFiles: tracksChanges ? collectChangedFiles(beforeFiles, afterFiles) : []
         })
       } catch (error) {
         reject(error)
@@ -245,8 +348,8 @@ async function runSandboxCommand(command, options = {}) {
       child.kill()
     }, timeoutMs)
 
-    child.stdout?.on('data', (chunk) => appendLimited(stdout, chunk))
-    child.stderr?.on('data', (chunk) => appendLimited(stderr, chunk))
+    child.stdout?.on('data', (chunk) => appendOutputChunk(stdout, chunk))
+    child.stderr?.on('data', (chunk) => appendOutputChunk(stderr, chunk))
     child.once('error', (error) => {
       clearTimeout(timer)
       if (settled) return
@@ -255,6 +358,8 @@ async function runSandboxCommand(command, options = {}) {
     })
     child.once('close', (code, signal) => {
       clearTimeout(timer)
+      const stdoutResult = finishOutputCollector(stdout)
+      const stderrResult = finishOutputCollector(stderr)
       void finish({
         ok: !timedOut && code === 0,
         exitCode: Number.isInteger(code) ? code : null,
@@ -262,9 +367,9 @@ async function runSandboxCommand(command, options = {}) {
         timedOut,
         timeoutMs,
         cwd: relative,
-        stdout: stdout.text,
-        stderr: stderr.text,
-        truncated: stdout.truncated || stderr.truncated
+        stdout: stdoutResult.text,
+        stderr: stderrResult.text,
+        truncated: stdoutResult.truncated || stderrResult.truncated
       })
     })
   })
@@ -277,7 +382,7 @@ async function runBash(command, options = {}) {
 const ACTIONS = Object.freeze([
   {
     name: 'sandbox_run',
-    description: 'Run a command inside an isolated AI Tools workspace. On Windows, auto uses PowerShell so built-in commands such as Compress-Archive are available; Bash remains selectable.',
+    description: 'Run a command in the active AI Tools command workspace. The default is isolated; a user-selected host workspace may be injected by the chat UI. On Windows, auto uses PowerShell.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -288,7 +393,7 @@ const ACTIONS = Object.freeze([
           description: 'Command shell. Default auto uses PowerShell on Windows and Bash elsewhere.'
         },
         workspace_id: { type: 'string', description: 'Workspace id returned with imported attachments. Default: default.' },
-        cwd: { type: 'string', description: 'Working directory relative to the sandbox workspace. Default: .' },
+        cwd: { type: 'string', description: 'Working directory relative to the active workspace. Default: workspace root.' },
         timeout_ms: { type: 'integer', minimum: 1000, maximum: MAX_TIMEOUT_MS }
       },
       required: ['command'],
@@ -303,7 +408,7 @@ const ACTIONS = Object.freeze([
       properties: {
         command: { type: 'string', description: 'Bash command to execute inside the workspace.' },
         workspace_id: { type: 'string', description: 'Workspace id returned with imported attachments. Default: default.' },
-        cwd: { type: 'string', description: 'Working directory relative to the sandbox workspace. Default: .' },
+        cwd: { type: 'string', description: 'Working directory relative to the active workspace. Default: workspace root.' },
         timeout_ms: { type: 'integer', minimum: 1000, maximum: MAX_TIMEOUT_MS }
       },
       required: ['command'],
@@ -370,6 +475,7 @@ class BuiltinShellSkillRuntime {
       return runBash(command, {
         workspaceId,
         cwd: args.cwd,
+        hostWorkspacePath: args.__host_workspace_path,
         timeoutMs: args.timeout_ms
       })
     }
@@ -380,6 +486,7 @@ class BuiltinShellSkillRuntime {
         shell: args.shell,
         workspaceId,
         cwd: args.cwd,
+        hostWorkspacePath: args.__host_workspace_path,
         timeoutMs: args.timeout_ms
       })
     }
@@ -417,5 +524,10 @@ module.exports._test = {
   clampTimeout,
   validateCommandBoundary,
   normalizeShell,
-  resolveShellLaunch
+  resolveShellLaunch,
+  buildPowerShellEncodedCommand,
+  decodeCommandOutput,
+  createOutputCollector,
+  appendOutputChunk,
+  finishOutputCollector
 }

@@ -45,6 +45,23 @@
     <div class="chat-messages-shell">
       <n-card class="chat-messages" :bordered="false" content-style="padding: 0; height: 100%;">
         <div class="chat-scroll-wrapper">
+          <div
+            v-if="historySessionLoadState.visible"
+            class="chat-session-loading"
+            :class="{ 'is-blocking': historySessionLoadState.blocking }"
+            role="status"
+            aria-live="polite"
+          >
+            <span class="chat-session-loading__spinner" aria-hidden="true" />
+            <div class="chat-session-loading__content">
+              <strong>{{ historySessionLoadState.phase }}</strong>
+              <span v-if="historySessionLoadState.detail">{{ historySessionLoadState.detail }}</span>
+              <div class="chat-session-loading__progress" aria-hidden="true">
+                <span :style="{ width: `${historySessionLoadState.percent}%` }" />
+              </div>
+            </div>
+          </div>
+
           <n-scrollbar ref="scrollbarRef" style="height: 100%;" @scroll="handleChatScroll" @wheel.passive="handleChatWheel">
             <div
               ref="chatListRef"
@@ -193,6 +210,12 @@
                         :class="['chat-tool-compact__state-icon', { 'is-spinning': getToolMessageStatus(msg) === 'running' }]"
                       />
                       <span class="chat-tool-compact__label">{{ toolMessageLabel(msg) }}</span>
+                      <code v-if="toolActivityToolName(msg)" class="chat-tool-compact__tool-name">
+                        {{ toolActivityToolName(msg) }}
+                      </code>
+                      <span v-if="toolActivitySource(msg)" class="chat-tool-compact__source">
+                        {{ toolActivitySource(msg) }}
+                      </span>
                       <span v-if="toolActivityMeta(msg)" class="chat-tool-compact__meta">{{ toolActivityMeta(msg) }}</span>
                       <span
                         v-if="shouldShowToolActivityStatus(msg)"
@@ -301,7 +324,17 @@
             <div class="chat-sticky-bubble__main">
               <n-icon :component="ChevronUpOutline" size="14" />
               <span class="chat-sticky-bubble__label">{{ stickyChatBubble.label }}</span>
-              <span v-if="stickyChatBubble.statusText" class="chat-sticky-bubble__status" :class="`is-${stickyChatBubble.status}`">
+              <code v-if="stickyChatBubble.toolName" class="chat-sticky-bubble__tool-name">
+                {{ stickyChatBubble.toolName }}
+              </code>
+              <span v-if="stickyChatBubble.source" class="chat-sticky-bubble__source">
+                {{ stickyChatBubble.source }}
+              </span>
+              <span
+                v-if="stickyChatBubble.showStatus && stickyChatBubble.statusText"
+                class="chat-sticky-bubble__status"
+                :class="`is-${stickyChatBubble.status}`"
+              >
                 {{ stickyChatBubble.statusText }}
               </span>
               <span v-if="stickyChatBubble.meta" class="chat-sticky-bubble__meta">{{ stickyChatBubble.meta }}</span>
@@ -481,6 +514,7 @@
       :media-generation-preset-options="mediaGenerationPresetOptions"
       :can-send="canSend"
       :queued-inputs="activeQueuedInputs"
+      :host-workspace-path="sandboxHostWorkspacePath"
       :footer-hint="footerHint"
       @update:input-value="input = $event"
       @file-change="handleFileInputChange"
@@ -505,6 +539,8 @@
       @open-agent-modal="openAgentModal"
       @insert-inline-command-trigger="insertInlineCommandTrigger"
       @open-file-picker="openFilePicker"
+      @choose-host-workspace="chooseSandboxHostWorkspace"
+      @clear-host-workspace="clearSandboxHostWorkspace"
       @toggle-web-search="toggleWebSearch"
       @set-tool-approval-mode="setToolApprovalMode"
       @toggle-auto-activate-agent-skills="toggleAutoActivateAgentSkills"
@@ -516,6 +552,7 @@
       @apply-media-preset="applyMediaGenerationPreset"
       @stop="stop"
       @steer="steerCurrentRun"
+      @steer-queued-input="steerQueuedInput"
       @remove-queued-input="removeQueuedInput"
       @send="send"
     />
@@ -1231,10 +1268,17 @@ import {
   collectSandboxFileCatalog,
   resolveSandboxFileLink
 } from '@/utils/chatSandboxFileLink'
-import { getToolActivityLabel, getToolActivityMeta } from '@/utils/chatToolActivity'
+import {
+  getToolActivityLabel,
+  getToolActivityMeta,
+  getToolActivitySource,
+  getToolActivityToolName
+} from '@/utils/chatToolActivity'
 import {
   resolveChatHeavyRenderTuning,
   resolveChatViewportCompensation,
+  resolveChatVirtualItemGap,
+  resolveChatVirtualItemHeight,
   shouldDeferChatHeavyBlockLayout
 } from '@/utils/chatPerformance.js'
 import {
@@ -1404,6 +1448,15 @@ const sessionTreeRef = ref(null)
 const sessionSiderCollapsed = ref(true)
 const activeSessionFilePath = ref('')
 const activeSessionTitle = ref('')
+const historySessionLoadState = reactive({
+  visible: false,
+  blocking: false,
+  path: '',
+  phase: '',
+  detail: '',
+  percent: 0,
+  token: 0
+})
 const sessionContextWindowOverride = ref(null)
 const isCompactChatLayout = ref(false)
 const isDenseChatLayout = ref(false)
@@ -1484,7 +1537,7 @@ const chatToolApprovalModeOptions = [
     key: TOOL_APPROVAL_MODE_MANUAL
   },
   {
-    label: '低风险自动（推荐）',
+    label: '低风险自动（只读查询自动，写入与命令确认）',
     key: TOOL_APPROVAL_MODE_SAFE
   },
   {
@@ -1571,6 +1624,7 @@ const showMcpModal = ref(false)
 const mcpModalSelectedIds = ref([])
 
 const input = ref('')
+const sandboxHostWorkspacePath = ref('')
 const composerInputKey = ref(0)
 const composerPanelRef = ref(null)
 const inlineAgentQuery = ref('')
@@ -2339,19 +2393,23 @@ const hasAppliedDefaultModel = ref(false)
 
 const COMPACT_CHAT_BREAKPOINT = 980
 const DENSE_CHAT_BREAKPOINT = 720
-const CHAT_VIRTUALIZATION_MIN_MESSAGES = 40
-const CHAT_VIRTUALIZATION_OVERSCAN_PX = 720
-const CHAT_VIRTUALIZATION_FORCE_RENDER_MARGIN_PX = 360
+const CHAT_VIRTUALIZATION_MIN_MESSAGES = 24
+const CHAT_VIRTUALIZATION_OVERSCAN_PX = 640
+const CHAT_VIRTUALIZATION_FORCE_RENDER_MARGIN_PX = 240
 const CHAT_LIST_GAP_PX = 14
+const CHAT_ACTIVITY_LIST_GAP_PX = 5
 const CHAT_DEFAULT_MESSAGE_HEIGHT = 180
-const CHAT_RECENT_HEAVY_RENDER_COUNT = 24
-const CHAT_HEAVY_RENDER_SEED_COUNT = 32
-const CHAT_HEAVY_RENDER_WARM_BUFFER_EXTRA = 8
+const CHAT_DEFAULT_MIN_MESSAGE_HEIGHT = 96
+const CHAT_RECENT_HEAVY_RENDER_COUNT = 12
+const CHAT_HEAVY_RENDER_SEED_COUNT = 12
+const CHAT_HEAVY_RENDER_WARM_BUFFER_EXTRA = 2
 const CHAT_SCROLL_COMPENSATION_SUSPEND_MS = 640
 const CHAT_SCROLL_COMPENSATION_MARK_MS = 96
+const CHAT_USER_SCROLL_ACTIVE_MS = 160
 const CHAT_TOOL_COMPACT_MIN_MESSAGES = 120
 const CHAT_TOOL_COMPACT_MIN_TOOL_MESSAGES = 32
-const CHAT_TOOL_COMPACT_ITEM_FIXED_HEIGHT = 40
+const CHAT_TOOL_COMPACT_ITEM_FIXED_HEIGHT = 26
+const CHAT_ASSISTANT_ACTIVITY_ITEM_HEIGHT = 28
 const CHAT_STREAM_RENDER_THROTTLE_MS = 72
 
 function syncChatResponsiveState() {
@@ -3553,6 +3611,29 @@ const systemContent = computed(() => {
   return blocks.join('\n\n').trim()
 })
 
+function resolveSessionHostWorkspacePath(sessionRecord = null) {
+  const fromState = normalizeSelectedHostWorkspacePath(
+    sessionRecord?.state?.sandboxHostWorkspacePath
+  )
+  if (fromState) return fromState
+  if (!sessionRecord || sessionRecord === session || isMemorySessionActive(sessionRecord)) {
+    return normalizeSelectedHostWorkspacePath(sandboxHostWorkspacePath.value)
+  }
+  return ''
+}
+
+function buildHostWorkspacePrompt(sessionRecord = null) {
+  const workspacePath = resolveSessionHostWorkspacePath(sessionRecord)
+  if (!workspacePath) return ''
+  return [
+    '## 当前会话工作区',
+    `- 用户已明确选择本机目录作为当前会话工作区：${workspacePath}`,
+    '- `sandbox_run` / `bash_run` 会自动从该工作区执行；不要在工具参数中填写或猜测绝对路径。',
+    '- `cwd` 仅在需要进入工作区子目录时填写，并且必须使用工作区内的相对路径；未填写时使用工作区根目录。',
+    '- 这是用户授权的本机目录，命令可能直接修改其中的文件；执行前应保持改动范围与用户请求一致。'
+  ].join('\n')
+}
+
 function buildCombinedSystemContent(memorySystemContent = '', options = {}) {
   const blocks = []
   if (systemContent.value) blocks.push(String(systemContent.value || '').trim())
@@ -3560,6 +3641,8 @@ function buildCombinedSystemContent(memorySystemContent = '', options = {}) {
     options.sessionRecord && typeof options.sessionRecord === 'object'
       ? options.sessionRecord
       : getActiveMemorySession()
+  const workspacePrompt = buildHostWorkspacePrompt(summarySource)
+  if (workspacePrompt) blocks.push(workspacePrompt)
   const summaryText = String(summarySource?.contextSummary?.summaryText || '').trim()
   if (summaryText) {
     blocks.push(buildContextSummaryPrelude(summaryText))
@@ -3812,6 +3895,68 @@ function getContextTokenTelemetry(record = null) {
     return createEmptyContextTokenTelemetry()
   }
   return telemetry
+}
+
+function extractDirectoryDialogPath(result) {
+  const candidate = Array.isArray(result)
+    ? result[0]
+    : Array.isArray(result?.filePaths)
+      ? result.filePaths[0]
+      : result
+  if (typeof candidate === 'string') return candidate.trim()
+  return String(
+    candidate?.path ||
+    candidate?.filePath ||
+    candidate?.fullPath ||
+    candidate?.value ||
+    ''
+  ).trim()
+}
+
+function normalizeSelectedHostWorkspacePath(value) {
+  const raw = String(value || '').trim()
+  if (/^[a-zA-Z]:[\\/]$/.test(raw) || raw === '/' || raw === '\\') return raw
+  return raw.replace(/[\\/]+$/, '')
+}
+
+async function chooseSandboxHostWorkspace() {
+  if (sending.value || preparingSend.value) {
+    message.warning('请等待当前回复结束后再更换工作区')
+    return
+  }
+  const api = window?.utools || globalThis?.utools
+  if (typeof api?.showOpenDialog !== 'function') {
+    message.error('当前环境不支持目录选择')
+    return
+  }
+
+  try {
+    const selected = extractDirectoryDialogPath(await Promise.resolve(api.showOpenDialog({
+      title: '选择当前会话工作区',
+      buttonLabel: '使用此目录',
+      properties: ['openDirectory']
+    })))
+    const nextPath = normalizeSelectedHostWorkspacePath(selected)
+    if (!nextPath) return
+    sandboxHostWorkspacePath.value = nextPath
+    const record = saveActiveMemorySessionDraft()
+    void autoPersistMemorySessionWhenIdle(record)
+    message.success('已为当前会话启用本机工作区；命令执行仍会单独确认')
+  } catch (error) {
+    message.error(`选择工作区失败：${error?.message || String(error)}`)
+  }
+}
+
+function clearSandboxHostWorkspace() {
+  if (sending.value || preparingSend.value) {
+    message.warning('请等待当前回复结束后再更换工作区')
+    return
+  }
+  if (!sandboxHostWorkspacePath.value) return
+  sandboxHostWorkspacePath.value = ''
+  const record = saveActiveMemorySessionDraft()
+  void autoPersistMemorySessionWhenIdle(record)
+  message.info('已改回默认隔离沙盒')
 }
 
 function resolveContextEstimateSource(record, rawMessages) {
@@ -4515,7 +4660,13 @@ const footerHint = computed(() => {
   if (activeQueuedInputs.value.length) return `待处理 ${activeQueuedInputs.value.length} 条消息`
   if (effectiveHeaderHint.value) return effectiveHeaderHint.value
   if (!systemContent.value) return '系统提示词为空。你可以先选择提示词、启用技能，或在上方输入临时系统提示词。'
-  return `联网：${webSearchEnabled.value ? '开' : '关'} | MCP 工具：${activeMcpServers.value.length} | 自动批准：${autoApproveTools.value ? '开' : '关'}`
+  const workspaceSegments = normalizeSelectedHostWorkspacePath(
+    sandboxHostWorkspacePath.value
+  ).split(/[\\/]/).filter(Boolean)
+  const workspaceText = sandboxHostWorkspacePath.value
+    ? `本机工作区：${workspaceSegments[workspaceSegments.length - 1] || sandboxHostWorkspacePath.value}`
+    : '工作区：默认沙盒'
+  return `联网：${webSearchEnabled.value ? '开' : '关'} | MCP 工具：${activeMcpServers.value.length} | 自动批准：${autoApproveTools.value ? '开' : '关'} | ${workspaceText}`
 })
 
 const composerShortcutHint =
@@ -5145,6 +5296,7 @@ function videoInsightLabel(video) {
 const BUILTIN_AGENTS_TRACE_EVENT = 'builtin-agents-trace'
 const BUILTIN_AGENT_ID = 'builtin_agent_notes'
 const BUILTIN_AGENT_ORCHESTRATION_SKILL_ID = 'builtin_skill_agent_orchestration'
+const BUILTIN_SHELL_SKILL_ID = 'builtin_skill_shell'
 const BUILTIN_AGENTS_TOOL_APPROVAL_REQUEST_EVENT = 'builtin-agents-tool-approval-request'
 const BUILTIN_AGENTS_TOOL_APPROVAL_RESPONSE_EVENT = 'builtin-agents-tool-approval-response'
 const BUILTIN_AGENTS_TOOL_APPROVAL_MODE_CHANGE_EVENT = 'builtin-agents-tool-approval-mode-change'
@@ -5428,6 +5580,14 @@ function toolActivityMeta(msg) {
   return getToolActivityMeta(msg)
 }
 
+function toolActivityToolName(msg) {
+  return getToolActivityToolName(msg)
+}
+
+function toolActivitySource(msg) {
+  return getToolActivitySource(msg)
+}
+
 function shouldShowToolActivityStatus(msg) {
   return ['paused', 'stopped', 'error', 'rejected'].includes(getToolMessageStatus(msg))
 }
@@ -5564,6 +5724,8 @@ function buildToolExecutionMessageContent(options = {}) {
 function createPendingToolExecutionMessage({
   serverName = '',
   toolName = '',
+  toolTitle = '',
+  toolDescription = '',
   argsText = '{}',
   autoApproved = false,
   traceStreamId = '',
@@ -5593,6 +5755,8 @@ function createPendingToolExecutionMessage({
       toolStatus: 'running',
       toolServerName: String(serverName || '').trim(),
       toolName: String(toolName || '').trim(),
+      toolTitle: String(toolTitle || '').trim(),
+      toolDescription: String(toolDescription || '').trim(),
       toolArgsText: String(argsText || '').trim() || '{}',
       toolAutoApproved: !!autoApproved,
       toolCallId: String(toolCallId || '').trim(),
@@ -5618,6 +5782,18 @@ function createToolExecutionResultMessage(content = '', extra = {}, toolCallId =
 }
 
 function buildToolExecutionResultSubMeta(result) {
+  const resultKind = String(result?.kind || '').trim()
+  if (resultKind.startsWith('sandbox_')) {
+    if (result?.workspaceKind === 'host') {
+      const workspacePath = String(result?.workspacePath || '').trim()
+      const relativeCwd = String(result?.cwd || '.').trim()
+      return [
+        workspacePath ? `本机工作区：${workspacePath}` : '本机工作区',
+        relativeCwd && relativeCwd !== '.' ? `cwd：${relativeCwd}` : ''
+      ].filter(Boolean).join(' · ')
+    }
+    return `沙盒工作区：${String(result?.workspaceId || 'default').trim() || 'default'}`
+  }
   if (!isAgentRunToolResult(result)) return ''
   const agentName = String(result?.agent?.name || result?.agent?.id || '').trim()
   const traceCount = Array.isArray(result?.trace) ? result.trace.length : 0
@@ -6048,10 +6224,26 @@ function handleBuiltinAgentsTraceEvent(event) {
 }
 
 function prepareBuiltinAgentToolCallArgs(skillId, toolName, argsObj, pendingMessage) {
-  const isBuiltinAgentsSkill = String(skillId || '').trim() === BUILTIN_AGENT_ORCHESTRATION_SKILL_ID
-  if (!isBuiltinAgentsSkill || !isAgentRunToolName(toolName)) return argsObj
-
   const nextArgs = argsObj && typeof argsObj === 'object' && !Array.isArray(argsObj) ? { ...argsObj } : {}
+  delete nextArgs.__host_workspace_path
+
+  const normalizedSkillId = String(skillId || '').trim()
+  const normalizedToolName = String(toolName || '').trim()
+  if (
+    normalizedSkillId === BUILTIN_SHELL_SKILL_ID &&
+    (normalizedToolName === 'sandbox_run' || normalizedToolName === 'bash_run')
+  ) {
+    const targetRecord = getRunRecord(
+      pendingMessage?.toolAbortState || abortController.value || null
+    ) || getActiveMemorySession()
+    const workspacePath = resolveSessionHostWorkspacePath(targetRecord)
+    if (workspacePath) nextArgs.__host_workspace_path = workspacePath
+    return nextArgs
+  }
+
+  const isBuiltinAgentsSkill = normalizedSkillId === BUILTIN_AGENT_ORCHESTRATION_SKILL_ID
+  if (!isBuiltinAgentsSkill || !isAgentRunToolName(toolName)) return nextArgs
+
   const streamId = String(pendingMessage?.toolTraceStreamId || pendingMessage?.id || '').trim()
   const approvalMode = resolveCurrentToolApprovalMode(
     pendingMessage?.toolAbortState || abortController.value || null
@@ -6431,6 +6623,11 @@ const toolMessageHelpers = {
   toolMessageLabel,
   getToolMessageStatus,
   toolMessageStatusLabel,
+  toolActivityIcon,
+  toolActivityMeta,
+  toolActivitySource,
+  toolActivityToolName,
+  shouldShowToolActivityStatus,
   imageMetaLabel,
   imageInsightLabel,
   shouldRenderHeavyChatMessage,
@@ -6553,6 +6750,7 @@ let chatMessageVisibilityObserver = null
 let chatMessageResizeObserver = null
 const chatMessageElMap = new Map()
 const chatMessageHeightCache = new Map()
+const chatMessageEstimatedHeightCache = new Map()
 const chatMessageByIdMap = new Map()
 const intersectingHeavyChatMessageIds = new Set()
 const pendingChatItemHeightMeasureMap = new Map()
@@ -6562,11 +6760,12 @@ let pendingChatScrollCompensationRafId = 0
 let lastProcessedChatScrollTop = 0
 let didProcessChatScroll = false
 let programmaticChatScrollUntil = 0
+let userChatScrollActiveUntil = 0
 let sessionResetPromise = null
 
 function estimateChatMessageHeight(msg) {
   if (isFixedCompactToolMessage(msg)) return CHAT_TOOL_COMPACT_ITEM_FIXED_HEIGHT
-  if (isAssistantActivityMessage(msg) && !msg?.thinkingExpanded) return 40
+  if (isAssistantActivityMessage(msg) && !msg?.thinkingExpanded) return CHAT_ASSISTANT_ACTIVITY_ITEM_HEIGHT
   const role = String(msg?.role || '')
   const attachmentCount = Array.isArray(msg?.attachments) ? msg.attachments.length : 0
   const thinkingLength = String(msg?.thinking || '').length
@@ -6579,6 +6778,58 @@ function estimateChatMessageHeight(msg) {
   const attachmentExtra = attachmentCount * 76
   const thinkingExtra = msg?.thinkingExpanded ? Math.min(320, Math.ceil(thinkingLength / 10)) : 0
   return Math.max(112, base + contentExtra + attachmentExtra + thinkingExtra)
+}
+
+function getChatMessageMinimumHeight(msg) {
+  if (isFixedCompactToolMessage(msg)) return CHAT_TOOL_COMPACT_ITEM_FIXED_HEIGHT
+  if (isAssistantActivityMessage(msg) && !msg?.thinkingExpanded) return CHAT_ASSISTANT_ACTIVITY_ITEM_HEIGHT
+  return CHAT_DEFAULT_MIN_MESSAGE_HEIGHT
+}
+
+function getChatMessageMeasuredHeight(msg, rawHeight) {
+  return resolveChatVirtualItemHeight({
+    measuredHeight: rawHeight,
+    estimatedHeight: getEstimatedChatMessageHeight(msg),
+    minimumHeight: getChatMessageMinimumHeight(msg),
+    fallbackHeight: CHAT_DEFAULT_MESSAGE_HEIGHT
+  })
+}
+
+function getChatMessageGapBefore(previousMsg, currentMsg, index) {
+  return resolveChatVirtualItemGap({
+    hasPrevious: index > 0,
+    previousIsActivity: isChatActivityMessage(previousMsg),
+    currentIsActivity: isChatActivityMessage(currentMsg),
+    defaultGap: CHAT_LIST_GAP_PX,
+    consecutiveActivityGap: CHAT_ACTIVITY_LIST_GAP_PX
+  })
+}
+
+function getEstimatedChatMessageHeight(msg) {
+  const id = String(msg?.id || '').trim()
+  if (!id) return estimateChatMessageHeight(msg)
+  const role = String(msg?.role || '')
+  const contentLength = String(msg?.content || '').length
+  const thinkingLength = msg?.thinkingExpanded ? String(msg?.thinking || '').length : 0
+  const attachmentCount = Array.isArray(msg?.attachments) ? msg.attachments.length : 0
+  const layoutMode = isCompactChatLayout.value ? 'compact' : isDenseChatLayout.value ? 'dense' : 'wide'
+  const signature = [
+    role,
+    contentLength,
+    thinkingLength,
+    attachmentCount,
+    msg?.thinkingExpanded ? 1 : 0,
+    msg?.toolExpanded ? 1 : 0,
+    msg?.attachmentsExpanded ? 1 : 0,
+    getToolMessageStatus(msg),
+    layoutMode
+  ].join('|')
+  const cached = chatMessageEstimatedHeightCache.get(id)
+  if (cached?.signature === signature) return cached.height
+
+  const height = estimateChatMessageHeight(msg)
+  chatMessageEstimatedHeightCache.set(id, { signature, height })
+  return height
 }
 
 function estimateChatMessageContentHeight(content) {
@@ -6895,7 +7146,15 @@ const chatVirtualLayout = computed(() => {
   let offset = 0
   ;(session.messages || []).forEach((msg, index) => {
     const id = String(msg?.id || '').trim()
-    const height = Math.max(96, Number(chatMessageHeightCache.get(id)) || estimateChatMessageHeight(msg) || CHAT_DEFAULT_MESSAGE_HEIGHT)
+    const previousMsg = index > 0 ? session.messages[index - 1] : null
+    const gapBefore = getChatMessageGapBefore(previousMsg, msg, index)
+    const height = resolveChatVirtualItemHeight({
+      measuredHeight: chatMessageHeightCache.get(id),
+      estimatedHeight: getEstimatedChatMessageHeight(msg),
+      minimumHeight: getChatMessageMinimumHeight(msg),
+      fallbackHeight: CHAT_DEFAULT_MESSAGE_HEIGHT
+    })
+    offset += gapBefore
     const top = offset
     const bottom = top + height
     items.push({
@@ -6904,15 +7163,16 @@ const chatVirtualLayout = computed(() => {
       top,
       bottom,
       height,
+      gapBefore,
       msg
     })
     if (id) {
       idToIndex.set(id, index)
       topById.set(id, top)
     }
-    offset = bottom + CHAT_LIST_GAP_PX
+    offset = bottom
   })
-  const totalHeight = items.length ? Math.max(0, offset - CHAT_LIST_GAP_PX) : 0
+  const totalHeight = items.length ? Math.max(0, offset) : 0
   return {
     items,
     idToIndex,
@@ -7102,8 +7362,11 @@ function getStickyChatBubbleState(msg) {
       type: 'thinking',
       label: msg.streaming ? '思考中...' : '思考完成',
       meta: '',
+      toolName: '',
+      source: '',
       status: '',
       statusText: '',
+      showStatus: false,
       actionText: '收起思考'
     }
   }
@@ -7114,8 +7377,11 @@ function getStickyChatBubbleState(msg) {
       type: 'attachments',
       label: '附件',
       meta: `${countImageAttachments(msg)} 图 / ${countFileAttachments(msg)} 文件`,
+      toolName: '',
+      source: '',
       status: '',
       statusText: '',
+      showStatus: false,
       actionText: '收起附件'
     }
   }
@@ -7126,10 +7392,13 @@ function getStickyChatBubbleState(msg) {
       id,
       type: 'tool',
       label: toolMessageLabel(msg),
-      meta: msg.toolSubMeta || msg.toolMeta || '',
+      meta: toolActivityMeta(msg),
+      toolName: toolActivityToolName(msg),
+      source: toolActivitySource(msg),
       status,
       statusText: toolMessageStatusLabel(msg),
-      actionText: '收起工具'
+      showStatus: shouldShowToolActivityStatus(msg),
+      actionText: '收起'
     }
   }
 
@@ -7143,8 +7412,11 @@ function setStickyChatBubbleState(next) {
     prev?.type === next?.type &&
     prev?.label === next?.label &&
     prev?.meta === next?.meta &&
+    prev?.toolName === next?.toolName &&
+    prev?.source === next?.source &&
     prev?.status === next?.status &&
     prev?.statusText === next?.statusText &&
+    prev?.showStatus === next?.showStatus &&
     prev?.actionText === next?.actionText
   ) {
     return
@@ -7251,7 +7523,11 @@ function queueChatItemHeightMeasure(messageId, el) {
       const itemIndex = layoutBefore?.idToIndex?.get(measureId)
       const layoutItem = Number.isInteger(itemIndex) ? layoutBefore?.items?.[itemIndex] : null
       const previousHeight = Number(chatMessageHeightCache.get(measureId) || layoutItem?.height || 0)
-      const nextHeight = Math.max(96, Math.ceil(targetEl.getBoundingClientRect().height || targetEl.offsetHeight || 0))
+      const msg = resolveChatMessageById(measureId)
+      const nextHeight = getChatMessageMeasuredHeight(
+        msg,
+        targetEl.getBoundingClientRect().height || targetEl.offsetHeight || 0
+      )
       if (!nextHeight || previousHeight === nextHeight) return
       chatMessageHeightCache.set(measureId, nextHeight)
       if (Number(layoutItem?.bottom) <= viewportTop + 1) {
@@ -7316,6 +7592,7 @@ function clearQueuedChatScrollCompensation() {
 
 function shouldApplyChatScrollCompensation() {
   if (isAtBottom.value) return false
+  if (Date.now() <= userChatScrollActiveUntil) return false
   const el = chatScrollEl.value || resolveScrollbarContainerEl()
   return !!el
 }
@@ -7355,7 +7632,10 @@ function ensureChatMessageResizeObserver() {
       const itemIndex = layoutBefore?.idToIndex?.get(id)
       const layoutItem = Number.isInteger(itemIndex) ? layoutBefore?.items?.[itemIndex] : null
       const prevHeight = Number(chatMessageHeightCache.get(id) || layoutItem?.height || estimateChatMessageHeight(msg) || 0)
-      const nextHeight = Math.max(96, Math.ceil(entry.contentRect?.height || target.getBoundingClientRect().height || target.offsetHeight || 0))
+      const nextHeight = getChatMessageMeasuredHeight(
+        msg,
+        entry.contentRect?.height || target.getBoundingClientRect().height || target.offsetHeight || 0
+      )
       if (!nextHeight || prevHeight === nextHeight) return
       chatMessageHeightCache.set(id, nextHeight)
       if (Number(layoutItem?.bottom) <= viewportTop + 1) {
@@ -7738,6 +8018,9 @@ watch(
     Array.from(chatMessageHeightCache.keys()).forEach((id) => {
       if (!validIds.has(id)) chatMessageHeightCache.delete(id)
     })
+    Array.from(chatMessageEstimatedHeightCache.keys()).forEach((id) => {
+      if (!validIds.has(id)) chatMessageEstimatedHeightCache.delete(id)
+    })
     if (hydratedHeavyChatMessageIds.value.size) {
       const nextHydratedIds = new Set()
       hydratedHeavyChatMessageIds.value.forEach((id) => {
@@ -7819,6 +8102,9 @@ function handleChatScroll(e) {
   const currentTop = Number(targetEl?.scrollTop || 0)
   const previousTop = didProcessChatScroll ? lastProcessedChatScrollTop : Number(chatScrollTop.value || 0)
   const isProgrammaticScroll = Date.now() <= programmaticChatScrollUntil
+  if (!isProgrammaticScroll && Math.abs(currentTop - previousTop) > 0.5) {
+    userChatScrollActiveUntil = Date.now() + CHAT_USER_SCROLL_ACTIVE_MS
+  }
   if (!isProgrammaticScroll && currentTop + 1 < previousTop) {
     autoScrollSuspendedByUser.value = true
     autoScrollEnabled.value = false
@@ -7829,6 +8115,7 @@ function handleChatScroll(e) {
 function handleChatWheel(e) {
   const deltaY = Number(e?.deltaY || 0)
   if (!deltaY) return
+  userChatScrollActiveUntil = Date.now() + CHAT_USER_SCROLL_ACTIVE_MS
   if (deltaY < 0) {
     autoScrollSuspendedByUser.value = true
     autoScrollEnabled.value = false
@@ -7897,6 +8184,7 @@ function clearQueuedChatScrollProcessing() {
   lastProcessedChatScrollTop = 0
   didProcessChatScroll = false
   programmaticChatScrollUntil = 0
+  userChatScrollActiveUntil = 0
 }
 
 async function scrollToBottom(options = {}) {
@@ -8839,7 +9127,7 @@ async function switchMemorySession(id) {
 
   await persistActiveMemorySessionBeforeLeaving()
   await withChatSessionOpeningHeavyRender(async () => {
-    await maybeWarmMarkdownPreviewRuntimeForMessages(record.messages)
+    void maybeWarmMarkdownPreviewRuntimeForMessages(record.messages).catch(() => {})
     restoreMemorySession(record, { skipSaveCurrent: true, skipScroll: true })
     await scrollToBottom({ force: true })
     await settleChatViewportAfterSessionOpen({
@@ -8941,6 +9229,7 @@ function buildCurrentChatState() {
     agentSkillIds: deepCopyJson(agentSkillIds.value, []),
     activatedAgentSkillIds: deepCopyJson(activatedAgentSkillIds.value, []),
     manualMcpIds: deepCopyJson(manualMcpIds.value, []),
+    sandboxHostWorkspacePath: normalizeSelectedHostWorkspacePath(sandboxHostWorkspacePath.value),
     webSearchEnabled: webSearchEnabled.value,
     toolApprovalMode: toolApprovalMode.value,
     autoApproveTools: autoApproveTools.value,
@@ -8978,6 +9267,7 @@ function buildDefaultChatState() {
     agentSkillIds: [],
     activatedAgentSkillIds: [],
     manualMcpIds: [],
+    sandboxHostWorkspacePath: '',
     webSearchEnabled: false,
     toolApprovalMode: TOOL_APPROVAL_MODE_SAFE,
     autoApproveTools: true,
@@ -9620,6 +9910,8 @@ function normalizeLoadedDisplayMessage(msg) {
     if (typeof raw.toolStatus !== 'string' || !raw.toolStatus.trim()) raw.toolStatus = raw.role === 'tool_call' ? 'running' : 'success'
     if (typeof raw.toolName !== 'string') raw.toolName = String(raw.toolName || '')
     if (typeof raw.toolServerName !== 'string') raw.toolServerName = String(raw.toolServerName || '')
+    if (typeof raw.toolTitle !== 'string') raw.toolTitle = String(raw.toolTitle || '')
+    if (typeof raw.toolDescription !== 'string') raw.toolDescription = String(raw.toolDescription || '')
     if (typeof raw.toolArgsText !== 'string') raw.toolArgsText = String(raw.toolArgsText || '')
     if (typeof raw.toolAutoApproved !== 'boolean') raw.toolAutoApproved = false
     if (typeof raw.toolSubMeta !== 'string') raw.toolSubMeta = String(raw.toolSubMeta || '')
@@ -9725,6 +10017,9 @@ function applyLoadedChatState(state) {
   if (Array.isArray(hydratedState.agentSkillIds)) agentSkillIds.value = normalizeStringList(hydratedState.agentSkillIds)
   if (Array.isArray(hydratedState.activatedAgentSkillIds)) activatedAgentSkillIds.value = normalizeStringList(hydratedState.activatedAgentSkillIds)
   if (Array.isArray(hydratedState.manualMcpIds)) manualMcpIds.value = normalizeStringList(hydratedState.manualMcpIds)
+  sandboxHostWorkspacePath.value = normalizeSelectedHostWorkspacePath(
+    hydratedState.sandboxHostWorkspacePath
+  )
 
   if (typeof hydratedState.webSearchEnabled === 'boolean') webSearchEnabled.value = hydratedState.webSearchEnabled
   toolApprovalMode.value = normalizeToolApprovalMode(
@@ -9763,9 +10058,128 @@ function applyLoadedChatState(state) {
   }
 }
 
-async function loadSessionFromFile(filePath) {
+let historySessionLoadHideTimer = null
+let historySessionLoadInFlight = false
+let pendingHistorySessionLoadPath = ''
+
+function beginHistorySessionLoad(filePath) {
+  if (historySessionLoadHideTimer) {
+    window.clearTimeout(historySessionLoadHideTimer)
+    historySessionLoadHideTimer = null
+  }
+  const token = Number(historySessionLoadState.token || 0) + 1
+  Object.assign(historySessionLoadState, {
+    visible: true,
+    blocking: true,
+    path: String(filePath || '').trim(),
+    phase: '正在准备历史会话',
+    detail: '当前页面会保持可见，完成后自动切换',
+    percent: 8,
+    token
+  })
+  historySessionLoadInFlight = true
+  return token
+}
+
+function updateHistorySessionLoad(token, patch = {}) {
+  if (!token || Number(historySessionLoadState.token) !== Number(token)) return false
+  Object.assign(historySessionLoadState, patch)
+  return true
+}
+
+function scheduleHistorySessionLoadHide(token, delayMs = 680) {
+  if (!token || Number(historySessionLoadState.token) !== Number(token)) return
+  if (historySessionLoadHideTimer) window.clearTimeout(historySessionLoadHideTimer)
+  historySessionLoadHideTimer = window.setTimeout(() => {
+    historySessionLoadHideTimer = null
+    if (Number(historySessionLoadState.token) !== Number(token)) return
+    historySessionLoadState.visible = false
+    historySessionLoadState.blocking = false
+  }, Math.max(0, Number(delayMs) || 0))
+}
+
+function finishHistorySessionLoad(token, options = {}) {
+  const updated = updateHistorySessionLoad(token, {
+    visible: true,
+    blocking: false,
+    phase: String(options.phase || '历史会话已显示'),
+    detail: String(options.detail || ''),
+    percent: 100
+  })
+  if (!updated) return
+  historySessionLoadInFlight = false
+  scheduleHistorySessionLoadHide(token, options.delayMs)
+}
+
+function failHistorySessionLoad(token, err) {
+  const updated = updateHistorySessionLoad(token, {
+    visible: true,
+    blocking: false,
+    phase: '历史会话加载失败',
+    detail: String(err?.message || err || '请稍后重试'),
+    percent: 100
+  })
+  if (!updated) return
+  historySessionLoadInFlight = false
+  scheduleHistorySessionLoadHide(token, 1800)
+}
+
+async function yieldHistorySessionLoadFrame() {
+  await nextTick()
+  await waitForLayoutFrame()
+}
+
+function hydrateLoadedSessionMediaInBackground({ token, record, messages, sessionFilePath }) {
+  const mediaCount = countSessionMediaItems(messages)
+  if (!mediaCount) {
+    finishHistorySessionLoad(token)
+    return
+  }
+
+  updateHistorySessionLoad(token, {
+    visible: true,
+    blocking: false,
+    phase: '历史会话已显示',
+    detail: `正在后台恢复 ${mediaCount} 个媒体预览`,
+    percent: 92
+  })
+  historySessionLoadInFlight = false
+
+  void hydrateChatSessionMediaAssets(
+    { messages },
+    {
+      sessionFilePath,
+      concurrency: 4,
+      onProgress(processed, total) {
+        if (processed !== total && processed % 4 !== 0) return
+        updateHistorySessionLoad(token, {
+          detail: `正在后台恢复媒体预览 ${processed}/${total}`,
+          percent: Math.min(99, 92 + Math.round((processed / Math.max(1, total)) * 7))
+        })
+      }
+    }
+  ).then(() => {
+    record.messages = [...messages]
+    if (String(activeMemorySessionId.value || '') === String(record.id || '')) {
+      session.messages = record.messages
+    }
+    finishHistorySessionLoad(token, {
+      phase: '历史会话已就绪',
+      detail: `${mediaCount} 个媒体预览已恢复`
+    })
+  }).catch((err) => {
+    console.warn('[chat session] background media hydration failed:', err)
+    finishHistorySessionLoad(token, {
+      phase: '历史会话已显示',
+      detail: '部分媒体预览恢复失败'
+    })
+  })
+}
+
+async function loadSessionFromFile(filePath, options = {}) {
   const relPath = String(filePath || '').trim()
-  if (!relPath) return
+  if (!relPath) return false
+  const loadToken = Number(options.loadToken || 0)
 
   let activeRecord = getActiveMemorySession()
   let detachedRunningRecord = null
@@ -9774,6 +10188,11 @@ async function loadSessionFromFile(filePath) {
   )
 
   if (runningTargetRecord) {
+    updateHistorySessionLoad(loadToken, {
+      phase: '正在恢复后台会话',
+      detail: '生成任务仍在运行',
+      percent: 42
+    })
     const switchingRecord = String(activeRecord?.id || '') !== String(runningTargetRecord.id || '')
     if (switchingRecord) {
       if (isMemorySessionRunning(activeRecord)) {
@@ -9785,7 +10204,7 @@ async function loadSessionFromFile(filePath) {
     }
 
     await withChatSessionOpeningHeavyRender(async () => {
-      await maybeWarmMarkdownPreviewRuntimeForMessages(runningTargetRecord.messages)
+      void maybeWarmMarkdownPreviewRuntimeForMessages(runningTargetRecord.messages).catch(() => {})
       restoreMemorySession(runningTargetRecord, { skipSaveCurrent: true, skipScroll: true })
       await nextTick()
       await sessionTreeRef.value?.selectPath?.(relPath)
@@ -9803,7 +10222,11 @@ async function loadSessionFromFile(filePath) {
       })
     })
     message.success('正在运行的会话已加载')
-    return
+    finishHistorySessionLoad(loadToken, {
+      phase: '后台会话已显示',
+      detail: '生成任务继续在后台运行'
+    })
+    return true
   }
 
   activeRecord = getActiveMemorySession()
@@ -9814,9 +10237,18 @@ async function loadSessionFromFile(filePath) {
   ) {
     await sessionTreeRef.value?.selectPath?.(relPath)
     syncActiveRequestUiState(activeRecord)
-    return
+    finishHistorySessionLoad(loadToken, {
+      phase: '历史会话已显示',
+      detail: '当前已是所选会话'
+    })
+    return true
   }
 
+  updateHistorySessionLoad(loadToken, {
+    phase: '正在保存当前会话',
+    detail: '避免切换时丢失最新内容',
+    percent: 18
+  })
   if (isMemorySessionRunning(activeRecord)) {
     detachedRunningRecord = activeRecord
     await detachRunningSessionToHistory({ notify: false, restoreTarget: false })
@@ -9826,12 +10258,29 @@ async function loadSessionFromFile(filePath) {
   }
 
   try {
+    updateHistorySessionLoad(loadToken, {
+      phase: '正在读取历史会话',
+      detail: getSessionTitleFromPath(relPath),
+      percent: 34
+    })
+    await yieldHistorySessionLoadFrame()
     const parsed = await readSessionJsonFile(relPath, { repairIfRecovered: true })
     if (!parsed.ok) {
       throw new Error('解析会话文件失败：' + (parsed.error?.message || '未知错误'))
     }
 
     const data = parsed.value
+    const rawMessageCount = Array.isArray(data?.session?.messages)
+      ? data.session.messages.length
+      : Array.isArray(data?.messages)
+        ? data.messages.length
+        : 0
+    updateHistorySessionLoad(loadToken, {
+      phase: '正在整理会话内容',
+      detail: `${rawMessageCount} 条消息`,
+      percent: 56
+    })
+    await yieldHistorySessionLoadFrame()
     const persistedState = data?.state && typeof data.state === 'object' ? data.state : null
     const state = persistedState ? buildHydratedChatState(persistedState) : buildDefaultChatState()
     const sessionCreatedAtMs =
@@ -9896,10 +10345,9 @@ async function loadSessionFromFile(filePath) {
       })
     }
 
-    await Promise.all([
-      hydrateChatSessionMediaAssets({ messages: displaySafe }, { sessionFilePath: relPath }),
-      maybeWarmMarkdownPreviewRuntimeForMessages(displaySafe)
-    ])
+    // 富文本运行时和媒体 Blob 不再阻塞首屏；先显示纯文本占位和可视区，
+    // 再在后台渐进升级，避免大历史会话长时间白屏后集中重排。
+    void maybeWarmMarkdownPreviewRuntimeForMessages(displaySafe).catch(() => {})
 
     const loadedTitle =
       typeof data?.title === 'string' && data.title.trim() ? data.title.trim() : getSessionTitleFromPath(relPath)
@@ -9964,6 +10412,11 @@ async function loadSessionFromFile(filePath) {
       clearMemoryCandidateFlushTimer(record)
     }
 
+    updateHistorySessionLoad(loadToken, {
+      phase: '正在渲染最近消息',
+      detail: '较早内容会在滚动到附近时再挂载',
+      percent: 78
+    })
     await withChatSessionOpeningHeavyRender(async () => {
       await nextTick()
       await sessionTreeRef.value?.selectPath?.(relPath)
@@ -9985,17 +10438,50 @@ async function loadSessionFromFile(filePath) {
     if (resumableCount) {
       message.info(`检测到 ${resumableCount} 个可继续轮询的视频任务，可在任务卡片中恢复。`)
     }
+    hydrateLoadedSessionMediaInBackground({
+      token: loadToken,
+      record,
+      messages: displaySafe,
+      sessionFilePath: relPath
+    })
+    return true
   } catch (err) {
     if (detachedRunningRecord && isMemorySessionRunning(detachedRunningRecord)) {
       restoreMemorySession(detachedRunningRecord, { skipSaveCurrent: true })
     }
     message.error('加载会话失败：' + (err?.message || String(err)))
+    failHistorySessionLoad(loadToken, err)
+    return false
   }
 }
 
 async function handleSessionHistorySelect(filePath) {
-  await loadSessionFromFile(filePath)
-  if (isCompactChatLayout.value) sessionSiderCollapsed.value = true
+  const requestedPath = String(filePath || '').trim()
+  if (!requestedPath) return
+  if (historySessionLoadInFlight) {
+    pendingHistorySessionLoadPath = requestedPath
+    updateHistorySessionLoad(historySessionLoadState.token, {
+      detail: `当前完成后将切换到：${getSessionTitleFromPath(requestedPath)}`
+    })
+    return
+  }
+
+  let targetPath = requestedPath
+  while (targetPath) {
+    pendingHistorySessionLoadPath = ''
+    const loadToken = beginHistorySessionLoad(targetPath)
+    try {
+      const loaded = await loadSessionFromFile(targetPath, { loadToken })
+      if (loaded && isCompactChatLayout.value) sessionSiderCollapsed.value = true
+      if (!loaded && historySessionLoadState.blocking) {
+        failHistorySessionLoad(loadToken, '会话未能加载')
+      }
+    } catch (err) {
+      message.error('加载会话失败：' + (err?.message || String(err)))
+      failHistorySessionLoad(loadToken, err)
+    }
+    targetPath = pendingHistorySessionLoadPath
+  }
 }
 
 watch(
@@ -10139,6 +10625,13 @@ function stop() {
 }
 
 onBeforeUnmount(() => {
+  if (historySessionLoadHideTimer) {
+    window.clearTimeout(historySessionLoadHideTimer)
+    historySessionLoadHideTimer = null
+  }
+  historySessionLoadInFlight = false
+  pendingHistorySessionLoadPath = ''
+  chatMessageEstimatedHeightCache.clear()
   cancelPendingToolApprovals()
   sessionApprovedToolKeys.clear()
   chatRunInputQueue.clearAll()
@@ -13027,7 +13520,7 @@ async function regenerateAssistant(msg) {
   })
   if (!ok) return
 
-  await startPreparingSend(async () => {
+  await startPreparingSend(async ({ release }) => {
     truncateConversationAfterUser(userApiIndex, userDisplayIndex)
     const requestRecord = getActiveMemorySession()
     const userDisplay = session.messages[userDisplayIndex]
@@ -13040,7 +13533,7 @@ async function regenerateAssistant(msg) {
       requestRecord,
       excludeLatestUserTurnFromMemoryRecall: true
     })
-    await runChatSession({
+    const runPromise = runChatSession({
       ...cfg,
       sessionRecord: requestRecord,
       memorySystemContent,
@@ -13049,6 +13542,8 @@ async function regenerateAssistant(msg) {
         if (isMemorySessionActive(requestRecord)) await scrollToBottom({ force: true })
       }
     })
+    release()
+    await runPromise
   })
 }
 
@@ -13112,7 +13607,7 @@ async function submitUserEdit(msg) {
   })
   if (!ok) return
 
-  await startPreparingSend(async () => {
+  await startPreparingSend(async ({ release }) => {
     msg.content = draft || (hasAttachments ? '(sent attachments)' : '')
     msg.render = inferUserDisplayMessageRender(msg.content)
     msg.editing = false
@@ -13135,7 +13630,7 @@ async function submitUserEdit(msg) {
       requestRecord,
       excludeLatestUserTurnFromMemoryRecall: true
     })
-    await runChatSession({
+    const runPromise = runChatSession({
       ...cfg,
       sessionRecord: requestRecord,
       memorySystemContent,
@@ -13144,6 +13639,8 @@ async function submitUserEdit(msg) {
         if (isMemorySessionActive(requestRecord)) await scrollToBottom({ force: true })
       }
     })
+    release()
+    await runPromise
   })
 }
 
@@ -14422,19 +14919,6 @@ async function prepareChatRequestContext({
   }
 }
 
-async function withPreparingSend(task) {
-  if (sending.value || preparingSend.value) return false
-  preparingSend.value = true
-  preparingSendStage.value = '正在准备上下文'
-  try {
-    await task?.()
-    return true
-  } finally {
-    preparingSend.value = false
-    preparingSendStage.value = ''
-  }
-}
-
 async function startPreparingSend(task) {
   if (sending.value || preparingSend.value) return false
   preparingSend.value = true
@@ -15423,9 +15907,12 @@ async function buildToolsBundle(options = {}) {
         serverId: server._id,
         toolName: t.name,
         serverName: server.name || server._id,
+        toolTitle: String(t.annotations?.title || '').trim(),
+        toolDescription: String(t.description || '').trim(),
         transportType: server.transportType,
         forceApproval: approvalPolicy.forceApproval,
         approvalKind: approvalPolicy.approvalKind,
+        approvalReason: approvalPolicy.approvalReason,
         annotations: t.annotations || null,
         unwrapArgs: toolDef.unwrapArgs
       })
@@ -15458,6 +15945,8 @@ function createDisplayMessage(role, content = '', extra = {}) {
     base.toolStatus = role === 'tool_call' ? 'running' : 'success'
     base.toolName = ''
     base.toolServerName = ''
+    base.toolTitle = ''
+    base.toolDescription = ''
     base.toolCallId = ''
     base.toolArgsText = ''
     base.toolAutoApproved = false
@@ -15796,6 +16285,8 @@ function normalizeToolCallExecutionContext(toolCall, toolMap) {
   const mapping = toolMap.get(fn)
   const serverName = mapping?.serverName || '未知'
   const toolName = mapping?.toolName || fn
+  const toolTitle = String(mapping?.toolTitle || '').trim()
+  const toolDescription = String(mapping?.toolDescription || '').trim()
   const parsedArgs = safeJsonParse(argsRaw)
   const argsObj = parsedArgs.ok && parsedArgs.value && typeof parsedArgs.value === 'object' ? parsedArgs.value : {}
   const argsText = parsedArgs.ok ? stableStringify(parsedArgs.value) : argsRaw
@@ -15808,6 +16299,8 @@ function normalizeToolCallExecutionContext(toolCall, toolMap) {
     mapping,
     serverName,
     toolName,
+    toolTitle,
+    toolDescription,
     argsRaw,
     argsObj,
     argsText: argsText || '{}'
@@ -15853,6 +16346,8 @@ async function hydrateSkillGatewayExecutionContext(context, abortState = null) {
     mapping: resolved.mapping,
     serverName: resolved.mapping.serverName,
     toolName: resolved.mapping.toolName,
+    toolTitle: String(resolved.mapping.toolTitle || '').trim(),
+    toolDescription: String(resolved.mapping.toolDescription || '').trim(),
     argsObj: resolved.args,
     argsText: stableStringify(resolved.args)
   }
@@ -15907,7 +16402,19 @@ function resolveToolApprovalTarget(context = {}) {
       resolvedTool = cachedTools.find((tool) => String(tool?.name || '').trim() === toolName) || null
     }
   }
-  const resolvedPolicy = resolveMcpToolApprovalPolicy(resolvedTool)
+  const isMcpTool =
+    mapping?.type === 'mcp' ||
+    (mapping?.type === 'internal' && mapping?.internal === 'mcp_call')
+  const resolvedPolicy = isMcpTool
+    ? resolveMcpToolApprovalPolicy(resolvedTool || {
+        name: toolName,
+        annotations: mapping.annotations || null
+      })
+    : {
+        forceApproval: false,
+        approvalKind: 'tool',
+        approvalReason: ''
+      }
   const configuredApprovalKind = String(mapping.approvalKind || resolvedPolicy.approvalKind || '').trim()
   const isShell = configuredApprovalKind === 'shell'
   const approvalKind =
@@ -15921,16 +16428,27 @@ function resolveToolApprovalTarget(context = {}) {
     configuredApprovalKind === 'execution' ||
     mapping.forceApproval === true ||
     resolvedPolicy.forceApproval === true
+  const approvalReason =
+    isShell
+      ? '命令执行始终需要确认具体命令和工作目录'
+      : configuredApprovalKind === 'execution'
+        ? '技能脚本或代码执行需要确认具体脚本和参数'
+        : String(mapping.approvalReason || resolvedPolicy.approvalReason || (
+            mapping.forceApproval === true ? '技能将写入数据或改变外部状态' : ''
+          )).trim()
 
   return {
     server,
     serverId,
     serverName,
     toolName,
+    toolTitle: String(resolvedTool?.annotations?.title || mapping.toolTitle || context.toolTitle || '').trim(),
+    toolDescription: String(resolvedTool?.description || mapping.toolDescription || context.toolDescription || '').trim(),
     argsObj,
     argsText: String(argsText || '{}').trim() || '{}',
     approvalKind,
-    forceApproval
+    forceApproval,
+    approvalReason
   }
 }
 
@@ -15941,13 +16459,22 @@ async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, ab
   const normalizedContext = normalizeToolCallExecutionContext(toolCall, toolMap)
   const context = await hydrateSkillGatewayExecutionContext(normalizedContext, abortState)
   const approvalTarget = resolveToolApprovalTarget(context)
+  const approvedHostWorkspacePath = approvalTarget.approvalKind === 'shell'
+    ? resolveSessionHostWorkspacePath(targetRecord)
+    : ''
+  const approvalKeyArgs = approvedHostWorkspacePath
+    ? {
+        ...approvalTarget.argsObj,
+        __host_workspace_path: approvedHostWorkspacePath
+      }
+    : approvalTarget.argsObj
   const approvalKey = buildSessionToolApprovalKey({
     sessionId: String(targetRecord?.id || 'chat'),
     serverId: approvalTarget.serverId,
     serverName: approvalTarget.serverName,
     toolName: approvalTarget.toolName,
     approvalKind: approvalTarget.approvalKind,
-    args: approvalTarget.argsObj,
+    args: approvalKeyArgs,
     argsText: approvalTarget.argsText
   })
   const currentApprovalMode = resolveCurrentToolApprovalMode(abortState)
@@ -15960,17 +16487,22 @@ async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, ab
     }).action === 'allow'
 
   const pendingToolMessage = createPendingToolExecutionMessage({
-    serverName: context.serverName,
-    toolName: context.toolName,
-    argsText: context.argsText,
+    serverName: approvalTarget.serverName,
+    toolName: approvalTarget.toolName,
+    toolTitle: approvalTarget.toolTitle,
+    toolDescription: approvalTarget.toolDescription,
+    argsText: approvalTarget.argsText,
     autoApproved: autoApproved,
-    argsObj: context.argsObj,
+    argsObj: approvalTarget.argsObj,
     toolCallId: context.toolCallId,
     toolExecutionId: context.toolExecutionId,
     toolSessionId: String(targetRecord?.id || '').trim()
   })
   pendingToolMessage.toolAbortState = abortState || null
   pendingToolMessage.toolApprovalMode = currentApprovalMode
+  if (approvedHostWorkspacePath) {
+    pendingToolMessage.toolSubMeta = `本机工作区：${approvedHostWorkspacePath}`
+  }
   targetSession.messages.push(pendingToolMessage)
   await maybeScrollToBottomForRun(abortState)
 
@@ -15998,6 +16530,14 @@ async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, ab
       sessionId: String(targetRecord?.id || 'chat'),
       sessionTitle: resolveMemorySessionTitle(targetRecord),
       approvalKind: approvalTarget.approvalKind,
+      extraLines: [
+        ...(approvalTarget.approvalReason
+          ? [`需要确认：${approvalTarget.approvalReason}`]
+          : []),
+        ...(approvedHostWorkspacePath
+          ? [`本机工作区：${approvedHostWorkspacePath}`]
+          : [])
+      ],
       rememberText:
         approvalTarget.approvalKind === 'shell'
           ? '本会话允许相同命令'
@@ -16225,6 +16765,17 @@ function removeQueuedInput(entryId) {
   message.info(removed.mode === CHAT_RUN_INPUT_MODE_STEER ? '已移除引导' : '已移除排队消息')
 }
 
+function steerQueuedInput(entryId) {
+  const updated = chatRunInputQueue.setMode(
+    activeMemorySessionId.value,
+    entryId,
+    CHAT_RUN_INPUT_MODE_STEER
+  )
+  if (!updated) return
+  touchChatRunInputQueue()
+  message.info('已改为引导，将在当前任务的下一个安全边界生效')
+}
+
 function scheduleQueuedInputDrain(record = getMemorySessionById(activeMemorySessionId.value)) {
   const sessionId = String(record?.id || '').trim()
   if (!sessionId || queuedInputDrainTimers.has(sessionId)) return
@@ -16269,7 +16820,7 @@ async function dispatchChatDraft({ text: rawText, attachments: rawAttachments } 
   if (!text && !attachments.length) return false
 
   let prepared = false
-  const accepted = await withPreparingSend(async () => {
+  const accepted = await startPreparingSend(async ({ release }) => {
     const userDisplay = createDisplayMessage('user', text || (attachments.length ? '(sent attachments)' : ''))
     if (attachments.length) {
       userDisplay.attachmentsExpanded = false
@@ -16325,6 +16876,7 @@ async function dispatchChatDraft({ text: rawText, attachments: rawAttachments } 
     }
 
     if (cfg.requestMode === 'video-generation') {
+      release()
       const generated = await startDetachedVideoGeneration({ cfg, text, attachments, userDisplay })
       if (generated && canRetryMemorySessionTitle(requestRecord)) {
         requestSessionTitleAsync({
@@ -16338,7 +16890,7 @@ async function dispatchChatDraft({ text: rawText, attachments: rawAttachments } 
       return
     }
 
-    const succeeded = await runChatSession({
+    const runPromise = runChatSession({
       ...cfg,
       sessionRecord: requestRecord,
       memorySystemContent,
@@ -16356,6 +16908,8 @@ async function dispatchChatDraft({ text: rawText, attachments: rawAttachments } 
         })
       }
     })
+    release()
+    const succeeded = await runPromise
 
     if (succeeded && canRetryMemorySessionTitle(requestRecord)) {
       requestSessionTitleAsync({
@@ -16374,7 +16928,7 @@ async function dispatchChatDraft({ text: rawText, attachments: rawAttachments } 
 async function send() {
   if (preparingSend.value) return
   if (sending.value) {
-    enqueueComposerDraft(CHAT_RUN_INPUT_MODE_STEER)
+    enqueueComposerDraft(CHAT_RUN_INPUT_MODE_QUEUE)
     return
   }
 

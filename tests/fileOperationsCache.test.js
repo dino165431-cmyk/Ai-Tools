@@ -71,6 +71,26 @@ function setupFileOperationsTest(t) {
   return { tempRoot, revoked, createdBlobs }
 }
 
+test('listDirectoryWithStats returns serializable metadata in one directory scan', async (t) => {
+  const { tempRoot } = setupFileOperationsTest(t)
+  createFixtureFile(tempRoot, 'session/历史会话/示例.json', '{"title":"示例"}')
+  fs.mkdirSync(path.join(tempRoot, 'session', '历史会话', '示例.json.assets'), { recursive: true })
+
+  const entries = await fileOperations.listDirectoryWithStats('session/历史会话')
+  const sessionFile = entries.find((entry) => entry.path.endsWith('/示例.json'))
+  const assetsDirectory = entries.find((entry) => entry.path.endsWith('/示例.json.assets'))
+
+  assert.equal(entries.length, 2)
+  assert.equal(sessionFile?.isFile, true)
+  assert.equal(sessionFile?.isDirectory, false)
+  assert.equal(sessionFile?.size, Buffer.byteLength('{"title":"示例"}'))
+  assert.equal(Number.isFinite(sessionFile?.mtimeMs), true)
+  assert.equal(Number.isFinite(sessionFile?.birthtimeMs), true)
+  assert.equal(assetsDirectory?.isDirectory, true)
+  assert.equal(assetsDirectory?.isFile, false)
+  assert.doesNotThrow(() => JSON.stringify(entries))
+})
+
 test('deleteItem clears cached file blobs for deleted files', async (t) => {
   const { tempRoot, revoked } = setupFileOperationsTest(t)
   createFixtureFile(tempRoot, 'note/demo.md.assets/pic.png')

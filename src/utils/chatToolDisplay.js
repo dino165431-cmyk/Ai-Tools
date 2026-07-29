@@ -157,3 +157,32 @@ export function formatToolResultDisplayContent(result, options = {}) {
 
   return `${heading}\n- 服务：**${serverName}**\n- 工具：\`${toolName}\`\n${imageHint}\n\`\`\`json\n${resultText}\n\`\`\``
 }
+
+export function stripToolIdentityFromDisplayContent(content) {
+  const lines = String(content || '').replace(/\r\n?/g, '\n').split('\n')
+  const output = []
+  let strippingIdentityBlock = false
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (/^#{2,4}\s+.*工具(?:调用|结果)(?:失败)?\s*$/i.test(trimmed)) {
+      strippingIdentityBlock = true
+      continue
+    }
+    if (
+      strippingIdentityBlock &&
+      /^-\s*(?:服务|工具|状态|自动批准|自动审批)\s*[：:]/.test(trimmed)
+    ) {
+      continue
+    }
+    if (strippingIdentityBlock && !trimmed) continue
+    strippingIdentityBlock = false
+    output.push(line)
+  }
+
+  return output
+    .join('\n')
+    .replace(/^\s+/, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}

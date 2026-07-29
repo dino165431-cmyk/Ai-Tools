@@ -151,6 +151,7 @@ const fileApi = bindMethods(fileOperations, [
   'readFile',
   'deleteItem',
   'listDirectory',
+  'listDirectoryWithStats',
   'exists',
   'stat',
   'openInFileManager',
@@ -193,7 +194,8 @@ const dangerousApi = deepFreeze({
   ]),
   skills: Object.freeze({
     listActions: builtinSkills.listBuiltinSkillActions,
-    runAction: builtinSkills.runBuiltinSkillAction
+    runAction: builtinSkills.runBuiltinSkillAction,
+    runActionWithHostContext: builtinSkills.runBuiltinSkillActionWithHostContext
   }),
   mcp: Object.freeze({
     createClient: createMCPClient

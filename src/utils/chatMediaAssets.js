@@ -303,13 +303,31 @@ export async function persistChatSessionMediaAssets(sessionLike = {}, options = 
 export async function hydrateChatSessionMediaAssets(sessionLike = {}, options = {}) {
   const messages = Array.isArray(sessionLike?.messages) ? sessionLike.messages : []
   const sessionFilePath = normalizeSlash(options.sessionFilePath || '')
+  const tasks = []
   for (const msg of messages) {
     if (!msg || typeof msg !== 'object') continue
     for (const key of ['images', 'videos']) {
       const list = Array.isArray(msg[key]) ? msg[key] : []
       for (const media of list) {
-        const assetPath = resolveChatMediaAssetPath(media, { sessionFilePath })
-        if (!assetPath) continue
+        tasks.push(media)
+      }
+    }
+  }
+
+  let cursor = 0
+  let processed = 0
+  const requestedConcurrency = Number(options.concurrency)
+  const concurrency = Number.isFinite(requestedConcurrency)
+    ? Math.max(1, Math.min(8, Math.round(requestedConcurrency)))
+    : 4
+
+  const worker = async () => {
+    while (cursor < tasks.length) {
+      const index = cursor
+      cursor += 1
+      const media = tasks[index]
+      const assetPath = resolveChatMediaAssetPath(media, { sessionFilePath })
+      if (assetPath) {
         const assetRef = getChatMediaAssetRef(media) || deriveChatSessionAssetRef(sessionFilePath, assetPath)
         if (assetRef) media.assetRef = assetRef
         media.assetPath = assetPath
@@ -318,7 +336,14 @@ export async function hydrateChatSessionMediaAssets(sessionLike = {}, options = 
           media.src = await getFileBlobUrl(assetPath).catch(() => '')
         }
       }
+      processed += 1
+      options.onProgress?.(processed, tasks.length)
     }
+  }
+
+  const workerCount = Math.min(tasks.length, concurrency)
+  if (workerCount > 0) {
+    await Promise.all(Array.from({ length: workerCount }, () => worker()))
   }
   return sessionLike
 }

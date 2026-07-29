@@ -125,9 +125,24 @@ export function createPreparedSkillToolExecutor(runtime) {
         }
         const callArgs = typeof mapping?.unwrapArgs === 'function' ? mapping.unwrapArgs(argsObj) : argsObj
         const runtimeArgs = prepareBuiltinAgentToolCallArgs(skillId, toolName, callArgs, pendingToolMessage)
+        const hostWorkspacePath = String(runtimeArgs?.__host_workspace_path || '').trim()
+        if (runtimeArgs && typeof runtimeArgs === 'object') {
+          delete runtimeArgs.__host_workspace_path
+        }
         throwIfAborted(abortState)
+        if (hostWorkspacePath && typeof skillsApi.runActionWithHostContext !== 'function') {
+          throw new Error('本机工作区能力尚未加载，请重载插件后重试')
+        }
+        const runActionPromise = hostWorkspacePath
+          ? skillsApi.runActionWithHostContext(
+              skillId,
+              mapping.toolName,
+              runtimeArgs,
+              { hostWorkspacePath }
+            )
+          : skillsApi.runAction(skillId, mapping.toolName, runtimeArgs)
         const result = await waitForAbortable(
-          Promise.resolve(skillsApi.runAction(skillId, mapping.toolName, runtimeArgs)),
+          Promise.resolve(runActionPromise),
           abortState
         )
         throwIfAborted(abortState)
