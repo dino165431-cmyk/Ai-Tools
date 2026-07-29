@@ -156,10 +156,16 @@ function normalizeImportBytes(value) {
 
 function toPublicFileEntry(workspaceId, relativePath, stat) {
   const normalizedPath = String(relativePath || '').replace(/\\/g, '/')
+  const encodedPath = normalizedPath
+    .split('/')
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment))
+    .join('/')
   return {
     name: path.posix.basename(normalizedPath),
     path: normalizedPath,
     dataPath: getWorkspaceDataPath(workspaceId, normalizedPath),
+    downloadHref: `sandbox-file://${normalizeWorkspaceId(workspaceId)}/${encodedPath}`,
     size: Number(stat?.size) || 0,
     modifiedAt: Number(stat?.mtimeMs) || 0
   }

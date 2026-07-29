@@ -1,6 +1,9 @@
 <template>
-  <n-card :class="['chat-composer-card', { 'is-dark': theme === 'dark' }]">
-    <n-flex vertical :size="10">
+  <n-card
+    :class="['chat-composer-card', { 'is-dark': theme === 'dark', 'is-running': sending }]"
+    content-style="padding: 10px 12px 8px;"
+  >
+    <n-flex vertical :size="7">
       <input
         ref="fileInputRef"
         class="chat-file-input"
@@ -27,9 +30,9 @@
               :class="{
                 'is-active': index === inlineAgentActiveIndex,
                 'is-selected': agent.value === selectedAgentId,
-                'is-disabled': busy
+                'is-disabled': interactionLocked
               }"
-              :disabled="busy"
+              :disabled="interactionLocked"
               :title="[agent.label, agent.name && agent.name !== agent.id ? `@${agent.id}` : '', agent.providerLabel, agent.model].filter(Boolean).join('\n')"
               @mousedown.prevent="emit('apply-inline-agent-suggestion', agent.value)"
             >
@@ -62,9 +65,9 @@
               :class="{
                 'is-active': index === inlineCommandActiveIndex,
                 'is-selected': item.selected,
-                'is-disabled': busy || item.disabled
+                'is-disabled': interactionLocked || item.disabled
               }"
-              :disabled="busy || item.disabled"
+              :disabled="interactionLocked || item.disabled"
               :title="item.title || ''"
               @mousedown.prevent="emit('apply-inline-command-suggestion', item)"
             >
@@ -89,7 +92,7 @@
           :key="composerInputKey"
           :value="inputValue"
           type="textarea"
-          :autosize="{ minRows: 4, maxRows: 12 }"
+          :autosize="{ minRows: 2, maxRows: 8 }"
           :placeholder="composerPlaceholder"
           :disabled="preparingSend"
           @update:value="handleInputValueUpdate"
@@ -188,9 +191,9 @@
             清空会话（并关闭会话绑定）
           </n-tooltip>
 
-          <n-tooltip trigger="hover">
+          <n-tooltip v-if="showExpandedToolbar" class="chat-composer-advanced-control" trigger="hover">
             <template #trigger>
-              <n-button size="small" tertiary circle :disabled="busy" @click="emit('open-agent-modal')">
+              <n-button size="small" tertiary circle :disabled="interactionLocked" @click="emit('open-agent-modal')">
                 <template #icon>
                   <n-icon :component="Magento" size="12" />
                 </template>
@@ -199,9 +202,9 @@
             选择智能体（@）
           </n-tooltip>
 
-          <n-tooltip trigger="hover">
+          <n-tooltip v-if="showExpandedToolbar" class="chat-composer-advanced-control" trigger="hover">
             <template #trigger>
-              <n-button size="small" tertiary circle :disabled="busy" @click="emit('insert-inline-command-trigger', 'prompt')">
+              <n-button size="small" tertiary circle :disabled="interactionLocked" @click="emit('insert-inline-command-trigger', 'prompt')">
                 <template #icon>
                   <n-icon :component="PromptIcon" size="12" />
                 </template>
@@ -210,9 +213,9 @@
             选择提示词（/prompt）
           </n-tooltip>
 
-          <n-tooltip trigger="hover">
+          <n-tooltip v-if="showExpandedToolbar" class="chat-composer-advanced-control" trigger="hover">
             <template #trigger>
-              <n-button size="small" tertiary circle :disabled="busy" @click="emit('insert-inline-command-trigger', 'skill')">
+              <n-button size="small" tertiary circle :disabled="interactionLocked" @click="emit('insert-inline-command-trigger', 'skill')">
                 <template #icon>
                   <n-icon :component="SkillLevelIntermediate" size="12" />
                 </template>
@@ -221,9 +224,9 @@
             选择技能（/skill）
           </n-tooltip>
 
-          <n-tooltip trigger="hover">
+          <n-tooltip v-if="showExpandedToolbar" class="chat-composer-advanced-control" trigger="hover">
             <template #trigger>
-              <n-button size="small" tertiary circle :disabled="busy" @click="emit('insert-inline-command-trigger', 'mcp')">
+              <n-button size="small" tertiary circle :disabled="interactionLocked" @click="emit('insert-inline-command-trigger', 'mcp')">
                 <template #icon>
                   <n-icon :component="BareMetalServer02" size="12" />
                 </template>
@@ -234,7 +237,7 @@
 
           <n-tooltip trigger="hover">
             <template #trigger>
-              <n-button size="small" tertiary circle :disabled="busy" @click="emit('open-file-picker')">
+              <n-button size="small" tertiary circle :disabled="interactionLocked" @click="emit('open-file-picker')">
                 <template #icon>
                   <n-icon :component="AttachOutline" size="12" />
                 </template>
@@ -250,7 +253,7 @@
                 tertiary
                 circle
                 :type="webSearchEnabled ? 'primary' : 'default'"
-                :disabled="busy"
+                :disabled="interactionLocked"
                 @click="emit('toggle-web-search')"
               >
                 <template #icon>
@@ -280,14 +283,14 @@
               </n-button>
           </n-dropdown>
 
-          <n-tooltip trigger="hover">
+          <n-tooltip v-if="showExpandedToolbar" class="chat-composer-advanced-control" trigger="hover">
             <template #trigger>
               <n-button
                 size="small"
                 tertiary
                 circle
                 :type="autoActivateAgentSkills ? 'primary' : 'default'"
-                :disabled="busy"
+                :disabled="interactionLocked"
                 @click="emit('toggle-auto-activate-agent-skills')"
               >
                 <template #icon>
@@ -298,9 +301,9 @@
             自动启用智能体技能：{{ autoActivateAgentSkills ? '开' : '关' }}
           </n-tooltip>
 
-          <n-tooltip trigger="hover">
+          <n-tooltip v-if="showExpandedToolbar" class="chat-composer-advanced-control" trigger="hover">
             <template #trigger>
-              <n-button size="small" tertiary circle :disabled="busy" @click="emit('cycle-tool-mode')">
+              <n-button size="small" tertiary circle :disabled="interactionLocked" @click="emit('cycle-tool-mode')">
                 <template #icon>
                   <n-icon :component="HardwareChipOutline" size="12" />
                 </template>
@@ -309,9 +312,9 @@
             工具模式：{{ toolModeDisplayText }}（点击切换）
           </n-tooltip>
 
-          <n-tooltip trigger="hover">
+          <n-tooltip v-if="showExpandedToolbar" class="chat-composer-advanced-control" trigger="hover">
             <template #trigger>
-              <n-button size="small" tertiary circle :disabled="busy" @click="emit('open-context-window-modal')">
+              <n-button size="small" tertiary circle :disabled="interactionLocked" @click="emit('open-context-window-modal')">
                 <template #icon>
                   <n-icon :component="ChatbubbleEllipsesOutline" size="12" />
                 </template>
@@ -320,7 +323,7 @@
             上下文窗口：{{ contextWindowPresetLabel }} / {{ contextWindowHistoryFocusLabel }}（点击设置）
           </n-tooltip>
 
-          <n-tooltip trigger="hover">
+          <n-tooltip v-if="showExpandedToolbar" class="chat-composer-advanced-control" trigger="hover">
             <template #trigger>
               <n-button
                 size="small"
@@ -341,7 +344,7 @@
             trigger="click"
             placement="top-start"
             :options="thinkingEffortOptions"
-            :disabled="busy"
+            :disabled="interactionLocked"
             @select="emit('set-thinking-effort', $event)"
           >
               <n-button
@@ -349,7 +352,7 @@
                 tertiary
                 circle
                 :type="thinkingEffortButtonType"
-                :disabled="busy"
+                :disabled="interactionLocked"
                 :title="`思考等级：${thinkingEffortLabel}（点击选择）`"
               >
                 <template #icon>
@@ -359,16 +362,17 @@
           </n-dropdown>
 
           <n-popover
-            v-if="mediaGenerationPresetGroups.length"
+            v-if="showExpandedToolbar && mediaGenerationPresetGroups.length"
+            class="chat-composer-advanced-control"
             v-model:show="mediaPresetPopoverVisible"
             trigger="click"
             placement="top-start"
-            :disabled="busy"
+            :disabled="interactionLocked"
           >
             <template #trigger>
               <n-tooltip trigger="hover">
                 <template #trigger>
-                  <n-button size="small" tertiary circle :disabled="busy" title="生成参数预设">
+                  <n-button size="small" tertiary circle :disabled="interactionLocked" title="生成参数预设">
                     <template #icon>
                       <n-icon :component="SparklesOutline" size="12" />
                     </template>
@@ -410,8 +414,9 @@
           </n-popover>
 
           <ChatMediaGenerationParamsPopover
+            v-if="imageGenerationMode === 'on' || videoGenerationMode === 'on' || imageGenerationParamsEnabled || videoGenerationParamsEnabled"
             :theme="theme"
-            :sending="busy"
+            :sending="interactionLocked"
             :image-generation-params-enabled="imageGenerationParamsEnabled"
             :image-generation-params="imageGenerationParams"
             :image-generation-params-summary="imageGenerationParamsSummary"
@@ -426,14 +431,14 @@
             @reset-video-generation-params="emit('reset-video-generation-params')"
           />
 
-          <n-tooltip trigger="hover">
+          <n-tooltip v-if="showExpandedToolbar" class="chat-composer-advanced-control" trigger="hover">
             <template #trigger>
               <n-button
                 size="small"
                 tertiary
                 circle
                 :type="imageGenerationButtonType"
-                :disabled="busy"
+                :disabled="interactionLocked"
                 @click="emit('cycle-image-generation-mode')"
               >
                 <template #icon>
@@ -444,14 +449,14 @@
             产图模式：{{ imageGenerationModeLabel }}（点击切换）
           </n-tooltip>
 
-          <n-tooltip trigger="hover">
+          <n-tooltip v-if="showExpandedToolbar" class="chat-composer-advanced-control" trigger="hover">
             <template #trigger>
               <n-button
                 size="small"
                 tertiary
                 circle
                 :type="videoGenerationButtonType"
-                :disabled="busy"
+                :disabled="interactionLocked"
                 @click="emit('cycle-video-generation-mode')"
               >
                 <template #icon>
@@ -461,6 +466,83 @@
             </template>
             产视频模式：{{ videoGenerationModeLabel }}（点击切换）
           </n-tooltip>
+
+          <n-popover
+            v-model:show="morePopoverVisible"
+            trigger="click"
+            placement="top-start"
+          >
+            <template #trigger>
+              <n-button
+                size="small"
+                tertiary
+                circle
+                :disabled="interactionLocked"
+                title="更多输入与任务设置"
+              >
+                <template #icon>
+                  <n-icon :component="EllipsisHorizontalOutline" size="14" />
+                </template>
+              </n-button>
+            </template>
+            <div :class="['chat-composer-more', { 'is-dark': theme === 'dark' }]">
+              <button type="button" @click="runMoreAction('open-agent-modal')">
+                <n-icon :component="Magento" size="14" />
+                <span>选择智能体</span>
+              </button>
+              <button type="button" @click="runMoreAction('insert-inline-command-trigger', 'prompt')">
+                <n-icon :component="PromptIcon" size="14" />
+                <span>插入提示词</span>
+              </button>
+              <button type="button" @click="runMoreAction('insert-inline-command-trigger', 'skill')">
+                <n-icon :component="SkillLevelIntermediate" size="14" />
+                <span>选择技能</span>
+              </button>
+              <button type="button" @click="runMoreAction('insert-inline-command-trigger', 'mcp')">
+                <n-icon :component="BareMetalServer02" size="14" />
+                <span>选择 MCP</span>
+              </button>
+              <button type="button" @click="runMoreAction('toggle-auto-activate-agent-skills')">
+                <n-icon :component="SparklesOutline" size="14" />
+                <span>自动技能：{{ autoActivateAgentSkills ? '开' : '关' }}</span>
+              </button>
+              <button type="button" @click="runMoreAction('cycle-tool-mode')">
+                <n-icon :component="HardwareChipOutline" size="14" />
+                <span>工具模式：{{ toolModeDisplayText }}</span>
+              </button>
+              <button type="button" @click="runMoreAction('open-context-window-modal')">
+                <n-icon :component="ChatbubbleEllipsesOutline" size="14" />
+                <span>上下文设置</span>
+              </button>
+              <button
+                type="button"
+                :disabled="busy || refreshingMcpTools"
+                @click="runMoreAction('refresh-active-mcp-tools')"
+              >
+                <n-icon :component="RefreshOutline" size="14" />
+                <span>刷新 MCP 工具</span>
+              </button>
+              <button type="button" @click="runMoreAction('cycle-image-generation-mode')">
+                <n-icon :component="ImageOutline" size="14" />
+                <span>产图：{{ imageGenerationModeLabel }}</span>
+              </button>
+              <button type="button" @click="runMoreAction('cycle-video-generation-mode')">
+                <n-icon :component="VideocamOutline" size="14" />
+                <span>视频：{{ videoGenerationModeLabel }}</span>
+              </button>
+              <template v-for="group in mediaGenerationPresetGroups" :key="group.key">
+                <button
+                  v-for="item in group.children"
+                  :key="item.key"
+                  type="button"
+                  @click="runMoreAction('apply-media-preset', item.key)"
+                >
+                  <n-icon :component="group.kind === 'video' ? VideocamOutline : ImageOutline" size="14" />
+                  <span>{{ item.label }}</span>
+                </button>
+              </template>
+            </div>
+          </n-popover>
         </n-flex>
 
         <n-flex :size="6">
@@ -473,24 +555,6 @@
               </n-button>
             </template>
             停止
-          </n-tooltip>
-
-          <n-tooltip v-if="sending" trigger="hover">
-            <template #trigger>
-              <n-button
-                size="small"
-                tertiary
-                circle
-                type="info"
-                :disabled="!canSend"
-                @click="emit('steer')"
-              >
-                <template #icon>
-                  <n-icon :component="SparklesOutline" size="12" />
-                </template>
-              </n-button>
-            </template>
-            引导当前任务（在下一个安全边界生效）
           </n-tooltip>
 
           <n-tooltip trigger="hover">
@@ -508,12 +572,12 @@
                 </template>
               </n-button>
             </template>
-            {{ sending ? '加入队列' : '发送' }}
+            {{ sending ? '发送到当前任务' : '发送' }}
           </n-tooltip>
         </n-flex>
       </n-flex>
 
-      <n-text depth="3" style="font-size: 12px;">{{ footerHint }}</n-text>
+      <n-text class="chat-composer-footer" depth="3">{{ footerHint }}</n-text>
     </n-flex>
   </n-card>
 </template>
@@ -538,7 +602,8 @@ import {
   ChatbubbleEllipsesOutline,
   HardwareChipOutline,
   EarthOutline,
-  RefreshOutline
+  RefreshOutline,
+  EllipsisHorizontalOutline
 } from '@vicons/ionicons5'
 
 import ChatPendingAttachments from './ChatPendingAttachments.vue'
@@ -824,8 +889,11 @@ const composerInputRef = ref(null)
 const inlineAgentListRef = ref(null)
 const inlineCommandListRef = ref(null)
 const mediaPresetPopoverVisible = ref(false)
+const morePopoverVisible = ref(false)
+const showExpandedToolbar = false
 
 const busy = computed(() => props.sending || props.preparingSend)
+const interactionLocked = computed(() => props.preparingSend)
 
 const composerPlaceholder = computed(() => {
   if (props.preparingSend) return '正在准备发送，请稍候…'
@@ -836,6 +904,13 @@ const composerPlaceholder = computed(() => {
 function handleInputValueUpdate(value) {
   emit('update:inputValue', value)
   emit('update:input-value', value)
+}
+
+function runMoreAction(eventName, payload) {
+  if (interactionLocked.value) return
+  morePopoverVisible.value = false
+  if (payload === undefined) emit(eventName)
+  else emit(eventName, payload)
 }
 
 const mediaGenerationPresetGroups = computed(() => {
@@ -910,11 +985,18 @@ defineExpose({
 <style scoped>
 .chat-composer-card {
   width: 100%;
-  border-radius: 22px;
+  border-radius: 18px;
   overflow: hidden;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.84));
-  box-shadow: 0 18px 38px rgba(15, 23, 42, 0.06);
-  margin-top: 8px;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+  margin-top: 4px;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.chat-composer-card.is-running {
+  box-shadow:
+    0 10px 24px rgba(15, 23, 42, 0.06),
+    inset 0 0 0 1px rgba(32, 128, 240, 0.12);
 }
 
 .chat-composer-card.is-dark {
@@ -931,6 +1013,62 @@ defineExpose({
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.chat-composer-footer {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 10px;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.72;
+}
+
+.chat-composer-more {
+  width: min(360px, calc(100vw - 32px));
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  padding: 4px;
+}
+
+.chat-composer-more button {
+  min-width: 0;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+
+.chat-composer-more button:hover {
+  background: rgba(32, 128, 240, 0.08);
+}
+
+.chat-composer-more button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.chat-composer-more button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-composer-more.is-dark button:hover {
+  background: rgba(94, 169, 255, 0.12);
 }
 
 .chat-composer :deep(.n-input) {

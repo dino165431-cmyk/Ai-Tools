@@ -4,7 +4,8 @@ const FORBIDDEN_TAGS = ['script', 'iframe', 'object', 'embed', 'frame', 'framese
 
 const SANITIZE_HTML_CONFIG = {
   USE_PROFILES: { html: true },
-  FORBID_TAGS: FORBIDDEN_TAGS
+  FORBID_TAGS: FORBIDDEN_TAGS,
+  ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|note|sandbox-file):|(?:[^a-z]|[a-z+.-]+(?:[^a-z+.-:]|$)))/i
 }
 
 function resolvePurifyInstance() {

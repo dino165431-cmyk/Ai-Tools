@@ -46,7 +46,12 @@
       <n-card class="chat-messages" :bordered="false" content-style="padding: 0; height: 100%;">
         <div class="chat-scroll-wrapper">
           <n-scrollbar ref="scrollbarRef" style="height: 100%;" @scroll="handleChatScroll" @wheel.passive="handleChatWheel">
-            <div ref="chatListRef" class="chat-list">
+            <div
+              ref="chatListRef"
+              class="chat-list"
+              @click="handleChatPreviewLinkClick"
+              @contextmenu="handleChatPreviewLinkContextMenu"
+            >
             <div v-if="!session.messages.length" class="chat-empty-state">
               <div class="chat-empty-state__panel">
                 <div class="chat-empty-state__hero">
@@ -179,19 +184,24 @@
                       v-if="shouldRenderCompactToolMessage(msg)"
                       class="chat-tool-compact"
                       :class="`is-${getToolMessageStatus(msg)}`"
+                      :title="formatTime(msg.time)"
                       @click="toggleToolExpanded(msg)"
                     >
                       <n-icon
-                        :component="msg.toolExpanded ? ChevronUpOutline : ChevronDownOutline"
+                        :component="toolActivityIcon(msg)"
                         size="14"
-                        class="chat-tool-compact__chevron"
+                        :class="['chat-tool-compact__state-icon', { 'is-spinning': getToolMessageStatus(msg) === 'running' }]"
                       />
                       <span class="chat-tool-compact__label">{{ toolMessageLabel(msg) }}</span>
-                      <span class="chat-tool-compact__status" :class="`is-${getToolMessageStatus(msg)}`">
+                      <span v-if="toolActivityMeta(msg)" class="chat-tool-compact__meta">{{ toolActivityMeta(msg) }}</span>
+                      <span
+                        v-if="shouldShowToolActivityStatus(msg)"
+                        class="chat-tool-compact__status"
+                        :class="`is-${getToolMessageStatus(msg)}`"
+                      >
                         {{ toolMessageStatusLabel(msg) }}
                       </span>
-                      <span v-if="msg.toolMeta" class="chat-tool-compact__meta">{{ msg.toolMeta }}</span>
-                      <span class="chat-tool-compact__hint">点击展开</span>
+                      <n-icon :component="ChevronDownOutline" size="13" class="chat-tool-compact__chevron" />
                     </div>
                     <ChatToolMessage
                       v-else
@@ -270,7 +280,7 @@
               </div>
             </div>
 
-            <n-text class="chat-item__time" depth="3">{{ formatTime(msg.time) }}</n-text>
+            <n-text v-if="!isChatActivityMessage(msg)" class="chat-item__time" depth="3">{{ formatTime(msg.time) }}</n-text>
           </div>
 
             <div
@@ -1193,7 +1203,10 @@ import {
   importFilesToSandbox,
   listDirectory,
   moveItem,
+  openFile,
   resolvePath,
+  saveFileAs,
+  showItemInFolder,
   stat,
   writeFile
 } from '@/utils/fileOperations'
@@ -1214,6 +1227,11 @@ import {
 import { isAgentRunToolResult } from '@/utils/chatToolDisplay'
 import { getAgentRunMessageStatus, isAgentRunToolName, mergeAgentRunTraceEntries } from '@/utils/chatAgentRun'
 import { CHAT_CODE_AUTO_FOLD_THRESHOLD } from '@/utils/chatMarkdownPreview'
+import {
+  collectSandboxFileCatalog,
+  resolveSandboxFileLink
+} from '@/utils/chatSandboxFileLink'
+import { getToolActivityLabel, getToolActivityMeta } from '@/utils/chatToolActivity'
 import {
   resolveChatHeavyRenderTuning,
   resolveChatViewportCompensation,
@@ -2333,7 +2351,7 @@ const CHAT_SCROLL_COMPENSATION_SUSPEND_MS = 640
 const CHAT_SCROLL_COMPENSATION_MARK_MS = 96
 const CHAT_TOOL_COMPACT_MIN_MESSAGES = 120
 const CHAT_TOOL_COMPACT_MIN_TOOL_MESSAGES = 32
-const CHAT_TOOL_COMPACT_ITEM_FIXED_HEIGHT = 72
+const CHAT_TOOL_COMPACT_ITEM_FIXED_HEIGHT = 40
 const CHAT_STREAM_RENDER_THROTTLE_MS = 72
 
 function syncChatResponsiveState() {
@@ -4677,7 +4695,6 @@ function copyMediaPrompt(item) {
 }
 
 function applyMediaGenerationPreset(key) {
-  if (sending.value) return
   const result = applyMediaGenerationPresetToInput(input.value, key)
   if (!result) return
 
@@ -4707,15 +4724,29 @@ function copyUserMessage(msg) {
   copyToClipboard(msg?.content || '')
 }
 
-let chatPreviewLinkRoot = null
 const chatLinkContextMenu = ref({
   show: false,
   x: 0,
   y: 0,
-  href: ''
+  href: '',
+  text: '',
+  file: null
 })
+const sandboxFileCatalog = computed(() => collectSandboxFileCatalog(session.messages))
 const chatLinkContextMenuOptions = computed(() => {
   const href = String(chatLinkContextMenu.value.href || '').trim()
+  const file = chatLinkContextMenu.value.file
+  if (file) {
+    return [
+      { label: '保存到指定目录…', key: 'save-file-as' },
+      { label: '打开文件', key: 'open-file' },
+      { label: '在文件夹中显示', key: 'show-file' },
+      { type: 'divider' },
+      { label: '复制文件名', key: 'copy-file-name' },
+      { label: '复制沙盒路径', key: 'copy-file-path' },
+      { label: '复制下载链接', key: 'copy-file-link' }
+    ]
+  }
   const externalUrl = getSafeExternalUrl(href)
   return [
     {
@@ -4728,18 +4759,6 @@ const chatLinkContextMenuOptions = computed(() => {
 
 function cleanupChatPreviewLinkHandlers() {
   closeChatLinkContextMenu()
-  if (!chatPreviewLinkRoot) return
-  chatPreviewLinkRoot.removeEventListener('click', handleChatPreviewLinkClick)
-  chatPreviewLinkRoot.removeEventListener('contextmenu', handleChatPreviewLinkContextMenu)
-  chatPreviewLinkRoot = null
-}
-
-function ensureChatPreviewLinkHandlers(root) {
-  if (!root || chatPreviewLinkRoot === root) return
-  cleanupChatPreviewLinkHandlers()
-  root.addEventListener('click', handleChatPreviewLinkClick)
-  root.addEventListener('contextmenu', handleChatPreviewLinkContextMenu)
-  chatPreviewLinkRoot = root
 }
 
 async function resolveChatNoteAbsPathFromHref(hrefRaw) {
@@ -4760,13 +4779,26 @@ async function openChatNoteFromHref(href) {
 
 async function handleChatPreviewLinkClick(e) {
   const link = e.target?.closest?.('a')
-  if (!link || !chatPreviewLinkRoot?.contains(link)) return
+  if (!link || !chatListRef.value?.contains(link)) return
 
   const href = String(link.getAttribute('href') || '').trim()
   if (!href || href.startsWith('#')) return
 
   e.preventDefault()
   e.stopPropagation()
+
+  const sandboxFile = resolveSandboxFileLink(href, sandboxFileCatalog.value)
+  if (sandboxFile) {
+    try {
+      const result = await saveFileAs(sandboxFile.dataPath, {
+        suggestedName: sandboxFile.name || 'sandbox-output'
+      })
+      if (!result?.canceled) message.success('文件已保存')
+    } catch (error) {
+      message.error(`保存文件失败：${error?.message || String(error)}`)
+    }
+    return
+  }
 
   if (getSafeExternalUrl(href)) {
     safeOpenExternal(href)
@@ -4779,7 +4811,7 @@ async function handleChatPreviewLinkClick(e) {
 
 function handleChatPreviewLinkContextMenu(e) {
   const link = e.target?.closest?.('a')
-  if (!link || !chatPreviewLinkRoot?.contains(link)) return
+  if (!link || !chatListRef.value?.contains(link)) return
 
   const href = String(link.getAttribute('href') || '').trim()
   if (!href) return
@@ -4790,7 +4822,9 @@ function handleChatPreviewLinkContextMenu(e) {
     show: false,
     x: e.clientX,
     y: e.clientY,
-    href
+    href,
+    text: String(link.textContent || '').trim(),
+    file: resolveSandboxFileLink(href, sandboxFileCatalog.value)
   }
   window.setTimeout(() => {
     chatLinkContextMenu.value.show = true
@@ -4823,8 +4857,44 @@ async function copyChatContextLink(href) {
 
 async function handleChatLinkContextMenuSelect(key) {
   const href = String(chatLinkContextMenu.value.href || '').trim()
+  const file = chatLinkContextMenu.value.file
   closeChatLinkContextMenu()
   if (!href) return
+
+  if (file) {
+    try {
+      if (key === 'save-file-as') {
+        const result = await saveFileAs(file.dataPath, {
+          suggestedName: file.name || 'sandbox-output'
+        })
+        if (!result?.canceled) message.success('文件已保存')
+        return
+      }
+      if (key === 'open-file') {
+        await openFile(file.dataPath)
+        return
+      }
+      if (key === 'show-file') {
+        await showItemInFolder(file.dataPath)
+        return
+      }
+      if (key === 'copy-file-name') {
+        copyToClipboard(file.name || file.path)
+        return
+      }
+      if (key === 'copy-file-path') {
+        copyToClipboard(file.path || file.dataPath)
+        return
+      }
+      if (key === 'copy-file-link') {
+        copyToClipboard(file.href || href)
+        return
+      }
+    } catch (error) {
+      message.error(`文件操作失败：${error?.message || String(error)}`)
+    }
+    return
+  }
 
   if (key === 'copy') {
     await copyChatContextLink(href)
@@ -5351,10 +5421,36 @@ function toolMessageStatusLabel(msg) {
 }
 
 function toolMessageLabel(msg) {
-  const toolName = String(msg?.toolName || '').trim()
-  if (toolName === 'agent_run') return '子智能体编排'
-  if (toolName === 'agents_list') return '智能体发现'
-  return '工具执行'
+  return getToolActivityLabel(msg, getToolMessageStatus(msg))
+}
+
+function toolActivityMeta(msg) {
+  return getToolActivityMeta(msg)
+}
+
+function shouldShowToolActivityStatus(msg) {
+  return ['paused', 'stopped', 'error', 'rejected'].includes(getToolMessageStatus(msg))
+}
+
+function toolActivityIcon(msg) {
+  const status = getToolMessageStatus(msg)
+  if (status === 'running') return RefreshOutline
+  if (status === 'paused') return PauseCircleOutline
+  if (status === 'error' || status === 'rejected' || status === 'stopped') return CloseOutline
+  return CheckmarkOutline
+}
+
+function isAssistantActivityMessage(msg) {
+  if (String(msg?.role || '').trim() !== 'assistant' || !String(msg?.thinking || '').trim()) return false
+  if (String(msg?.content || '').trim()) return false
+  return !(
+    (Array.isArray(msg?.images) && msg.images.length) ||
+    (Array.isArray(msg?.videos) && msg.videos.length)
+  )
+}
+
+function isChatActivityMessage(msg) {
+  return isToolMessage(msg) || isAssistantActivityMessage(msg)
 }
 
 function chatItemStateClasses(msg) {
@@ -5367,7 +5463,9 @@ function chatItemStateClasses(msg) {
     'is-tool-success': status === 'success',
     'is-tool-error': status === 'error',
     'is-tool-rejected': status === 'rejected',
-    'is-agent-run': isToolMessage(msg) && String(msg?.toolName || '').trim() === 'agent_run'
+    'is-agent-run': isToolMessage(msg) && String(msg?.toolName || '').trim() === 'agent_run',
+    'is-activity': isChatActivityMessage(msg),
+    'is-thinking-activity': isAssistantActivityMessage(msg)
   }
 }
 
@@ -6468,6 +6566,7 @@ let sessionResetPromise = null
 
 function estimateChatMessageHeight(msg) {
   if (isFixedCompactToolMessage(msg)) return CHAT_TOOL_COMPACT_ITEM_FIXED_HEIGHT
+  if (isAssistantActivityMessage(msg) && !msg?.thinkingExpanded) return 40
   const role = String(msg?.role || '')
   const attachmentCount = Array.isArray(msg?.attachments) ? msg.attachments.length : 0
   const thinkingLength = String(msg?.thinking || '').length
@@ -6531,7 +6630,7 @@ function estimateCollapsedToolMessageHeight(msg) {
   const lineCount = Math.max(1, Math.min(4, Math.ceil(summary.length / charsPerLine)))
   const runningExtra = isLiveToolMessageStatus(getToolMessageStatus(msg)) ? 4 : 0
   // 折叠态工具消息只展示一行摘要和时间，不应该按隐藏正文长度估高。
-  return 52 + ((lineCount - 1) * 18) + runningExtra
+  return 38 + ((lineCount - 1) * 16) + runningExtra
 }
 
 function resolveChatMessageById(messageId) {
@@ -7405,13 +7504,8 @@ function shouldDeferHeavyChatBlockLayout(msg) {
 }
 
 function shouldRenderCompactToolMessage(msg) {
-  if (!compactToolMessageMode.value) return false
   if (!isToolMessage(msg)) return false
-  const id = String(msg?.id || '').trim()
-  if (!id) return false
   if (msg.toolExpanded || msg.streaming || msg.editing || msg.attachmentsExpanded || msg.thinkingExpanded) return false
-  if (recentHeavyChatMessageIds.value.has(id)) return false
-  if (isLiveToolMessageStatus(getToolMessageStatus(msg))) return false
   return true
 }
 
@@ -7580,7 +7674,6 @@ async function refreshChatViewportState(options = {}) {
   const container = resolveScrollbarContainerEl()
   const list = chatListRef.value
   chatScrollEl.value = container || null
-  if (list) ensureChatPreviewLinkHandlers(list)
   if (!container) return
 
   if (reconnectObserver) {
@@ -13483,7 +13576,7 @@ function handleInputKeydown(e) {
     return
   }
 
-  if (!sending.value && !e.ctrlKey && !e.metaKey && !e.altKey && showInlineCommandPicker.value) {
+  if (!e.ctrlKey && !e.metaKey && !e.altKey && showInlineCommandPicker.value) {
     if (e.key === 'ArrowDown') {
       e.preventDefault()
       moveInlineCommandActive(1)
@@ -13516,7 +13609,7 @@ function handleInputKeydown(e) {
     }
   }
 
-  if (!sending.value && !e.ctrlKey && !e.metaKey && !e.altKey && showInlineAgentPicker.value) {
+  if (!e.ctrlKey && !e.metaKey && !e.altKey && showInlineAgentPicker.value) {
     if (e.key === 'ArrowDown') {
       e.preventDefault()
       moveInlineAgentActive(1)
@@ -16281,7 +16374,7 @@ async function dispatchChatDraft({ text: rawText, attachments: rawAttachments } 
 async function send() {
   if (preparingSend.value) return
   if (sending.value) {
-    enqueueComposerDraft(CHAT_RUN_INPUT_MODE_QUEUE)
+    enqueueComposerDraft(CHAT_RUN_INPUT_MODE_STEER)
     return
   }
 

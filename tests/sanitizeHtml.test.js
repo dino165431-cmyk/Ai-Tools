@@ -188,7 +188,12 @@ test('sanitizeHtml removes dangerous tags, inline handlers, and javascript urls'
 })
 
 test('sanitizeHtml keeps benign rich text markup intact', () => {
-  const sanitized = sanitizeHtml('<table><tbody><tr><th>name</th><td>value</td></tr></tbody></table><p><strong>ok</strong></p>')
+  const sanitized = sanitizeHtml([
+    '<table><tbody><tr><th>name</th><td>value</td></tr></tbody></table>',
+    '<p><strong>ok</strong></p>',
+    '<a href="note:/demo.md">note</a>',
+    '<a href="sandbox-file://chat-demo/output/result.zip">download</a>'
+  ].join(''))
 
   assert.match(sanitized, /<table/i)
   assert.match(sanitized, /<tbody/i)
@@ -196,4 +201,6 @@ test('sanitizeHtml keeps benign rich text markup intact', () => {
   assert.match(sanitized, /<th[^>]*>name<\/th>/i)
   assert.match(sanitized, /<td[^>]*>value<\/td>/i)
   assert.match(sanitized, /<strong[^>]*>ok<\/strong>/i)
+  assert.match(sanitized, /href="note:\/demo\.md"/i)
+  assert.match(sanitized, /href="sandbox-file:\/\/chat-demo\/output\/result\.zip"/i)
 })

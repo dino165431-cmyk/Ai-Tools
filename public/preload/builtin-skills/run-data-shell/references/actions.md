@@ -1,15 +1,20 @@
 # Native action catalog
 
-## `bash_run`
+## `sandbox_run`
 
-Runs Bash inside one sandbox workspace. Accepts:
+Runs a command inside one sandbox workspace. Accepts:
 
-- `command`: required Bash command;
+- `command`: required command;
+- `shell`: optional `auto`, `powershell`, or `bash`; Windows `auto` uses PowerShell;
 - `workspace_id`: optional workspace id, especially the id provided with a chat attachment;
 - `cwd`: optional directory relative to that workspace;
 - `timeout_ms`: bounded timeout.
 
-Returns exit status, stdout/stderr, timeout state, workspace id, resolved relative working directory, and `changedFiles`. Each changed file includes a workspace-relative `path` and a data-root-relative `dataPath` used by the result UI.
+Returns the selected shell, exit status, stdout/stderr, timeout state, workspace id, resolved relative working directory, and `changedFiles`. Each changed file includes a workspace-relative `path`, a data-root-relative `dataPath`, and a `downloadHref` used by Markdown and the result UI.
+
+## `bash_run`
+
+Compatibility action for Bash-specific commands. Its result contract is the same as `sandbox_run`.
 
 ## `sandbox_import`
 

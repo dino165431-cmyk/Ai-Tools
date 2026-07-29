@@ -105,7 +105,7 @@ const DEFINITIONS = Object.freeze([
     triggers: Object.freeze({
       keywords: Object.freeze(['bash', 'shell', '命令行', '终端', '执行命令', '运行脚本', '沙盒', '修改文件'])
     }),
-    actionNames: Object.freeze(['bash_run', 'sandbox_import', 'sandbox_list', 'sandbox_reset'])
+    actionNames: Object.freeze(['sandbox_run', 'bash_run', 'sandbox_import', 'sandbox_list', 'sandbox_reset'])
   })
 ])
 
@@ -307,7 +307,7 @@ function normalizeActionSpec(skillId, action) {
     name.startsWith('config_list_') ||
     /^(notes_(list|read|search)|notebook_read)/.test(name)
   const isSandboxAction = skillId === BUILTIN_SKILL_IDS.shell
-  const isShell = isSandboxAction && name === 'bash_run'
+  const isShell = isSandboxAction && (name === 'sandbox_run' || name === 'bash_run')
   const isExecution =
     isShell ||
     name === 'agent_run' ||

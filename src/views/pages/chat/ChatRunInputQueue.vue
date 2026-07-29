@@ -1,8 +1,8 @@
 <template>
   <div v-if="entries.length" class="chat-run-input-queue">
     <div class="chat-run-input-queue__header">
-      <span>待处理消息</span>
-      <span>{{ entries.length }} 条 · 引导优先，同类按加入顺序执行</span>
+      <span>{{ entries.some((entry) => entry.mode === 'steer') ? '将发送到当前任务' : '后续消息' }}</span>
+      <span>{{ entries.length }} 条</span>
     </div>
     <div class="chat-run-input-queue__list">
       <div v-for="(entry, index) in entries" :key="entry.id" class="chat-run-input-queue__item">
@@ -55,10 +55,11 @@ function attachmentSummary(entry) {
 <style scoped>
 .chat-run-input-queue {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: 6px;
-  padding: 8px 10px;
-  border-radius: 12px;
+  min-width: 0;
+  padding: 4px 7px;
+  border-radius: 9px;
   background: rgba(59, 130, 246, 0.07);
 }
 
@@ -70,19 +71,22 @@ function attachmentSummary(entry) {
 }
 
 .chat-run-input-queue__header {
-  justify-content: space-between;
+  flex: 0 0 auto;
   color: var(--n-text-color-3);
   font-size: 11px;
 }
 
 .chat-run-input-queue__list {
   display: flex;
-  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
   gap: 4px;
 }
 
 .chat-run-input-queue__item {
-  min-width: 0;
+  min-width: 120px;
+  max-width: 260px;
 }
 
 .chat-run-input-queue__text {

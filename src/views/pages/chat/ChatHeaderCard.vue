@@ -1,5 +1,9 @@
 <template>
-  <n-card hoverable :class="['chat-header-card', { 'is-dark': theme === 'dark' }]">
+  <n-card
+    hoverable
+    content-style="padding: 9px 12px;"
+    :class="['chat-header-card', { 'is-dark': theme === 'dark' }]"
+  >
     <n-flex justify="space-between" align="center" wrap :size="12">
       <n-flex align="center" :size="8">
         <n-icon :component="ChatMultiple24Filled" size="20" :depth="1" />
@@ -7,6 +11,28 @@
       </n-flex>
 
       <n-flex align="center" wrap :size="8">
+        <n-popover trigger="click" placement="bottom-end" :show-arrow="false">
+          <template #trigger>
+            <n-button size="small" tertiary circle title="会话详情">
+              <template #icon>
+                <n-icon :component="InformationCircleOutline" size="16" />
+              </template>
+            </n-button>
+          </template>
+          <div :class="['chat-header-overview-popover', { 'is-dark': theme === 'dark' }]">
+            <div class="chat-header-overview">
+              <div
+                v-for="item in chatOverviewItems"
+                :key="item.key"
+                class="chat-header-overview__item"
+              >
+                <span class="chat-header-overview__label">{{ item.label }}</span>
+                <strong class="chat-header-overview__value">{{ item.value }}</strong>
+              </div>
+            </div>
+          </div>
+        </n-popover>
+
         <n-tooltip trigger="hover">
           <template #trigger>
             <n-button size="small" tertiary circle @click="emit('open-model-modal')">
@@ -67,7 +93,7 @@
       </n-flex>
     </n-flex>
 
-    <n-flex align="center" wrap :size="6" class="chat-header-card__tags">
+    <n-flex align="center" :size="6" class="chat-header-card__tags">
       <n-tag v-if="selectedProvider" size="small" type="info" bordered>
         服务商：{{ selectedProvider.name || selectedProvider._id }}
       </n-tag>
@@ -134,16 +160,6 @@
       <n-text v-if="effectiveHeaderHint" depth="3" class="chat-header-card__hint">{{ effectiveHeaderHint }}</n-text>
     </n-flex>
 
-    <div class="chat-header-overview">
-      <div
-        v-for="item in chatOverviewItems"
-        :key="item.key"
-        class="chat-header-overview__item"
-      >
-        <span class="chat-header-overview__label">{{ item.label }}</span>
-        <strong class="chat-header-overview__value">{{ item.value }}</strong>
-      </div>
-    </div>
   </n-card>
 </template>
 
@@ -155,6 +171,7 @@ import {
   NDropdown,
   NFlex,
   NIcon,
+  NPopover,
   NTag,
   NText,
   NTooltip
@@ -162,7 +179,7 @@ import {
 import { ChatMultiple24Filled } from '@vicons/fluent'
 import { FlowModelerReference } from '@vicons/carbon'
 import { Prompt as PromptIcon } from '@vicons/tabler'
-import { SaveOutline, ImageOutline } from '@vicons/ionicons5'
+import { SaveOutline, ImageOutline, InformationCircleOutline } from '@vicons/ionicons5'
 
 const props = defineProps({
   theme: { type: String, default: 'light' },
@@ -208,10 +225,10 @@ const contextWindowSummaryTagType = computed(() => props.contextWindowSummaryTag
 <style scoped>
 .chat-header-card {
   width: 100%;
-  border-radius: 22px;
+  border-radius: 16px;
   overflow: hidden;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.84));
-  box-shadow: 0 18px 38px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
 }
 
 .chat-header-card.is-dark {
@@ -224,18 +241,38 @@ const contextWindowSummaryTagType = computed(() => props.contextWindowSummaryTag
 }
 
 .chat-header-card__tags {
-  margin-top: 10px;
+  flex-wrap: nowrap !important;
+  margin-top: 5px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.chat-header-card__tags::-webkit-scrollbar {
+  display: none;
+}
+
+.chat-header-card__tags :deep(.n-tag),
+.chat-header-card__tags .chat-header-card__hint {
+  flex: 0 0 auto;
 }
 
 .chat-header-card__hint {
+  max-width: 280px;
   font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-header-overview-popover {
+  width: min(660px, calc(100vw - 48px));
 }
 
 .chat-header-overview {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
   gap: 10px;
-  margin-top: 14px;
 }
 
 .chat-header-overview__item {
@@ -249,7 +286,8 @@ const contextWindowSummaryTagType = computed(() => props.contextWindowSummaryTag
   box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.12);
 }
 
-.chat-header-card.is-dark .chat-header-overview__item {
+.chat-header-card.is-dark .chat-header-overview__item,
+.chat-header-overview-popover.is-dark .chat-header-overview__item {
   background: rgba(255, 255, 255, 0.05);
   box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.12);
 }

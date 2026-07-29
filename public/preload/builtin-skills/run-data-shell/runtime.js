@@ -18,6 +18,7 @@ const {
 const MAX_OUTPUT_CHARS = 20000
 const DEFAULT_TIMEOUT_MS = 30000
 const MAX_TIMEOUT_MS = 120000
+const SUPPORTED_SHELLS = new Set(['auto', 'powershell', 'bash'])
 
 function cleanString(value) {
   return typeof value === 'string' ? value.trim() : ''
@@ -72,6 +73,18 @@ function clampTimeout(value) {
   return Math.max(1000, Math.min(MAX_TIMEOUT_MS, Math.floor(parsed)))
 }
 
+function normalizeShell(value = 'auto') {
+  const requested = cleanString(value).toLowerCase() || 'auto'
+  if (!SUPPORTED_SHELLS.has(requested)) {
+    throw new Error('shell 仅支持 auto、powershell 或 bash')
+  }
+  if (requested === 'auto') return process.platform === 'win32' ? 'powershell' : 'bash'
+  if (requested === 'powershell' && process.platform !== 'win32') {
+    throw new Error('powershell 仅在 Windows 沙盒中可用')
+  }
+  return requested
+}
+
 function validateCommandBoundary(command) {
   const text = cleanString(command)
   if (!text) throw new Error('command is required')
@@ -113,6 +126,53 @@ function resolveBashExecutable() {
   return resolved
 }
 
+function resolvePowerShellExecutable() {
+  if (process.platform !== 'win32') throw new Error('PowerShell 仅在 Windows 上可用')
+  const candidates = [
+    process.env.SystemRoot && path.join(
+      process.env.SystemRoot,
+      'System32',
+      'WindowsPowerShell',
+      'v1.0',
+      'powershell.exe'
+    ),
+    process.env.WINDIR && path.join(
+      process.env.WINDIR,
+      'System32',
+      'WindowsPowerShell',
+      'v1.0',
+      'powershell.exe'
+    )
+  ].filter(Boolean)
+  const resolved = candidates.find((candidate) => fsSync.existsSync(candidate))
+  if (!resolved) throw new Error('未检测到 Windows PowerShell')
+  return resolved
+}
+
+function resolveShellLaunch(shellRaw, command) {
+  const shell = normalizeShell(shellRaw)
+  if (shell === 'powershell') {
+    return {
+      shell,
+      executable: resolvePowerShellExecutable(),
+      args: [
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        command
+      ]
+    }
+  }
+  return {
+    shell,
+    executable: resolveBashExecutable(),
+    args: ['--noprofile', '--norc', '-c', command]
+  }
+}
+
 function appendLimited(state, chunk) {
   const text = String(chunk || '')
   if (!text || state.text.length >= MAX_OUTPUT_CHARS) return
@@ -120,8 +180,9 @@ function appendLimited(state, chunk) {
   if (state.text.length >= MAX_OUTPUT_CHARS) state.truncated = true
 }
 
-async function runBash(command, options = {}) {
+async function runSandboxCommand(command, options = {}) {
   const safeCommand = validateCommandBoundary(command)
+  const launch = resolveShellLaunch(options.shell, safeCommand)
   const workspaceId = normalizeWorkspaceId(options.workspaceId)
   const {
     root,
@@ -136,7 +197,7 @@ async function runBash(command, options = {}) {
   return new Promise((resolve, reject) => {
     const stdout = { text: '', truncated: false }
     const stderr = { text: '', truncated: false }
-    const child = spawn(resolveBashExecutable(), ['--noprofile', '--norc', '-c', safeCommand], {
+    const child = spawn(launch.executable, launch.args, {
       cwd,
       windowsHide: true,
       shell: false,
@@ -152,8 +213,11 @@ async function runBash(command, options = {}) {
         GIT_CONFIG_NOSYSTEM: '1',
         GIT_CONFIG_GLOBAL: path.join(root, '.runtime', 'config', 'gitconfig'),
         LANG: process.env.LANG || 'C.UTF-8',
+        PYTHONUTF8: '1',
+        PYTHONIOENCODING: 'utf-8',
         AI_TOOLS_SANDBOX: '1',
-        AI_TOOLS_SANDBOX_WORKSPACE: workspaceId
+        AI_TOOLS_SANDBOX_WORKSPACE: workspaceId,
+        AI_TOOLS_SANDBOX_SHELL: launch.shell
       }
     })
 
@@ -167,6 +231,7 @@ async function runBash(command, options = {}) {
         resolve({
           kind: 'sandbox_shell_result',
           workspaceId,
+          shell: launch.shell,
           ...result,
           changedFiles: collectChangedFiles(beforeFiles, afterFiles)
         })
@@ -205,10 +270,34 @@ async function runBash(command, options = {}) {
   })
 }
 
+async function runBash(command, options = {}) {
+  return runSandboxCommand(command, { ...options, shell: 'bash' })
+}
+
 const ACTIONS = Object.freeze([
   {
+    name: 'sandbox_run',
+    description: 'Run a command inside an isolated AI Tools workspace. On Windows, auto uses PowerShell so built-in commands such as Compress-Archive are available; Bash remains selectable.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: 'Command to execute inside the workspace.' },
+        shell: {
+          type: 'string',
+          enum: ['auto', 'powershell', 'bash'],
+          description: 'Command shell. Default auto uses PowerShell on Windows and Bash elsewhere.'
+        },
+        workspace_id: { type: 'string', description: 'Workspace id returned with imported attachments. Default: default.' },
+        cwd: { type: 'string', description: 'Working directory relative to the sandbox workspace. Default: .' },
+        timeout_ms: { type: 'integer', minimum: 1000, maximum: MAX_TIMEOUT_MS }
+      },
+      required: ['command'],
+      additionalProperties: false
+    }
+  },
+  {
     name: 'bash_run',
-    description: 'Run a Bash command inside an isolated AI Tools workspace. Files outside the workspace are unavailable unless explicitly imported.',
+    description: 'Compatibility action that runs Bash inside an isolated AI Tools workspace. Prefer sandbox_run unless Bash syntax is specifically required.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -284,6 +373,16 @@ class BuiltinShellSkillRuntime {
         timeoutMs: args.timeout_ms
       })
     }
+    if (action === 'sandbox_run') {
+      const command = cleanString(args.command)
+      if (!command) throw new Error('command is required')
+      return runSandboxCommand(command, {
+        shell: args.shell,
+        workspaceId,
+        cwd: args.cwd,
+        timeoutMs: args.timeout_ms
+      })
+    }
     if (action === 'sandbox_import') {
       return copyExternalFilesToWorkspace(workspaceId, args.source_paths)
     }
@@ -316,5 +415,7 @@ module.exports.ACTIONS = ACTIONS
 module.exports._test = {
   resolveWorkingDirectory,
   clampTimeout,
-  validateCommandBoundary
+  validateCommandBoundary,
+  normalizeShell,
+  resolveShellLaunch
 }

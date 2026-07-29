@@ -1000,6 +1000,14 @@
   overflow: visible;
 }
 
+.chat-item.is-activity {
+  animation: none;
+}
+
+.chat-item.is-activity + .chat-item.is-activity {
+  margin-top: -9px;
+}
+
 .chat-user-guidance-tag {
   margin-bottom: 6px;
 }
@@ -1178,11 +1186,12 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  min-width: min(100%, 680px);
-  padding: 4px 6px;
-  border-radius: 10px;
-  border: 1px dashed rgba(148, 163, 184, 0.32);
-  background: rgba(248, 250, 252, 0.82);
+  width: min(100%, 760px);
+  min-width: 0;
+  padding: 3px 2px;
+  border-radius: 7px;
+  border: 0;
+  background: transparent;
   cursor: pointer;
   user-select: none;
   font-size: 12px;
@@ -1190,12 +1199,16 @@
 }
 
 .chat-page.dark .chat-tool-compact {
-  border-color: rgba(148, 163, 184, 0.24);
-  background: rgba(30, 41, 59, 0.58);
+  background: transparent;
 }
 
-.chat-tool-compact__chevron {
-  opacity: 0.76;
+.chat-tool-compact__state-icon {
+  flex: 0 0 auto;
+  opacity: 0.8;
+}
+
+.chat-tool-compact__state-icon.is-spinning {
+  animation: tool-icon-spin 0.9s linear infinite;
 }
 
 .chat-tool-compact__label {
@@ -1254,15 +1267,54 @@
   white-space: nowrap;
 }
 
-.chat-tool-compact__hint {
+.chat-tool-compact__chevron {
   flex: 0 0 auto;
-  opacity: 0.62;
+  margin-left: auto;
+  opacity: 0.5;
 }
 
 .assistant-thinking {
   margin-bottom: 10px;
   padding-bottom: 10px;
   border-bottom: 1px dashed rgba(0, 0, 0, 0.10);
+}
+
+.chat-item.is-activity .chat-item__row {
+  align-items: center;
+  padding-left: 40px;
+}
+
+.chat-item.is-activity .chat-item__avatar {
+  display: none;
+}
+
+.chat-item.is-activity .chat-item__bubble,
+.chat-item.is-activity .chat-item__bubble:hover,
+.chat-page.dark .chat-item.is-activity .chat-item__bubble,
+.chat-page.dark .chat-item.is-activity .chat-item__bubble:hover {
+  width: min(100%, 780px);
+  max-width: calc(100% - 40px);
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.chat-item.is-thinking-activity .assistant-thinking {
+  margin: 0;
+  padding: 3px 2px;
+  border: 0;
+}
+
+.chat-item.is-thinking-activity .assistant-thinking__toggle {
+  min-height: 22px;
+  opacity: 0.78;
+}
+
+.chat-item.is-thinking-activity .assistant-thinking__hint {
+  margin-left: 4px;
+  font-size: 11px;
 }
 
 .md-editor {
