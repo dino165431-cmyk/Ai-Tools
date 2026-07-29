@@ -1101,10 +1101,10 @@ import {
 import {
   buildSkillToolsBundle,
   buildSkillsPromptText as buildProgressiveSkillsPromptText,
+  buildAutoSkillActivationPlan,
   collectDerivedMcpIds,
   createBuiltinSkillActionCatalog,
   listSelectedSkillsBrief as listSelectedSkillsBriefFromList,
-  pickSkillsByTriggers,
   resolveBuiltinSkillCall,
   resolveSelectedSkillTarget as resolveSelectedSkillTargetFromList,
   selectSkillsByIds
@@ -1261,7 +1261,7 @@ import {
   shouldAutoAttachToolImagesForVision,
   shouldFallbackVisionInputToText
 } from '@/utils/toolVisionContext'
-import { isAgentRunToolResult } from '@/utils/chatToolDisplay'
+import { inferStructuredToolResultStatus, isAgentRunToolResult } from '@/utils/chatToolDisplay'
 import { getAgentRunMessageStatus, isAgentRunToolName, mergeAgentRunTraceEntries } from '@/utils/chatAgentRun'
 import { CHAT_CODE_AUTO_FOLD_THRESHOLD } from '@/utils/chatMarkdownPreview'
 import {
@@ -1541,7 +1541,7 @@ const chatToolApprovalModeOptions = [
     key: TOOL_APPROVAL_MODE_SAFE
   },
   {
-    label: '全部自动（高风险）',
+    label: '高风险自动（强制确认除外）',
     key: TOOL_APPROVAL_MODE_FULL
   }
 ]
@@ -1592,6 +1592,10 @@ const MCP_PINNED_TOOL_HINTS_MAX_PER_SERVER = 20
 // Agent 预设技能：元数据常驻，SKILL.md、引用文件和原生 Action Schema 均按需加载。
 const agentSkillIds = ref([])
 const activatedAgentSkillIds = ref([])
+// Router activations live for one user turn. Explicit use_skill calls promote them to session scope.
+const routerActivatedAgentSkillIds = new Set()
+const routerAddedSelectedSkillIds = new Set()
+const routerAddedAgentSkillIds = new Set()
 const loadedSkillContentById = reactive({})
 const loadedSkillFileCacheBySkillId = reactive({})
 
@@ -3153,6 +3157,7 @@ function isSkillPromptContentLoaded(skill) {
   const id = String(skill?._id || '').trim()
   if (!id) return false
   if (isDirectorySkill(skill)) {
+    if (agentSkillIdSet.value.has(id) && !activatedAgentSkillIdSet.value.has(id)) return false
     return hasLoadedSkillMainContent(id, skill?.entryFile || 'SKILL.md')
   }
   if (!agentSkillIdSet.value.has(id)) return true
@@ -3274,24 +3279,44 @@ function buildActiveRequestOverrides(options = {}) {
 }
 
 async function autoActivateAgentSkillsFromText(textRaw) {
+  if (
+    routerActivatedAgentSkillIds.size ||
+    routerAddedSelectedSkillIds.size ||
+    routerAddedAgentSkillIds.size
+  ) {
+    activatedAgentSkillIds.value = normalizeStringList(activatedAgentSkillIds.value)
+      .filter((id) => !routerActivatedAgentSkillIds.has(id))
+    selectedSkillIds.value = normalizeStringList(selectedSkillIds.value)
+      .filter((id) => !routerAddedSelectedSkillIds.has(id))
+    agentSkillIds.value = normalizeStringList(agentSkillIds.value)
+      .filter((id) => !routerAddedAgentSkillIds.has(id))
+    routerActivatedAgentSkillIds.clear()
+    routerAddedSelectedSkillIds.clear()
+    routerAddedAgentSkillIds.clear()
+  }
   if (!autoActivateAgentSkills.value) return []
   const raw = String(textRaw || '').trim()
   if (!raw) return []
 
-  const agentSet = agentSkillIdSet.value
-  const activatedSet = activatedAgentSkillIdSet.value
-  const candidates = (selectedSkillObjects.value || []).filter((s) => {
-    const id = s?._id
-    return !!id && agentSet.has(id) && !activatedSet.has(id)
+  const plan = buildAutoSkillActivationPlan({
+    skills: skills.value,
+    text: raw,
+    selectedSkillIds: selectedSkillIds.value,
+    agentSkillIds: agentSkillIds.value,
+    activatedSkillIds: activatedAgentSkillIds.value,
+    loadedSkillIds: loadedSkillIdSet.value,
+    minimumScore: 2,
+    limit: 2
   })
-
-  const picked = pickSkillsByTriggers(candidates, raw, { minimumScore: 2, limit: 2 })
+  const { candidates, picked } = plan
   if (!picked.length) return []
 
-  const prev = Array.isArray(activatedAgentSkillIds.value) ? activatedAgentSkillIds.value : []
-  const next = new Set(prev)
-  picked.forEach((x) => next.add(x.id))
-  activatedAgentSkillIds.value = Array.from(next)
+  plan.addedSelectedSkillIds.forEach((id) => routerAddedSelectedSkillIds.add(id))
+  plan.addedAgentSkillIds.forEach((id) => routerAddedAgentSkillIds.add(id))
+  picked.forEach((item) => routerActivatedAgentSkillIds.add(item.id))
+  selectedSkillIds.value = plan.selectedSkillIds
+  agentSkillIds.value = plan.agentSkillIds
+  activatedAgentSkillIds.value = plan.activatedSkillIds
   await Promise.all(picked.map(async (x) => {
     const skill = candidates.find((item) => String(item?._id || '').trim() === x.id)
     if (!isDirectorySkill(skill)) return
@@ -3309,8 +3334,18 @@ async function autoActivateAgentSkillsFromText(textRaw) {
   return picked
 }
 
+function markSkillActivationPersistent(skillIds = []) {
+  normalizeStringList(skillIds).forEach((id) => {
+    routerActivatedAgentSkillIds.delete(id)
+    routerAddedSelectedSkillIds.delete(id)
+    routerAddedAgentSkillIds.delete(id)
+  })
+}
+
 const derivedMcpIds = computed(() => {
-  return collectDerivedMcpIds(selectedSkillObjects.value)
+  return collectDerivedMcpIds(selectedSkillObjects.value, {
+    activeSkillIds: loadedSkillIdSet.value
+  })
 })
 
 const activeMcpIds = computed(() => {
@@ -3513,6 +3548,16 @@ const basePromptText = computed(() => {
   return String(p?.content || '').trim()
 })
 
+const agentPromptText = computed(() => {
+  const promptId = String(selectedAgent.value?.prompt || '').trim()
+  if (!promptId) return ''
+  const prompt = findLocalPromptById(promptId)
+  if (!prompt || !isSystemPrompt(prompt)) return ''
+  const content = String(prompt.content || '').trim()
+  if (!content || content === basePromptText.value) return ''
+  return content
+})
+
 const skillsPromptText = computed(() => {
   return buildProgressiveSkillsPromptText({
     selectedSkills: selectedSkillObjects.value,
@@ -3604,6 +3649,7 @@ const webSearchPromptText = computed(() => {
 const systemContent = computed(() => {
   const blocks = []
   if (basePromptText.value) blocks.push(basePromptText.value)
+  if (agentPromptText.value) blocks.push(agentPromptText.value)
   if (skillsPromptText.value) blocks.push(skillsPromptText.value)
   if (webSearchPromptText.value) blocks.push(webSearchPromptText.value)
   if (toolModePromptText.value) blocks.push(toolModePromptText.value)
@@ -3628,9 +3674,9 @@ function buildHostWorkspacePrompt(sessionRecord = null) {
   return [
     '## 当前会话工作区',
     `- 用户已明确选择本机目录作为当前会话工作区：${workspacePath}`,
-    '- `sandbox_run` / `bash_run` 会自动从该工作区执行；不要在工具参数中填写或猜测绝对路径。',
-    '- `cwd` 仅在需要进入工作区子目录时填写，并且必须使用工作区内的相对路径；未填写时使用工作区根目录。',
-    '- 这是用户授权的本机目录，命令可能直接修改其中的文件；执行前应保持改动范围与用户请求一致。'
+    '- `sandbox_read_file` / `sandbox_write_file` / `sandbox_list` / `sandbox_run` / `bash_run` 会自动作用于该工作区；不要在工具参数中填写或猜测绝对路径。',
+    '- `path` 和 `cwd` 必须使用工作区内的相对路径；未填写 cwd 时使用工作区根目录。',
+    '- 这是用户授权的本机目录，结构化写入和命令都可能直接修改其中的文件；当前命令执行没有操作系统级进程沙盒，执行前应保持改动范围与用户请求一致。'
   ].join('\n')
 }
 
@@ -5561,6 +5607,10 @@ function getToolMessageStatus(msg) {
     if (explicit && explicit !== 'running') return explicit
     if (payloadStatus === 'running') return 'running'
   }
+  const structuredStatus = normalizeToolMessageStatus(
+    inferStructuredToolResultStatus(msg?.toolResultPayload)
+  )
+  if (structuredStatus) return structuredStatus
   if (explicit) return explicit
   const text = String(msg?.content || '').trim()
   if (/rejected|拒绝/i.test(text)) return 'rejected'
@@ -5677,6 +5727,10 @@ function inferToolResultStatus(messageLike) {
     if (explicit && explicit !== 'running') return explicit
     if (payloadStatus === 'running') return 'running'
   }
+  const structuredStatus = normalizeToolMessageStatus(
+    inferStructuredToolResultStatus(messageLike?.toolResultPayload)
+  )
+  if (structuredStatus) return structuredStatus
   if (explicit) return explicit
   const role = String(messageLike?.role || '').trim()
   if (role === 'tool_call') return 'running'
@@ -5784,15 +5838,20 @@ function createToolExecutionResultMessage(content = '', extra = {}, toolCallId =
 function buildToolExecutionResultSubMeta(result) {
   const resultKind = String(result?.kind || '').trim()
   if (resultKind.startsWith('sandbox_')) {
+    const isolationLabel = result?.sandboxEnforced === true
+      ? '系统沙盒'
+      : result?.isolationLevel === 'host-workspace'
+        ? '本机工作区（无系统沙盒）'
+        : '隔离工作区（路径守卫）'
     if (result?.workspaceKind === 'host') {
       const workspacePath = String(result?.workspacePath || '').trim()
       const relativeCwd = String(result?.cwd || '.').trim()
       return [
-        workspacePath ? `本机工作区：${workspacePath}` : '本机工作区',
+        workspacePath ? `${isolationLabel}：${workspacePath}` : isolationLabel,
         relativeCwd && relativeCwd !== '.' ? `cwd：${relativeCwd}` : ''
       ].filter(Boolean).join(' · ')
     }
-    return `沙盒工作区：${String(result?.workspaceId || 'default').trim() || 'default'}`
+    return `${isolationLabel}：${String(result?.workspaceId || 'default').trim() || 'default'}`
   }
   if (!isAgentRunToolResult(result)) return ''
   const agentName = String(result?.agent?.name || result?.agent?.id || '').trim()
@@ -5947,6 +6006,7 @@ function enqueueMemorySessionApprovalRequest(record, request) {
           ? 'execution'
           : 'tool',
     forceApproval: request.forceApproval === true,
+    hardApproval: request.hardApproval === true,
     approvalKey: String(request.approvalKey || '').trim(),
     streamId: String(request.streamId || '').trim(),
     agentName: String(request.agentName || '').trim(),
@@ -5981,6 +6041,7 @@ async function flushMemorySessionApprovalQueue(record) {
       record.autoApproveTools === false ? TOOL_APPROVAL_MODE_MANUAL : TOOL_APPROVAL_MODE_SAFE
     ),
     forceApproval: nextRequest.forceApproval === true,
+    hardApproval: nextRequest.hardApproval === true,
     interactive: true
   })
   if (
@@ -6008,6 +6069,7 @@ async function flushMemorySessionApprovalQueue(record) {
       sessionId: record.id,
       sessionTitle: resolveMemorySessionTitle(record),
       approvalKind: nextRequest.approvalKind,
+      hardApproval: nextRequest.hardApproval === true,
       rememberText:
         nextRequest.approvalKind === 'shell'
           ? '本会话允许相同命令'
@@ -6231,7 +6293,14 @@ function prepareBuiltinAgentToolCallArgs(skillId, toolName, argsObj, pendingMess
   const normalizedToolName = String(toolName || '').trim()
   if (
     normalizedSkillId === BUILTIN_SHELL_SKILL_ID &&
-    (normalizedToolName === 'sandbox_run' || normalizedToolName === 'bash_run')
+    [
+      'sandbox_status',
+      'sandbox_run',
+      'bash_run',
+      'sandbox_read_file',
+      'sandbox_write_file',
+      'sandbox_list'
+    ].includes(normalizedToolName)
   ) {
     const targetRecord = getRunRecord(
       pendingMessage?.toolAbortState || abortController.value || null
@@ -6338,6 +6407,10 @@ async function handleBuiltinAgentsToolApprovalRequest(event) {
   const forceApproval =
     detail.forceApproval === true ||
     approvalKind === 'shell'
+  const hardApproval =
+    detail.hardApproval === true ||
+    approvalKind === 'shell' ||
+    approvalKind === 'execution'
   const approvalKey = buildSessionToolApprovalKey({
     sessionId: String(targetRecord?.id || 'chat'),
     serverId,
@@ -6355,6 +6428,7 @@ async function handleBuiltinAgentsToolApprovalRequest(event) {
     evaluateToolApproval({
       mode: inheritedMode,
       forceApproval,
+      hardApproval,
       interactive: true
     }).action === 'allow'
 
@@ -6371,6 +6445,7 @@ async function handleBuiltinAgentsToolApprovalRequest(event) {
       reasoningText,
       approvalKind,
       forceApproval,
+      hardApproval,
       approvalKey,
       streamId,
       agentName,
@@ -9225,9 +9300,21 @@ function buildCurrentChatState() {
     selectedPromptId: normalizedBasePromptState.selectedPromptId,
     customSystemPrompt: normalizedBasePromptState.customSystemPrompt,
     customSystemPromptExplicit: normalizedBasePromptState.customSystemPromptExplicit,
-    selectedSkillIds: deepCopyJson(selectedSkillIds.value, []),
-    agentSkillIds: deepCopyJson(agentSkillIds.value, []),
-    activatedAgentSkillIds: deepCopyJson(activatedAgentSkillIds.value, []),
+    selectedSkillIds: deepCopyJson(
+      normalizeStringList(selectedSkillIds.value)
+        .filter((id) => !routerAddedSelectedSkillIds.has(id)),
+      []
+    ),
+    agentSkillIds: deepCopyJson(
+      normalizeStringList(agentSkillIds.value)
+        .filter((id) => !routerAddedAgentSkillIds.has(id)),
+      []
+    ),
+    activatedAgentSkillIds: deepCopyJson(
+      normalizeStringList(activatedAgentSkillIds.value)
+        .filter((id) => !routerActivatedAgentSkillIds.has(id)),
+      []
+    ),
     manualMcpIds: deepCopyJson(manualMcpIds.value, []),
     sandboxHostWorkspacePath: normalizeSelectedHostWorkspacePath(sandboxHostWorkspacePath.value),
     webSearchEnabled: webSearchEnabled.value,
@@ -9255,16 +9342,18 @@ function buildDefaultChatState() {
   const rawDefaultSystemPrompt = String(chatConfig.value?.defaultSystemPrompt || '')
   const defaultModel = resolveDefaultModelSelectionFromConfig()
   const defaultPromptState = buildCustomSystemPromptState(rawDefaultSystemPrompt, false)
+  const builtinAgent = (agents.value || []).find((agent) => String(agent?._id || '').trim() === BUILTIN_AGENT_ID)
+  const builtinSkillIds = normalizeStringList(builtinAgent?.skills)
   return {
-    selectedAgentId: null,
+    selectedAgentId: builtinAgent?._id || null,
     selectedProviderId: defaultModel.providerId || null,
     selectedModel: defaultModel.model || '',
     basePromptMode: defaultPromptState.basePromptMode,
     selectedPromptId: defaultPromptState.selectedPromptId,
     customSystemPrompt: defaultPromptState.customSystemPrompt,
     customSystemPromptExplicit: defaultPromptState.customSystemPromptExplicit,
-    selectedSkillIds: [],
-    agentSkillIds: [],
+    selectedSkillIds: builtinSkillIds,
+    agentSkillIds: builtinSkillIds,
     activatedAgentSkillIds: [],
     manualMcpIds: [],
     sandboxHostWorkspacePath: '',
@@ -9980,6 +10069,9 @@ function normalizeLoadedDisplayMessages(messages) {
 function applyLoadedChatState(state) {
   if (!state || typeof state !== 'object') return
   const hydratedState = buildHydratedChatState(state)
+  routerActivatedAgentSkillIds.clear()
+  routerAddedSelectedSkillIds.clear()
+  routerAddedAgentSkillIds.clear()
 
   sessionContextWindowOverride.value =
     hydratedState.contextWindow && typeof hydratedState.contextWindow === 'object'
@@ -10526,6 +10618,9 @@ watch(
 )
 
 function applyAgent(agentId) {
+  routerActivatedAgentSkillIds.clear()
+  routerAddedSelectedSkillIds.clear()
+  routerAddedAgentSkillIds.clear()
   selectedAgentId.value = agentId
   const agent = (agents.value || []).find((a) => a._id === agentId)
   if (!agent) return
@@ -10550,10 +10645,7 @@ function applyAgent(agentId) {
 
   const nextAgentSkills = Array.isArray(agent.skills) ? [...agent.skills] : []
   agentSkillIds.value = nextAgentSkills
-  activatedAgentSkillIds.value =
-    String(agent?._id || '').trim() === BUILTIN_AGENT_ID && nextAgentSkills.includes(BUILTIN_AGENT_ORCHESTRATION_SKILL_ID)
-      ? [BUILTIN_AGENT_ORCHESTRATION_SKILL_ID]
-      : []
+  activatedAgentSkillIds.value = []
   selectedSkillIds.value = nextAgentSkills
   manualMcpIds.value = Array.isArray(agent.mcp) ? [...agent.mcp] : []
   if (reasoningEffortOverride) thinkingEffort.value = reasoningEffortOverride
@@ -13658,7 +13750,10 @@ function commitToolApprovalMode(value) {
     dispatchBuiltinAgentsToolApprovalModeChange(record, nextMode)
     if (nextMode === TOOL_APPROVAL_MODE_FULL) {
       pendingToolApprovals.value
-        .filter((request) => !request?.sessionId || String(request.sessionId) === String(record.id))
+        .filter((request) => (
+          request?.hardApproval !== true &&
+          (!request?.sessionId || String(request.sessionId) === String(record.id))
+        ))
         .forEach((request) => request?.settle?.('once'))
       window.setTimeout(() => {
         void flushMemorySessionApprovalQueue(record)
@@ -13672,9 +13767,9 @@ function setToolApprovalMode(value) {
   if (nextMode === toolApprovalMode.value) return
   if (nextMode === TOOL_APPROVAL_MODE_FULL) {
     dialog.warning({
-      title: '启用全部自动调用？',
-      content: '全部自动会直接执行写入、脚本和命令调用，子 Agent 也会继承此模式。请只在信任当前智能体、技能和 MCP 服务时启用。',
-      positiveText: '启用全部自动',
+      title: '启用高风险自动调用？',
+      content: '此模式会直接执行普通写入，子 Agent 也会继承；命令、代码执行及明确标记为破坏性的操作仍需逐次确认。请只挂载可信的智能体、技能和 MCP 服务。',
+      positiveText: '启用高风险自动',
       negativeText: '取消',
       onPositiveClick: () => commitToolApprovalMode(nextMode)
     })
@@ -15911,6 +16006,7 @@ async function buildToolsBundle(options = {}) {
         toolDescription: String(t.description || '').trim(),
         transportType: server.transportType,
         forceApproval: approvalPolicy.forceApproval,
+        hardApproval: approvalPolicy.hardApproval,
         approvalKind: approvalPolicy.approvalKind,
         approvalReason: approvalPolicy.approvalReason,
         annotations: t.annotations || null,
@@ -15942,7 +16038,7 @@ function createDisplayMessage(role, content = '', extra = {}) {
   if (role === 'tool' || role === 'tool_call') {
     base.toolExpanded = false
     base.toolMeta = ''
-    base.toolStatus = role === 'tool_call' ? 'running' : 'success'
+    base.toolStatus = role === 'tool_call' ? 'running' : ''
     base.toolName = ''
     base.toolServerName = ''
     base.toolTitle = ''
@@ -16412,6 +16508,7 @@ function resolveToolApprovalTarget(context = {}) {
       })
     : {
         forceApproval: false,
+        hardApproval: false,
         approvalKind: 'tool',
         approvalReason: ''
       }
@@ -16428,6 +16525,11 @@ function resolveToolApprovalTarget(context = {}) {
     configuredApprovalKind === 'execution' ||
     mapping.forceApproval === true ||
     resolvedPolicy.forceApproval === true
+  const hardApproval =
+    isShell ||
+    configuredApprovalKind === 'execution' ||
+    mapping.hardApproval === true ||
+    resolvedPolicy.hardApproval === true
   const approvalReason =
     isShell
       ? '命令执行始终需要确认具体命令和工作目录'
@@ -16448,6 +16550,7 @@ function resolveToolApprovalTarget(context = {}) {
     argsText: String(argsText || '{}').trim() || '{}',
     approvalKind,
     forceApproval,
+    hardApproval,
     approvalReason
   }
 }
@@ -16459,7 +16562,10 @@ async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, ab
   const normalizedContext = normalizeToolCallExecutionContext(toolCall, toolMap)
   const context = await hydrateSkillGatewayExecutionContext(normalizedContext, abortState)
   const approvalTarget = resolveToolApprovalTarget(context)
-  const approvedHostWorkspacePath = approvalTarget.approvalKind === 'shell'
+  const usesCommandWorkspace =
+    approvalTarget.approvalKind === 'shell' ||
+    String(approvalTarget.serverId || '').trim() === BUILTIN_SHELL_SKILL_ID
+  const approvedHostWorkspacePath = usesCommandWorkspace
     ? resolveSessionHostWorkspacePath(targetRecord)
     : ''
   const approvalKeyArgs = approvedHostWorkspacePath
@@ -16483,6 +16589,7 @@ async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, ab
     evaluateToolApproval({
       mode: currentApprovalMode,
       forceApproval: approvalTarget.forceApproval === true,
+      hardApproval: approvalTarget.hardApproval === true,
       interactive: true
     }).action === 'allow'
 
@@ -16530,6 +16637,7 @@ async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, ab
       sessionId: String(targetRecord?.id || 'chat'),
       sessionTitle: resolveMemorySessionTitle(targetRecord),
       approvalKind: approvalTarget.approvalKind,
+      hardApproval: approvalTarget.hardApproval === true,
       extraLines: [
         ...(approvalTarget.approvalReason
           ? [`需要确认：${approvalTarget.approvalReason}`]
@@ -16623,6 +16731,7 @@ const executePreparedSkillTool = createPreparedSkillToolExecutor({
   loadSkillMainContent,
   loadedSkillContentById,
   loadedSkillFileCacheBySkillId,
+  markSkillActivationPersistent,
   maybeScrollToBottomForRun,
   mcpServers,
   prepareBuiltinAgentToolCallArgs,

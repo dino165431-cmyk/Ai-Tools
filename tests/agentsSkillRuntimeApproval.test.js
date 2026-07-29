@@ -40,6 +40,7 @@ test('sub-agent approval modes match the parent chat semantics', () => {
   assert.equal(shouldAllowToolCallByApprovalMode({ toolApprovalMode: 'safe' }, { forceApproval: false }).allowed, true)
   assert.equal(shouldAllowToolCallByApprovalMode({ toolApprovalMode: 'safe' }, { forceApproval: true }).requiresPrompt, true)
   assert.equal(shouldAllowToolCallByApprovalMode({ toolApprovalMode: 'full' }, { forceApproval: true }).requiresPrompt, undefined)
+  assert.equal(shouldAllowToolCallByApprovalMode({ toolApprovalMode: 'full' }, { hardApproval: true }).requiresPrompt, true)
   assert.equal(shouldAllowToolCallByApprovalMode({ toolApprovalMode: 'manual' }, { forceApproval: false }).requiresPrompt, true)
   assert.equal(shouldAllowToolCallByApprovalMode({ toolApprovalMode: 'deny' }, { forceApproval: false }).allowed, false)
 })
@@ -66,4 +67,5 @@ test('nested sub-agents prompt for MCP tools unless they are explicitly read-onl
     getMcpToolApprovalPolicy({}, { annotations: { readOnlyHint: true } }).forceApproval,
     false
   )
+  assert.equal(getMcpToolApprovalPolicy({}, { name: 'delete_account' }).hardApproval, true)
 })

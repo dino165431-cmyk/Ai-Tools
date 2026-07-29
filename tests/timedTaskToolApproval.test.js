@@ -14,7 +14,7 @@ test('timed tasks expose an explicit unattended tool policy instead of hard-codi
   assert.match(viewSource, /toolApprovalMode:\s*'safe'/)
   assert.match(viewSource, /低风险只读（推荐）/)
   assert.match(viewSource, /禁止工具/)
-  assert.match(viewSource, /全部自动（高风险）/)
+  assert.match(viewSource, /高风险自动（强制确认类仍阻止）/)
   assert.doesNotMatch(viewSource, /toolApprovalMode:\s*'full'\s*\n\s*}/)
 
   assert.match(executorSource, /normalizeUnattendedToolApprovalMode/)
@@ -28,4 +28,3 @@ test('timed task tool failures are rendered as errors in both provider paths', (
 
   assert.equal(statusChecks.length, 2)
 })
-

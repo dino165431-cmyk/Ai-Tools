@@ -35,6 +35,7 @@ test('prepared MCP executor lists active servers through the internal gateway', 
   assert.equal(result.ok, true)
   assert.match(result.content, /server-1/)
   assert.match(context.targetSession.messages[0].content, /MCP 服务器/)
+  assert.equal(context.targetSession.messages[0].toolStatus, 'success')
   assert.equal(scrollCount, 1)
 })
 
@@ -61,5 +62,6 @@ test('prepared MCP executor keeps mapped missing-server failures local and non-s
   assert.equal(result.ok, false)
   assert.match(result.content, /missing/)
   assert.match(context.targetSession.messages[0].content, /未找到 MCP 服务器/)
+  assert.equal(context.targetSession.messages[0].toolStatus, 'error')
   assert.equal(scrollCount, 0)
 })

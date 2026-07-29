@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { stripToolIdentityFromDisplayContent } from '../src/utils/chatToolDisplay.js'
+import {
+  inferStructuredToolResultStatus,
+  stripToolIdentityFromDisplayContent
+} from '../src/utils/chatToolDisplay.js'
 
 test('expanded tool display removes duplicated identity blocks but keeps parameters and results', () => {
   const content = [
@@ -36,4 +39,13 @@ test('expanded tool display removes duplicated identity blocks but keeps paramet
 test('expanded tool display preserves unrelated markdown sections', () => {
   const content = '### 执行摘要\n\n没有发现异常。'
   assert.equal(stripToolIdentityFromDisplayContent(content), content)
+})
+
+test('structured tool result status treats nested runtime failures as errors', () => {
+  assert.equal(inferStructuredToolResultStatus({ ok: false, exitCode: 1 }), 'error')
+  assert.equal(inferStructuredToolResultStatus({ ok: true, exitCode: 0 }), 'success')
+  assert.equal(inferStructuredToolResultStatus({ timedOut: true }), 'error')
+  assert.equal(inferStructuredToolResultStatus({ isError: true }), 'error')
+  assert.equal(inferStructuredToolResultStatus({ status: 'rejected' }), 'rejected')
+  assert.equal(inferStructuredToolResultStatus({ status: 'paused' }), 'paused')
 })

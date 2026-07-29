@@ -1,5 +1,5 @@
-﻿import test from 'node:test'
 import assert from 'node:assert/strict'
+import test from 'node:test'
 
 import { sanitizeToolResultForModel, stringifyToolResultForModel } from '../src/utils/toolResultForModel.js'
 
@@ -92,4 +92,12 @@ test('stringifyToolResultForModel returns sanitized json text', () => {
 
   assert.match(text, /omitted: base64\/dataUrl too long/)
   assert.doesNotMatch(text, /iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/)
+})
+
+test('process streams keep useful head and tail while bounding model context', () => {
+  const text = `${'a'.repeat(9000)}TAIL`
+  const sanitized = sanitizeToolResultForModel({ stdout: text })
+  assert.ok(sanitized.stdout.length < text.length)
+  assert.match(sanitized.stdout, /truncated process output/)
+  assert.ok(sanitized.stdout.endsWith('TAIL'))
 })

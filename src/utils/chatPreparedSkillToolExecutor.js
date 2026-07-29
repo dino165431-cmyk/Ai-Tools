@@ -1,6 +1,10 @@
 import { readSkillFile as readSkillRegistryFile, runSkillScript as runSkillRegistryScript } from './configListener.js'
 import { discoverBuiltinSkillActions } from './chatSkillTooling.js'
-import { formatToolResultDisplayContent, isAgentRunToolResult } from './chatToolDisplay.js'
+import {
+  formatToolResultDisplayContent,
+  inferStructuredToolResultStatus,
+  isAgentRunToolResult
+} from './chatToolDisplay.js'
 import { isDirectorySkill } from './skillUtils.js'
 import { createAbortError, isAbortError, throwIfAborted, waitForAbortable } from './abortableRequest.js'
 import { stableStringify } from './chatProviderStreaming.js'
@@ -42,6 +46,7 @@ export function createPreparedSkillToolExecutor(runtime) {
     loadSkillMainContent,
     loadedSkillContentById,
     loadedSkillFileCacheBySkillId,
+    markSkillActivationPersistent,
     maybeScrollToBottomForRun,
     mcpServers,
     prepareBuiltinAgentToolCallArgs,
@@ -147,6 +152,8 @@ export function createPreparedSkillToolExecutor(runtime) {
         )
         throwIfAborted(abortState)
 
+        const resultStatus = inferStructuredToolResultStatus(result) || 'success'
+        const resultOk = !['error', 'rejected', 'stopped'].includes(resultStatus)
         const images = extractChatImagesFromToolResult(result)
         const resultKind = String(result?.kind || '').trim()
         const toolResultPayload = (
@@ -174,12 +181,13 @@ export function createPreparedSkillToolExecutor(runtime) {
             toolServerName: skillName,
             toolSubMeta: buildToolExecutionResultSubMeta(result),
             toolResultPayload,
+            toolStatus: resultStatus,
             toolTraceStreamId: String(pendingToolMessage?.toolTraceStreamId || '').trim(),
             toolAutoApproved: pendingToolMessage?.toolAutoApproved === true
           })
         )
         await maybeScrollToBottomForRun(abortState)
-        return { ok: true, content: resultText, images, serverName: skillName, toolName }
+        return { ok: resultOk, content: resultText, images, serverName: skillName, toolName }
       } catch (error) {
         if (isAbortError(error) || abortState?.aborted) throw createAbortError()
         const errorText = error?.message || String(error)
@@ -524,6 +532,7 @@ export function createPreparedSkillToolExecutor(runtime) {
 
     let changed = false
     if (isAgentSkill) {
+      markSkillActivationPersistent?.([skillId])
       throwIfAborted(abortState)
       const previous = Array.isArray(activatedAgentSkillIds.value) ? activatedAgentSkillIds.value : []
       if (!previous.includes(skillId)) {
@@ -639,6 +648,7 @@ export function createPreparedSkillToolExecutor(runtime) {
         noop.push(id)
         return
       }
+      markSkillActivationPersistent?.([id])
       if (previous.has(id)) already.push(id)
       else {
         previous.add(id)

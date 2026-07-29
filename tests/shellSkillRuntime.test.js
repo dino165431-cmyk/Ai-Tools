@@ -33,12 +33,51 @@ test('shell Skill runtime rejects obvious data-directory escapes', () => {
 test('shell Skill runtime exposes explicit sandbox lifecycle actions', () => {
   assert.deepEqual(
     createShellSkillRuntime.ACTIONS.map((action) => action.name),
-    ['sandbox_run', 'bash_run', 'sandbox_import', 'sandbox_list', 'sandbox_reset']
+    [
+      'sandbox_status',
+      'sandbox_run',
+      'bash_run',
+      'sandbox_read_file',
+      'sandbox_write_file',
+      'sandbox_import',
+      'sandbox_list',
+      'sandbox_reset'
+    ]
   )
-  const runAction = createShellSkillRuntime.ACTIONS[0]
+  const runAction = createShellSkillRuntime.ACTIONS.find((action) => action.name === 'sandbox_run')
   assert.ok(runAction.inputSchema.properties.workspace_id)
   assert.deepEqual(runAction.inputSchema.properties.shell.enum, ['auto', 'powershell', 'bash'])
-  assert.match(runAction.description, /isolated/i)
+  assert.match(runAction.description, /not an OS-level process sandbox/i)
+})
+
+test('shell action policy separates read-only workspace operations from hard-gated execution', async () => {
+  const actions = await builtinSkills.listBuiltinSkillActions(builtinSkills.BUILTIN_SKILL_IDS.shell)
+  const byName = new Map(actions.map((action) => [action.name, action]))
+  assert.equal(byName.get('sandbox_status').forceApproval, false)
+  assert.equal(byName.get('sandbox_read_file').forceApproval, false)
+  assert.equal(byName.get('sandbox_run').hardApproval, true)
+  assert.equal(byName.get('sandbox_write_file').forceApproval, true)
+  assert.equal(byName.get('sandbox_write_file').hardApproval, false)
+  assert.equal(byName.get('sandbox_reset').hardApproval, true)
+})
+
+test('runtime PATH merges refreshed entries and resolves executable files', (t) => {
+  const toolRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-path-'))
+  const executable = path.join(toolRoot, process.platform === 'win32' ? 'uv.exe' : 'uv')
+  fs.writeFileSync(executable, '')
+  t.after(() => fs.rmSync(toolRoot, { recursive: true, force: true }))
+
+  const runtimePath = createShellSkillRuntime._test.buildRuntimePath({
+    env: { PATH: 'C:\\stale' },
+    registryPaths: [],
+    knownDirectories: [toolRoot],
+    refresh: true
+  })
+  assert.ok(runtimePath.split(path.delimiter).includes(toolRoot))
+  assert.equal(
+    createShellSkillRuntime._test.findRuntimeExecutable('uv', runtimePath),
+    executable
+  )
 })
 
 test('shell Skill runtime decodes UTF-8 across chunk boundaries and falls back to GB18030 on Windows', () => {
@@ -172,10 +211,54 @@ test('sandbox_run executes in a user-selected host workspace without scanning th
   assert.equal(result.ok, true)
   assert.equal(result.workspaceKind, 'host')
   assert.equal(result.workspacePath, fs.realpathSync(hostRoot))
-  assert.equal(result.tracksChanges, false)
-  assert.deepEqual(result.changedFiles, [])
+  assert.equal(result.sandboxEnforced, false)
+  assert.equal(result.isolationLevel, 'host-workspace')
+  assert.equal(typeof result.tracksChanges, 'boolean')
+  if (result.tracksChanges) {
+    assert.ok(result.changedFiles.some((file) => file.path === 'result.txt'))
+  }
   assert.match(result.stdout, /完成/)
   assert.equal(fs.existsSync(path.join(hostRoot, 'result.txt')), true)
+})
+
+test('structured workspace file actions accept source text without shell boundary false positives', async (t) => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-shell-data-'))
+  const hostRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-host-structured-'))
+  const originalGetDataStorageRoot = globalConfig.getDataStorageRoot
+  globalConfig.getDataStorageRoot = () => tempRoot
+  t.after(() => {
+    globalConfig.getDataStorageRoot = originalGetDataStorageRoot
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+    fs.rmSync(hostRoot, { recursive: true, force: true })
+  })
+
+  const runtime = createShellSkillRuntime()
+  const content = [
+    '# Example',
+    'Install path: C:/Users/Admin/Downloads/demo',
+    'Formula: sin(pi / 4)',
+    'URL: https://example.com/docs'
+  ].join('\n')
+  const written = await runtime.runAction('sandbox_write_file', {
+    __host_workspace_path: hostRoot,
+    path: 'docs/README.md',
+    content
+  })
+  assert.equal(written.ok, true)
+  assert.equal(written.changedFiles[0].path, 'docs/README.md')
+
+  const read = await runtime.runAction('sandbox_read_file', {
+    __host_workspace_path: hostRoot,
+    path: 'docs/README.md'
+  })
+  assert.equal(read.content, content)
+
+  const listed = await runtime.runAction('sandbox_list', {
+    __host_workspace_path: hostRoot,
+    path: 'docs'
+  })
+  assert.equal(listed.workspaceKind, 'host')
+  assert.deepEqual(listed.files.map((file) => file.path), ['docs/README.md'])
 })
 
 test('built-in Skill registry ignores model-supplied host paths and accepts only host context', {

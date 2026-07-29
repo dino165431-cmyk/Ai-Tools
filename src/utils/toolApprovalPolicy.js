@@ -72,6 +72,24 @@ const MUTATING_TOOL_VERBS = new Set([
   'write'
 ])
 
+const HARD_APPROVAL_TOOL_VERBS = new Set([
+  'cancel',
+  'delete',
+  'disable',
+  'disconnect',
+  'invite',
+  'order',
+  'pay',
+  'publish',
+  'purchase',
+  'remove',
+  'reset',
+  'send',
+  'share',
+  'submit',
+  'uninstall'
+])
+
 function splitToolIdentifier(value) {
   return cleanText(value)
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -134,7 +152,7 @@ export function normalizeUnattendedToolApprovalMode(value, fallback = TOOL_APPRO
 export function getToolApprovalModeLabel(value) {
   const mode = normalizeToolApprovalMode(value)
   if (mode === TOOL_APPROVAL_MODE_MANUAL) return '每次确认'
-  if (mode === TOOL_APPROVAL_MODE_FULL) return '全部自动'
+  if (mode === TOOL_APPROVAL_MODE_FULL) return '高风险自动（强制确认除外）'
   if (mode === TOOL_APPROVAL_MODE_DENY) return '禁止调用'
   return '低风险自动'
 }
@@ -142,6 +160,7 @@ export function getToolApprovalModeLabel(value) {
 export function evaluateToolApproval({
   mode = TOOL_APPROVAL_MODE_SAFE,
   forceApproval = false,
+  hardApproval = false,
   interactive = true
 } = {}) {
   const normalizedMode = normalizeToolApprovalMode(mode)
@@ -151,6 +170,14 @@ export function evaluateToolApproval({
       action: 'deny',
       mode: normalizedMode,
       reason: 'tool_calls_disabled'
+    }
+  }
+
+  if (hardApproval === true) {
+    return {
+      action: interactive ? 'prompt' : 'deny',
+      mode: normalizedMode,
+      reason: interactive ? 'hard_confirmation_required' : 'unattended_hard_confirmation_unavailable'
     }
   }
 
@@ -197,6 +224,8 @@ export function resolveMcpToolApprovalPolicy(tool) {
     !explicitlyReadOnly &&
     hasConventionalReadOnlyName(tool)
   const mutatingName = hasMutatingToolName(tool)
+  const hardApprovalName = splitToolIdentifier(tool?.name || tool?.toolName)
+    .some((token) => HARD_APPROVAL_TOOL_VERBS.has(token))
   const approvalReason =
     annotations.destructiveHint === true
       ? '服务声明此工具可能产生破坏性修改'
@@ -212,6 +241,7 @@ export function resolveMcpToolApprovalPolicy(tool) {
 
   return {
     forceApproval: !(explicitlyReadOnly || inferredReadOnly),
+    hardApproval: annotations.destructiveHint === true || hardApprovalName,
     approvalKind: 'tool',
     explicitlyReadOnly,
     inferredReadOnly,

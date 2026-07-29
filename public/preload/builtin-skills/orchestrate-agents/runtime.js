@@ -784,8 +784,31 @@ function getMcpToolApprovalPolicy(server, tool) {
   const explicitlyReadOnly =
     annotations.readOnlyHint === true &&
     annotations.destructiveHint !== true
+  const hardApprovalName = cleanString(tool?.name)
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+    .some((token) => [
+      'cancel',
+      'delete',
+      'disable',
+      'disconnect',
+      'invite',
+      'order',
+      'pay',
+      'publish',
+      'purchase',
+      'remove',
+      'reset',
+      'send',
+      'share',
+      'submit',
+      'uninstall'
+    ].includes(token))
   return {
     forceApproval: !explicitlyReadOnly,
+    hardApproval: annotations.destructiveHint === true || hardApprovalName,
     approvalKind: 'tool',
     explicitlyReadOnly
   }
@@ -1165,6 +1188,9 @@ function filterAllowedMcpTools(server, list) {
 
 function shouldAllowToolCallByApprovalMode(runState, mapping) {
   const mode = normalizeToolApprovalMode(runState?.toolApprovalMode)
+  if (mapping?.hardApproval === true) {
+    return { allowed: true, mode, requiresPrompt: true }
+  }
   if (mode === 'full') return { allowed: true, mode }
   if (mode === 'safe') {
     if (mapping?.forceApproval === true) return { allowed: true, mode, requiresPrompt: true }
@@ -1239,6 +1265,7 @@ async function requestBuiltinAgentsToolApproval({ mapping, argsText, trace, runS
       argsText,
       reasoningText,
       forceApproval: mapping?.forceApproval === true,
+      hardApproval: mapping?.hardApproval === true,
       approvalKind:
         mapping?.approvalKind === 'shell'
           ? 'shell'
@@ -1278,6 +1305,7 @@ async function buildMcpToolsBundle(servers, trace, runState) {
         serverName: server.name || server._id,
         toolName,
         forceApproval: approvalPolicy.forceApproval,
+        hardApproval: approvalPolicy.hardApproval,
         approvalKind: approvalPolicy.approvalKind,
         annotations: isPlainObject(tool?.annotations) ? tool.annotations : null,
         requiresWrappedInput: !!definition.wrapped,

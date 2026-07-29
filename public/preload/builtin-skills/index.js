@@ -103,9 +103,35 @@ const DEFINITIONS = Object.freeze([
     directory: 'run-data-shell',
     name: '沙盒命令工作区（内置）',
     triggers: Object.freeze({
-      keywords: Object.freeze(['bash', 'shell', '命令行', '终端', '执行命令', '运行脚本', '沙盒', '修改文件'])
+      keywords: Object.freeze([
+        'bash',
+        'shell',
+        '命令行',
+        '终端',
+        '执行命令',
+        '运行脚本',
+        '沙盒',
+        '修改文件',
+        '创建项目',
+        '代码',
+        '编程',
+        '构建',
+        '测试',
+        'Python',
+        'uv',
+        'npm'
+      ])
     }),
-    actionNames: Object.freeze(['sandbox_run', 'bash_run', 'sandbox_import', 'sandbox_list', 'sandbox_reset'])
+    actionNames: Object.freeze([
+      'sandbox_status',
+      'sandbox_run',
+      'bash_run',
+      'sandbox_read_file',
+      'sandbox_write_file',
+      'sandbox_import',
+      'sandbox_list',
+      'sandbox_reset'
+    ])
   })
 ])
 
@@ -300,13 +326,17 @@ function loadRuntime(skillId) {
 function normalizeActionSpec(skillId, action) {
   const source = action && typeof action === 'object' ? action : {}
   const name = String(source.name || '').trim()
+  const isSandboxAction = skillId === BUILTIN_SKILL_IDS.shell
+  const isSandboxReadOnly =
+    isSandboxAction &&
+    (name === 'sandbox_list' || name === 'sandbox_read_file' || name === 'sandbox_status')
   const readOnly =
     skillId === BUILTIN_SKILL_IDS.sessions ||
     name === 'agents_list' ||
     name === 'config_get_system_time' ||
     name.startsWith('config_list_') ||
-    /^(notes_(list|read|search)|notebook_read)/.test(name)
-  const isSandboxAction = skillId === BUILTIN_SKILL_IDS.shell
+    /^(notes_(list|read|search)|notebook_read)/.test(name) ||
+    isSandboxReadOnly
   const isShell = isSandboxAction && (name === 'sandbox_run' || name === 'bash_run')
   const isExecution =
     isShell ||
@@ -326,7 +356,12 @@ function normalizeActionSpec(skillId, action) {
         name === 'notes_delete' ||
         name === 'notebook_delete_cell'
     },
-    forceApproval: isSandboxAction || isExecution || !readOnly,
+    forceApproval: isExecution || !readOnly,
+    hardApproval:
+      source.hardApproval === true ||
+      isShell ||
+      name === 'sandbox_reset' ||
+      source.annotations?.destructiveHint === true,
     approvalKind: isShell ? 'shell' : isExecution ? 'execution' : 'tool'
   }
 }
@@ -378,7 +413,14 @@ async function runBuiltinSkillActionWithHostContext(
   delete sanitizedArgs.__host_workspace_path
   if (
     id === BUILTIN_SKILL_IDS.shell &&
-    (name === 'sandbox_run' || name === 'bash_run')
+    (
+      name === 'sandbox_status' ||
+      name === 'sandbox_run' ||
+      name === 'bash_run' ||
+      name === 'sandbox_read_file' ||
+      name === 'sandbox_write_file' ||
+      name === 'sandbox_list'
+    )
   ) {
     const hostWorkspacePath = String(context?.hostWorkspacePath || '').trim()
     if (hostWorkspacePath) sanitizedArgs.__host_workspace_path = hostWorkspacePath

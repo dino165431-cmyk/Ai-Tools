@@ -2,6 +2,28 @@ export function isAgentRunToolResult(result) {
   return !!result && typeof result === 'object' && !Array.isArray(result) && result.kind === 'agent_run_result'
 }
 
+export function inferStructuredToolResultStatus(result) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return ''
+
+  const status = String(result.status || '').trim().toLowerCase()
+  if (['rejected', 'denied'].includes(status)) return 'rejected'
+  if (['error', 'failed', 'failure'].includes(status)) return 'error'
+  if (['aborted', 'stopped', 'cancelled', 'canceled'].includes(status)) return 'stopped'
+  if (status === 'paused') return 'paused'
+  if (status === 'running') return 'running'
+  if (['success', 'succeeded', 'completed', 'complete', 'ok'].includes(status)) return 'success'
+
+  if (result.rejected === true || result.denied === true) return 'rejected'
+  if (result.timedOut === true || result.timeout === true) return 'error'
+  if (result.ok === false || result.isError === true) return 'error'
+
+  const exitCode = Number(result.exitCode ?? result.exit_code)
+  if (Number.isFinite(exitCode) && exitCode !== 0) return 'error'
+  if (result.error && result.ok !== true) return 'error'
+  if (result.ok === true) return 'success'
+  return ''
+}
+
 function resolveAgentRunTraceText(trace, phases, fieldNames) {
   const phaseSet = phases instanceof Set ? phases : new Set(Array.isArray(phases) ? phases : [])
   const traceList = Array.isArray(trace) ? trace : []

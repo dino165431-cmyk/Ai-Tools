@@ -179,7 +179,7 @@
           style="margin-bottom: 16px;"
         >
           {{ formData.toolApprovalMode === 'full'
-            ? '全部自动模式不会等待人工审批。请只挂载可信的智能体、技能和 MCP 服务。'
+            ? '高风险自动模式可执行普通写入；命令、代码执行和明确标记为破坏性的操作仍会被无人值守策略阻止。'
             : formData.toolApprovalMode === 'deny'
               ? '当前任务不会执行任何工具调用。'
               : '低风险模式只自动执行明确标注为只读的工具；写入、脚本、命令及未标注工具会被阻止并写入会话结果。' }}
@@ -340,7 +340,7 @@ const monthDayOptions = Array.from({ length: 31 }).map((_, idx) => ({ label: Str
 const toolApprovalModeOptions = [
   { label: '低风险只读（推荐）', value: 'safe' },
   { label: '禁止工具', value: 'deny' },
-  { label: '全部自动（高风险）', value: 'full' }
+  { label: '高风险自动（强制确认类仍阻止）', value: 'full' }
 ]
 
 const agentOptions = computed(() => (agents.value || []).map((a) => ({ label: a.name || a._id, value: a._id })))
@@ -420,7 +420,7 @@ function getAgentLabel(agentId) {
 }
 
 function getToolApprovalModeLabel(value) {
-  if (value === 'full') return '全部自动（高风险）'
+  if (value === 'full') return '高风险自动（强制确认除外）'
   if (value === 'deny') return '禁止工具'
   return '低风险只读'
 }

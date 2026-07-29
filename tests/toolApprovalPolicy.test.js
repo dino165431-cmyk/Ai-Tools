@@ -104,7 +104,7 @@ test('tool approval modes preserve legacy values and expose clear labels', () =>
   assert.equal(normalizeToolApprovalMode('readonly'), 'safe')
   assert.equal(normalizeToolApprovalMode('full'), 'full')
   assert.equal(getToolApprovalModeLabel('safe'), '低风险自动')
-  assert.equal(getToolApprovalModeLabel('full'), '全部自动')
+  assert.equal(getToolApprovalModeLabel('full'), '高风险自动（强制确认除外）')
 })
 
 test('unattended mode never leaves a task waiting for manual confirmation', () => {
@@ -120,6 +120,7 @@ test('interactive approval policy distinguishes manual, safe and full modes', ()
   assert.equal(evaluateToolApproval({ mode: 'safe', forceApproval: false }).action, 'allow')
   assert.equal(evaluateToolApproval({ mode: 'safe', forceApproval: true }).action, 'prompt')
   assert.equal(evaluateToolApproval({ mode: 'full', forceApproval: true }).action, 'allow')
+  assert.equal(evaluateToolApproval({ mode: 'full', hardApproval: true }).action, 'prompt')
   assert.equal(evaluateToolApproval({ mode: 'deny' }).action, 'deny')
 })
 
@@ -136,11 +137,16 @@ test('unattended approval policy blocks calls that would require confirmation', 
     evaluateToolApproval({ mode: 'full', forceApproval: true, interactive: false }).action,
     'allow'
   )
+  assert.equal(
+    evaluateToolApproval({ mode: 'full', hardApproval: true, interactive: false }).action,
+    'deny'
+  )
 })
 
 test('safe mode auto-approves declared or conventionally named read-only MCP tools', () => {
   const unknown = resolveMcpToolApprovalPolicy({})
   assert.equal(unknown.forceApproval, true)
+  assert.equal(unknown.hardApproval, false)
   assert.equal(unknown.explicitlyReadOnly, false)
   assert.equal(unknown.inferredReadOnly, false)
   assert.match(unknown.approvalReason, /无法可靠判定/)
@@ -166,6 +172,13 @@ test('safe mode auto-approves declared or conventionally named read-only MCP too
     resolveMcpToolApprovalPolicy({
       annotations: { readOnlyHint: true, destructiveHint: true }
     }).forceApproval,
+    true
+  )
+  assert.equal(
+    resolveMcpToolApprovalPolicy({
+      name: 'delete_account',
+      annotations: { readOnlyHint: false }
+    }).hardApproval,
     true
   )
   const declaredRead = resolveMcpToolApprovalPolicy({

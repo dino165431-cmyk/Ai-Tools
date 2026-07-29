@@ -1,8 +1,15 @@
 # Native action catalog
 
+## `sandbox_status`
+
+Reports the active workspace kind, actual isolation guarantees, relative working directory, and
+detected Python/uv/Node/npm/Git/Bash executables. Use `refresh_path: true` after installing a
+tool while AI Tools is already running.
+
 ## `sandbox_run`
 
-Runs a command inside one sandbox workspace. Accepts:
+Runs a command inside one guarded workspace. It uses a dedicated working directory, relative-path
+preflight, bounded output, and a timeout, but it is not an OS-level process sandbox. Accepts:
 
 - `command`: required command;
 - `shell`: optional `auto`, `powershell`, or `bash`; Windows `auto` uses PowerShell;
@@ -18,13 +25,25 @@ Returns the selected shell, exit status, stdout/stderr, timeout state, workspace
 
 Compatibility action for Bash-specific commands. Its result contract is the same as `sandbox_run`.
 
+## `sandbox_read_file`
+
+Reads one regular workspace-relative file without a shell. It rejects symlinks and paths outside
+the active workspace, supports UTF-8 or base64, and has a 1MB response limit.
+
+## `sandbox_write_file`
+
+Creates, overwrites, or appends one workspace-relative file without putting its content in a shell
+command. It rejects symlinks and workspace escapes and limits one write to 5MB. The default
+`create` mode refuses to replace an existing file; replacement requires explicit `mode: overwrite`.
+
 ## `sandbox_import`
 
 Copies explicitly named absolute source file paths into `inbox/`. It only accepts regular files, rejects symlinks, applies per-file and batch size limits, never changes the sources, and returns imported file entries.
 
 ## `sandbox_list`
 
-Lists regular non-symlink files in the workspace. Runtime metadata under `.runtime/` is hidden.
+Lists regular non-symlink files in the active default or host workspace. Runtime metadata under
+`.runtime/` is hidden.
 
 ## `sandbox_reset`
 

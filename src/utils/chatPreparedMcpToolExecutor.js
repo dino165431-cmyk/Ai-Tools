@@ -1,5 +1,9 @@
 import { getOrCreateMCPClient, releaseMCPClient } from './mcpClient.js'
-import { formatToolResultDisplayContent, isAgentRunToolResult } from './chatToolDisplay.js'
+import {
+  formatToolResultDisplayContent,
+  inferStructuredToolResultStatus,
+  isAgentRunToolResult
+} from './chatToolDisplay.js'
 import { createAbortError, isAbortError, throwIfAborted, waitForAbortable, withTimeout } from './abortableRequest.js'
 import { stableStringify } from './chatProviderStreaming.js'
 import { stringifyToolResultForModel as stringifyToolResultForLlm } from './toolResultForModel.js'
@@ -24,7 +28,7 @@ export function createPreparedMcpToolExecutor(runtime) {
   } = runtime
 
   const pushResult = (targetSession, createMessage, content, extra = {}) => {
-    targetSession.messages.push(createMessage(content, extra))
+    targetSession.messages.push(createMessage(content, { toolStatus: 'success', ...extra }))
   }
 
   const pushError = async ({
@@ -37,7 +41,11 @@ export function createPreparedMcpToolExecutor(runtime) {
     scroll = true,
     extra = {}
   }) => {
-    pushResult(targetSession, createMessage, `${heading}\n- 错误：${errorText}`, { toolMeta, ...extra })
+    pushResult(targetSession, createMessage, `${heading}\n- 错误：${errorText}`, {
+      toolMeta,
+      toolStatus: 'error',
+      ...extra
+    })
     if (scroll) await maybeScrollToBottomForRun(abortState)
     return { ok: false, content: errorText }
   }
@@ -85,6 +93,8 @@ export function createPreparedMcpToolExecutor(runtime) {
       client = null
 
       const images = extractChatImagesFromToolResult(result)
+      const resultStatus = inferStructuredToolResultStatus(result) || 'success'
+      const resultOk = !['error', 'rejected', 'stopped'].includes(resultStatus)
       const toolResultPayload = isAgentRunToolResult(result) ? deepCopyJson(result, null) : null
       const resultText = stringifyToolResultForLlm(result)
       const imageHint = images.length ? `- 图片：${images.length}（已在上方预览；base64/dataUrl 已省略）\n` : ''
@@ -105,12 +115,13 @@ export function createPreparedMcpToolExecutor(runtime) {
         toolServerName: serverName,
         toolSubMeta: buildToolExecutionResultSubMeta(result),
         toolResultPayload,
+        toolStatus: resultStatus,
         toolTraceStreamId: String(pendingToolMessage?.toolTraceStreamId || '').trim(),
         toolAutoApproved: pendingToolMessage?.toolAutoApproved === true
       })
       await maybeScrollToBottomForRun(abortState)
       return {
-        ok: true,
+        ok: resultOk,
         content: resultText,
         ...(includeImagesInResult ? { images } : {}),
         serverName,

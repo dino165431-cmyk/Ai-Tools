@@ -24,7 +24,9 @@ export function sanitizeToolResultForModel(result) {
   const KEY_HINT_IMAGE = /^(images|image|artifacts)$/i
   const KEY_HINT_BASE64 = /(base64|b64|b64_json|dataurl|data_url)$/i
   const KEY_HINT_TRACE = /^(trace|events|steps|logs|debug|messages)$/i
+  const KEY_HINT_PROCESS_STREAM = /^(stdout|stderr|output)$/i
   const MAX_DEPTH = 24
+  const MAX_PROCESS_STREAM_CHARS = 8000
 
   const walk = (val, depth, keyHint) => {
     if (depth > MAX_DEPTH) return '（已截断：层级过深）'
@@ -43,6 +45,12 @@ export function sanitizeToolResultForModel(result) {
 
       if (KEY_HINT_IMAGE.test(key) && (isDataImageUrl(val) || looksLikeBase64Payload(val))) {
         return '(omitted: image base64/dataUrl)'
+      }
+
+      if (KEY_HINT_PROCESS_STREAM.test(key) && val.length > MAX_PROCESS_STREAM_CHARS) {
+        const headChars = 5000
+        const tailChars = MAX_PROCESS_STREAM_CHARS - headChars
+        return `${val.slice(0, headChars)}\n... (truncated process output, total ${val.length} chars) ...\n${val.slice(-tailChars)}`
       }
 
       if (val.length > 20000) {

@@ -60,6 +60,7 @@ export function createChatToolApprovalController({
     sessionId = '',
     sessionTitle = '',
     approvalKind = 'tool',
+    hardApproval = false,
     rememberText = '本会话允许此工具',
     onRememberForSession = null
   }) {
@@ -107,6 +108,7 @@ export function createChatToolApprovalController({
           sessionId: String(sessionId || '').trim(),
           sessionTitle: String(sessionTitle || '').trim(),
           approvalKind: normalizedKind,
+          hardApproval: hardApproval === true,
           commandText: normalizedKind === 'shell' ? shellCommand.command : '',
           cwdText: normalizedKind === 'shell' ? shellCommand.cwd : '',
           canRemember: typeof onRememberForSession === 'function',

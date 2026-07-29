@@ -84,9 +84,16 @@ export function listSelectedSkillsBrief(selectedSkills, limit = 30) {
     .slice(0, Math.max(1, Number(limit) || 30))
 }
 
-export function collectDerivedMcpIds(selectedSkills) {
+export function collectDerivedMcpIds(selectedSkills, options = {}) {
   const ids = new Set()
+  const activeSkillIds = options.activeSkillIds instanceof Set
+    ? options.activeSkillIds
+    : Array.isArray(options.activeSkillIds)
+      ? new Set(normalizeStringList(options.activeSkillIds))
+      : null
   ;(Array.isArray(selectedSkills) ? selectedSkills : []).forEach((skill) => {
+    const skillId = normalizeText(skill?._id)
+    if (activeSkillIds && (!skillId || !activeSkillIds.has(skillId))) return
     normalizeStringList(skill?.mcp).forEach((id) => ids.add(id))
   })
   return Array.from(ids)
@@ -436,6 +443,7 @@ export async function resolveBuiltinSkillCall({
       toolTitle: normalizeText(action?.title || action?.annotations?.title),
       toolDescription: normalizeText(action.description),
       forceApproval: action.forceApproval === true,
+      hardApproval: action.hardApproval === true,
       approvalKind: normalizeText(action.approvalKind || 'tool') || 'tool',
       annotations: action.annotations || null,
       unwrapArgs(value) {
@@ -450,9 +458,13 @@ export function buildSkillsPromptText({
   agentSkillIds = [],
   loadedSkillIds = [],
   mcpServers = [],
-  getLoadedSkillContent = () => ''
+  getLoadedSkillContent = () => '',
+  maxMetadataChars = 8000
 } = {}) {
   const blocks = []
+  const metadataLimit = Math.max(1000, Number(maxMetadataChars) || 8000)
+  let metadataChars = 0
+  let omittedMetadataCount = 0
   const agentSet = new Set(normalizeStringList(agentSkillIds))
   const loadedSet = loadedSkillIds instanceof Set
     ? loadedSkillIds
@@ -466,7 +478,11 @@ export function buildSkillsPromptText({
     return agentSet.has(id) && !loadedSet.has(id)
   })
 
-  if (hasLazyUnloaded) blocks.push(AGENT_SKILL_LAZY_LOAD_GUIDANCE_LINES.join('\n'))
+  if (hasLazyUnloaded) {
+    const guidance = AGENT_SKILL_LAZY_LOAD_GUIDANCE_LINES.join('\n')
+    blocks.push(guidance)
+    metadataChars += guidance.length
+  }
 
   skills.forEach((skill) => {
     const id = normalizeText(skill?._id)
@@ -520,9 +536,18 @@ export function buildSkillsPromptText({
       }
     }
     if (content) parts.push(content)
-    blocks.push(parts.join('\n'))
+    const block = parts.join('\n')
+    if (!isLoaded && metadataChars + block.length > metadataLimit) {
+      omittedMetadataCount += 1
+      return
+    }
+    blocks.push(block)
+    if (!isLoaded) metadataChars += block.length
   })
 
+  if (omittedMetadataCount > 0) {
+    blocks.push(`## Skill catalog truncated\n${omittedMetadataCount} unloaded Skill metadata entries were omitted to keep the initial context bounded. Use the Skill selector or discovery tools to narrow the capability set.`)
+  }
   return blocks.join('\n\n').trim()
 }
 
@@ -544,18 +569,103 @@ function normalizeRegexPattern(raw) {
     : { source: value, flags: 'i' }
 }
 
+const ROUTING_STOP_WORDS = new Set([
+  '一个',
+  '这个',
+  '可以',
+  '帮助',
+  '使用',
+  '用户',
+  '任务',
+  '功能',
+  '进行',
+  '处理',
+  '工作',
+  'when',
+  'with',
+  'from',
+  'into',
+  'that',
+  'this',
+  'the',
+  'and',
+  'for',
+  'use',
+  'using'
+])
+
+function tokenizeRoutingText(value) {
+  const raw = String(value || '').toLowerCase()
+  const tokens = new Set()
+  const latin = raw.match(/[a-z0-9][a-z0-9_+.-]{2,}/g) || []
+  latin.forEach((token) => {
+    if (!ROUTING_STOP_WORDS.has(token)) tokens.add(token)
+  })
+
+  const cjkGroups = raw.match(/[\u3400-\u9fff]{2,}/g) || []
+  cjkGroups.forEach((group) => {
+    if (group.length <= 8 && !ROUTING_STOP_WORDS.has(group)) tokens.add(group)
+    for (let size = 2; size <= Math.min(4, group.length); size += 1) {
+      for (let index = 0; index <= group.length - size; index += 1) {
+        const token = group.slice(index, index + size)
+        if (!ROUTING_STOP_WORDS.has(token)) tokens.add(token)
+      }
+    }
+  })
+  return tokens
+}
+
+function allowsImplicitSkillInvocation(skill) {
+  const policy = skill?.policy && typeof skill.policy === 'object' ? skill.policy : {}
+  if (policy.allowImplicitInvocation === false || policy.allow_implicit_invocation === false) {
+    return false
+  }
+  return skill?.allowImplicitInvocation !== false
+}
+
+function scoreSkillDescription(skill, raw, matched) {
+  const name = normalizeText(skill?.name)
+  const description = getSkillDescription(skill)
+  const haystack = `${name}\n${description}`.trim()
+  if (!haystack) return 0
+
+  const lower = String(raw || '').toLowerCase()
+  let score = 0
+  if (name && name.length >= 2 && lower.includes(name.toLowerCase())) {
+    score += 3
+    matched.push(`name:${name}`)
+  }
+
+  const queryTokens = tokenizeRoutingText(raw)
+  const skillTokens = tokenizeRoutingText(haystack)
+  const overlaps = Array.from(queryTokens)
+    .filter((token) => skillTokens.has(token))
+    .sort((a, b) => b.length - a.length)
+  const accepted = []
+  for (const token of overlaps) {
+    if (accepted.some((item) => item.includes(token) || token.includes(item))) continue
+    accepted.push(token)
+    if (accepted.length >= 4) break
+  }
+  accepted.forEach((token) => {
+    score += /[\u3400-\u9fff]/.test(token) && token.length >= 3 ? 2 : 1
+    matched.push(`desc:${token}`)
+  })
+  return Math.min(score, 5)
+}
+
 export function scoreSkillByTriggers(skill, text) {
   const id = normalizeText(skill?._id)
   const name = normalizeText(skill?.name || id || 'Skill')
   const raw = String(text || '')
   const lower = raw.toLowerCase()
   const triggers = getSkillTriggers(skill)
-  if (!triggers.keywords.length && !triggers.regex.length && !triggers.intents.length) {
+  if (!allowsImplicitSkillInvocation(skill)) {
     return { ok: false, id, name, score: 0, matched: [] }
   }
 
-  let score = 0
   const matched = []
+  let score = scoreSkillDescription(skill, raw, matched)
   triggers.keywords.forEach((keyword) => {
     if (lower.includes(keyword.toLowerCase())) {
       score += 2
@@ -580,7 +690,7 @@ export function scoreSkillByTriggers(skill, text) {
       // Invalid user-defined trigger patterns are ignored.
     }
   })
-  return { ok: true, id, name, score, matched }
+  return { ok: score > 0, id, name, score, matched }
 }
 
 export function pickSkillsByTriggers(skills, text, options = {}) {
@@ -591,4 +701,51 @@ export function pickSkillsByTriggers(skills, text, options = {}) {
     .filter((result) => result.ok && result.id && result.score >= minimumScore)
     .sort((a, b) => b.score - a.score || b.matched.length - a.matched.length)
     .slice(0, limit)
+}
+
+export function buildAutoSkillActivationPlan({
+  skills = [],
+  text = '',
+  selectedSkillIds = [],
+  agentSkillIds = [],
+  activatedSkillIds = [],
+  loadedSkillIds = [],
+  minimumScore = 2,
+  limit = 2
+} = {}) {
+  const selected = new Set(normalizeStringList(selectedSkillIds))
+  const agent = new Set(normalizeStringList(agentSkillIds))
+  const activated = new Set(normalizeStringList(activatedSkillIds))
+  const loaded = loadedSkillIds instanceof Set
+    ? loadedSkillIds
+    : new Set(normalizeStringList(loadedSkillIds))
+  const candidates = (Array.isArray(skills) ? skills : []).filter((skill) => {
+    const id = normalizeText(skill?._id)
+    return !!id && !activated.has(id) && !loaded.has(id)
+  })
+  const picked = pickSkillsByTriggers(candidates, text, { minimumScore, limit })
+  const addedSelectedSkillIds = []
+  const addedAgentSkillIds = []
+
+  picked.forEach(({ id }) => {
+    if (!selected.has(id)) {
+      selected.add(id)
+      addedSelectedSkillIds.push(id)
+    }
+    if (!agent.has(id)) {
+      agent.add(id)
+      addedAgentSkillIds.push(id)
+    }
+    activated.add(id)
+  })
+
+  return {
+    picked,
+    candidates,
+    selectedSkillIds: Array.from(selected),
+    agentSkillIds: Array.from(agent),
+    activatedSkillIds: Array.from(activated),
+    addedSelectedSkillIds,
+    addedAgentSkillIds
+  }
 }

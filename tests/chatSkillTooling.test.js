@@ -3,7 +3,9 @@ import assert from 'node:assert/strict'
 
 import {
   buildSkillsPromptText,
+  buildAutoSkillActivationPlan,
   buildSkillToolsBundle,
+  collectDerivedMcpIds,
   createBuiltinSkillActionCatalog,
   discoverBuiltinSkillActions,
   pickSkillsByTriggers,
@@ -181,4 +183,91 @@ test('trigger routing activates only the highest-scoring relevant Skills', () =>
     limit: 2
   })
   assert.deepEqual(picked.map((item) => item.id), [notes._id])
+})
+
+test('implicit routing can match a standard Skill description without custom triggers', () => {
+  const spreadsheet = makeBuiltinSkill({
+    _id: 'skill-spreadsheet',
+    name: '工作簿助手',
+    description: '分析电子表格、生成 Excel 工作簿并检查公式',
+    triggers: undefined,
+    policy: { allowImplicitInvocation: true }
+  })
+  const unrelated = makeBuiltinSkill({
+    _id: 'skill-audio',
+    name: '音频处理',
+    description: '剪辑音频并生成字幕',
+    triggers: undefined
+  })
+
+  const picked = pickSkillsByTriggers(
+    [spreadsheet, unrelated],
+    '请帮我生成一份电子表格并检查里面的公式',
+    { minimumScore: 2, limit: 2 }
+  )
+  assert.deepEqual(picked.map((item) => item.id), [spreadsheet._id])
+  assert.ok(picked[0].matched.some((item) => item.startsWith('desc:')))
+})
+
+test('implicit routing respects a Skill opt-out policy', () => {
+  const skill = makeBuiltinSkill({
+    triggers: undefined,
+    description: '生成电子表格',
+    policy: { allowImplicitInvocation: false }
+  })
+  assert.deepEqual(
+    pickSkillsByTriggers([skill], '生成电子表格', { minimumScore: 1 }),
+    []
+  )
+})
+
+test('derived MCP dependencies mount only for active Skills', () => {
+  const first = makeBuiltinSkill({ _id: 'skill-first', mcp: ['mcp-a'] })
+  const second = makeBuiltinSkill({ _id: 'skill-second', mcp: ['mcp-b'] })
+  assert.deepEqual(
+    collectDerivedMcpIds([first, second], { activeSkillIds: new Set(['skill-second']) }),
+    ['mcp-b']
+  )
+})
+
+test('unloaded Skill metadata is bounded while loaded content remains available', () => {
+  const skills = Array.from({ length: 10 }, (_, index) => makeBuiltinSkill({
+    _id: `skill-${index}`,
+    name: `Skill ${index}`,
+    description: `能力 ${index} ${'说明'.repeat(100)}`,
+    triggers: undefined
+  }))
+  const prompt = buildSkillsPromptText({
+    selectedSkills: skills,
+    agentSkillIds: skills.map((skill) => skill._id),
+    loadedSkillIds: new Set([skills[9]._id]),
+    getLoadedSkillContent: (id) => id === skills[9]._id ? '# LOADED-CONTENT' : '',
+    maxMetadataChars: 1200
+  })
+  assert.match(prompt, /catalog truncated/)
+  assert.match(prompt, /LOADED-CONTENT/)
+})
+
+test('auto activation can transiently mount an implicit installed Skill outside the Agent profile', () => {
+  const installed = makeBuiltinSkill({
+    _id: 'skill-installed',
+    name: '电子表格助手',
+    description: '生成电子表格并检查公式',
+    triggers: undefined
+  })
+  const plan = buildAutoSkillActivationPlan({
+    skills: [installed],
+    text: '生成电子表格并检查公式',
+    selectedSkillIds: [],
+    agentSkillIds: [],
+    activatedSkillIds: [],
+    loadedSkillIds: new Set()
+  })
+
+  assert.deepEqual(plan.picked.map((item) => item.id), [installed._id])
+  assert.deepEqual(plan.selectedSkillIds, [installed._id])
+  assert.deepEqual(plan.agentSkillIds, [installed._id])
+  assert.deepEqual(plan.activatedSkillIds, [installed._id])
+  assert.deepEqual(plan.addedSelectedSkillIds, [installed._id])
+  assert.deepEqual(plan.addedAgentSkillIds, [installed._id])
 })

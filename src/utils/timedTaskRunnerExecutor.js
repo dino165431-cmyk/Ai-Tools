@@ -792,13 +792,14 @@ async function executeBuiltinSkillToolCall({ profile, mapping, argsObj }) {
       const permission = evaluateToolApproval({
         mode: profile?.toolApprovalMode,
         forceApproval: resolved.mapping?.forceApproval === true,
+        hardApproval: resolved.mapping?.hardApproval === true,
         interactive: false
       })
       if (permission.action !== 'allow') {
         return {
           ok: false,
           blocked: true,
-          content: `定时任务工具权限已阻止：${resolved.mapping?.serverName || resolved.mapping?.serverId || 'Skill'} / ${resolved.mapping?.toolName || 'unknown'}。如确认可信，请将该任务的工具权限改为“全部自动”。`,
+          content: `定时任务工具权限已阻止：${resolved.mapping?.serverName || resolved.mapping?.serverId || 'Skill'} / ${resolved.mapping?.toolName || 'unknown'}。强制确认类操作不能在无人值守任务中执行；其他写入操作可使用“高风险自动”模式。`,
           serverName: resolved.mapping?.serverName,
           toolName: resolved.mapping?.toolName
         }
@@ -838,13 +839,14 @@ async function executeTimedTaskToolCall({ profile, toolCall, mapping, argsObj })
   const permission = evaluateToolApproval({
     mode: profile?.toolApprovalMode,
     forceApproval: mapping?.forceApproval === true,
+    hardApproval: mapping?.hardApproval === true,
     interactive: false
   })
   if (permission.action !== 'allow') {
     return {
       ok: false,
       blocked: true,
-      content: `定时任务工具权限已阻止：${mapping?.serverName || mapping?.serverId || '未知'} / ${mapping?.toolName || 'unknown'}。如确认可信，请将该任务的工具权限改为“全部自动”。`
+      content: `定时任务工具权限已阻止：${mapping?.serverName || mapping?.serverId || '未知'} / ${mapping?.toolName || 'unknown'}。强制确认类操作不能在无人值守任务中执行；其他写入操作可使用“高风险自动”模式。`
     }
   }
 

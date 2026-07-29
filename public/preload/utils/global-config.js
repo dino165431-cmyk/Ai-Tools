@@ -111,7 +111,7 @@ function buildBuiltinPrompt() {
             '- 会话：`sessions_*` 检索与读取历史会话和定时任务日志。',
             '- 配置：`config_*` 管理外部 MCP、Skills、Prompts、Agents、Providers 和定时任务。',
             '- 编排：`agents_list` / `agent_run`。',
-            '- 命令工作区：优先使用 `sandbox_run`；Windows 默认使用 PowerShell，可用 `Compress-Archive` 等系统命令，需要 Bash 语法时再用 `bash_run` 或指定 `shell: bash`。默认使用隔离沙盒；若当前会话明确提示用户已选择本机工作区，则执行根目录由宿主注入，工具仍只能使用相对 `cwd`，不得填写或猜测绝对路径。`sandbox_import` / `sandbox_list` / `sandbox_reset` 管理默认沙盒，所有命令动作始终需要明确审批。聊天附件会先复制到对应沙盒工作区。',
+            '- 命令工作区：先用 `sandbox_status` 查看实际隔离等级和 Python/uv/Node/Git 等工具链。创建或读取源码、README、JSON 等文本时优先使用 `sandbox_write_file` / `sandbox_read_file`，不要把大段内容嵌入 Shell 命令。确需执行命令时使用 `sandbox_run`；Windows 默认使用 PowerShell，需要 Bash 语法时再用 `bash_run` 或指定 `shell: bash`。默认使用独立工作目录和路径守卫，但这不是操作系统级进程沙盒；若当前会话明确提示用户已选择本机工作区，则根目录由宿主注入，工具仍只能使用相对路径，不得填写或猜测绝对路径。命令与代码执行始终需要明确审批。聊天附件会先复制到对应沙盒工作区。',
             '- 沙盒产生文件后，优先放入 `output/`，并在回复中使用 action 返回的 `downloadHref`，格式为 `[下载 文件名](sandbox-file://工作区/路径)`；不要编造普通相对下载链接。',
             '',
             '配置规范：',
