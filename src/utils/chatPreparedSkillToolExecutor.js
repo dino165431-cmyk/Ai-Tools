@@ -32,6 +32,7 @@ export function createPreparedSkillToolExecutor(runtime) {
   const {
     activatedAgentSkillIds,
     agentSkillIdSet,
+    availableSkillObjects,
     buildToolExecutionResultSubMeta,
     buildWebToolSubMeta,
     builtinSkillActionCatalog,
@@ -42,6 +43,7 @@ export function createPreparedSkillToolExecutor(runtime) {
     getLoadedSkillFilePathSet,
     getSkillMcpStatus,
     hasLoadedSkillMainContent,
+    listAvailableSkillsBrief,
     listSelectedSkillsBrief,
     loadSkillMainContent,
     loadedSkillContentById,
@@ -51,10 +53,12 @@ export function createPreparedSkillToolExecutor(runtime) {
     mcpServers,
     prepareBuiltinAgentToolCallArgs,
     readSkillRegistryFile: readSkillRegistryFileOverride,
+    resolveAvailableSkillTarget,
     resolveSelectedSkillTarget,
     resolveSkillScriptTarget,
     runSkillRegistryScript: runSkillRegistryScriptOverride,
     searchCapabilities,
+    selectSkillForSession,
     selectedSkillObjects
   } = runtime
   const readSkillFile = readSkillRegistryFileOverride || readSkillRegistryFile
@@ -63,6 +67,28 @@ export function createPreparedSkillToolExecutor(runtime) {
   function persistUsedSkill(skillId) {
     const id = String(skillId || '').trim()
     if (id) markSkillActivationPersistent?.([id])
+  }
+
+  function getAvailableSkills() {
+    const installed = Array.isArray(availableSkillObjects?.value)
+      ? availableSkillObjects.value
+      : Array.isArray(availableSkillObjects)
+        ? availableSkillObjects
+        : []
+    if (installed.length) return installed
+    return Array.isArray(selectedSkillObjects?.value) ? selectedSkillObjects.value : []
+  }
+
+  function resolveAvailableSkill({ idCandidate = '', nameCandidate = '' } = {}) {
+    if (typeof resolveAvailableSkillTarget === 'function') {
+      return resolveAvailableSkillTarget({ idCandidate, nameCandidate })
+    }
+    return resolveSelectedSkillTarget?.({ idCandidate, nameCandidate }) || null
+  }
+
+  function getAvailableSkillsBrief(limit = 30) {
+    if (typeof listAvailableSkillsBrief === 'function') return listAvailableSkillsBrief(limit)
+    return listSelectedSkillsBrief?.(limit) || []
   }
 
   async function executePreparedSkillTool(prepared, executionContext, abortState = null) {
@@ -100,7 +126,7 @@ export function createPreparedSkillToolExecutor(runtime) {
         persistUsedSkill(argsObj?.skill_id ?? argsObj?.skillId ?? argsObj?.id)
         const result = await waitForAbortable(
           discoverBuiltinSkillActions({
-            selectedSkills: selectedSkillObjects.value,
+            selectedSkills: getAvailableSkills(),
             catalog: builtinSkillActionCatalog,
             args: argsObj,
             searchCapabilities
@@ -492,26 +518,15 @@ export function createPreparedSkillToolExecutor(runtime) {
   }) {
     const idCandidate = String(argsObj?.id ?? argsObj?._id ?? argsObj?.skillId ?? argsObj?.skill_id ?? '').trim()
     const nameCandidate = String(argsObj?.name ?? argsObj?.skillName ?? argsObj?.skill_name ?? argsObj?.skill ?? '').trim()
-    const available = Array.isArray(selectedSkillObjects.value) ? selectedSkillObjects.value : []
-
-    let target = idCandidate
-      ? available.find((skill) => String(skill?._id || '') === idCandidate) || null
-      : null
-    if (!target && nameCandidate) {
-      const normalizedName = nameCandidate.toLowerCase()
-      target =
-        available.find((skill) => String(skill?.name || '').trim().toLowerCase() === normalizedName) ||
-        available.find((skill) => String(skill?._id || '').trim().toLowerCase() === normalizedName) ||
-        available.find((skill) => String(skill?.name || '').trim().toLowerCase().includes(normalizedName)) ||
-        null
-    }
+    const available = getAvailableSkills()
+    const target = resolveAvailableSkill({ idCandidate, nameCandidate })
 
     if (!target?._id) {
       const availableSkills = available
         .map((skill) => ({ id: skill?._id, name: skill?.name || skill?._id }))
         .filter((skill) => skill.id)
         .slice(0, 30)
-      const errorText = `未找到要启用的技能（仅可启用当前已选择的技能）。可用技能：${stableStringify(availableSkills)}`
+      const errorText = `未找到要启用的已安装技能。可用技能：${stableStringify(availableSkills)}`
       targetSession.messages.push(
         createCurrentToolResultMessage(`### 技能启用结果\n- 错误：${errorText}`, {
           toolMeta: `${serverName} / ${toolName}`
@@ -522,7 +537,6 @@ export function createPreparedSkillToolExecutor(runtime) {
 
     const skillId = String(target._id || '').trim()
     const skillName = String(target.name || target._id || '').trim() || skillId
-    const isAgentSkill = agentSkillIdSet.value.has(skillId)
     const directorySkill = isDirectorySkill(target)
     const wasLoaded = directorySkill
       ? hasLoadedSkillMainContent(skillId, target?.entryFile || 'SKILL.md')
@@ -547,7 +561,22 @@ export function createPreparedSkillToolExecutor(runtime) {
     }
 
     let changed = false
-    if (isAgentSkill) {
+    let isAgentSkill = agentSkillIdSet?.value?.has(skillId) === true
+    if (typeof selectSkillForSession === 'function') {
+      const selected = selectSkillForSession(skillId)
+      if (selected?.ok === false) {
+        const errorText = `技能无法加入当前会话：${skillId}`
+        targetSession.messages.push(
+          createCurrentToolResultMessage(`### 技能启用结果\n- 错误：${errorText}`, {
+            toolMeta: `${serverName} / ${toolName}`
+          })
+        )
+        await maybeScrollToBottomForRun(abortState)
+        return { ok: false, content: errorText }
+      }
+      isAgentSkill = true
+      changed = selected?.changed === true
+    } else if (isAgentSkill) {
       markSkillActivationPersistent?.([skillId])
       throwIfAborted(abortState)
       const previous = Array.isArray(activatedAgentSkillIds.value) ? activatedAgentSkillIds.value : []
@@ -608,8 +637,8 @@ export function createPreparedSkillToolExecutor(runtime) {
     const ids = Array.isArray(idsRaw) ? idsRaw.map((id) => String(id || '').trim()).filter(Boolean) : []
     const names = Array.isArray(namesRaw) ? namesRaw.map((name) => String(name || '').trim()).filter(Boolean) : []
     const resolvedSkills = [
-      ...ids.map((id) => resolveSelectedSkillTarget({ idCandidate: id })),
-      ...names.map((name) => resolveSelectedSkillTarget({ nameCandidate: name }))
+      ...ids.map((id) => resolveAvailableSkill({ idCandidate: id })),
+      ...names.map((name) => resolveAvailableSkill({ nameCandidate: name }))
     ].filter(Boolean)
     const uniqueSkills = new Map()
     resolvedSkills.forEach((skill) => {
@@ -619,7 +648,7 @@ export function createPreparedSkillToolExecutor(runtime) {
     const targets = Array.from(uniqueSkills.values())
 
     if (!targets.length) {
-      const errorText = `未找到要启用的技能（仅可启用当前已选择的技能）。可用技能：${stableStringify(listSelectedSkillsBrief())}`
+      const errorText = `未找到要启用的已安装技能。可用技能：${stableStringify(getAvailableSkillsBrief())}`
       targetSession.messages.push(
         createCurrentToolResultMessage(`### 技能启用结果\n- 错误：${errorText}`, {
           toolMeta: `${serverName} / ${toolName}`
@@ -629,7 +658,7 @@ export function createPreparedSkillToolExecutor(runtime) {
       return { ok: false, content: errorText }
     }
 
-    const agentSet = agentSkillIdSet.value
+    const agentSet = agentSkillIdSet?.value instanceof Set ? agentSkillIdSet.value : new Set()
     const loaded = []
     const alreadyLoaded = []
     const loadFailed = []
@@ -660,15 +689,25 @@ export function createPreparedSkillToolExecutor(runtime) {
     targets.forEach((skill) => {
       const id = String(skill?._id || '').trim()
       if (!id || loadFailed.some((item) => item.id === id)) return
-      if (!agentSet.has(id)) {
-        noop.push(id)
-        return
-      }
-      markSkillActivationPersistent?.([id])
-      if (previous.has(id)) already.push(id)
-      else {
-        previous.add(id)
-        activated.push(id)
+      if (typeof selectSkillForSession === 'function') {
+        const selected = selectSkillForSession(id)
+        if (selected?.ok === false) {
+          noop.push(id)
+          return
+        }
+        if (selected?.changed) activated.push(id)
+        else already.push(id)
+      } else {
+        if (!agentSet.has(id)) {
+          noop.push(id)
+          return
+        }
+        markSkillActivationPersistent?.([id])
+        if (previous.has(id)) already.push(id)
+        else {
+          previous.add(id)
+          activated.push(id)
+        }
       }
 
       const mcpStatus = getSkillMcpStatus(skill)
@@ -676,7 +715,9 @@ export function createPreparedSkillToolExecutor(runtime) {
       mcpStatus.missingMcpIds.forEach((idValue) => missingMcpIds.add(idValue))
     })
     throwIfAborted(abortState)
-    activatedAgentSkillIds.value = Array.from(previous)
+    if (typeof selectSkillForSession !== 'function') {
+      activatedAgentSkillIds.value = Array.from(previous)
+    }
 
     const resultText = stableStringify({
       ok: true,

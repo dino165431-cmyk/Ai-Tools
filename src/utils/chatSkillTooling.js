@@ -12,6 +12,8 @@ import {
 
 export const BUILTIN_SKILL_SOURCE_TYPE = 'builtin-directory'
 export const DEFAULT_SKILL_ACTION_CACHE_TTL_MS = 30 * 60_000
+export const DEFAULT_SKILL_ROUTING_MIN_CONFIDENCE = 0.74
+export const DEFAULT_SKILL_ROUTING_MIN_MARGIN = 0.12
 
 function normalizeText(value) {
   return String(value || '').trim()
@@ -160,23 +162,21 @@ function createInternalMapping(internal, toolName = internal, extra = {}) {
 
 export function buildSkillToolsBundle({
   selectedSkills = [],
+  availableSkills = selectedSkills,
   agentSkillIds = [],
   internalToolSpecs = INTERNAL_TOOL_SPECS,
   includeLifecycleTools = true,
   includeResourceTools = true
 } = {}) {
   const skills = Array.isArray(selectedSkills) ? selectedSkills : []
-  const agentSet = new Set(normalizeStringList(agentSkillIds))
-  const hasDirectorySkills = skills.some((skill) => isDirectorySkill(skill))
-  const hasRunnableScripts = skills.some(
+  const available = Array.isArray(availableSkills) ? availableSkills : skills
+  const hasDirectorySkills = available.some((skill) => isDirectorySkill(skill))
+  const hasRunnableScripts = available.some(
     (skill) => isDirectorySkill(skill) && getSkillScriptCatalog(skill).length > 0
   )
-  const hasActivatableSkills = skills.some((skill) => {
-    const id = normalizeText(skill?._id)
-    return !!id && (agentSet.has(id) || isDirectorySkill(skill))
-  })
-  const hasDiscoverableSkills = skills.some((skill) => normalizeText(skill?._id))
-  const hasNativeSkills = skills.some(isBuiltinNativeSkill)
+  const hasActivatableSkills = available.some((skill) => normalizeText(skill?._id))
+  const hasDiscoverableSkills = available.some((skill) => normalizeText(skill?._id))
+  const hasNativeSkills = available.some(isBuiltinNativeSkill)
   const tools = []
   const map = new Map()
 
@@ -352,6 +352,18 @@ function scoreSearchText(query, haystack) {
   )
 }
 
+function normalizeLocalSearchConfidence(score) {
+  const numeric = Number(score) || 0
+  if (numeric >= 100) return 1
+  if (numeric >= 8) return 0.95
+  if (numeric >= 6) return 0.88
+  if (numeric >= 4) return 0.78
+  if (numeric >= 3) return 0.68
+  if (numeric >= 2) return 0.55
+  if (numeric >= 1) return 0.28
+  return 0
+}
+
 function compactSkillDiscoveryEntry(skill) {
   const id = normalizeText(skill?._id)
   const scripts = getSkillScriptCatalog(skill)
@@ -434,10 +446,10 @@ export async function discoverBuiltinSkillActions({
     }
   }
   const capabilityItems = normalizeCapabilitySearchItems(capabilitySearchResult)
-  const capabilityScoreById = new Map(
+  const capabilityConfidenceById = new Map(
     capabilityItems.map((item) => [
       normalizeText(item?.skillId || item?.capabilityId),
-      Math.max(1, Number(item?.score) || 1)
+      normalizeRetrievalConfidence(item)
     ])
   )
   const targetSkills = targetSkill
@@ -446,11 +458,15 @@ export async function discoverBuiltinSkillActions({
         .map((skill) => {
           const id = normalizeText(skill?._id)
           const localScore = search ? scoreSearchText(search, skillSearchText(skill)) : 1
-          const retrievalScore = capabilityScoreById.get(id) || 0
-          return { skill, score: Math.max(localScore, retrievalScore) }
+          const localConfidence = search ? normalizeLocalSearchConfidence(localScore) : 1
+          const retrievalConfidence = capabilityConfidenceById.get(id) || 0
+          return {
+            skill,
+            confidence: fuseSkillRoutingConfidence(localConfidence, retrievalConfidence)
+          }
         })
-        .filter((item) => item.score > 0)
-        .sort((a, b) => b.score - a.score)
+        .filter((item) => item.confidence >= (search ? 0.5 : 0))
+        .sort((a, b) => b.confidence - a.confidence)
         .map((item) => item.skill)
   const skillEntries = []
 
@@ -610,6 +626,7 @@ export async function resolveBuiltinSkillCall({
 
 export function buildSkillsPromptText({
   selectedSkills = [],
+  availableSkills = selectedSkills,
   agentSkillIds = [],
   loadedSkillIds = [],
   mcpServers = [],
@@ -626,7 +643,16 @@ export function buildSkillsPromptText({
     : new Set(normalizeStringList(loadedSkillIds))
   const mcpList = Array.isArray(mcpServers) ? mcpServers : []
   const skills = Array.isArray(selectedSkills) ? selectedSkills : []
-  const hasLazyUnloaded = skills.some((skill) => {
+  const selectedIds = new Set(skills.map((skill) => normalizeText(skill?._id)).filter(Boolean))
+  const catalogSkills = []
+  const catalogSkillIds = new Set()
+  ;(Array.isArray(availableSkills) ? availableSkills : skills).forEach((skill) => {
+    const id = normalizeText(skill?._id)
+    if (!id || catalogSkillIds.has(id)) return
+    catalogSkillIds.add(id)
+    catalogSkills.push(skill)
+  })
+  const hasLazyUnloaded = catalogSkills.some((skill) => {
     const id = normalizeText(skill?._id)
     if (!id) return false
     if (isDirectorySkill(skill)) return !loadedSet.has(id)
@@ -700,8 +726,38 @@ export function buildSkillsPromptText({
     if (!isLoaded) metadataChars += block.length
   })
 
+  const availableMetadataLines = []
+  catalogSkills.forEach((skill) => {
+    const id = normalizeText(skill?._id)
+    if (!id || selectedIds.has(id)) return
+    const name = normalizeText(skill?.name || id)
+    const description = getSkillDescription(skill).slice(0, 512)
+    const entryFile = normalizeText(skill?.entryFile)
+    const explicitOnly = !allowsImplicitSkillInvocation(skill)
+    const line = [
+      `- \`${id}\` — ${name}`,
+      description ? `: ${description}` : '',
+      entryFile ? ` [entry: ${entryFile}]` : '',
+      explicitOnly ? ' [explicit only]' : ''
+    ].join('')
+    if (metadataChars + line.length > metadataLimit) {
+      omittedMetadataCount += 1
+      return
+    }
+    availableMetadataLines.push(line)
+    metadataChars += line.length
+  })
+
+  if (availableMetadataLines.length) {
+    blocks.push([
+      '## Available Skill catalog',
+      'Only metadata is loaded. When one clearly matches the task, call `use_skill` with its exact id before using its instructions, files, scripts, MCP dependencies, or native actions.',
+      ...availableMetadataLines
+    ].join('\n'))
+  }
+
   if (omittedMetadataCount > 0) {
-    blocks.push(`## Skill catalog truncated\n${omittedMetadataCount} unloaded Skill metadata entries were omitted to keep the initial context bounded. Use the Skill selector or discovery tools to narrow the capability set.`)
+    blocks.push(`## Skill catalog truncated\n${omittedMetadataCount} unloaded Skill metadata entries were omitted to keep the initial context bounded. Use \`skill_discover\` or the Skill selector to search the complete installed catalog.`)
   }
   return blocks.join('\n\n').trim()
 }
@@ -748,6 +804,42 @@ const ROUTING_STOP_WORDS = new Set([
   'use',
   'using'
 ])
+const MAX_ROUTING_REGEX_LENGTH = 256
+const MAX_ROUTING_REGEX_INPUT_LENGTH = 4000
+const MAX_ROUTING_REGEX_CACHE_SIZE = 256
+const routingRegexCache = new Map()
+
+function looksLikeUnsafeRoutingRegex(source) {
+  const value = String(source || '')
+  if (!value || value.length > MAX_ROUTING_REGEX_LENGTH) return true
+  if (/\\[1-9]/.test(value)) return true
+  if (/(\([^)]*[+*][^)]*\)|\[[^\]]+\][+*]|\.[+*])\s*(?:[+*]|\{\d*,?\d*\})/.test(value)) return true
+  return /(?:\.\*){2,}|(?:\.\+){2,}/.test(value)
+}
+
+function getRoutingRegex(pattern) {
+  const cacheKey = normalizeText(pattern)
+  if (!cacheKey) return null
+  if (routingRegexCache.has(cacheKey)) return routingRegexCache.get(cacheKey)
+
+  const normalized = normalizeRegexPattern(cacheKey)
+  let regex = null
+  if (normalized?.source && !looksLikeUnsafeRoutingRegex(normalized.source)) {
+    try {
+      regex = new RegExp(normalized.source, normalized.flags)
+    } catch {
+      regex = null
+    }
+  }
+
+  routingRegexCache.set(cacheKey, regex)
+  while (routingRegexCache.size > MAX_ROUTING_REGEX_CACHE_SIZE) {
+    const oldestKey = routingRegexCache.keys().next().value
+    if (oldestKey === undefined) break
+    routingRegexCache.delete(oldestKey)
+  }
+  return regex
+}
 
 function tokenizeRoutingText(value) {
   const raw = String(value || '').toLowerCase()
@@ -809,6 +901,94 @@ function scoreSkillDescription(skill, raw, matched) {
   return Math.min(score, 5)
 }
 
+function clampConfidence(value) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return 0
+  return Math.max(0, Math.min(1, numeric))
+}
+
+function combineConfidenceSignals(signals = []) {
+  const remaining = signals
+    .map(clampConfidence)
+    .filter((value) => value > 0)
+    .reduce((product, value) => product * (1 - value), 1)
+  return clampConfidence(1 - remaining)
+}
+
+function computeLocalSkillConfidence(matched = []) {
+  const matches = Array.isArray(matched) ? matched : []
+  const descriptionCount = matches.filter((item) => String(item).startsWith('desc:')).length
+  const keywordCount = matches.filter((item) => String(item).startsWith('kw:')).length
+  const intentCount = matches.filter((item) => String(item).startsWith('intent:')).length
+  const signals = []
+
+  if (matches.some((item) => String(item).startsWith('name:'))) signals.push(0.98)
+  if (matches.some((item) => String(item).startsWith('re:'))) signals.push(0.95)
+  if (keywordCount > 0) signals.push(Math.min(0.94, 0.82 + ((keywordCount - 1) * 0.08)))
+  if (intentCount > 0) signals.push(Math.min(0.72, 0.5 + ((intentCount - 1) * 0.1)))
+  if (descriptionCount > 0) {
+    signals.push([0, 0.42, 0.64, 0.78, 0.86][Math.min(descriptionCount, 4)])
+  }
+
+  return combineConfidenceSignals(signals)
+}
+
+function normalizeRetrievalConfidence(item) {
+  if (!item || typeof item !== 'object') return 0
+  const mode = normalizeText(item?.searchMode || item?.mode).toLowerCase()
+  const rawKeywordScore = Number(item?.keywordScore)
+  const keywordScore = Number.isFinite(rawKeywordScore)
+    ? rawKeywordScore
+    : mode === 'keyword'
+      ? Number(item?.score) || 0
+      : 0
+  const semanticSimilarity = Number(item?.semanticSimilarity)
+
+  let keywordConfidence = 0
+  if (keywordScore >= 160) keywordConfidence = 0.96
+  else if (keywordScore >= 100) keywordConfidence = 0.9
+  else if (keywordScore >= 70) keywordConfidence = 0.8
+  else if (keywordScore >= 50) keywordConfidence = 0.7
+  else if (keywordScore >= 35) keywordConfidence = 0.55
+
+  let semanticConfidence = 0
+  if (Number.isFinite(semanticSimilarity)) {
+    if (semanticSimilarity >= 0.8) semanticConfidence = 0.96
+    else if (semanticSimilarity >= 0.72) semanticConfidence = 0.9
+    else if (semanticSimilarity >= 0.64) semanticConfidence = 0.8
+    else if (semanticSimilarity >= 0.58) semanticConfidence = 0.68
+    else if (semanticSimilarity >= 0.52) semanticConfidence = 0.5
+  }
+
+  return Math.max(keywordConfidence, semanticConfidence)
+}
+
+function fuseSkillRoutingConfidence(localConfidence, retrievalConfidence) {
+  const local = clampConfidence(localConfidence)
+  const retrieval = clampConfidence(retrievalConfidence)
+  if (!local) return clampConfidence(retrieval * 0.92)
+  if (!retrieval) return local
+  return combineConfidenceSignals([local, retrieval * 0.55])
+}
+
+function legacyMinimumScoreToConfidence(value) {
+  const score = Number(value)
+  if (!Number.isFinite(score)) return DEFAULT_SKILL_ROUTING_MIN_CONFIDENCE
+  if (score <= 1) return 0.42
+  if (score <= 2) return 0.64
+  if (score <= 3) return 0.74
+  if (score <= 4) return 0.82
+  return 0.88
+}
+
+function hasDecisiveRoutingSignal(result) {
+  const matches = Array.isArray(result?.matched) ? result.matched : []
+  return matches.some((item) => {
+    const value = String(item || '')
+    return value.startsWith('name:') || value.startsWith('re:')
+  })
+}
+
 export function scoreSkillByTriggers(skill, text) {
   const id = normalizeText(skill?._id)
   const name = normalizeText(skill?.name || id || 'Skill')
@@ -816,7 +996,7 @@ export function scoreSkillByTriggers(skill, text) {
   const lower = raw.toLowerCase()
   const triggers = getSkillTriggers(skill)
   if (!allowsImplicitSkillInvocation(skill)) {
-    return { ok: false, id, name, score: 0, matched: [] }
+    return { ok: false, id, name, score: 0, confidence: 0, matched: [] }
   }
 
   const matched = []
@@ -834,22 +1014,33 @@ export function scoreSkillByTriggers(skill, text) {
     }
   })
   triggers.regex.forEach((pattern) => {
-    const normalized = normalizeRegexPattern(pattern)
-    if (!normalized?.source) return
-    try {
-      if (new RegExp(normalized.source, normalized.flags).test(raw)) {
-        score += 3
-        matched.push(`re:${pattern}`)
-      }
-    } catch {
-      // Invalid user-defined trigger patterns are ignored.
+    const regex = getRoutingRegex(pattern)
+    if (!regex) return
+    regex.lastIndex = 0
+    if (regex.test(raw.slice(0, MAX_ROUTING_REGEX_INPUT_LENGTH))) {
+      score += 3
+      matched.push(`re:${pattern}`)
     }
   })
-  return { ok: score > 0, id, name, score, matched }
+  return {
+    ok: score > 0,
+    id,
+    name,
+    score,
+    confidence: computeLocalSkillConfidence(matched),
+    matched
+  }
 }
 
 export function pickSkillsByTriggers(skills, text, options = {}) {
-  const minimumScore = Math.max(1, Number(options.minimumScore) || 2)
+  const minimumConfidence = options.minimumConfidence !== undefined
+    ? clampConfidence(options.minimumConfidence)
+    : options.minimumScore !== undefined
+      ? legacyMinimumScoreToConfidence(options.minimumScore)
+      : DEFAULT_SKILL_ROUTING_MIN_CONFIDENCE
+  const minimumMargin = options.minimumMargin !== undefined
+    ? clampConfidence(options.minimumMargin)
+    : DEFAULT_SKILL_ROUTING_MIN_MARGIN
   const limit = Math.max(1, Number(options.limit) || 2)
   const retrievalItems = Array.isArray(options.retrievalMatches) ? options.retrievalMatches : []
   const retrievalCapabilityType = normalizeText(options.retrievalCapabilityType || 'skill')
@@ -862,25 +1053,49 @@ export function pickSkillsByTriggers(skills, text, options = {}) {
       ])
       .filter(([id]) => id)
   )
-  return (Array.isArray(skills) ? skills : [])
+  const ranked = (Array.isArray(skills) ? skills : [])
     .map((skill) => {
       const result = scoreSkillByTriggers(skill, text)
       const retrieval = retrievalById.get(result.id)
       if (!retrieval || !allowsImplicitSkillInvocation(skill)) return result
-      const retrievalScore = Math.max(2, Math.min(5, Math.ceil(Number(retrieval?.score) || 0)))
+      const retrievalConfidence = normalizeRetrievalConfidence(retrieval)
       return {
         ...result,
-        ok: true,
-        score: result.score + retrievalScore,
+        ok: result.ok || retrievalConfidence > 0,
+        confidence: fuseSkillRoutingConfidence(result.confidence, retrievalConfidence),
+        retrievalConfidence,
         matched: [
           ...result.matched,
-          `index:${normalizeText(retrieval?.searchMode || retrieval?.mode || 'hybrid')}`
+          ...(retrievalConfidence > 0
+            ? [`index:${normalizeText(retrieval?.searchMode || retrieval?.mode || 'hybrid')}`]
+            : [])
         ]
       }
     })
-    .filter((result) => result.ok && result.id && result.score >= minimumScore)
-    .sort((a, b) => b.score - a.score || b.matched.length - a.matched.length)
-    .slice(0, limit)
+    .filter((result) => result.ok && result.id && result.confidence >= minimumConfidence)
+    .sort((a, b) => (
+      Number(b.confidence || 0) - Number(a.confidence || 0) ||
+      Number(b.score || 0) - Number(a.score || 0) ||
+      b.matched.length - a.matched.length
+    ))
+
+  if (!ranked.length) return []
+  if (
+    ranked.length > 1 &&
+    Number(ranked[0].confidence || 0) - Number(ranked[1].confidence || 0) < minimumMargin &&
+    !hasDecisiveRoutingSignal(ranked[0])
+  ) {
+    return []
+  }
+
+  const picked = [ranked[0]]
+  const additionalMinimum = Math.max(0.88, minimumConfidence + 0.1)
+  for (const candidate of ranked.slice(1)) {
+    if (picked.length >= limit) break
+    if (candidate.confidence < additionalMinimum || !hasDecisiveRoutingSignal(candidate)) continue
+    picked.push(candidate)
+  }
+  return picked
 }
 
 export function buildAutoSkillActivationPlan({
@@ -892,8 +1107,10 @@ export function buildAutoSkillActivationPlan({
   loadedSkillIds = [],
   retrievalMatches = [],
   retrievalCapabilityType = 'skill',
-  minimumScore = 2,
-  limit = 2
+  minimumScore,
+  minimumConfidence = DEFAULT_SKILL_ROUTING_MIN_CONFIDENCE,
+  minimumMargin = DEFAULT_SKILL_ROUTING_MIN_MARGIN,
+  limit = 1
 } = {}) {
   const selected = new Set(normalizeStringList(selectedSkillIds))
   const agent = new Set(normalizeStringList(agentSkillIds))
@@ -907,6 +1124,8 @@ export function buildAutoSkillActivationPlan({
   })
   const picked = pickSkillsByTriggers(candidates, text, {
     minimumScore,
+    minimumConfidence: minimumScore === undefined ? minimumConfidence : undefined,
+    minimumMargin,
     limit,
     retrievalMatches,
     retrievalCapabilityType

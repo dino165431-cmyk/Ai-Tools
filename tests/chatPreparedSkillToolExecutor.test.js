@@ -176,3 +176,88 @@ test('prepared skill executor keeps an auto-routed skill available when its scri
   assert.match(execution.result.content, /设备暂时离线/)
   assert.deepEqual(persistedSkillIds, ['skill_adjust'])
 })
+
+test('prepared skill discovery searches the installed catalog, not only selected skills', async () => {
+  const context = createExecutionContext()
+  const installed = {
+    _id: 'skill-release',
+    name: '发布验证',
+    description: '检查发布结果和回滚风险',
+    sourceType: 'directory',
+    sourcePath: 'D:/skills/release',
+    entryFile: 'SKILL.md',
+    nativeActions: [],
+    mcp: []
+  }
+  const execute = createPreparedSkillToolExecutor({
+    availableSkillObjects: { value: [installed] },
+    selectedSkillObjects: { value: [] },
+    maybeScrollToBottomForRun: async () => {}
+  })
+
+  const execution = await execute(
+    {
+      mapping: { type: 'internal', internal: 'skill_discover' },
+      serverName: 'Skill',
+      toolName: 'skill_discover',
+      argsObj: {}
+    },
+    context
+  )
+
+  assert.equal(execution.handled, true)
+  assert.equal(execution.result.ok, true)
+  assert.match(execution.result.content, /skill-release/)
+})
+
+test('use_skill can add an installed unselected Skill to the current session', async () => {
+  const context = createExecutionContext()
+  const installed = {
+    _id: 'skill-release',
+    name: '发布验证',
+    description: '检查发布结果和回滚风险',
+    sourceType: 'directory',
+    sourcePath: 'D:/skills/release',
+    entryFile: 'SKILL.md',
+    nativeActions: [],
+    mcp: []
+  }
+  const selected = []
+  let loadCount = 0
+  const execute = createPreparedSkillToolExecutor({
+    activatedAgentSkillIds: { value: [] },
+    agentSkillIdSet: { value: new Set() },
+    availableSkillObjects: { value: [installed] },
+    hasLoadedSkillMainContent: () => false,
+    loadSkillMainContent: async () => {
+      loadCount += 1
+      return '# Release verification'
+    },
+    mcpServers: { value: [] },
+    maybeScrollToBottomForRun: async () => {},
+    resolveAvailableSkillTarget: ({ idCandidate }) => (
+      idCandidate === installed._id ? installed : null
+    ),
+    selectSkillForSession: (id) => {
+      selected.push(id)
+      return { ok: true, changed: true }
+    },
+    selectedSkillObjects: { value: [] }
+  })
+
+  const execution = await execute(
+    {
+      mapping: { type: 'internal', internal: 'use_skill' },
+      serverName: 'Skill',
+      toolName: 'use_skill',
+      argsObj: { id: installed._id }
+    },
+    context
+  )
+
+  assert.equal(execution.handled, true)
+  assert.equal(execution.result.ok, true)
+  assert.equal(loadCount, 1)
+  assert.deepEqual(selected, [installed._id])
+  assert.match(execution.result.content, /status: loaded/)
+})

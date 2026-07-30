@@ -3,6 +3,14 @@
   --ai-markdown-soft-bg: rgba(148, 163, 184, 0.08);
   --ai-markdown-border: rgba(148, 163, 184, 0.22);
   --ai-markdown-code-shadow: 0 8px 22px rgba(15, 23, 42, 0.08);
+  --ai-markdown-syntax-text: #24292e;
+  --ai-markdown-syntax-keyword: #cf222e;
+  --ai-markdown-syntax-title: #8250df;
+  --ai-markdown-syntax-constant: #0550ae;
+  --ai-markdown-syntax-string: #0a3069;
+  --ai-markdown-syntax-builtin: #953800;
+  --ai-markdown-syntax-comment: #6e7781;
+  --ai-markdown-syntax-name: #116329;
 }
 
 .ai-markdown-surface.is-dark,
@@ -11,6 +19,14 @@
   --ai-markdown-soft-bg: rgba(148, 163, 184, 0.1);
   --ai-markdown-border: rgba(148, 163, 184, 0.2);
   --ai-markdown-code-shadow: 0 10px 26px rgba(2, 6, 23, 0.24);
+  --ai-markdown-syntax-text: #c9d1d9;
+  --ai-markdown-syntax-keyword: #ff7b72;
+  --ai-markdown-syntax-title: #d2a8ff;
+  --ai-markdown-syntax-constant: #79c0ff;
+  --ai-markdown-syntax-string: #a5d6ff;
+  --ai-markdown-syntax-builtin: #ffa657;
+  --ai-markdown-syntax-comment: #8b949e;
+  --ai-markdown-syntax-name: #7ee787;
 }
 
 .ai-markdown-surface .md-editor-preview {
@@ -137,7 +153,8 @@
   margin: 0;
   overflow-x: auto !important;
   overflow-y: hidden !important;
-  overscroll-behavior: contain;
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: auto;
   scrollbar-gutter: stable;
 }
 
@@ -157,8 +174,77 @@
 }
 
 .ai-markdown-surface .md-editor-preview-wrapper {
-  overscroll-behavior: contain;
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: auto;
   scrollbar-gutter: stable;
+}
+
+/*
+ * md-editor-v3 normally fetches its Highlight.js theme from a CDN. The
+ * desktop renderer uses the local Highlight.js instance instead, so keep the
+ * token palette local as well. These selectors intentionally live under the
+ * shared surface used by chat, notes and notebook markdown cells.
+ */
+.ai-markdown-surface .md-editor-preview .hljs {
+  color: var(--ai-markdown-syntax-text);
+}
+
+.ai-markdown-surface .md-editor-preview .hljs-doctag,
+.ai-markdown-surface .md-editor-preview .hljs-keyword,
+.ai-markdown-surface .md-editor-preview .hljs-meta .hljs-keyword,
+.ai-markdown-surface .md-editor-preview .hljs-template-tag,
+.ai-markdown-surface .md-editor-preview .hljs-template-variable,
+.ai-markdown-surface .md-editor-preview .hljs-type,
+.ai-markdown-surface .md-editor-preview .hljs-variable.language_ {
+  color: var(--ai-markdown-syntax-keyword);
+}
+
+.ai-markdown-surface .md-editor-preview .hljs-title,
+.ai-markdown-surface .md-editor-preview .hljs-title.class_,
+.ai-markdown-surface .md-editor-preview .hljs-title.function_ {
+  color: var(--ai-markdown-syntax-title);
+}
+
+.ai-markdown-surface .md-editor-preview .hljs-attr,
+.ai-markdown-surface .md-editor-preview .hljs-attribute,
+.ai-markdown-surface .md-editor-preview .hljs-literal,
+.ai-markdown-surface .md-editor-preview .hljs-meta,
+.ai-markdown-surface .md-editor-preview .hljs-number,
+.ai-markdown-surface .md-editor-preview .hljs-operator,
+.ai-markdown-surface .md-editor-preview .hljs-selector-attr,
+.ai-markdown-surface .md-editor-preview .hljs-selector-class,
+.ai-markdown-surface .md-editor-preview .hljs-selector-id,
+.ai-markdown-surface .md-editor-preview .hljs-variable {
+  color: var(--ai-markdown-syntax-constant);
+}
+
+.ai-markdown-surface .md-editor-preview .hljs-regexp,
+.ai-markdown-surface .md-editor-preview .hljs-string,
+.ai-markdown-surface .md-editor-preview .hljs-meta .hljs-string {
+  color: var(--ai-markdown-syntax-string);
+}
+
+.ai-markdown-surface .md-editor-preview .hljs-built_in,
+.ai-markdown-surface .md-editor-preview .hljs-symbol {
+  color: var(--ai-markdown-syntax-builtin);
+}
+
+.ai-markdown-surface .md-editor-preview .hljs-comment,
+.ai-markdown-surface .md-editor-preview .hljs-code,
+.ai-markdown-surface .md-editor-preview .hljs-formula {
+  color: var(--ai-markdown-syntax-comment);
+}
+
+.ai-markdown-surface .md-editor-preview .hljs-name,
+.ai-markdown-surface .md-editor-preview .hljs-quote,
+.ai-markdown-surface .md-editor-preview .hljs-selector-tag,
+.ai-markdown-surface .md-editor-preview .hljs-selector-pseudo {
+  color: var(--ai-markdown-syntax-name);
+}
+
+.ai-markdown-surface.is-deferred-block-layout .md-editor-preview > * {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 96px;
 }
 
 @media (max-width: 720px) {

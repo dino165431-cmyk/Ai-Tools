@@ -85,45 +85,56 @@
         </div>
       </div>
       <div v-if="loading" class="notebook-editor__empty"><n-spin size="small" /><span>正在加载超级笔记...</span></div>
-      <div v-else-if="notebook.cells.length" class="notebook-editor__cells">
-        <component
-          :is="cell.cell_type === 'markdown' ? NotebookCellMarkdown : NotebookCellCode"
-          v-for="(cell, index) in notebook.cells"
-          :ref="setCellRef(cell.id)"
+      <div
+        v-else-if="notebook.cells.length"
+        class="notebook-editor__cells is-virtualized"
+        :style="notebookVirtualListStyle"
+      >
+        <div
+          v-for="{ cell, index, virtualItem } in renderedNotebookCells"
           :key="cell.id"
-          :cell="cell"
-          :index="index"
-          :cell-count="notebook.cells.length"
-          :selected="selectedCellId === cell.id"
-          :previewing="isMarkdownPreviewing(cell.id)"
-          :collapsed="isCellCollapsed(cell.id)"
-          :running="runningCellId === cell.id"
-          :theme="theme"
-          :file-path="filePath"
-          :content-active="shouldRenderCellContent(cell.id, index)"
-          :runtime-input-request="getRuntimePromptRequestForCell(cell.id)"
-          :python-modules="getCellRuntime(cell) === 'python' ? availablePythonModules : EMPTY_ARRAY"
-          :python-path="getCellRuntime(cell) === 'python' ? activePythonPath : ''"
-          :notebook-magic-options="getCellRuntime(cell) === 'python' ? notebookMagicOptions : EMPTY_ARRAY"
-          :completion-context="selectedCellId === cell.id && getCellRuntime(cell) === 'python' ? getPythonCompletionContext(index) : ''"
-          :python-context-cells="selectedCellId === cell.id && getCellRuntime(cell) === 'python' ? getPythonContextCells(index) : EMPTY_ARRAY"
-          @focus="setSelectedCell(cell.id)"
-          @toggle-preview="toggleMarkdownPreview(cell.id)"
-          @toggle-collapse="toggleCellCollapsed(cell.id)"
-          @update-source="updateCellSource(cell.id, $event)"
-          @update-runtime="updateCellRuntime(cell.id, $event)"
-          @delete="deleteCell(cell.id)"
-          @move-up="moveCell(cell.id, -1)"
-          @move-down="moveCell(cell.id, 1)"
-          @add-after="insertCellAfter(cell.id, $event)"
-          @run="runCellById(cell.id)"
-          @stop="stopCellRun(cell.id)"
-          @clear-outputs="clearCodeCellOutputs(cell.id)"
-          @submit-runtime-input="submitRuntimePromptInput($event)"
-          @abort-runtime-input="abortRuntimePromptInput()"
-          @runtime-error="handlePythonCompletionFailure($event)"
-          @go-to-definition="handlePythonDefinitionNavigation"
-        />
+          :ref="getNotebookVirtualItemRef(cell.id)"
+          class="notebook-editor__cell-item"
+          :data-index="index"
+          :style="getNotebookVirtualItemStyle(virtualItem)"
+        >
+          <component
+            :is="cell.cell_type === 'markdown' ? NotebookCellMarkdown : NotebookCellCode"
+            :ref="setCellRef(cell.id)"
+            :cell="cell"
+            :index="index"
+            :cell-count="notebook.cells.length"
+            :selected="selectedCellId === cell.id"
+            :previewing="isMarkdownPreviewing(cell.id)"
+            :collapsed="isCellCollapsed(cell.id)"
+            :running="runningCellId === cell.id"
+            :theme="theme"
+            :file-path="filePath"
+            :content-active="shouldRenderCellContent(cell.id, index)"
+            :runtime-input-request="getRuntimePromptRequestForCell(cell.id)"
+            :python-modules="getCellRuntime(cell) === 'python' ? availablePythonModules : EMPTY_ARRAY"
+            :python-path="getCellRuntime(cell) === 'python' ? activePythonPath : ''"
+            :notebook-magic-options="getCellRuntime(cell) === 'python' ? notebookMagicOptions : EMPTY_ARRAY"
+            :completion-context="selectedCellId === cell.id && getCellRuntime(cell) === 'python' ? getPythonCompletionContext(index) : ''"
+            :python-context-cells="selectedCellId === cell.id && getCellRuntime(cell) === 'python' ? getPythonContextCells(index) : EMPTY_ARRAY"
+            @focus="setSelectedCell(cell.id)"
+            @toggle-preview="toggleMarkdownPreview(cell.id)"
+            @toggle-collapse="toggleCellCollapsed(cell.id)"
+            @update-source="updateCellSource(cell.id, $event)"
+            @update-runtime="updateCellRuntime(cell.id, $event)"
+            @delete="deleteCell(cell.id)"
+            @move-up="moveCell(cell.id, -1)"
+            @move-down="moveCell(cell.id, 1)"
+            @add-after="insertCellAfter(cell.id, $event)"
+            @run="runCellById(cell.id)"
+            @stop="stopCellRun(cell.id)"
+            @clear-outputs="clearCodeCellOutputs(cell.id)"
+            @submit-runtime-input="submitRuntimePromptInput($event)"
+            @abort-runtime-input="abortRuntimePromptInput()"
+            @runtime-error="handlePythonCompletionFailure($event)"
+            @go-to-definition="handlePythonDefinitionNavigation"
+          />
+        </div>
       </div>
       <div v-else class="notebook-editor__empty notebook-editor__empty--blank">
         <n-empty description="当前超级笔记还是空的"><template #extra><div class="notebook-editor__empty-actions"><n-tooltip trigger="hover"><template #trigger><n-button quaternary circle size="large" @click="insertCellRelativeToSelection('markdown')"><template #icon><n-icon><DocumentTextOutline /></n-icon></template></n-button></template>添加 Markdown（Ctrl+Alt+M）</n-tooltip><n-tooltip trigger="hover"><template #trigger><n-button type="primary" ghost circle size="large" @click="insertCellRelativeToSelection('code')"><template #icon><n-icon><CodeSlashOutline /></n-icon></template></n-button></template>添加代码 Cell（Ctrl+Alt+C）</n-tooltip></div></template></n-empty>
@@ -147,6 +158,7 @@
 import path from 'path-browserify'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { NAlert, NButton, NCard, NEmpty, NForm, NFormItem, NIcon, NInput, NModal, NSpin, NTag, NText, NTooltip, useMessage } from 'naive-ui'
+import { defaultRangeExtractor, useVirtualizer } from '@tanstack/vue-virtual'
 import { AddOutline, ArrowDownOutline, ArrowUpOutline, ChevronDownOutline, ChevronUpOutline, CodeSlashOutline, CreateOutline, DocumentTextOutline, EyeOutline, PauseOutline, PlayOutline, RefreshOutline, SaveOutline, StopCircleOutline, TrashOutline } from '@vicons/ionicons5'
 import { getNoteConfig, updateNoteConfig } from '@/utils/configListener'
 import { exists, readFile, writeFile } from '@/utils/fileOperations'
@@ -204,6 +216,7 @@ const runtimeInstallModal = reactive({ show: false, loading: false, detecting: f
 const runtimePromptModal = reactive({ prompt: '', password: false, submitting: false, requestId: '', cellId: '', outputCount: 0 })
 const cellComponentRefs = new Map()
 const cellRefHandlers = new Map()
+const notebookVirtualItemRefHandlers = new Map()
 const pythonContextTextCache = []
 const pythonContextCellsCache = []
 const pendingRuntimePatchByCellId = new Map()
@@ -237,6 +250,89 @@ const runtimeInstallCommand = computed(() => `"${resolveRuntimePythonPath(runtim
 const stickyCell = computed(() => notebook.value.cells.find((cell) => cell.id === stickyCellId.value) || null)
 const stickyCellIndex = computed(() => stickyCell.value ? Math.max(0, notebook.value.cells.findIndex((cell) => cell.id === stickyCell.value.id)) : -1)
 const selectedCellIndex = computed(() => getCellIndex(selectedCellId.value))
+const runningCellIndex = computed(() => getCellIndex(runningCellId.value))
+const notebookCellIndexById = computed(() => {
+  const indexById = new Map()
+  notebook.value.cells.forEach((cell, index) => {
+    indexById.set(String(cell?.id || ''), index)
+  })
+  return indexById
+})
+const notebookVirtualizedEnabled = computed(() => notebook.value.cells.length > 0)
+
+function estimateNotebookOutputHeight(outputs = []) {
+  if (!Array.isArray(outputs) || !outputs.length) return 0
+  return outputs.reduce((height, output) => {
+    const text = String(output?.text || output?.data?.['text/plain'] || output?.evalue || '')
+    const lineCount = text ? text.split(/\r?\n/).length : 1
+    return height + Math.min(320, 54 + lineCount * 20)
+  }, 0)
+}
+
+function estimateNotebookVirtualItemSize(index) {
+  const cell = notebook.value.cells[index]
+  if (!cell) return 180
+  if (isCellCollapsed(cell.id)) return 66
+  const sourceLineCount = Math.max(1, String(cell.source || '').split(/\r?\n/).length)
+  const sourceHeight = Math.min(cell.cell_type === 'markdown' ? 720 : 520, sourceLineCount * 23)
+  const outputHeight = cell.cell_type === 'code' ? estimateNotebookOutputHeight(cell.outputs) : 0
+  return Math.max(132, 104 + sourceHeight + outputHeight) + 12
+}
+
+function extractNotebookVirtualRange(range) {
+  const indices = new Set(defaultRangeExtractor(range))
+  const pinnedIndices = [selectedCellIndex.value, runningCellIndex.value]
+  pinnedIndices.forEach((index) => {
+    if (index >= 0 && index < notebook.value.cells.length) indices.add(index)
+  })
+  return [...indices].sort((left, right) => left - right)
+}
+
+const notebookVirtualizer = useVirtualizer(computed(() => ({
+  count: notebook.value.cells.length,
+  getScrollElement: () => resolveNotebookScrollViewport(),
+  estimateSize: estimateNotebookVirtualItemSize,
+  getItemKey: (index) => String(notebook.value.cells[index]?.id || `notebook-cell-${index}`),
+  overscan: 4,
+  rangeExtractor: extractNotebookVirtualRange,
+  paddingEnd: 8,
+  enabled: notebookVirtualizedEnabled.value,
+  useAnimationFrameWithResizeObserver: true
+})))
+
+const notebookVirtualItems = computed(() => notebookVirtualizer.value.getVirtualItems())
+const renderedNotebookCells = computed(() => notebookVirtualItems.value
+  .map((virtualItem) => ({
+    cell: notebook.value.cells[virtualItem.index],
+    index: virtualItem.index,
+    virtualItem
+  }))
+  .filter((entry) => !!entry.cell)
+)
+const notebookVirtualListStyle = computed(() => ({
+  height: `${Math.ceil(notebookVirtualizer.value.getTotalSize())}px`
+}))
+
+function getNotebookVirtualItemStyle(virtualItem) {
+  return {
+    '--notebook-virtual-item-top': `${Math.max(0, Number(virtualItem?.start) || 0)}px`
+  }
+}
+
+function getNotebookVirtualItemRef(cellId) {
+  const targetId = String(cellId || '')
+  if (notebookVirtualItemRefHandlers.has(targetId)) return notebookVirtualItemRefHandlers.get(targetId)
+  const handler = (element) => {
+    if (!(element instanceof HTMLElement)) return
+    const index = notebookCellIndexById.value.get(targetId)
+    if (!Number.isInteger(index)) return
+    element.dataset.index = String(index)
+    notebookVirtualizer.value.measureElement(element)
+  }
+  notebookVirtualItemRefHandlers.set(targetId, handler)
+  return handler
+}
+
 const stickyCellRunning = computed(() => !!stickyCell.value?.id && runningCellId.value === stickyCell.value.id)
 const stickyCellPreviewing = computed(() => !!stickyCell.value?.id && isMarkdownPreviewing(stickyCell.value.id))
 const stickyCellCollapsed = computed(() => !!stickyCell.value?.id && isCellCollapsed(stickyCell.value.id))
@@ -518,7 +614,9 @@ function syncStickyCell() {
   const viewportRect = viewport.getBoundingClientRect()
   const threshold = viewportRect.top
   let candidateId = ''
-  const candidateIds = new Set(visibleCellIds.value)
+  const candidateIds = notebookVirtualizedEnabled.value
+    ? new Set(cellComponentRefs.keys())
+    : new Set(visibleCellIds.value)
   if (selectedCellId.value) candidateIds.add(selectedCellId.value)
   if (stickyCellId.value) candidateIds.add(stickyCellId.value)
   const cellsToMeasure = candidateIds.size
@@ -557,6 +655,11 @@ function refreshCellVisibilityObserver() {
   const viewport = resolveNotebookScrollViewport()
   if (!(viewport instanceof HTMLElement)) return
   syncStickyHeaderBinding(viewport)
+  if (notebookVirtualizedEnabled.value) {
+    visibleCellIds.value = new Set(renderedNotebookCells.value.map((entry) => entry.cell.id))
+    scheduleStickyHeaderSync()
+    return
+  }
   const observedIds = new Set()
   cellVisibilityObserver = new IntersectionObserver((entries) => {
     const updated = new Set(visibleCellIds.value)
@@ -607,6 +710,7 @@ function scheduleRefreshCellVisibilityObserver() {
 function shouldRenderCellContent(cellId, index = -1) {
   const targetId = String(cellId || '').trim()
   if (!targetId) return false
+  if (notebookVirtualizedEnabled.value) return true
   if (selectedCellId.value === targetId || runningCellId.value === targetId) return true
   if (hydratedCellIds.value.has(targetId)) return true
   if (visibleCellIds.value.has(targetId)) return true
@@ -616,8 +720,17 @@ function shouldRenderCellContent(cellId, index = -1) {
 }
 function ensureCellInViewport(cellId, options = {}) {
   const viewport = resolveNotebookScrollViewport()
-  const cellEl = resolveCellElement(cellId)
   if (!(viewport instanceof HTMLElement)) return
+  if (notebookVirtualizedEnabled.value) {
+    const index = notebookCellIndexById.value.get(String(cellId || ''))
+    if (!Number.isInteger(index)) return
+    notebookVirtualizer.value.scrollToIndex(index, {
+      align: 'auto',
+      behavior: options.behavior === 'smooth' ? 'auto' : options.behavior
+    })
+    return
+  }
+  const cellEl = resolveCellElement(cellId)
   if (!(cellEl instanceof HTMLElement)) return
   const viewportRect = viewport.getBoundingClientRect()
   const cellRect = cellEl.getBoundingClientRect()
@@ -664,13 +777,13 @@ function setCellRef(cellId) {
       nextTick(() => {
         if (cellComponentRefs.get(targetId) !== instance) return
         scheduleStickyHeaderSync()
-        scheduleRefreshCellVisibilityObserver()
+        if (!notebookVirtualizedEnabled.value) scheduleRefreshCellVisibilityObserver()
       })
       return
     }
     if (!currentInstance) return
     cellComponentRefs.delete(targetId)
-    scheduleRefreshCellVisibilityObserver()
+    if (!notebookVirtualizedEnabled.value) scheduleRefreshCellVisibilityObserver()
   }
   cellRefHandlers.set(targetId, handler)
   return handler
@@ -1809,6 +1922,14 @@ lastSavedSerialized = serializeNotebookForStorage(createEmptyNotebook())
 onMounted(() => {
   window.addEventListener('keydown', handleGlobalKeydown, true)
 })
+watch(
+  () => notebookVirtualItems.value.map((item) => `${item.key}:${item.index}`).join('|'),
+  () => {
+    visibleCellIds.value = new Set(renderedNotebookCells.value.map((entry) => entry.cell.id))
+    scheduleStickyHeaderSync()
+  },
+  { flush: 'post' }
+)
 watch(() => [props.filePath, props.renameContext?.from, props.renameContext?.to, props.renameContext?.token], () => { void rewriteNotebookManagedEnvBindingForRename(props.renameContext).catch((err) => { message.error(err?.message || String(err)) }) }, { immediate: true })
 watch(() => [props.filePath, activePythonPath.value, loading.value], ([filePath, pythonPath, isLoading]) => {
   if (!filePath || isLoading) {
@@ -1825,7 +1946,11 @@ watch(() => notebook.value.cells.map((cell) => cell.id).join('|'), () => {
   markdownPreviewingCellIds.value = new Set([...markdownPreviewingCellIds.value].filter((cellId) => validIds.has(cellId)))
   collapsedCellIds.value = new Set([...collapsedCellIds.value].filter((cellId) => validIds.has(cellId)))
   hydratedCellIds.value = new Set([...hydratedCellIds.value].filter((cellId) => validIds.has(cellId)))
+  for (const cellId of notebookVirtualItemRefHandlers.keys()) {
+    if (!validIds.has(cellId)) notebookVirtualItemRefHandlers.delete(cellId)
+  }
   scheduleRefreshCellVisibilityObserver()
+  nextTick(() => notebookVirtualizer.value.measure())
 })
 watch(() => [selectedCellId.value, runningCellId.value], () => { scheduleStickyHeaderSync() })
 watch(() => missingManagedVenv.value, (envName, prevEnvName) => {
@@ -1849,6 +1974,23 @@ onBeforeUnmount(async () => { window.removeEventListener('keydown', handleGlobal
   scrollbar-gutter: stable;
   overflow-anchor: none;
   overscroll-behavior: contain;
+}
+
+.notebook-editor__cells.is-virtualized {
+  position: relative;
+  display: block;
+  box-sizing: border-box;
+  gap: 0;
+  overflow: visible;
+}
+
+.notebook-editor__cell-item {
+  position: absolute;
+  top: var(--notebook-virtual-item-top, 0);
+  left: 0;
+  right: 6px;
+  box-sizing: border-box;
+  padding-bottom: 12px;
 }
 
 .notebook-editor__sticky-layer {

@@ -369,6 +369,86 @@ test('content index uses hybrid embedding search when configured', async (t) => 
   assert.equal(sessionResult.items[0].embedding, undefined)
 })
 
+test('hybrid query embeddings are cached and respect the routing timeout budget', async (t) => {
+  const { tempRoot } = setupIndexTest(t)
+  storage.delete('global-config')
+  createFixtureFile(tempRoot, 'note/cache.md', '# Cache\n\ninvoice settlement details')
+
+  const originalFetch = globalThis.fetch
+  const originalWarn = console.warn
+  let fetchCount = 0
+  globalThis.fetch = async () => {
+    fetchCount += 1
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ data: [{ embedding: [1, 0, 0] }] }),
+      text: async () => JSON.stringify({ data: [{ embedding: [1, 0, 0] }] })
+    }
+  }
+
+  globalConfig.addProvider({
+    _id: 'test-query-cache-provider',
+    name: 'Test Query Cache Provider',
+    providerType: 'openai',
+    baseurl: 'https://example.com/v1',
+    apikey: 'test-key',
+    selectModels: ['test-embed']
+  })
+  await globalConfig.updateContentSearchConfig({
+    searchMode: 'hybrid',
+    embedding: {
+      providerId: 'test-query-cache-provider',
+      model: 'test-embed'
+    }
+  })
+
+  t.after(() => {
+    resetContentIndexRuntime()
+    globalThis.fetch = originalFetch
+    console.warn = originalWarn
+    storage.delete('global-config')
+  })
+
+  await contentIndex.rebuildIndex('note', { reason: 'query_cache_test' })
+  contentIndex._internal.clearEmbeddingQueryCache()
+  fetchCount = 0
+
+  const first = await contentIndex.searchIndex('note', {
+    query: 'invoice settlement',
+    embeddingTimeoutMs: 500
+  })
+  const second = await contentIndex.searchIndex('note', {
+    query: 'invoice settlement',
+    embeddingTimeoutMs: 500
+  })
+
+  assert.equal(first.semanticUsed, true)
+  assert.equal(second.semanticUsed, true)
+  assert.equal(fetchCount, 1)
+  assert.equal(contentIndex._internal.getEmbeddingQueryCacheSize(), 1)
+
+  contentIndex._internal.clearEmbeddingQueryCache()
+  console.warn = () => {}
+  globalThis.fetch = async (_url, options = {}) => new Promise((_resolve, reject) => {
+    options.signal?.addEventListener('abort', () => {
+      const error = new Error('aborted')
+      error.name = 'AbortError'
+      reject(error)
+    }, { once: true })
+  })
+
+  const startedAt = Date.now()
+  const timedOut = await contentIndex.searchIndex('note', {
+    query: 'semantic-timeout-token',
+    embeddingTimeoutMs: 50
+  })
+  const elapsedMs = Date.now() - startedAt
+
+  assert.equal(timedOut.semanticUsed, false)
+  assert.ok(elapsedMs < 500, `expected timeout fallback under 500ms, got ${elapsedMs}ms`)
+})
+
 test('content index sanitizes repeated embedding failures and logs them once per provider', async (t) => {
   const { tempRoot } = setupIndexTest(t)
   storage.delete('global-config')

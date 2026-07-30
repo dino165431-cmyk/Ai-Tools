@@ -332,7 +332,31 @@ test('legacy default Agent skill bindings are removed while manual selections ar
   assert.deepEqual(custom.selectedSkillIds, ['builtin_skill_notes'])
 })
 
-test('auto activation accepts a persistent capability-index match', () => {
+test('auto activation accepts a strong semantic capability-index match', () => {
+  const installed = makeBuiltinSkill({
+    _id: 'skill-adjust',
+    name: 'Mobile Adjust Analysis',
+    description: 'Authorized mobile analytics workflow',
+    triggers: undefined
+  })
+  const plan = buildAutoSkillActivationPlan({
+    skills: [installed],
+    text: 'inspect the app traffic',
+    retrievalMatches: [{
+      capabilityType: 'skill',
+      skillId: installed._id,
+      score: 22,
+      keywordScore: 0,
+      semanticSimilarity: 0.76,
+      searchMode: 'hybrid'
+    }]
+  })
+
+  assert.deepEqual(plan.picked.map((item) => item.id), [installed._id])
+  assert.ok(plan.picked[0].matched.includes('index:hybrid'))
+})
+
+test('auto activation ignores weak retrieval-only matches', () => {
   const installed = makeBuiltinSkill({
     _id: 'skill-adjust',
     name: 'Mobile Adjust Analysis',
@@ -346,10 +370,97 @@ test('auto activation accepts a persistent capability-index match', () => {
       capabilityType: 'skill',
       skillId: installed._id,
       score: 4.2,
+      keywordScore: 4.2,
+      semanticSimilarity: 0.41,
       searchMode: 'hybrid'
     }]
   })
 
-  assert.deepEqual(plan.picked.map((item) => item.id), [installed._id])
-  assert.ok(plan.picked[0].matched.includes('index:hybrid'))
+  assert.deepEqual(plan.picked, [])
+})
+
+test('auto activation abstains when two skills have indistinguishable weak intent', () => {
+  const first = makeBuiltinSkill({
+    _id: 'skill-first',
+    name: '材料分析一',
+    description: '分析并整理用户提供的材料',
+    triggers: undefined
+  })
+  const second = makeBuiltinSkill({
+    _id: 'skill-second',
+    name: '材料分析二',
+    description: '分析并整理用户提供的材料',
+    triggers: undefined
+  })
+
+  const plan = buildAutoSkillActivationPlan({
+    skills: [first, second],
+    text: '请分析并整理这些材料'
+  })
+
+  assert.deepEqual(plan.picked, [])
+})
+
+test('global Skill metadata catalog includes unselected skills without loading their body', () => {
+  const selected = makeBuiltinSkill({
+    _id: 'skill-selected',
+    name: 'Selected Skill',
+    description: 'Already selected'
+  })
+  const available = makeBuiltinSkill({
+    _id: 'skill-available',
+    name: 'Available Skill',
+    description: 'Use for release verification',
+    content: 'PRIVATE FULL BODY'
+  })
+
+  const prompt = buildSkillsPromptText({
+    selectedSkills: [selected],
+    availableSkills: [selected, available],
+    loadedSkillIds: new Set()
+  })
+
+  assert.match(prompt, /Available Skill catalog/)
+  assert.match(prompt, /skill-available/)
+  assert.match(prompt, /Use for release verification/)
+  assert.doesNotMatch(prompt, /PRIVATE FULL BODY/)
+})
+
+test('Skill tool bundle exposes global discovery and activation before a Skill is selected', () => {
+  const available = makeBuiltinSkill({
+    _id: 'skill-available',
+    builtin: false,
+    sourceType: 'directory',
+    nativeActions: []
+  })
+  const bundle = buildSkillToolsBundle({
+    selectedSkills: [],
+    availableSkills: [available],
+    agentSkillIds: []
+  })
+
+  assert.deepEqual(
+    bundle.tools.map((tool) => tool.function.name),
+    ['use_skill', 'use_skills', 'read_skill_file', 'skill_discover']
+  )
+})
+
+test('unsafe trigger regex is ignored while safe regex remains usable', () => {
+  const unsafe = makeBuiltinSkill({
+    _id: 'skill-unsafe',
+    triggers: { regex: ['(a+)+$'] }
+  })
+  const safe = makeBuiltinSkill({
+    _id: 'skill-safe',
+    triggers: { regex: ['release-[0-9]+'] }
+  })
+
+  assert.deepEqual(
+    pickSkillsByTriggers([unsafe], `${'a'.repeat(500)}!`, { minimumConfidence: 0.1 }),
+    []
+  )
+  assert.deepEqual(
+    pickSkillsByTriggers([safe], 'check release-42', { minimumConfidence: 0.9 }).map((item) => item.id),
+    ['skill-safe']
+  )
 })

@@ -109,7 +109,7 @@ export function shouldClearBasePromptSelectionImmediately(currentState = {}, par
 
 export const AGENT_SKILL_LAZY_LOAD_GUIDANCE_LINES = Object.freeze([
   '## 技能（按需加载）',
-  '- 以下为智能体预设技能，默认只提供名称、描述和文件索引。',
+  '- 系统会列出已安装技能的精简元数据；完整规则、引用、脚本和 Action Schema 均按需加载。',
   '- 只有在你确实需要某个技能的完整规则时，才调用 `use_skill` 或 `use_skills`。',
   '- 标准目录 Skill 先用 `use_skill({"id":"..."})` 加载 `SKILL.md`。',
   '- 需要补充材料时，再用 `read_skill_file({"id":"...","path":"references/..."})` 或 `read_skill_file({"id":"...","path":"scripts/..."})` 按需读取文本文件。',
@@ -117,7 +117,7 @@ export const AGENT_SKILL_LAZY_LOAD_GUIDANCE_LINES = Object.freeze([
   '- `assets/` 只应在其中存放文本模板、SVG、HTML、CSS、JSON 等可读文本时再读取；二进制图片、字体、压缩包等资产不要用 `read_skill_file`。',
   '- 优先使用技能块展示的 id，不要传空对象，也不要猜不存在的技能。',
   '- 单个技能用：`use_skill({"id":"..."})`；多个技能再用：`use_skills({"ids":["...","..."]})`。',
-  '- `skill_discover` 可检索当前可用的目录 Skill 和内置 Skill。只知道任务意图时传 `search`；找到目录 Skill 后用 `use_skill` 加载正文。内置 Action Schema 不会全量注册，需要查看动作时传 `skill_id`，需要完整参数 Schema 时再传 `action`。',
+  '- `skill_discover` 可检索全部已安装且启用的目录 Skill 和内置 Skill。只知道任务意图时传 `search`；找到目录 Skill 后用 `use_skill` 加载正文。内置 Action Schema 不会全量注册，需要查看动作时传 `skill_id`，需要完整参数 Schema 时再传 `action`。',
   '- 同一轮中已加载的 Skill、已发现的 Action Schema 和已有能力索引应直接复用；除非状态变化、继续分页或结果不足，不要重复调用 `use_skill`、`use_skills` 或 `skill_discover`。',
   '- 调用内置动作前必须先加载对应 Skill，然后使用 `skill_call({"skill_id":"...","action":"...","args":{...}})`。不要猜 Action 名称或参数。',
   '- `skill_call` 失败时先根据错误修正参数或选择其他 Action，不要原样重试；同一根因连续失败后停止盲试并说明阻碍。',
@@ -144,7 +144,7 @@ export const COMPACT_MCP_TOOL_GUIDANCE_LINES = Object.freeze([
 export const INTERNAL_TOOL_SPECS = Object.freeze({
   useSkill: {
     description:
-      '激活一个当前已选择的智能体预设技能。只在系统提示词列出的技能范围内调用。必须优先传技能 id，不要传空对象。单个技能示例：{"id":"skill_xxx"}；如需多个技能，改用 use_skills。',
+      '选择并加载一个已安装技能，把它加入当前会话。只在系统提示词或 skill_discover 返回的技能范围内调用。必须优先传技能 id，不要传空对象。单个技能示例：{"id":"skill_xxx"}；如需多个技能，改用 use_skills。',
     parameters: {
       type: 'object',
       properties: {
@@ -159,7 +159,7 @@ export const INTERNAL_TOOL_SPECS = Object.freeze({
   },
   useSkills: {
     description:
-      '批量激活多个当前已选择的智能体预设技能。只在确实需要多个技能时使用；ids 必须是非空数组，示例：{"ids":["skill_a","skill_b"]}。如只需一个技能，优先 use_skill。',
+      '批量选择并加载多个已安装技能，把它们加入当前会话。只在确实需要多个技能时使用；ids 必须是非空数组，示例：{"ids":["skill_a","skill_b"]}。如只需一个技能，优先 use_skill。',
     parameters: {
       type: 'object',
       properties: {
@@ -224,7 +224,7 @@ export const INTERNAL_TOOL_SPECS = Object.freeze({
   },
   skillDiscover: {
     description:
-      '按需发现并检索当前会话可用的目录 Skill、内置 Skill 及其 Action。只知道任务意图时传 search，会结合名称、描述、触发词、脚本元数据和本地能力索引返回相关 Skill；目录 Skill 找到后用 use_skill 加载。查询内置 Action 时同时传 skill_id 和 action，可返回完整 inputSchema。不要把它用于外部 MCP。',
+      '按需发现并检索全部已安装且启用的目录 Skill、内置 Skill 及其 Action。只知道任务意图时传 search，会结合名称、描述、触发词、脚本元数据和本地能力索引返回相关 Skill；目录 Skill 找到后用 use_skill 加载。查询内置 Action 时同时传 skill_id 和 action，可返回完整 inputSchema。不要把它用于外部 MCP。',
     parameters: {
       type: 'object',
       properties: {

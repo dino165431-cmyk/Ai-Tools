@@ -51,6 +51,8 @@ import {
   buildAutoSkillActivationPlan,
   buildSkillToolsBundle,
   createBuiltinSkillActionCatalog,
+  DEFAULT_SKILL_ROUTING_MIN_CONFIDENCE,
+  DEFAULT_SKILL_ROUTING_MIN_MARGIN,
   discoverBuiltinSkillActions,
   resolveBuiltinSkillCall
 } from '@/utils/chatSkillTooling'
@@ -619,7 +621,8 @@ async function resolveExecutionProfile(task) {
   const capabilitySearchResult = isDefaultGeneralAgent
     ? await searchCapabilities({
         query: String(task?.content || ''),
-        limit: 18
+        limit: 18,
+        embeddingTimeoutMs: 600
       }).catch(() => null)
     : null
   const capabilityMatches = Array.isArray(capabilitySearchResult?.items)
@@ -632,8 +635,9 @@ async function resolveExecutionProfile(task) {
         selectedSkillIds: configuredSkillIds,
         agentSkillIds: agent.skills,
         retrievalMatches: capabilityMatches,
-        minimumScore: 2,
-        limit: 3
+        minimumConfidence: DEFAULT_SKILL_ROUTING_MIN_CONFIDENCE,
+        minimumMargin: DEFAULT_SKILL_ROUTING_MIN_MARGIN,
+        limit: 1
       }).picked.map((item) => item.id)
     : []
   const skillIds = unionStrings(configuredSkillIds, routedSkills)
@@ -654,8 +658,9 @@ async function resolveExecutionProfile(task) {
         text: String(task?.content || ''),
         retrievalMatches: capabilityMatches,
         retrievalCapabilityType: 'mcp',
-        minimumScore: 2,
-        limit: 3
+        minimumConfidence: DEFAULT_SKILL_ROUTING_MIN_CONFIDENCE,
+        minimumMargin: DEFAULT_SKILL_ROUTING_MIN_MARGIN,
+        limit: 1
       }).picked.map((item) => item.id)
     : []
   const manualMcpIds = unionStrings(agent.mcp, task?.mcpIds, routedMcpIds)

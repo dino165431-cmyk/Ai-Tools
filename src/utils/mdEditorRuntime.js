@@ -313,20 +313,28 @@ export async function ensureMarkdownPreviewRuntime() {
   if (!previewRuntimePromise) {
     previewRuntimePromise = (async () => {
       const configureMdEditor = await getConfigureMdEditor()
-      const [katexMod, mermaidMod, echartsMod] = await Promise.all([
+      const [katexMod, mermaidMod, echartsMod, highlightMod] = await Promise.all([
         import('katex'),
         import('mermaid'),
         import('echarts'),
+        import('highlight.js/lib/common'),
         import('md-editor-v3/lib/style.css'),
         import('katex/dist/katex.min.css')
       ])
       const echarts = resolveModuleDefault(echartsMod)
+      const highlight = resolveModuleDefault(highlightMod)
 
       registerEchartsThemes(echarts)
+      highlight?.configure?.({
+        ignoreUnescapedHTML: true
+      })
 
       if (!previewConfigured) {
         configureMdEditor({
           editorExtensions: {
+            highlight: {
+              instance: highlight
+            },
             katex: {
               instance: resolveModuleDefault(katexMod)
             },

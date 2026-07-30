@@ -21,6 +21,11 @@ const HYBRID_SEARCH_MIN_SEMANTIC_SIMILARITY = 0.38
 const HYBRID_SEARCH_SEMANTIC_BOOST = 120
 const EMBEDDING_FAILURE_LOG_WINDOW_MS = 60 * 1000
 const MAX_EMBEDDING_FAILURE_LOG_CACHE_SIZE = 100
+const DEFAULT_EMBEDDING_REQUEST_TIMEOUT_MS = 12_000
+const DEFAULT_EMBEDDING_QUERY_TIMEOUT_MS = 500
+const EMBEDDING_QUERY_CACHE_TTL_MS = 5 * 60_000
+const EMBEDDING_QUERY_FAILURE_CACHE_TTL_MS = 10_000
+const MAX_EMBEDDING_QUERY_CACHE_SIZE = 100
 const ENCRYPTED_NOTE_PAYLOAD_RE = /^\s*\{\s*"kind"\s*:\s*"ai-tools-note"\s*,\s*"v"\s*:\s*1\s*,\s*"content"\s*:\s*\{\s*"alg"\s*:\s*"AES-GCM"\s*,/i
 
 const INDEX_KINDS = Object.freeze({
@@ -80,6 +85,8 @@ let lastObservedCapabilityConfigSignature = ''
 let globalConfigMaintenanceListener = null
 let contentIndexInitialized = false
 const embeddingFailureLogTimes = new Map()
+const embeddingQueryCache = new Map()
+const embeddingQueryInFlight = new Map()
 
 function toPosixPath(value) {
   return String(value || '').replace(/\\/g, '/')
@@ -785,7 +792,29 @@ function buildEntryEmbeddingText(kind, metadata = {}, entry = {}) {
   return normalizeSearchText(body, MAX_INDEX_SEARCH_TEXT_LENGTH).slice(0, 3000)
 }
 
-async function requestEmbeddingVector(text, selection) {
+function normalizeEmbeddingTimeoutMs(value, fallback = DEFAULT_EMBEDDING_REQUEST_TIMEOUT_MS) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return fallback
+  return Math.max(50, Math.min(60_000, Math.floor(numeric)))
+}
+
+function pruneEmbeddingQueryCache(now = Date.now()) {
+  for (const [key, cached] of embeddingQueryCache) {
+    if (!cached || Number(cached.expiresAt || 0) <= now) embeddingQueryCache.delete(key)
+  }
+  while (embeddingQueryCache.size > MAX_EMBEDDING_QUERY_CACHE_SIZE) {
+    const oldestKey = embeddingQueryCache.keys().next().value
+    if (oldestKey === undefined) break
+    embeddingQueryCache.delete(oldestKey)
+  }
+}
+
+function clearEmbeddingQueryCache() {
+  embeddingQueryCache.clear()
+  embeddingQueryInFlight.clear()
+}
+
+async function requestEmbeddingVector(text, selection, options = {}) {
   const provider = getProviderInfo(selection?.providerId)
   const model = String(selection?.model || '').trim()
   const baseUrl = String(provider?.baseurl || '').trim()
@@ -793,76 +822,136 @@ async function requestEmbeddingVector(text, selection) {
   if (!baseUrl || !apiKey || !model) return []
   if (provider?.builtin || String(provider?.providerType || '').trim() === 'utools-ai') return []
 
+  const inputText = String(text || '')
+  const cacheEnabled = options?.cache === true
+  const cacheKey = cacheEnabled
+    ? [
+        String(selection?.providerId || ''),
+        model,
+        baseUrl.replace(/\/+$/, ''),
+        inputText
+      ].join('\u0000')
+    : ''
+  const now = Date.now()
+  if (cacheEnabled) {
+    pruneEmbeddingQueryCache(now)
+    const cached = embeddingQueryCache.get(cacheKey)
+    if (cached && Number(cached.expiresAt || 0) > now) return [...cached.vector]
+    if (embeddingQueryInFlight.has(cacheKey)) return embeddingQueryInFlight.get(cacheKey)
+  }
+
   const candidates = [`${baseUrl.replace(/\/+$/, '')}/embeddings`]
   if (!/\/v1$/i.test(baseUrl)) candidates.push(`${baseUrl.replace(/\/+$/, '')}/v1/embeddings`)
 
-  let lastError = null
-  let lastFailedUrl = candidates[candidates.length - 1] || baseUrl
-  for (const url of candidates) {
+  const timeoutMs = normalizeEmbeddingTimeoutMs(
+    options?.timeoutMs,
+    options?.cache === true ? DEFAULT_EMBEDDING_QUERY_TIMEOUT_MS : DEFAULT_EMBEDDING_REQUEST_TIMEOUT_MS
+  )
+  const pending = (async () => {
+    let lastError = null
+    let lastFailedUrl = candidates[candidates.length - 1] || baseUrl
+    const controller = typeof AbortController === 'function' ? new AbortController() : null
+    let timeoutId = null
+    const timeoutPromise = new Promise((_, reject) => {
+      timeoutId = setTimeout(() => {
+        controller?.abort()
+        const error = new Error(`Embedding request timed out after ${timeoutMs}ms`)
+        error.name = 'TimeoutError'
+        reject(error)
+      }, timeoutMs)
+    })
+
     try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-          model,
-          input: text
-        })
-      })
-
-      if (response.status === 404 && url !== candidates[candidates.length - 1]) {
-        continue
-      }
-
-      if (!response.ok) {
-        const body = await response.text().catch(() => '')
-        throw new Error(buildEmbeddingHttpErrorSummary(response, body))
-      }
-
-      let json = null
-      try {
-        json = await response.json()
-      } catch {
-        throw new Error('Invalid JSON response')
-      }
-      const usage = json?.usage || json?.usageMetadata || json?.usage_metadata
-      if (usage && typeof usage === 'object') {
+      for (const url of candidates) {
         try {
-          const usageStatistics = require('./usage-statistics')
-          await usageStatistics.recordUsage({
-            usage,
-            providerId: String(selection?.providerId || ''),
-            model,
-            endpoint: 'embeddings',
-            purpose: 'content-index-embedding'
+          const fetchPromise = fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${apiKey}`
+            },
+            body: JSON.stringify({
+              model,
+              input: inputText
+            }),
+            ...(controller ? { signal: controller.signal } : {})
           })
-        } catch (error) {
-          console.warn('[content-index] failed to record embedding usage:', error?.message || String(error))
+          const response = await Promise.race([fetchPromise, timeoutPromise])
+
+          if (response.status === 404 && url !== candidates[candidates.length - 1]) {
+            continue
+          }
+
+          if (!response.ok) {
+            const body = await response.text().catch(() => '')
+            throw new Error(buildEmbeddingHttpErrorSummary(response, body))
+          }
+
+          let json = null
+          try {
+            json = await response.json()
+          } catch {
+            throw new Error('Invalid JSON response')
+          }
+          const usage = json?.usage || json?.usageMetadata || json?.usage_metadata
+          if (usage && typeof usage === 'object') {
+            try {
+              const usageStatistics = require('./usage-statistics')
+              await usageStatistics.recordUsage({
+                usage,
+                providerId: String(selection?.providerId || ''),
+                model,
+                endpoint: 'embeddings',
+                purpose: 'content-index-embedding'
+              })
+            } catch (error) {
+              console.warn('[content-index] failed to record embedding usage:', error?.message || String(error))
+            }
+          }
+
+          return Array.isArray(json?.data?.[0]?.embedding)
+            ? json.data[0].embedding.map((value) => Number(value) || 0)
+            : []
+        } catch (err) {
+          lastError = err
+          lastFailedUrl = url
+          if (err?.name === 'TimeoutError' || err?.name === 'AbortError') break
+          if (url !== candidates[candidates.length - 1]) continue
+          break
         }
       }
-
-      return Array.isArray(json?.data?.[0]?.embedding)
-        ? json.data[0].embedding.map((value) => Number(value) || 0)
-        : []
-    } catch (err) {
-      lastError = err
-      lastFailedUrl = url
-      if (url !== candidates[candidates.length - 1]) continue
-      break
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId)
     }
-  }
 
-  if (lastError) {
-    logEmbeddingRequestFailure({
-      provider,
-      model,
-      url: lastFailedUrl,
-      error: lastError
-    })
+    if (lastError) {
+      logEmbeddingRequestFailure({
+        provider,
+        model,
+        url: lastFailedUrl,
+        error: lastError
+      })
+    }
+    return []
+  })()
+
+  if (cacheEnabled) embeddingQueryInFlight.set(cacheKey, pending)
+  try {
+    const vector = await pending
+    if (cacheEnabled) {
+      embeddingQueryCache.delete(cacheKey)
+      embeddingQueryCache.set(cacheKey, {
+        vector: [...vector],
+        expiresAt: Date.now() + (
+          vector.length ? EMBEDDING_QUERY_CACHE_TTL_MS : EMBEDDING_QUERY_FAILURE_CACHE_TTL_MS
+        )
+      })
+      pruneEmbeddingQueryCache()
+    }
+    return vector
+  } finally {
+    if (cacheEnabled) embeddingQueryInFlight.delete(cacheKey)
   }
-  return []
 }
 
 function compareByPath(a, b) {
@@ -995,6 +1084,7 @@ function init() {
 function dispose() {
   contentIndexInitialized = false
   clearAllMaintenanceTimers()
+  clearEmbeddingQueryCache()
   lastObservedContentSearchConfigSignature = ''
   lastObservedAgentConfigSignature = ''
   lastObservedCapabilityConfigSignature = ''
@@ -1883,17 +1973,34 @@ async function searchIndex(kind, options = {}) {
   const { index, searchConfig } = await readIndexForQuery(kindConfig.kind, options)
   const hybridEnabled = isHybridSearchEnabled(searchConfig)
   const queryEmbedding = hybridEnabled
-    ? await requestEmbeddingVector(query, searchConfig.embedding)
+    ? await requestEmbeddingVector(query, searchConfig.embedding, {
+        cache: true,
+        timeoutMs: options?.embeddingTimeoutMs
+      })
     : []
   const hasEntryEmbeddings = Array.isArray(index?.entries) && index.entries.some((entry) => Array.isArray(entry?.embedding) && entry.embedding.length > 0)
   const semanticUsed = hybridEnabled && queryEmbedding.length > 0 && hasEntryEmbeddings
+  const capabilityType = kindConfig.kind === 'capability'
+    ? String(options?.capabilityType || '').trim()
+    : ''
   const filtered = filterEntriesByDir(index.entries, options?.dirPath)
-    .map((entry) => ({
-      ...entry,
-      score: semanticUsed
-        ? computeHybridSearchScore(entry, queryLower, tokens, queryEmbedding, options)
-        : computeSearchScore(entry, queryLower, tokens)
-    }))
+    .filter((entry) => !capabilityType || String(entry?.capabilityType || '').trim() === capabilityType)
+    .map((entry) => {
+      const keywordScore = computeSearchScore(entry, queryLower, tokens)
+      const entryEmbedding = Array.isArray(entry?.embedding) ? entry.embedding : []
+      const semanticSimilarity = semanticUsed && entryEmbedding.length
+        ? cosineSimilarity(entryEmbedding, queryEmbedding)
+        : 0
+      return {
+        ...entry,
+        score: semanticUsed
+          ? computeHybridSearchScore(entry, queryLower, tokens, queryEmbedding, options)
+          : keywordScore,
+        keywordScore,
+        semanticSimilarity,
+        searchMode: semanticUsed ? 'hybrid' : 'keyword'
+      }
+    })
     .filter((entry) => entry.score > 0)
     .sort((a, b) => {
       const scoreDiff = Number(b.score || 0) - Number(a.score || 0)
@@ -2226,7 +2333,9 @@ module.exports = {
     classifyIndexCacheFileName,
     cleanupIndexCacheFiles,
     ensureIndexCacheCleanup,
-    indexHasAnyEmbedding
+    indexHasAnyEmbedding,
+    clearEmbeddingQueryCache,
+    getEmbeddingQueryCacheSize: () => embeddingQueryCache.size
   }
 }
 

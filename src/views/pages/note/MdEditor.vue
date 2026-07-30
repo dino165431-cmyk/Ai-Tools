@@ -204,25 +204,6 @@ import {
   replaceEncryptedNoteContent
 } from '@/utils/noteEncryption';
 
-// 配置 highlight.js 实例，关闭未转义 HTML 的警告
-let hljsInstancePromise = null;
-
-function getHighlightJs() {
-  if (!hljsInstancePromise) {
-    hljsInstancePromise = Promise.all([
-      import('highlight.js'),
-      import('highlight.js/styles/github.css')
-    ]).then(([mod]) => {
-      const hljs = mod?.default || mod;
-      hljs.configure({
-        ignoreUnescapedHTML: true
-      });
-      return hljs;
-    });
-  }
-  return hljsInstancePromise;
-}
-
 const excludeToolbars = [
   'revoke', 'next', 'save', 'github', 'htmlPreview', 'pageFullscreen', 'fullscreen', 'preview', 'catalog'
 ];
@@ -2553,20 +2534,6 @@ const handleHtmlChanged = () => {
           cleanupPreviewDiagramObserver();
         }
 
-        const codeBlocks = Array.from(preview.querySelectorAll('pre code')).filter(
-          (block) => block.dataset.highlighted !== 'yes'
-        );
-        if (!codeBlocks.length) return;
-
-        runWhenIdle(async () => {
-          if (!isCurrentRender()) return;
-          const hljs = await getHighlightJs();
-          if (!isCurrentRender()) return;
-          processNodesInBatches(codeBlocks, (block) => {
-            if (!block.isConnected || block.dataset.highlighted === 'yes') return;
-            hljs.highlightElement(block);
-          }, 6, isCurrentRender, schedulePreviewCatalogMeasurement);
-        });
       });
     });
   }, 140);
@@ -3019,6 +2986,11 @@ onBeforeUnmount(() => {
 
 .editor-container :deep(.md-editor-preview) {
   padding: 10px 4px 28px;
+}
+
+.editor-container :deep(.md-editor-preview > *) {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 96px;
 }
 
 .editor-container :deep(.md-editor-preview img) {

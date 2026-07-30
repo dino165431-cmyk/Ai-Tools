@@ -3,6 +3,10 @@ import assert from 'node:assert/strict'
 
 import {
   CHAT_LONG_TEXT_ATTACHMENT_DISPLAY_TEXT,
+  MAX_ATTACHMENT_BATCH_BYTES,
+  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENT_FILE_BYTES,
+  MAX_ATTACHMENT_PREVIEW_BYTES,
   buildDisplayImagesFromReferenceAttachments,
   buildChatLongTextAttachmentName,
   getFileExt,
@@ -15,6 +19,13 @@ import {
   shouldWrapChatLongTextAsAttachment,
   truncateAttachmentContextForRequest
 } from '../src/utils/chatAttachmentUtils.js'
+
+test('chat attachment limits match the sandbox import boundary', () => {
+  assert.equal(MAX_ATTACHMENT_FILE_BYTES, 50 * 1024 * 1024)
+  assert.equal(MAX_ATTACHMENT_BATCH_BYTES, 100 * 1024 * 1024)
+  assert.equal(MAX_ATTACHMENT_PREVIEW_BYTES, 15 * 1024 * 1024)
+  assert.equal(MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_BATCH_BYTES)
+})
 
 test('attachment detection handles extension, MIME fallback, and generated names', () => {
   assert.equal(getFileExt('report.FINAL.MD'), 'md')
@@ -99,4 +110,11 @@ test('long chat text attachment plan preserves existing attachments and enforces
   })
   assert.equal(rejected.wrapped, false)
   assert.match(rejected.error, /超过/)
+
+  const oversizedFile = resolveChatLongTextAttachmentPlan('界'.repeat(12_000), existing, {
+    maxFileBytes: 35_000,
+    maxBytes: 50_000
+  })
+  assert.equal(oversizedFile.wrapped, false)
+  assert.match(oversizedFile.error, /单文件上限/)
 })

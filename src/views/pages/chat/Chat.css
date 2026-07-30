@@ -1698,7 +1698,8 @@
   max-width: 100%;
   overflow-x: auto !important;
   overflow-y: hidden !important;
-  overscroll-behavior: contain;
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: auto;
   scrollbar-gutter: stable;
 }
 
@@ -1737,8 +1738,7 @@
 }
 
 .chat-item__content :deep(.md-editor-preview pre code) {
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: visible;
 }
 
 .chat-item__content :deep(.md-editor-preview table) {

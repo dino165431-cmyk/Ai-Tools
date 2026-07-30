@@ -1145,6 +1145,8 @@ import {
   buildAutoSkillActivationPlan,
   collectDerivedMcpIds,
   createBuiltinSkillActionCatalog,
+  DEFAULT_SKILL_ROUTING_MIN_CONFIDENCE,
+  DEFAULT_SKILL_ROUTING_MIN_MARGIN,
   listSelectedSkillsBrief as listSelectedSkillsBriefFromList,
   migrateLegacyDefaultAgentSkillState,
   resolveBuiltinSkillCall,
@@ -1342,7 +1344,9 @@ import {
 } from '@/utils/chatPerformance.js'
 import {
   ATTACH_ACCEPT,
-  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENT_BATCH_BYTES,
+  MAX_ATTACHMENT_FILE_BYTES,
+  MAX_ATTACHMENT_PREVIEW_BYTES,
   MAX_ATTACHMENT_TEXT_CHARS,
   MAX_IMAGE_BYTES,
   buildDisplayImagesFromReferenceAttachments as buildDisplayImagesFromReferences,
@@ -2643,8 +2647,8 @@ async function parseAttachment(att) {
   const file = att?.file
   if (!file) throw new Error('附件文件为空')
 
-  if (file.size > MAX_ATTACHMENT_BYTES) {
-    throw new Error(`Attachment too large (${Math.ceil(file.size / 1024 / 1024)}MB). Limit: ${Math.ceil(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB`)
+  if (file.size > MAX_ATTACHMENT_FILE_BYTES) {
+    throw new Error(`附件过大（${Math.ceil(file.size / 1024 / 1024)}MB），单文件上限为 ${Math.ceil(MAX_ATTACHMENT_FILE_BYTES / 1024 / 1024)}MB`)
   }
 
   const name = String(att.name || file.name || 'unnamed')
@@ -2669,6 +2673,10 @@ async function parseAttachment(att) {
       metaLine: imageSummary.metaLine,
       svgTextPreview: imageSummary.svgTextPreview
     }
+  }
+
+  if (file.size > MAX_ATTACHMENT_PREVIEW_BYTES) {
+    return { kind: 'file', name, ext, mime, text: '' }
   }
 
   if (isDirectTextAttachmentExtension(ext) || (!ext && isTextAttachmentMime(mime))) {
@@ -2778,9 +2786,15 @@ function appendPendingFiles(files, options = {}) {
   if (!list.length) return 0
 
   const current = Array.isArray(pendingAttachments.value) ? pendingAttachments.value : []
+  const oversizedFile = list.find((file) => Number(file?.size || 0) > MAX_ATTACHMENT_FILE_BYTES)
+  if (oversizedFile) {
+    message.warning(`附件“${oversizedFile.name || '未命名文件'}”超过单文件上限（${Math.ceil(MAX_ATTACHMENT_FILE_BYTES / 1024 / 1024)}MB）`)
+    return 0
+  }
+
   const totalBytes = current.reduce((sum, a) => sum + Number(a?.size || 0), 0) + list.reduce((sum, f) => sum + Number(f?.size || 0), 0)
-  if (totalBytes > MAX_ATTACHMENT_BYTES) {
-    message.warning(`附件总大小超过上限（${Math.ceil(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB），请减少文件数量或大小`)
+  if (totalBytes > MAX_ATTACHMENT_BATCH_BYTES) {
+    message.warning(`附件总大小超过单次上限（${Math.ceil(MAX_ATTACHMENT_BATCH_BYTES / 1024 / 1024)}MB），请减少文件数量或大小`)
     return 0
   }
 
@@ -2858,38 +2872,6 @@ async function handleFileInputChange(e) {
   if (!files.length) return
 
   appendPendingFiles(files)
-  return
-
-  const current = Array.isArray(pendingAttachments.value) ? pendingAttachments.value : []
-  const totalBytes = current.reduce((sum, a) => sum + Number(a?.size || 0), 0) + files.reduce((sum, f) => sum + Number(f?.size || 0), 0)
-  if (totalBytes > MAX_ATTACHMENT_BYTES) {
-    message.warning(`Attachments exceed the total limit (${Math.ceil(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB). Reduce file count or size.`)
-    return
-  }
-
-  const added = files.map((file) =>
-    reactive({
-      id: newId(),
-      name: file?.name || 'unnamed',
-      ext: getFileExt(file?.name),
-      mime: file?.type || '',
-      size: file?.size || 0,
-      file,
-      kind: '',
-      text: '',
-      dataUrl: '',
-      width: 0,
-      height: 0,
-      metaLine: '',
-      svgTextPreview: '',
-      status: 'pending', // pending | processing | ready | error
-      error: ''
-    })
-  )
-  pendingAttachments.value = [...current, ...added]
-
-  // 异步解析，避免阻塞 UI
-  added.forEach((a) => ensureAttachmentParsed(a))
 }
 
 const scrollbarRef = ref(null)
@@ -3469,23 +3451,32 @@ async function autoActivateAgentSkillsFromText(textRaw) {
   const raw = String(textRaw || '').trim()
   if (!raw) return []
 
-  const capabilitySearchResult = await searchCapabilities({
-    query: raw,
-    limit: 12
-  }).catch(() => null)
-  const plan = buildAutoSkillActivationPlan({
+  const routingInput = {
     skills: skills.value,
     text: raw,
     selectedSkillIds: selectedSkillIds.value,
     agentSkillIds: agentSkillIds.value,
     activatedSkillIds: activatedAgentSkillIds.value,
     loadedSkillIds: loadedSkillIdSet.value,
-    retrievalMatches: Array.isArray(capabilitySearchResult?.items)
-      ? capabilitySearchResult.items
-      : [],
-    minimumScore: 2,
-    limit: 2
-  })
+    minimumConfidence: DEFAULT_SKILL_ROUTING_MIN_CONFIDENCE,
+    minimumMargin: DEFAULT_SKILL_ROUTING_MIN_MARGIN,
+    limit: 1
+  }
+  let plan = buildAutoSkillActivationPlan(routingInput)
+  if (!plan.picked.length) {
+    const capabilitySearchResult = await searchCapabilities({
+      query: raw,
+      limit: 12,
+      capabilityType: 'skill',
+      embeddingTimeoutMs: 500
+    }).catch(() => null)
+    plan = buildAutoSkillActivationPlan({
+      ...routingInput,
+      retrievalMatches: Array.isArray(capabilitySearchResult?.items)
+        ? capabilitySearchResult.items
+        : []
+    })
+  }
   const { candidates, picked } = plan
   if (!picked.length) return []
 
@@ -3742,6 +3733,7 @@ const agentPromptText = computed(() => {
 const skillsPromptText = computed(() => {
   return buildProgressiveSkillsPromptText({
     selectedSkills: runtimeSkillObjects.value,
+    availableSkills: skills.value,
     agentSkillIds: runtimeAgentSkillIds.value,
     loadedSkillIds: loadedSkillIdSet.value,
     mcpServers: mcpServers.value,
@@ -13827,35 +13819,33 @@ async function stageChatAttachmentsInSandbox(attachments, sessionTarget = null) 
   )
   if (!unstagedAttachments.length) return sandboxWorkspaceId
 
-  let imported
-  try {
-    imported = await importFilesToSandbox(
-      sandboxWorkspaceId,
-      await Promise.all(unstagedAttachments.map(async (attachment) => ({
+  let importedWorkspaceId = sandboxWorkspaceId
+  for (const attachment of unstagedAttachments) {
+    let imported
+    try {
+      // Import one file at a time so a large selection is not duplicated in
+      // renderer memory before being written to disk.
+      imported = await importFilesToSandbox(sandboxWorkspaceId, [{
         name: attachment.name || attachment.file?.name || 'attachment',
         data: new Uint8Array(await attachment.file.arrayBuffer())
-      })))
-    )
-  } catch (error) {
-    throw new Error(`附件写入聊天沙盒失败：${error?.message || String(error)}`)
-  }
+      }])
+    } catch (error) {
+      throw new Error(`附件写入聊天沙盒失败：${error?.message || String(error)}`)
+    }
 
-  const entries = Array.isArray(imported?.imported) ? imported.imported : []
-  if (entries.length !== unstagedAttachments.length || entries.some((entry) => !String(entry?.path || '').trim())) {
-    throw new Error('附件写入聊天沙盒不完整，请重试')
-  }
+    const entry = Array.isArray(imported?.imported) ? imported.imported[0] : null
+    if (!String(entry?.path || '').trim()) {
+      throw new Error('附件写入聊天沙盒不完整，请重试')
+    }
 
-  unstagedAttachments.forEach((attachment, index) => {
-    const entry = entries[index]
-    attachment.sandboxWorkspaceId = imported.workspaceId || sandboxWorkspaceId
+    importedWorkspaceId = imported.workspaceId || importedWorkspaceId
+    attachment.sandboxWorkspaceId = importedWorkspaceId
     attachment.sandboxPath = entry.path
     attachment.sandboxDataPath = entry.dataPath || ''
-  })
-  // File objects are not serializable. Release them only after every import is verified.
-  unstagedAttachments.forEach((attachment) => {
+    // File objects are not serializable and may retain a large in-memory blob.
     attachment.file = null
-  })
-  return imported.workspaceId || sandboxWorkspaceId
+  }
+  return importedWorkspaceId
 }
 
 async function ensureAttachmentSandboxSkillAvailable(attachments = []) {
@@ -16277,6 +16267,7 @@ async function buildToolsBundle(options = {}) {
 
   const skillBundle = buildSkillToolsBundle({
     selectedSkills: runtimeSkillObjects.value,
+    availableSkills: skills.value,
     agentSkillIds: runtimeAgentSkillIds.value,
     internalToolSpecs: INTERNAL_TOOL_SPECS
   })
@@ -16463,8 +16454,46 @@ function resolveSelectedSkillTarget({ idCandidate = '', nameCandidate = '' } = {
   })
 }
 
+function resolveInstalledSkillTarget({ idCandidate = '', nameCandidate = '' } = {}) {
+  return resolveSelectedSkillTargetFromList(skills.value, {
+    idCandidate,
+    nameCandidate
+  })
+}
+
 function listSelectedSkillsBrief(limit = 30) {
   return listSelectedSkillsBriefFromList(runtimeSkillObjects.value, limit)
+}
+
+function listInstalledSkillsBrief(limit = 30) {
+  return listSelectedSkillsBriefFromList(skills.value, limit)
+}
+
+function selectSkillForSession(skillId) {
+  const id = String(skillId || '').trim()
+  if (!id || !resolveInstalledSkillTarget({ idCandidate: id })) {
+    return { ok: false, changed: false }
+  }
+
+  markSkillActivationPersistent([id])
+  const selected = normalizeStringList(selectedSkillIds.value)
+  const agent = normalizeStringList(agentSkillIds.value)
+  const activated = normalizeStringList(activatedAgentSkillIds.value)
+  const addedSelected = !selected.includes(id)
+  const addedAgent = !agent.includes(id)
+  const addedActivation = !activated.includes(id)
+
+  if (addedSelected) selectedSkillIds.value = [...selected, id]
+  if (addedAgent) agentSkillIds.value = [...agent, id]
+  if (addedActivation) activatedAgentSkillIds.value = [...activated, id]
+
+  return {
+    ok: true,
+    changed: addedSelected || addedAgent || addedActivation,
+    addedSelected,
+    addedAgent,
+    addedActivation
+  }
 }
 
 function normalizeSkillScriptPathCandidate(value) {
@@ -17141,6 +17170,7 @@ function getToolCallParallelExecutionKey(prepared = {}) {
 const executePreparedSkillTool = createPreparedSkillToolExecutor({
   activatedAgentSkillIds,
   agentSkillIdSet: runtimeAgentSkillIdSet,
+  availableSkillObjects: skills,
   buildToolExecutionResultSubMeta,
   buildWebToolSubMeta,
   builtinSkillActionCatalog,
@@ -17151,6 +17181,7 @@ const executePreparedSkillTool = createPreparedSkillToolExecutor({
   getLoadedSkillFilePathSet,
   getSkillMcpStatus,
   hasLoadedSkillMainContent,
+  listAvailableSkillsBrief: listInstalledSkillsBrief,
   listSelectedSkillsBrief,
   loadSkillMainContent,
   loadedSkillContentById,
@@ -17159,9 +17190,11 @@ const executePreparedSkillTool = createPreparedSkillToolExecutor({
   maybeScrollToBottomForRun,
   mcpServers,
   prepareBuiltinAgentToolCallArgs,
+  resolveAvailableSkillTarget: resolveInstalledSkillTarget,
   resolveSelectedSkillTarget,
   resolveSkillScriptTarget,
   searchCapabilities,
+  selectSkillForSession,
   selectedSkillObjects: runtimeSkillObjects
 })
 

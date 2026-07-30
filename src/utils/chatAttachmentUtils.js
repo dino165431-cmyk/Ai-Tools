@@ -5,7 +5,13 @@ import {
 } from './chatMediaGenerationParams.js'
 import { extractChatSandboxDescriptors } from './chatSandboxWorkspace.js'
 
-export const MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024
+// Keep renderer-side limits aligned with the sandbox import boundary. Files
+// above the preview limit are stored directly and read through sandbox tools.
+export const MAX_ATTACHMENT_FILE_BYTES = 50 * 1024 * 1024
+export const MAX_ATTACHMENT_BATCH_BYTES = 100 * 1024 * 1024
+export const MAX_ATTACHMENT_PREVIEW_BYTES = 15 * 1024 * 1024
+// Backward-compatible alias for callers that treat this as the total budget.
+export const MAX_ATTACHMENT_BYTES = MAX_ATTACHMENT_BATCH_BYTES
 // Keep current-turn text near the largest commonly available long-context models
 // (~1M tokens, approximated as 4.2 characters per token).
 export const MAX_ATTACHMENT_TEXT_CHARS = 4_200_000
@@ -204,6 +210,16 @@ export function resolveChatLongTextAttachmentPlan(text, attachments = [], option
 
   const byteLength = getUtf8TextByteLength(raw)
   const existingBytes = list.reduce((total, attachment) => total + Math.max(0, Number(attachment?.size) || 0), 0)
+  const maxFileBytes = Math.max(1, Number(options.maxFileBytes) || MAX_ATTACHMENT_FILE_BYTES)
+  if (byteLength > maxFileBytes) {
+    return {
+      wrapped: false,
+      text: raw,
+      attachments: list,
+      error: `长文本超过单文件上限（${Math.ceil(maxFileBytes / 1024 / 1024)}MB），无法自动包装为附件。`
+    }
+  }
+
   const maxBytes = Math.max(1, Number(options.maxBytes) || MAX_ATTACHMENT_BYTES)
   if (existingBytes + byteLength > maxBytes) {
     return {
