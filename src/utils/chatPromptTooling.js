@@ -118,12 +118,14 @@ export const AGENT_SKILL_LAZY_LOAD_GUIDANCE_LINES = Object.freeze([
   '- 优先使用技能块展示的 id，不要传空对象，也不要猜不存在的技能。',
   '- 单个技能用：`use_skill({"id":"..."})`；多个技能再用：`use_skills({"ids":["...","..."]})`。',
   '- `skill_discover` 可检索当前可用的目录 Skill 和内置 Skill。只知道任务意图时传 `search`；找到目录 Skill 后用 `use_skill` 加载正文。内置 Action Schema 不会全量注册，需要查看动作时传 `skill_id`，需要完整参数 Schema 时再传 `action`。',
+  '- 同一轮中已加载的 Skill、已发现的 Action Schema 和已有能力索引应直接复用；除非状态变化、继续分页或结果不足，不要重复调用 `use_skill`、`use_skills` 或 `skill_discover`。',
   '- 调用内置动作前必须先加载对应 Skill，然后使用 `skill_call({"skill_id":"...","action":"...","args":{...}})`。不要猜 Action 名称或参数。',
+  '- `skill_call` 失败时先根据错误修正参数或选择其他 Action，不要原样重试；同一根因连续失败后停止盲试并说明阻碍。',
   '- 外部 MCP 绑定仍会随 Skill 选择挂载；`use_skill` / `use_skills` 负责把技能正文加入上下文。'
 ])
 
 export const COMPACT_MCP_CATALOG_NOTE =
-  'tool_names is the tool-name list. tool_names_truncated=true means the list is partial, not exhaustive. tool_hints and pinned_tool_hints are hints only, not full schemas. Prefer the exact server_id and tool. Put real tool arguments in args. args may be an object, string, array, number, boolean, or null. For config_add_* tools pass the full object directly; for config_update_* tools pass {"id":"...","patch":{...}}. If the schema is unclear, tool_names may be incomplete, the tool looks executable (script/run/execute/exec), or a call just failed, use mcp_discover({server_id, tool}) first, then retry with mcp_call({server_id, tool, args}).'
+  'tool_names is the tool-name list. tool_names_truncated=true means the list is partial, not exhaustive. tool_hints and pinned_tool_hints are hints only, not full schemas. Prefer the exact server_id and tool. Put real tool arguments in args. args may be an object, string, array, number, boolean, or null. For config_add_* tools pass the full object directly; for config_update_* tools pass {"id":"...","patch":{...}}. If the schema is unclear, tool_names may be incomplete, or the tool looks executable (script/run/execute/exec), use mcp_discover({server_id, tool}) once, then reuse that schema. After a failed call, inspect the error and change the arguments or approach; do not repeat the same call unchanged.'
 
 export const COMPACT_MCP_TOOL_GUIDANCE_LINES = Object.freeze([
   '## MCP tools (compact mode)',
@@ -135,7 +137,8 @@ export const COMPACT_MCP_TOOL_GUIDANCE_LINES = Object.freeze([
   '- For config tools (`config_` prefix), call `config_list_*` first when the id is unknown; `config_add_*` should receive the full object directly, and `config_update_*` must receive {"id":"...","patch":{...}}.',
   '- If sensitive fields in the listing are shown as `***`, that is a redaction placeholder. Do not write `***` back into `apikey`, `env`, or `headers`.',
   '- Only call `mcp_discover` when you need to refresh the catalog, check for missing tools, or fetch the full inputSchema for one tool.',
-  '- When querying one tool schema, prefer `mcp_discover({"server_id":"...","tool":"..."})`.'
+  '- When querying one tool schema, prefer `mcp_discover({"server_id":"...","tool":"..."})`. Reuse the returned schema; do not discover the same unchanged tool repeatedly.',
+  '- After `mcp_call` fails, inspect the error and change the arguments, target, or approach before retrying. Never repeat the same failed call unchanged.'
 ])
 
 export const INTERNAL_TOOL_SPECS = Object.freeze({

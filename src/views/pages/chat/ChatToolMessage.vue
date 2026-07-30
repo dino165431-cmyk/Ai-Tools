@@ -234,10 +234,10 @@ import { computed, ref } from 'vue'
 import { NDropdown, NIcon, NImage, NImageGroup, useMessage } from 'naive-ui'
 import LazyMarkdownPreview from '@/components/LazyMarkdownPreview.vue'
 import { CHAT_CODE_AUTO_FOLD_THRESHOLD } from '@/utils/chatMarkdownPreview'
+import { collectSandboxFileCatalog } from '@/utils/chatSandboxFileLink.js'
 import { stripToolIdentityFromDisplayContent } from '@/utils/chatToolDisplay'
 import { ChevronUpOutline } from '@vicons/ionicons5'
 import ChatAgentRunFlow from './ChatAgentRunFlow.vue'
-import { openFile, saveFileAs, showItemInFolder } from '@/utils/fileOperations'
 import { copyTextToClipboard } from '@/utils/clipboard'
 
 const props = defineProps({
@@ -304,13 +304,7 @@ const sandboxToolPayload = computed(() => {
   return kind.startsWith('sandbox_') ? payload : null
 })
 const sandboxFiles = computed(() => {
-  const payload = sandboxToolPayload.value
-  const files = payload?.changedFiles || payload?.imported || payload?.files
-  return (Array.isArray(files) ? files : []).filter((file) =>
-    file &&
-    String(file.path || '').trim() &&
-    String(file.dataPath || '').trim()
-  )
+  return collectSandboxFileCatalog([props.msg])
 })
 const sandboxFileMenu = ref({
   show: false,
@@ -356,9 +350,9 @@ function showSandboxFileMenu(event, file) {
 
 async function openSandboxFile(file) {
   const dataPath = String(file?.dataPath || '').trim()
-  if (!dataPath) return
+  if (!dataPath && String(file?.workspaceKind || '').trim() !== 'host') return
   try {
-    await openFile(dataPath)
+    await props.actions.openChatWorkspaceResultFile(file)
   } catch (error) {
     message.error(`打开文件失败：${error?.message || String(error)}`)
   }
@@ -368,19 +362,19 @@ async function handleSandboxFileMenuSelect(key) {
   const file = sandboxFileMenu.value.file
   closeSandboxFileMenu()
   const dataPath = String(file?.dataPath || '').trim()
-  if (!dataPath) return
+  if (!dataPath && String(file?.workspaceKind || '').trim() !== 'host') return
 
   try {
     if (key === 'open') {
-      await openFile(dataPath)
+      await props.actions.openChatWorkspaceResultFile(file)
       return
     }
     if (key === 'show-in-folder') {
-      await showItemInFolder(dataPath)
+      await props.actions.showChatWorkspaceResultFile(file)
       return
     }
     if (key === 'save-as') {
-      const result = await saveFileAs(dataPath, {
+      const result = await props.actions.saveChatWorkspaceResultFile(file, {
         suggestedName: file?.name || 'sandbox-output'
       })
       if (!result?.canceled) message.success('文件已保存')

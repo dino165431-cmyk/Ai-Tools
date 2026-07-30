@@ -8,6 +8,7 @@ import {
   collectDerivedMcpIds,
   createBuiltinSkillActionCatalog,
   discoverBuiltinSkillActions,
+  migrateLegacyDefaultAgentSkillState,
   pickSkillsByTriggers,
   resolveBuiltinSkillCall
 } from '../src/utils/chatSkillTooling.js'
@@ -301,6 +302,34 @@ test('auto activation can transiently mount an implicit installed Skill outside 
   assert.deepEqual(plan.activatedSkillIds, [installed._id])
   assert.deepEqual(plan.addedSelectedSkillIds, [installed._id])
   assert.deepEqual(plan.addedAgentSkillIds, [installed._id])
+})
+
+test('legacy default Agent skill bindings are removed while manual selections are preserved', () => {
+  const legacySkillIds = [
+    'builtin_skill_notes',
+    'builtin_skill_config',
+    'builtin_skill_sessions',
+    'builtin_skill_agent_orchestration',
+    'builtin_skill_shell'
+  ]
+  const migrated = migrateLegacyDefaultAgentSkillState({
+    selectedSkillIds: [...legacySkillIds, 'skill-manual'],
+    agentSkillIds: legacySkillIds,
+    activatedSkillIds: ['builtin_skill_shell']
+  }, legacySkillIds)
+
+  assert.equal(migrated.migrated, true)
+  assert.deepEqual(migrated.selectedSkillIds, ['skill-manual'])
+  assert.deepEqual(migrated.agentSkillIds, [])
+  assert.deepEqual(migrated.activatedSkillIds, [])
+
+  const custom = migrateLegacyDefaultAgentSkillState({
+    selectedSkillIds: ['builtin_skill_notes'],
+    agentSkillIds: ['builtin_skill_notes'],
+    activatedSkillIds: []
+  }, legacySkillIds)
+  assert.equal(custom.migrated, false)
+  assert.deepEqual(custom.selectedSkillIds, ['builtin_skill_notes'])
 })
 
 test('auto activation accepts a persistent capability-index match', () => {

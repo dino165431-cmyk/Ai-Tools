@@ -116,12 +116,24 @@ export function openFile(relativePath) {
     return callFileOpsAsync('openFile', relativePath);
 }
 
+export function openWorkspaceFile(workspacePath, relativePath) {
+    return callFileOpsAsync('openWorkspaceFile', workspacePath, relativePath);
+}
+
 export function showItemInFolder(relativePath) {
     return callFileOpsAsync('showItemInFolder', relativePath);
 }
 
+export function showWorkspaceItemInFolder(workspacePath, relativePath) {
+    return callFileOpsAsync('showWorkspaceItemInFolder', workspacePath, relativePath);
+}
+
 export function saveFileAs(relativePath, options) {
     return callFileOpsAsync('saveFileAs', relativePath, options);
+}
+
+export function saveWorkspaceFileAs(workspacePath, relativePath, options) {
+    return callFileOpsAsync('saveWorkspaceFileAs', workspacePath, relativePath, options);
 }
 
 export function resolvePath(relativePath) {

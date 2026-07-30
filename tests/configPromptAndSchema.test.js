@@ -173,6 +173,20 @@ test('builtin Skills expose standard packages, icons, references, and native act
   await builtinSkills.closeBuiltinSkillRuntimes()
 })
 
+test('builtin default Agent starts without prebound Skills and repairs legacy bindings', () => {
+  resetConfigStorage()
+  const initial = globalConfig.getConfig()
+  const builtinAgentId = 'builtin_agent_notes'
+  const legacySkillIds = Object.values(builtinSkills.BUILTIN_SKILL_IDS)
+
+  assert.deepEqual(initial.agents[builtinAgentId].skills, [])
+
+  initial.agents[builtinAgentId].skills = legacySkillIds
+  storage.set('global-config', initial)
+  const repaired = globalConfig.ensureBuiltins()
+  assert.deepEqual(repaired.agents[builtinAgentId].skills, [])
+})
+
 test('legacy builtin MCP records and bindings are removed during config migration', () => {
   resetConfigStorage()
   const seeded = globalConfig.getConfig()
@@ -256,10 +270,73 @@ test('builtin assistant prompt mentions skill import priority and compatibility 
   assert.ok(prompt.content.includes('sessions_list_recent'))
   assert.ok(prompt.content.includes('sessions_search'))
   assert.ok(prompt.content.includes('默认通用 Agent 可按需使用全部已安装 Skill 和已启用 MCP'))
+  assert.ok(prompt.content.includes('不会预先挂载全部 Skill'))
+  assert.ok(prompt.content.includes('最多激活少量相关 Skill'))
   assert.ok(prompt.content.includes('config_read_prompt'))
   assert.ok(prompt.content.includes('bundle_id'))
   assert.ok(prompt.content.includes('Compress-Archive'))
   assert.ok(prompt.content.includes('临时 `.zip` 再重命名'))
+})
+
+test('default system prompt fallbacks stay synchronized and include execution guardrails', async () => {
+  resetConfigStorage()
+  const { DEFAULT_SYSTEM_PROMPT: rendererDefaultSystemPrompt } = await import('../src/utils/configListener.js')
+  const preloadDefaultSystemPrompt = globalConfig.getConfig().chatConfig.defaultSystemPrompt
+
+  assert.equal(rendererDefaultSystemPrompt, preloadDefaultSystemPrompt)
+  assert.ok(preloadDefaultSystemPrompt.includes('解释、审查、报告或诊断默认只读'))
+  assert.ok(preloadDefaultSystemPrompt.includes('采用最小充分调用'))
+  assert.ok(preloadDefaultSystemPrompt.includes('不要重复发现能力、列目录、搜索或读取同一目标'))
+  assert.ok(preloadDefaultSystemPrompt.includes('不要原样重试'))
+  assert.ok(preloadDefaultSystemPrompt.includes('不得声称文件已保存、命令已执行或测试已通过'))
+  assert.ok(preloadDefaultSystemPrompt.includes('达到用户目标后立即停止调用工具'))
+  assert.ok(preloadDefaultSystemPrompt.includes('不回显密钥、token、cookie、env、headers'))
+})
+
+test('legacy official default prompts upgrade without overwriting custom prompts', () => {
+  resetConfigStorage()
+  const stored = globalConfig.getConfig()
+  const legacyDefaultPrompt = [
+    '你是一个 AI 助手（AI Assistant）。',
+    '默认使用简体中文回复；仅在用户明确要求时切换到其他语言。',
+    '优先给出准确、可执行、可验证的结论与步骤。',
+    '不确定时先提出 1 到 2 个关键澄清问题，避免做高风险假设。',
+    '涉及代码、配置或命令时，优先给出可直接操作的步骤与示例。',
+    '遇到可能有风险或权限不足的操作时，先说明风险并征求确认。',
+    '不要编造信息；需要外部信息时，明确说明并给出获取或验证方式。'
+  ].join('\r\n')
+  stored.chatConfig.defaultSystemPrompt = legacyDefaultPrompt
+  storage.set('global-config', stored)
+
+  const upgraded = globalConfig.getConfig().chatConfig.defaultSystemPrompt
+  assert.notEqual(upgraded, legacyDefaultPrompt)
+  assert.ok(upgraded.includes('执行：'))
+  assert.ok(upgraded.includes('不要原样重试'))
+
+  const customPrompt = '这是用户自定义的系统提示词，不应被迁移覆盖。'
+  const customStored = storage.get('global-config') || {}
+  customStored.chatConfig.defaultSystemPrompt = customPrompt
+  storage.set('global-config', customStored)
+  assert.equal(globalConfig.getConfig().chatConfig.defaultSystemPrompt, customPrompt)
+})
+
+test('builtin assistant prompt prevents redundant discovery, blind retries, and invented file links', () => {
+  resetConfigStorage()
+  const prompt = globalConfig.getConfig().prompts.builtin_prompt_notes
+
+  assert.ok(prompt.content.includes('执行稳定性（高优先级）'))
+  assert.ok(prompt.content.includes('不要反复查看全部可用能力'))
+  assert.ok(prompt.content.includes('不要原样重复失败调用'))
+  assert.ok(prompt.content.includes('同一根因连续失败 2 次后停止盲试'))
+  assert.ok(prompt.content.includes('只有 action 明确返回成功'))
+  assert.ok(prompt.content.includes('达到用户目标后立即停止工具调用'))
+  assert.ok(prompt.content.includes('只有 action 实际返回 `downloadHref` 时'))
+  assert.ok(prompt.content.includes('本机工作区文件没有沙盒下载链接'))
+  assert.ok(prompt.content.includes('不要自行拼接或猜测 `sandbox-file://`'))
+  assert.ok(prompt.content.includes('附件、临时脚本、中间产物和默认生成结果都使用 `workspace_scope: sandbox`'))
+  assert.ok(prompt.content.includes('不要自动改到那里执行'))
+  assert.ok(prompt.content.includes('`workspace_scope: all` 同时检索沙盒和本机工作区'))
+  assert.equal(prompt.content.includes('能用工具就用工具'), false)
 })
 
 test('builtin notes and sessions skills prefer lightweight discovery tools first', () => {

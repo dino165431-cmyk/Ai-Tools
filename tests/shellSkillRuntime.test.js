@@ -45,8 +45,17 @@ test('shell Skill runtime exposes explicit sandbox lifecycle actions', () => {
     ]
   )
   const runAction = createShellSkillRuntime.ACTIONS.find((action) => action.name === 'sandbox_run')
+  const listAction = createShellSkillRuntime.ACTIONS.find((action) => action.name === 'sandbox_list')
   assert.ok(runAction.inputSchema.properties.workspace_id)
   assert.deepEqual(runAction.inputSchema.properties.shell.enum, ['auto', 'powershell', 'bash'])
+  assert.deepEqual(
+    runAction.inputSchema.properties.workspace_scope.enum,
+    ['sandbox', 'host']
+  )
+  assert.deepEqual(
+    listAction.inputSchema.properties.workspace_scope.enum,
+    ['sandbox', 'host', 'all']
+  )
   assert.match(runAction.description, /not an OS-level process sandbox/i)
 })
 
@@ -125,7 +134,8 @@ test('shell Skill runtime resolves an explicitly selected host workspace and rel
   const resolved = await createShellSkillRuntime._test.resolveWorkingDirectory(
     'nested',
     'host-workspace-test',
-    hostRoot
+    hostRoot,
+    'host'
   )
   assert.equal(resolved.workspaceKind, 'host')
   assert.equal(resolved.workspacePath, fs.realpathSync(hostRoot))
@@ -135,7 +145,8 @@ test('shell Skill runtime resolves an explicitly selected host workspace and rel
     createShellSkillRuntime._test.resolveWorkingDirectory(
       '../outside',
       'host-workspace-test',
-      hostRoot
+      hostRoot,
+      'host'
     ),
     /离开当前工作区/
   )
@@ -206,6 +217,7 @@ test('sandbox_run executes in a user-selected host workspace without scanning th
   const runtime = createShellSkillRuntime()
   const result = await runtime.runAction('sandbox_run', {
     workspace_id: 'host-run-test',
+    workspace_scope: 'host',
     __host_workspace_path: hostRoot,
     command: "Set-Content -Path result.txt -Value 'ok' -Encoding UTF8; Write-Output '完成'"
   })
@@ -242,6 +254,7 @@ test('structured workspace file actions accept source text without shell boundar
     'URL: https://example.com/docs'
   ].join('\n')
   const written = await runtime.runAction('sandbox_write_file', {
+    workspace_scope: 'host',
     __host_workspace_path: hostRoot,
     path: 'docs/README.md',
     content
@@ -250,17 +263,89 @@ test('structured workspace file actions accept source text without shell boundar
   assert.equal(written.changedFiles[0].path, 'docs/README.md')
 
   const read = await runtime.runAction('sandbox_read_file', {
+    workspace_scope: 'host',
     __host_workspace_path: hostRoot,
     path: 'docs/README.md'
   })
   assert.equal(read.content, content)
 
+  const utf16Text = '中文日志\nsecond line'
+  fs.writeFileSync(
+    path.join(hostRoot, 'docs', 'utf16.log'),
+    Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(utf16Text, 'utf16le')])
+  )
+  const utf16Read = await runtime.runAction('sandbox_read_file', {
+    workspace_scope: 'host',
+    __host_workspace_path: hostRoot,
+    path: 'docs/utf16.log'
+  })
+  assert.equal(utf16Read.content, utf16Text)
+  assert.doesNotMatch(utf16Read.content, /\uFFFD|\u0000/)
+
   const listed = await runtime.runAction('sandbox_list', {
+    workspace_scope: 'host',
     __host_workspace_path: hostRoot,
     path: 'docs'
   })
   assert.equal(listed.workspaceKind, 'host')
-  assert.deepEqual(listed.files.map((file) => file.path), ['docs/README.md'])
+  assert.deepEqual(listed.files.map((file) => file.path), ['docs/README.md', 'docs/utf16.log'])
+})
+
+test('chat sandbox remains the default while all-scope listing searches sandbox and host', async (t) => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-shell-dual-data-'))
+  const hostRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-shell-dual-host-'))
+  const originalGetDataStorageRoot = globalConfig.getDataStorageRoot
+  globalConfig.getDataStorageRoot = () => tempRoot
+  t.after(() => {
+    globalConfig.getDataStorageRoot = originalGetDataStorageRoot
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+    fs.rmSync(hostRoot, { recursive: true, force: true })
+  })
+
+  const runtime = createShellSkillRuntime()
+  const workspaceId = 'chat-dual-workspace-test'
+  const written = await runtime.runAction('sandbox_write_file', {
+    workspace_id: workspaceId,
+    __host_workspace_path: hostRoot,
+    path: 'inbox/attachment.txt',
+    content: 'sandbox attachment'
+  })
+  assert.equal(written.workspaceKind, 'sandbox')
+  assert.equal(
+    written.file.downloadHref,
+    `sandbox-file://${workspaceId}/inbox/attachment.txt`
+  )
+  assert.equal(fs.existsSync(path.join(hostRoot, 'inbox', 'attachment.txt')), false)
+
+  const read = await runtime.runAction('sandbox_read_file', {
+    workspace_id: workspaceId,
+    __host_workspace_path: hostRoot,
+    path: 'inbox/attachment.txt'
+  })
+  assert.equal(read.workspaceKind, 'sandbox')
+  assert.equal(read.content, 'sandbox attachment')
+
+  fs.writeFileSync(path.join(hostRoot, 'host-source.txt'), 'host source')
+  const listed = await runtime.runAction('sandbox_list', {
+    workspace_id: workspaceId,
+    workspace_scope: 'all',
+    __host_workspace_path: hostRoot
+  })
+  assert.equal(listed.workspaceKind, 'multiple')
+  assert.deepEqual(
+    new Set(listed.workspaces.map((workspace) => workspace.workspaceKind)),
+    new Set(['sandbox', 'host'])
+  )
+  assert.ok(listed.files.some((file) =>
+    file.path === 'inbox/attachment.txt' &&
+    file.workspaceKind === 'sandbox' &&
+    file.workspaceId === workspaceId
+  ))
+  assert.ok(listed.files.some((file) =>
+    file.path === 'host-source.txt' &&
+    file.workspaceKind === 'host' &&
+    file.workspacePath === fs.realpathSync(hostRoot)
+  ))
 })
 
 test('built-in Skill registry ignores model-supplied host paths and accepts only host context', {
@@ -294,6 +379,7 @@ test('built-in Skill registry ignores model-supplied host paths and accepts only
     'sandbox_run',
     {
       workspace_id: 'registry-host-test',
+      workspace_scope: 'host',
       command: "Set-Content -Path authorized.txt -Value 'yes' -Encoding UTF8"
     },
     { hostWorkspacePath: hostRoot }

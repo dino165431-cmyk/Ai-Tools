@@ -247,6 +247,9 @@ test('guidance text includes concrete skill and mcp calling rules', () => {
   assert.match(skillGuidance, /run_skill_script/)
   assert.match(skillGuidance, /skill_discover/)
   assert.match(skillGuidance, /skill_call/)
+  assert.match(skillGuidance, /已有能力索引应直接复用/)
+  assert.match(skillGuidance, /不要重复调用 `use_skill`、`use_skills` 或 `skill_discover`/)
+  assert.match(skillGuidance, /不要原样重试/)
 
   assert.match(mcpGuidance, /mcp_call\(\{"server_id":"\.\.\.","tool":"\.\.\.","args":\{...\}\}\)/)
   assert.match(mcpGuidance, /mcp_discover\(\{"server_id":"\.\.\.","tool":"\.\.\."\}\)/)
@@ -255,11 +258,14 @@ test('guidance text includes concrete skill and mcp calling rules', () => {
   assert.match(mcpGuidance, /script/)
   assert.match(mcpGuidance, /config_add_\*/)
   assert.match(mcpGuidance, /\{"id":"\.\.\.","patch":\{...\}\}/)
+  assert.match(mcpGuidance, /Reuse the returned schema/)
+  assert.match(mcpGuidance, /Never repeat the same failed call unchanged/)
   assert.match(COMPACT_MCP_CATALOG_NOTE, /tool_names_truncated=true/)
   assert.match(COMPACT_MCP_CATALOG_NOTE, /pinned_tool_hints/)
   assert.match(COMPACT_MCP_CATALOG_NOTE, /args/)
   assert.match(COMPACT_MCP_CATALOG_NOTE, /config_update_/)
   assert.match(COMPACT_MCP_CATALOG_NOTE, /mcp_discover\(\{server_id, tool\}\)/)
+  assert.match(COMPACT_MCP_CATALOG_NOTE, /do not repeat the same call unchanged/)
 })
 
 test('internal tool specs require stable fields for skill and mcp calls', () => {

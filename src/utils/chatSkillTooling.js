@@ -39,6 +39,44 @@ export function selectSkillsByIds(skillIds, availableSkills) {
   return normalizeStringList(skillIds).map((id) => skillById.get(id)).filter(Boolean)
 }
 
+function hasExactStringSet(values, expected) {
+  if (values.length !== expected.length) return false
+  const expectedSet = new Set(expected)
+  return values.every((value) => expectedSet.has(value))
+}
+
+export function migrateLegacyDefaultAgentSkillState(state = {}, legacySkillIds = []) {
+  const selectedSkillIds = normalizeStringList(state?.selectedSkillIds)
+  const agentSkillIds = normalizeStringList(state?.agentSkillIds)
+  const activatedSkillIds = normalizeStringList(state?.activatedSkillIds)
+  const legacyIds = normalizeStringList(legacySkillIds)
+  const matchesLegacyAgentProfile = legacyIds.length > 0 && (
+    hasExactStringSet(agentSkillIds, legacyIds) ||
+    (
+      agentSkillIds.length === 0 &&
+      activatedSkillIds.length === 0 &&
+      hasExactStringSet(selectedSkillIds, legacyIds)
+    )
+  )
+
+  if (!matchesLegacyAgentProfile) {
+    return {
+      selectedSkillIds,
+      agentSkillIds,
+      activatedSkillIds,
+      migrated: false
+    }
+  }
+
+  const legacySet = new Set(legacyIds)
+  return {
+    selectedSkillIds: selectedSkillIds.filter((id) => !legacySet.has(id)),
+    agentSkillIds: agentSkillIds.filter((id) => !legacySet.has(id)),
+    activatedSkillIds: activatedSkillIds.filter((id) => !legacySet.has(id)),
+    migrated: true
+  }
+}
+
 export function isBuiltinNativeSkill(skill) {
   return !!(
     skill?.builtin === true &&

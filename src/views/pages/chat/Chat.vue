@@ -180,26 +180,62 @@
                       @keydown="(e) => handleUserEditKeydown(e, msg)"
                     />
 
-                    <pre v-if="!msg.editing && shouldRenderUserMessageAsPlainText(msg)" class="chat-plain">{{ msg.content }}</pre>
-                    <LazyMarkdownPreview
-                      v-else-if="!msg.editing && shouldRenderHeavyChatMessage(msg)"
-                      :editorId="`msg-${msg.id}`"
-                      :modelValue="msg.content"
-                      previewTheme="github"
-                      :theme="theme"
-                      :deferBlockLayout="shouldDeferHeavyChatBlockLayout(msg)"
-                      :streaming="msg.streaming"
-                      :stream-throttle-ms="CHAT_STREAM_RENDER_THROTTLE_MS"
-                      :code-foldable="true"
-                      :auto-fold-threshold="CHAT_CODE_AUTO_FOLD_THRESHOLD"
-                    />
-                    <pre v-else-if="!msg.editing" class="chat-plain chat-plain--deferred">{{ msg.content }}</pre>
+                    <div
+                      v-if="!msg.editing"
+                      class="chat-user-message"
+                      :class="{ 'is-collapsed': isUserMessageCollapsed(msg) }"
+                    >
+                      <pre
+                        v-if="isUserMessageCollapsed(msg)"
+                        class="chat-plain chat-user-message__preview"
+                      >{{ userMessagePreview(msg) }}</pre>
+                      <template v-else>
+                        <pre v-if="shouldRenderUserMessageAsPlainText(msg)" class="chat-plain">{{ msg.content }}</pre>
+                        <LazyMarkdownPreview
+                          v-else-if="shouldRenderHeavyChatMessage(msg)"
+                          :editorId="`msg-${msg.id}`"
+                          :modelValue="msg.content"
+                          previewTheme="github"
+                          :theme="theme"
+                          :deferBlockLayout="shouldDeferHeavyChatBlockLayout(msg)"
+                          :streaming="msg.streaming"
+                          :stream-throttle-ms="CHAT_STREAM_RENDER_THROTTLE_MS"
+                          :code-foldable="true"
+                          :auto-fold-threshold="CHAT_CODE_AUTO_FOLD_THRESHOLD"
+                        />
+                        <pre v-else class="chat-plain chat-plain--deferred">{{ msg.content }}</pre>
+                      </template>
+                      <button
+                        v-if="isUserMessageFoldable(msg)"
+                        type="button"
+                        class="chat-user-message__toggle"
+                        @click="toggleUserMessageExpanded(msg)"
+                      >
+                        <span>{{ msg.userMessageExpanded ? '收起内容' : '展开全部' }}</span>
+                        <span class="chat-user-message__stats">{{ userMessageFoldSummary(msg) }}</span>
+                        <n-icon
+                          :component="msg.userMessageExpanded ? ChevronUpOutline : ChevronDownOutline"
+                          size="13"
+                        />
+                      </button>
+                    </div>
 
                     <ChatUserAttachments
                       :msg="msg"
                       :theme="theme"
                       :helpers="userAttachmentHelpers"
                       :actions="userAttachmentActions"
+                    />
+                  </template>
+
+                  <template v-else-if="msg.role === 'tool_group'">
+                    <ChatToolActivityGroup
+                      :group="msg"
+                      :theme="theme"
+                      :helpers="toolActivityGroupHelpers"
+                      :actions="toolActivityGroupActions"
+                      :tool-message-helpers="toolMessageHelpers"
+                      :tool-message-actions="toolMessageActions"
                     />
                   </template>
 
@@ -1048,6 +1084,12 @@ import {
 } from 'naive-ui'
 import LazyMarkdownPreview from '@/components/LazyMarkdownPreview.vue'
 import { ensureMarkdownPreviewRuntime } from '@/utils/mdEditorRuntime'
+import {
+  analyzeUserMessageFolding,
+  buildChatDisplayMessages,
+  buildUserMessagePreview,
+  shouldShowChatAnchorRail
+} from '@/utils/chatDisplayFolding.js'
 import { ChatMultiple24Filled } from '@vicons/fluent'
 import {
   ArrowDownOutline,
@@ -1106,6 +1148,7 @@ import {
   collectDerivedMcpIds,
   createBuiltinSkillActionCatalog,
   listSelectedSkillsBrief as listSelectedSkillsBriefFromList,
+  migrateLegacyDefaultAgentSkillState,
   resolveBuiltinSkillCall,
   resolveSelectedSkillTarget as resolveSelectedSkillTargetFromList,
   selectSkillsByIds
@@ -1241,16 +1284,14 @@ import {
   importFilesToSandbox,
   listDirectory,
   moveItem,
-  openFile,
   resolvePath,
-  saveFileAs,
-  showItemInFolder,
   stat,
   writeFile
 } from '@/utils/fileOperations'
 import { requestOpenNoteFile } from '@/utils/noteOpenBridge'
 import { buildNoteHrefFromPath, resolveNoteAbsPathFromHref, safeDecodeURIComponent } from '@/utils/notePathUtils'
 import { getSafeExternalUrl, safeOpenExternal } from '@/utils/safeOpenExternal'
+import { runChatWorkspaceFileAction } from '@/utils/chatWorkspaceFileOperations.js'
 import {
   contentHasUserAttachments,
   extractEditableUserTextFromContent,
@@ -1272,6 +1313,7 @@ import {
 import {
   buildChatAttachmentReferenceBlock,
   buildChatSandboxWorkspaceId,
+  resolveChatToolWorkspaceScope,
   withDefaultChatSandboxWorkspaceId
 } from '@/utils/chatSandboxWorkspace'
 import {
@@ -1378,6 +1420,7 @@ import ChatComposerPanel from './ChatComposerPanel.vue'
 import ChatHeaderCard from './ChatHeaderCard.vue'
 import ChatMediaLibraryModal from './ChatMediaLibraryModal.vue'
 import ChatToolMessage from './ChatToolMessage.vue'
+import ChatToolActivityGroup from './ChatToolActivityGroup.vue'
 import ChatUserAttachments from './ChatUserAttachments.vue'
 import SessionTree from './SessionTree.vue'
 
@@ -2431,6 +2474,7 @@ const CHAT_USER_SCROLL_ACTIVE_MS = 480
 const CHAT_TOOL_COMPACT_MIN_MESSAGES = 120
 const CHAT_TOOL_COMPACT_MIN_TOOL_MESSAGES = 32
 const CHAT_TOOL_COMPACT_ITEM_FIXED_HEIGHT = 26
+const CHAT_TOOL_ACTIVITY_GROUP_FIXED_HEIGHT = 32
 const CHAT_ASSISTANT_ACTIVITY_ITEM_HEIGHT = 28
 const CHAT_STREAM_RENDER_THROTTLE_MS = 72
 
@@ -3195,10 +3239,7 @@ const selectedSkillObjects = computed(() => {
   return selectSkillsByIds(selectedSkillIds.value, skills.value)
 })
 
-const runtimeSkillObjects = computed(() => {
-  if (!isDefaultGeneralAgent.value) return selectedSkillObjects.value
-  return (skills.value || []).filter((skill) => skill?._id)
-})
+const runtimeSkillObjects = computed(() => selectedSkillObjects.value)
 
 function formatDisplayNameWithId(entity) {
   const id = String(entity?._id || '').trim()
@@ -3216,10 +3257,7 @@ function joinAsLines(items = [], emptyText = '无') {
   return list.map((item) => `- ${item}`).join('\n')
 }
 
-const runtimeAgentSkillIds = computed(() => {
-  if (!isDefaultGeneralAgent.value) return normalizeStringList(agentSkillIds.value)
-  return normalizeStringList((runtimeSkillObjects.value || []).map((skill) => skill?._id))
-})
+const runtimeAgentSkillIds = computed(() => normalizeStringList(agentSkillIds.value))
 
 const agentSkillIdSet = computed(() => new Set(Array.isArray(agentSkillIds.value) ? agentSkillIds.value : []))
 const runtimeAgentSkillIdSet = computed(() => new Set(runtimeAgentSkillIds.value))
@@ -3554,8 +3592,12 @@ const selectedSkillsHoverText = computed(() => {
     const name = formatDisplayNameWithId(skill)
     if (!id) return name
     const flags = []
-    if (agentSet.has(id)) flags.push('智能体技能')
-    if (activatedSet.has(id)) flags.push('已启用')
+    if (routerActivatedAgentSkillIds.has(id)) {
+      flags.push('按需启用')
+    } else {
+      if (agentSet.has(id)) flags.push('智能体技能')
+      if (activatedSet.has(id)) flags.push('已启用')
+    }
     if (isDirectorySkill(skill)) flags.push('目录')
     return flags.length ? `${name}（${flags.join(' / ')}）` : name
   })
@@ -5091,7 +5133,7 @@ async function handleChatPreviewLinkClick(e) {
   const sandboxFile = resolveSandboxFileLink(href, sandboxFileCatalog.value)
   if (sandboxFile) {
     try {
-      const result = await saveFileAs(sandboxFile.dataPath, {
+      const result = await saveChatWorkspaceResultFile(sandboxFile, {
         suggestedName: sandboxFile.name || 'sandbox-output'
       })
       if (!result?.canceled) message.success('文件已保存')
@@ -5108,6 +5150,26 @@ async function handleChatPreviewLinkClick(e) {
 
   if (await openChatNoteFromHref(href)) return
   copyToClipboard(href)
+}
+
+async function runChatWorkspaceResultFileAction(file, action, actionOptions = {}) {
+  const outcome = await runChatWorkspaceFileAction(file, action, { actionOptions })
+  if (outcome.recovered) {
+    message.warning('原始结果文件已丢失，已根据历史写入内容恢复副本')
+  }
+  return outcome.result
+}
+
+function saveChatWorkspaceResultFile(file, options = {}) {
+  return runChatWorkspaceResultFileAction(file, 'save', options)
+}
+
+function openChatWorkspaceResultFile(file) {
+  return runChatWorkspaceResultFileAction(file, 'open')
+}
+
+function showChatWorkspaceResultFile(file) {
+  return runChatWorkspaceResultFileAction(file, 'show')
 }
 
 function handleChatPreviewLinkContextMenu(e) {
@@ -5165,18 +5227,18 @@ async function handleChatLinkContextMenuSelect(key) {
   if (file) {
     try {
       if (key === 'save-file-as') {
-        const result = await saveFileAs(file.dataPath, {
+        const result = await saveChatWorkspaceResultFile(file, {
           suggestedName: file.name || 'sandbox-output'
         })
         if (!result?.canceled) message.success('文件已保存')
         return
       }
       if (key === 'open-file') {
-        await openFile(file.dataPath)
+        await openChatWorkspaceResultFile(file)
         return
       }
       if (key === 'show-file') {
-        await showItemInFolder(file.dataPath)
+        await showChatWorkspaceResultFile(file)
         return
       }
       if (key === 'copy-file-name') {
@@ -5445,6 +5507,13 @@ function videoInsightLabel(video) {
 
 const BUILTIN_AGENTS_TRACE_EVENT = 'builtin-agents-trace'
 const BUILTIN_AGENT_ID = 'builtin_agent_notes'
+const LEGACY_DEFAULT_AGENT_SKILL_IDS = Object.freeze([
+  'builtin_skill_notes',
+  'builtin_skill_config',
+  'builtin_skill_sessions',
+  'builtin_skill_agent_orchestration',
+  'builtin_skill_shell'
+])
 const BUILTIN_AGENT_ORCHESTRATION_SKILL_ID = 'builtin_skill_agent_orchestration'
 const BUILTIN_SHELL_SKILL_ID = 'builtin_skill_shell'
 const BUILTIN_AGENTS_TOOL_APPROVAL_REQUEST_EVENT = 'builtin-agents-tool-approval-request'
@@ -5754,6 +5823,23 @@ function toolActivityIcon(msg) {
   return CheckmarkOutline
 }
 
+function isToolActivityGroup(msg) {
+  return String(msg?.role || '').trim() === 'tool_group' && Array.isArray(msg?.toolGroupMessages)
+}
+
+function toggleToolActivityGroup(group) {
+  if (!isToolActivityGroup(group)) return
+  const id = String(group.id || '').trim()
+  if (!id) return
+  const next = new Set(expandedToolActivityGroupIds.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  expandedToolActivityGroupIds.value = next
+  chatMessageHeightCache.delete(id)
+  chatMessageEstimatedHeightCache.delete(id)
+  bumpChatMessageMetricsVersion()
+}
+
 function isAssistantActivityMessage(msg) {
   if (String(msg?.role || '').trim() !== 'assistant' || !String(msg?.thinking || '').trim()) return false
   if (String(msg?.content || '').trim()) return false
@@ -5764,7 +5850,7 @@ function isAssistantActivityMessage(msg) {
 }
 
 function isChatActivityMessage(msg) {
-  return isToolMessage(msg) || isAssistantActivityMessage(msg)
+  return isToolMessage(msg) || isToolActivityGroup(msg) || isAssistantActivityMessage(msg)
 }
 
 function chatItemStateClasses(msg) {
@@ -5778,6 +5864,7 @@ function chatItemStateClasses(msg) {
     'is-tool-error': status === 'error',
     'is-tool-rejected': status === 'rejected',
     'is-agent-run': isToolMessage(msg) && String(msg?.toolName || '').trim() === 'agent_run',
+    'is-tool-group': isToolActivityGroup(msg),
     'is-activity': isChatActivityMessage(msg),
     'is-thinking-activity': isAssistantActivityMessage(msg)
   }
@@ -5942,6 +6029,15 @@ function createToolExecutionResultMessage(content = '', extra = {}, toolCallId =
 function buildToolExecutionResultSubMeta(result) {
   const resultKind = String(result?.kind || '').trim()
   if (resultKind.startsWith('sandbox_')) {
+    if (result?.workspaceKind === 'multiple') {
+      const kinds = new Set(
+        (Array.isArray(result?.workspaces) ? result.workspaces : [])
+          .map((workspace) => String(workspace?.workspaceKind || '').trim())
+          .filter(Boolean)
+      )
+      if (kinds.has('sandbox') && kinds.has('host')) return '会话沙盒 + 本机工作区'
+      if (kinds.has('host')) return '本机工作区（无系统沙盒）'
+    }
     const isolationLabel = result?.sandboxEnforced === true
       ? '系统沙盒'
       : result?.isolationLevel === 'host-workspace'
@@ -6403,21 +6499,35 @@ function prepareBuiltinAgentToolCallArgs(skillId, toolName, argsObj, pendingMess
       'bash_run',
       'sandbox_read_file',
       'sandbox_write_file',
-      'sandbox_list'
+      'sandbox_import',
+      'sandbox_list',
+      'sandbox_reset'
     ].includes(normalizedToolName)
   ) {
     const targetRecord = getRunRecord(
       pendingMessage?.toolAbortState || abortController.value || null
     ) || getActiveMemorySession()
-    const workspacePath = resolveSessionHostWorkspacePath(targetRecord)
-    if (workspacePath) {
-      nextArgs.__host_workspace_path = workspacePath
-      return nextArgs
+    const sessionId = targetRecord?.id || activeMemorySessionId.value || 'default'
+    if (normalizedToolName === 'sandbox_import' || normalizedToolName === 'sandbox_reset') {
+      return withDefaultChatSandboxWorkspaceId(nextArgs, sessionId)
     }
-    return withDefaultChatSandboxWorkspaceId(
+    const workspacePath = resolveSessionHostWorkspacePath(targetRecord)
+    const workspaceScope = resolveChatToolWorkspaceScope(
+      normalizedToolName,
       nextArgs,
-      targetRecord?.id || activeMemorySessionId.value || 'default'
+      { hasHostWorkspace: !!workspacePath }
     )
+    const routedArgs = withDefaultChatSandboxWorkspaceId(
+      {
+        ...nextArgs,
+        workspace_scope: workspaceScope
+      },
+      sessionId
+    )
+    if (workspacePath && (workspaceScope === 'host' || workspaceScope === 'all')) {
+      routedArgs.__host_workspace_path = workspacePath
+    }
+    return routedArgs
   }
 
   const isBuiltinAgentsSkill = normalizedSkillId === BUILTIN_AGENT_ORCHESTRATION_SKILL_ID
@@ -6823,7 +6933,25 @@ const toolMessageActions = {
   toggleToolExpanded,
   downloadChatImage,
   copyChatImage,
-  scheduleScrollToBottom
+  openChatWorkspaceResultFile,
+  saveChatWorkspaceResultFile,
+  scheduleScrollToBottom,
+  showChatWorkspaceResultFile
+}
+
+const toolActivityGroupHelpers = {
+  getToolMessageStatus,
+  shouldRenderCompactToolMessage,
+  shouldShowToolActivityStatus,
+  toolActivityIcon,
+  toolActivityMeta,
+  toolMessageLabel,
+  toolMessageStatusLabel
+}
+
+const toolActivityGroupActions = {
+  toggleGroup: toggleToolActivityGroup,
+  toggleToolExpanded
 }
 
 const pendingAttachmentHelpers = {
@@ -6911,6 +7039,7 @@ const chatScrollTop = ref(0)
 const chatViewportHeight = ref(0)
 const chatScrollDistanceFromBottom = ref(Number.POSITIVE_INFINITY)
 const isChatScrollable = ref(false)
+const expandedToolActivityGroupIds = ref(new Set())
 const visibleHeavyChatMessageIds = ref(new Set())
 const hydratedHeavyChatMessageIds = ref(new Set())
 const chatSessionOpeningHeavyRender = ref(false)
@@ -6950,15 +7079,23 @@ let userChatScrollActiveUntil = 0
 let sessionResetPromise = null
 
 function estimateChatMessageHeight(msg) {
-  if (isFixedCompactToolMessage(msg)) return CHAT_TOOL_COMPACT_ITEM_FIXED_HEIGHT
+  const fixedHeight = getFixedCompactChatMessageHeight(msg)
+  if (fixedHeight) return fixedHeight
   if (isAssistantActivityMessage(msg) && !msg?.thinkingExpanded) return CHAT_ASSISTANT_ACTIVITY_ITEM_HEIGHT
   const role = String(msg?.role || '')
+  if (role === 'tool_group') {
+    const children = Array.isArray(msg?.toolGroupMessages) ? msg.toolGroupMessages : []
+    return 42 + children.reduce(
+      (height, child) => height + (child?.toolExpanded ? estimateChatMessageHeight(child) : CHAT_TOOL_COMPACT_ITEM_FIXED_HEIGHT),
+      0
+    )
+  }
   const attachmentCount = Array.isArray(msg?.attachments) ? msg.attachments.length : 0
   const thinkingLength = String(msg?.thinking || '').length
   const isToolRole = role === 'tool_call' || role === 'tool'
   const toolCollapsed = isToolRole && !msg?.toolExpanded
   if (toolCollapsed) return estimateCollapsedToolMessageHeight(msg)
-  const content = String(msg?.content || '')
+  const content = isUserMessageCollapsed(msg) ? userMessagePreview(msg) : String(msg?.content || '')
   const base = isToolRole ? 168 : role === 'assistant' ? 156 : 140
   const contentExtra = estimateChatMessageContentHeight(content)
   const attachmentExtra = attachmentCount * 76
@@ -6967,7 +7104,8 @@ function estimateChatMessageHeight(msg) {
 }
 
 function getChatMessageMinimumHeight(msg) {
-  if (isFixedCompactToolMessage(msg)) return CHAT_TOOL_COMPACT_ITEM_FIXED_HEIGHT
+  const fixedHeight = getFixedCompactChatMessageHeight(msg)
+  if (fixedHeight) return fixedHeight
   if (isAssistantActivityMessage(msg) && !msg?.thinkingExpanded) return CHAT_ASSISTANT_ACTIVITY_ITEM_HEIGHT
   return CHAT_DEFAULT_MIN_MESSAGE_HEIGHT
 }
@@ -7007,6 +7145,11 @@ function getEstimatedChatMessageHeight(msg) {
     msg?.thinkingExpanded ? 1 : 0,
     msg?.toolExpanded ? 1 : 0,
     msg?.attachmentsExpanded ? 1 : 0,
+    msg?.userMessageExpanded ? 1 : 0,
+    msg?.toolGroupExpanded ? 1 : 0,
+    Array.isArray(msg?.toolGroupMessages)
+      ? msg.toolGroupMessages.map((child) => child?.toolExpanded ? '1' : '0').join('')
+      : '',
     getToolMessageStatus(msg),
     layoutMode
   ].join('|')
@@ -7075,8 +7218,13 @@ function resolveChatMessageById(messageId) {
   if (!id) return null
   if (chatMessageByIdMap.has(id)) return chatMessageByIdMap.get(id)
   const fallback = (session.messages || []).find((msg) => String(msg?.id || '').trim() === id) || null
-  if (fallback) chatMessageByIdMap.set(id, fallback)
-  return fallback
+  if (fallback) {
+    chatMessageByIdMap.set(id, fallback)
+    return fallback
+  }
+  const displayMessage = chatDisplayMessages.value.find((msg) => String(msg?.id || '').trim() === id) || null
+  if (displayMessage) chatMessageByIdMap.set(id, displayMessage)
+  return displayMessage
 }
 
 function isMarkdownHeavyRenderCandidate(msg) {
@@ -7311,7 +7459,14 @@ function findLastItemTopLte(items, targetTop, startIndex = 0) {
   return answer
 }
 
-const chatVirtualizedEnabled = computed(() => (session.messages?.length || 0) >= CHAT_VIRTUALIZATION_MIN_MESSAGES)
+const chatDisplayMessages = computed(() =>
+  buildChatDisplayMessages(session.messages, {
+    resolveToolStatus: getToolMessageStatus,
+    expandedToolGroupIds: expandedToolActivityGroupIds.value
+  })
+)
+
+const chatVirtualizedEnabled = computed(() => chatDisplayMessages.value.length >= CHAT_VIRTUALIZATION_MIN_MESSAGES)
 
 const forcedRenderedChatMessageIdSet = computed(() => {
   const ids = new Set(recentHeavyChatMessageIds.value)
@@ -7330,9 +7485,10 @@ const chatVirtualLayout = computed(() => {
   const idToIndex = new Map()
   const topById = new Map()
   let offset = 0
-  ;(session.messages || []).forEach((msg, index) => {
+  const displayMessages = chatDisplayMessages.value
+  displayMessages.forEach((msg, index) => {
     const id = String(msg?.id || '').trim()
-    const previousMsg = index > 0 ? session.messages[index - 1] : null
+    const previousMsg = index > 0 ? displayMessages[index - 1] : null
     const gapBefore = getChatMessageGapBefore(previousMsg, msg, index)
     const height = resolveChatVirtualItemHeight({
       measuredHeight: chatMessageHeightCache.get(id),
@@ -7550,7 +7706,9 @@ const userAnchors = computed(() => {
   return anchors
 })
 
-const showAnchorRail = computed(() => !isCompactChatLayout.value && userAnchors.value.length > 1)
+const showAnchorRail = computed(() =>
+  shouldShowChatAnchorRail(userAnchors.value.length, { dense: isDenseChatLayout.value })
+)
 const stickyChatBubble = ref(null)
 let stickyChatBubbleSyncFrame = 0
 
@@ -7824,8 +7982,8 @@ function ensureChatMessageResizeObserver() {
       const id = String(target.dataset.messageId || '').trim()
       if (!id) return
       const msg = resolveChatMessageById(id)
-      if (isFixedCompactToolMessage(msg)) {
-        const fixedHeight = CHAT_TOOL_COMPACT_ITEM_FIXED_HEIGHT
+      const fixedHeight = getFixedCompactChatMessageHeight(msg)
+      if (fixedHeight) {
         const cachedHeight = Number(chatMessageHeightCache.get(id) || 0)
         if (cachedHeight !== fixedHeight) {
           chatMessageHeightCache.set(id, fixedHeight)
@@ -7942,8 +8100,8 @@ function setChatItemEl(messageId, role, el) {
     el.dataset.messageId = k
     chatMessageElMap.set(k, el)
     const msg = resolveChatMessageById(k)
-    if (isFixedCompactToolMessage(msg)) {
-      const fixedHeight = CHAT_TOOL_COMPACT_ITEM_FIXED_HEIGHT
+    const fixedHeight = getFixedCompactChatMessageHeight(msg)
+    if (fixedHeight) {
       if (chatMessageHeightCache.get(k) !== fixedHeight) {
         chatMessageHeightCache.set(k, fixedHeight)
         bumpChatMessageMetricsVersion()
@@ -7956,7 +8114,7 @@ function setChatItemEl(messageId, role, el) {
     } catch {
       // ignore
     }
-    if (!isFixedCompactToolMessage(msg)) {
+    if (!fixedHeight) {
       try {
         chatMessageResizeObserver?.observe(el)
       } catch {
@@ -7995,6 +8153,12 @@ function shouldRenderCompactToolMessage(msg) {
 
 function isFixedCompactToolMessage(msg) {
   return shouldRenderCompactToolMessage(msg)
+}
+
+function getFixedCompactChatMessageHeight(msg) {
+  if (isFixedCompactToolMessage(msg)) return CHAT_TOOL_COMPACT_ITEM_FIXED_HEIGHT
+  if (isToolActivityGroup(msg) && !msg.toolGroupExpanded) return CHAT_TOOL_ACTIVITY_GROUP_FIXED_HEIGHT
+  return 0
 }
 
 function refreshUserAnchorMeta() {
@@ -8201,6 +8365,13 @@ watch(
 )
 
 watch(
+  () => activeMemorySessionId.value,
+  () => {
+    expandedToolActivityGroupIds.value = new Set()
+  }
+)
+
+watch(
   () => chatMessageMetricsVersion.value,
   () => {
     scheduleRefreshUserAnchorMeta()
@@ -8209,11 +8380,17 @@ watch(
 )
 
 watch(
-  () => session.messages.map((msg) => String(msg?.id || '')).join('|'),
+  () => chatDisplayMessages.value.map((msg) => [
+    String(msg?.id || ''),
+    msg?.toolGroupExpanded ? 1 : 0,
+    Array.isArray(msg?.toolGroupMessages)
+      ? msg.toolGroupMessages.map((child) => child?.toolExpanded ? '1' : '0').join('')
+      : ''
+  ].join(':')).join('|'),
   () => {
     const validIds = new Set()
     chatMessageByIdMap.clear()
-    ;(session.messages || []).forEach((msg) => {
+    chatDisplayMessages.value.forEach((msg) => {
       const id = String(msg?.id || '').trim()
       if (!id) return
       validIds.add(id)
@@ -9776,6 +9953,7 @@ function scheduleSessionAutosave(options = {}) {
 function resetChatRuntimeState() {
   typewriterFlushAll()
   clearAllUserEditingState()
+  expandedToolActivityGroupIds.value = new Set()
   clearSessionData()
   userAnchorElMap.clear()
   userAnchorMeta.value = []
@@ -10086,6 +10264,54 @@ function shouldRenderUserMessageAsPlainText(msg) {
   return inferUserDisplayMessageRender(msg.content) === 'text'
 }
 
+const userMessageFoldInfoCache = new WeakMap()
+
+function getUserMessageFoldInfo(msg) {
+  if (!msg || typeof msg !== 'object') {
+    return { charCount: 0, lineCount: 0, foldable: false, preview: '' }
+  }
+  const content = String(msg.content || '')
+  const cached = userMessageFoldInfoCache.get(msg)
+  if (cached?.content === content) return cached.value
+  const analysis = analyzeUserMessageFolding(content)
+  const value = {
+    ...analysis,
+    preview: analysis.foldable ? buildUserMessagePreview(content) : content
+  }
+  userMessageFoldInfoCache.set(msg, { content, value })
+  return value
+}
+
+function isUserMessageFoldable(msg) {
+  return String(msg?.role || '').trim() === 'user' && getUserMessageFoldInfo(msg).foldable
+}
+
+function isUserMessageCollapsed(msg) {
+  if (msg?.editing) return false
+  return isUserMessageFoldable(msg) && msg?.userMessageExpanded !== true
+}
+
+function userMessagePreview(msg) {
+  return getUserMessageFoldInfo(msg).preview
+}
+
+function userMessageFoldSummary(msg) {
+  const info = getUserMessageFoldInfo(msg)
+  return `${info.charCount.toLocaleString()} 字${info.lineCount > 1 ? ` · ${info.lineCount.toLocaleString()} 行` : ''}`
+}
+
+function toggleUserMessageExpanded(msg) {
+  if (!isUserMessageFoldable(msg)) return
+  msg.userMessageExpanded = msg.userMessageExpanded !== true
+  const id = String(msg?.id || '').trim()
+  if (id) {
+    chatMessageHeightCache.delete(id)
+    chatMessageEstimatedHeightCache.delete(id)
+    if (msg.userMessageExpanded) rememberHydratedHeavyChatMessage(id)
+  }
+  bumpChatMessageMetricsVersion()
+}
+
 function shouldKeepLoadedAssistantTextRender(raw, content) {
   const text = String(content || '').trim()
   if (!text) return false
@@ -10144,6 +10370,7 @@ function normalizeLoadedDisplayMessage(msg) {
   if (raw.role === 'user') {
     raw.editing = false
     raw.editDraft = ''
+    raw.userMessageExpanded = false
   }
 
   if (raw.role === 'tool' || raw.role === 'tool_call') {
@@ -10264,9 +10491,23 @@ function applyLoadedChatState(state) {
     customSystemPromptExplicit.value = nextState.customSystemPromptExplicit
   }
 
-  if (Array.isArray(hydratedState.selectedSkillIds)) selectedSkillIds.value = normalizeStringList(hydratedState.selectedSkillIds)
-  if (Array.isArray(hydratedState.agentSkillIds)) agentSkillIds.value = normalizeStringList(hydratedState.agentSkillIds)
-  if (Array.isArray(hydratedState.activatedAgentSkillIds)) activatedAgentSkillIds.value = normalizeStringList(hydratedState.activatedAgentSkillIds)
+  const isHydratingDefaultAgent =
+    !!builtinAgent?._id &&
+    String(selectedAgentId.value || '').trim() === String(builtinAgent._id || '').trim()
+  const hydratedSkillState = isHydratingDefaultAgent
+    ? migrateLegacyDefaultAgentSkillState({
+        selectedSkillIds: hydratedState.selectedSkillIds,
+        agentSkillIds: hydratedState.agentSkillIds,
+        activatedSkillIds: hydratedState.activatedAgentSkillIds
+      }, LEGACY_DEFAULT_AGENT_SKILL_IDS)
+    : {
+        selectedSkillIds: normalizeStringList(hydratedState.selectedSkillIds),
+        agentSkillIds: normalizeStringList(hydratedState.agentSkillIds),
+        activatedSkillIds: normalizeStringList(hydratedState.activatedAgentSkillIds)
+      }
+  selectedSkillIds.value = hydratedSkillState.selectedSkillIds
+  agentSkillIds.value = hydratedSkillState.agentSkillIds
+  activatedAgentSkillIds.value = hydratedSkillState.activatedSkillIds
   if (Array.isArray(hydratedState.manualMcpIds)) manualMcpIds.value = normalizeStringList(hydratedState.manualMcpIds)
   if (!hydratedAgent) applyDefaultGeneralAgent()
   sandboxHostWorkspacePath.value = normalizeSelectedHostWorkspacePath(
@@ -16751,13 +16992,28 @@ async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, ab
   const usesCommandWorkspace =
     approvalTarget.approvalKind === 'shell' ||
     String(approvalTarget.serverId || '').trim() === BUILTIN_SHELL_SKILL_ID
-  const approvedHostWorkspacePath = usesCommandWorkspace
+  const availableHostWorkspacePath = usesCommandWorkspace
     ? resolveSessionHostWorkspacePath(targetRecord)
     : ''
-  const approvalKeyArgs = approvedHostWorkspacePath
+  const commandWorkspaceScope = usesCommandWorkspace
+    ? resolveChatToolWorkspaceScope(
+        approvalTarget.toolName,
+        approvalTarget.argsObj,
+        { hasHostWorkspace: !!availableHostWorkspacePath }
+      )
+    : ''
+  const approvedHostWorkspacePath =
+    availableHostWorkspacePath &&
+    (commandWorkspaceScope === 'host' || commandWorkspaceScope === 'all')
+      ? availableHostWorkspacePath
+      : ''
+  const approvalKeyArgs = usesCommandWorkspace
     ? {
         ...approvalTarget.argsObj,
-        __host_workspace_path: approvedHostWorkspacePath
+        workspace_scope: commandWorkspaceScope,
+        ...(approvedHostWorkspacePath
+          ? { __host_workspace_path: approvedHostWorkspacePath }
+          : {})
       }
     : approvalTarget.argsObj
   const approvalKey = buildSessionToolApprovalKey({
@@ -16793,8 +17049,18 @@ async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, ab
   })
   pendingToolMessage.toolAbortState = abortState || null
   pendingToolMessage.toolApprovalMode = currentApprovalMode
-  if (approvedHostWorkspacePath) {
-    pendingToolMessage.toolSubMeta = `本机工作区：${approvedHostWorkspacePath}`
+  if (usesCommandWorkspace) {
+    const chatWorkspaceId = buildChatSandboxWorkspaceId(
+      targetRecord?.id || activeMemorySessionId.value || 'default'
+    )
+    pendingToolMessage.toolSubMeta =
+      commandWorkspaceScope === 'all'
+        ? approvedHostWorkspacePath
+          ? `检索：会话沙盒 ${chatWorkspaceId} + 本机工作区 ${approvedHostWorkspacePath}`
+          : `会话沙盒：${chatWorkspaceId}`
+        : commandWorkspaceScope === 'host'
+          ? `本机工作区：${approvedHostWorkspacePath || '未选择'}`
+          : `会话沙盒：${chatWorkspaceId}`
   }
   targetSession.messages.push(pendingToolMessage)
   await maybeScrollToBottomForRun(abortState)
@@ -16830,7 +17096,9 @@ async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, ab
           : []),
         ...(approvedHostWorkspacePath
           ? [`本机工作区：${approvedHostWorkspacePath}`]
-          : [])
+          : usesCommandWorkspace && commandWorkspaceScope === 'sandbox'
+            ? ['执行位置：会话沙盒']
+            : [])
       ],
       rememberText:
         approvalTarget.approvalKind === 'shell'

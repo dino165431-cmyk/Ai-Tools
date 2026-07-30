@@ -25,6 +25,7 @@ const MAX_LISTED_ACTIVE_FILES = 500
 const DEFAULT_TIMEOUT_MS = 30000
 const MAX_TIMEOUT_MS = 120000
 const SUPPORTED_SHELLS = new Set(['auto', 'powershell', 'bash'])
+const SUPPORTED_WORKSPACE_SCOPES = new Set(['sandbox', 'host'])
 const RUNTIME_PATH_CACHE_MS = 30000
 
 let cachedRuntimePath = ''
@@ -286,17 +287,35 @@ function normalizeHostWorkspacePath(value) {
   return realRoot
 }
 
+function normalizeWorkspaceScope(value, options = {}) {
+  const requested = cleanString(value).toLowerCase() || 'sandbox'
+  if (requested === 'all' && options.allowAll === true) return requested
+  if (!SUPPORTED_WORKSPACE_SCOPES.has(requested)) {
+    throw new Error(options.allowAll === true
+      ? 'workspace_scope 仅支持 sandbox、host 或 all'
+      : 'workspace_scope 仅支持 sandbox 或 host')
+  }
+  return requested
+}
+
 async function resolveWorkingDirectory(
   relativePath = '.',
   workspaceId = DEFAULT_WORKSPACE_ID,
-  hostWorkspacePath = ''
+  hostWorkspacePath = '',
+  workspaceScope = 'sandbox'
 ) {
   const workspace = await ensureWorkspace(workspaceId)
   const requested = cleanString(relativePath) || '.'
   const safeRelativePath = requested === '.'
     ? ''
     : normalizeSandboxRelativePath(requested, { allowEmpty: true })
-  const hostRoot = normalizeHostWorkspacePath(hostWorkspacePath)
+  const scope = normalizeWorkspaceScope(workspaceScope)
+  const hostRoot = scope === 'host'
+    ? normalizeHostWorkspacePath(hostWorkspacePath)
+    : ''
+  if (scope === 'host' && !hostRoot) {
+    throw new Error('当前会话未选择可用的本机工作区')
+  }
   const workspaceRoot = hostRoot || workspace.workspaceRoot
   const resolved = hostRoot
     ? path.resolve(hostRoot, safeRelativePath)
@@ -506,11 +525,14 @@ function finishOutputCollector(state, options = {}) {
 
 function getWorkspaceIsolationMetadata(workspaceKind) {
   const isHost = workspaceKind === 'host'
+  const isMultiple = workspaceKind === 'multiple'
   return {
-    isolationLevel: isHost ? 'host-workspace' : 'workspace-guard',
+    isolationLevel: isMultiple ? 'mixed-workspaces' : isHost ? 'host-workspace' : 'workspace-guard',
     sandboxEnforced: false,
     networkRestricted: false,
-    warning: isHost
+    warning: isMultiple
+      ? '结果来自会话沙盒和用户选择的本机工作区；两边都只有路径守卫，没有操作系统级进程沙盒。'
+      : isHost
       ? '命令在用户选择的本机工作区中运行；当前没有操作系统级进程沙盒。'
       : '命令使用独立工作目录和路径守卫，但当前没有操作系统级进程沙盒。'
   }
@@ -522,7 +544,12 @@ async function resolveWorkspaceTarget(
   hostWorkspacePath = '',
   options = {}
 ) {
-  const workspace = await resolveWorkingDirectory('.', workspaceId, hostWorkspacePath)
+  const workspace = await resolveWorkingDirectory(
+    '.',
+    workspaceId,
+    hostWorkspacePath,
+    options.workspaceScope
+  )
   const safeRelativePath = normalizeSandboxRelativePath(relativePath, {
     allowEmpty: options.allowEmpty === true
   })
@@ -594,7 +621,11 @@ async function walkActiveWorkspaceFiles(workspace, options = {}) {
     options.path || '',
     workspace.workspaceId,
     workspace.workspaceKind === 'host' ? workspace.workspacePath : '',
-    { allowEmpty: true, mustExist: false }
+    {
+      allowEmpty: true,
+      mustExist: false,
+      workspaceScope: workspace.workspaceKind
+    }
   )
   const entries = []
   const limit = Math.max(1, Math.min(MAX_LISTED_ACTIVE_FILES, Number(options.limit) || MAX_LISTED_ACTIVE_FILES))
@@ -688,7 +719,10 @@ async function readWorkspaceFile(args = {}) {
     args.path,
     workspaceId,
     args.__host_workspace_path,
-    { mustExist: true }
+    {
+      mustExist: true,
+      workspaceScope: args.workspace_scope
+    }
   )
   const stat = await fs.lstat(target.absolutePath)
   if (!stat.isFile()) throw new Error('path 必须指向普通文件')
@@ -697,6 +731,9 @@ async function readWorkspaceFile(args = {}) {
   }
   const encoding = cleanString(args.encoding).toLowerCase() === 'base64' ? 'base64' : 'utf8'
   const bytes = await fs.readFile(target.absolutePath)
+  const content = encoding === 'base64'
+    ? bytes.toString('base64')
+    : decodeCommandOutput(bytes)
   return {
     kind: 'sandbox_read_file_result',
     ok: true,
@@ -707,7 +744,7 @@ async function readWorkspaceFile(args = {}) {
     path: target.relativePath,
     encoding,
     size: bytes.byteLength,
-    content: bytes.toString(encoding)
+    content
   }
 }
 
@@ -716,7 +753,8 @@ async function writeWorkspaceFile(args = {}) {
   const target = await resolveWorkspaceTarget(
     args.path,
     workspaceId,
-    args.__host_workspace_path
+    args.__host_workspace_path,
+    { workspaceScope: args.workspace_scope }
   )
   const mode = cleanString(args.mode).toLowerCase() || 'create'
   if (!['create', 'overwrite', 'append'].includes(mode)) {
@@ -744,7 +782,8 @@ async function writeWorkspaceFile(args = {}) {
   const verified = await resolveWorkspaceTarget(
     target.relativePath,
     workspaceId,
-    args.__host_workspace_path
+    args.__host_workspace_path,
+    { workspaceScope: args.workspace_scope }
   )
   if (mode === 'append') await fs.appendFile(verified.absolutePath, bytes)
   else await fs.writeFile(verified.absolutePath, bytes)
@@ -771,7 +810,8 @@ async function getSandboxStatus(args = {}) {
   const workspace = await resolveWorkingDirectory(
     args.cwd,
     workspaceId,
-    args.__host_workspace_path
+    args.__host_workspace_path,
+    args.workspace_scope
   )
   const runtimePath = buildRuntimePath({ refresh: args.refresh_path === true })
   return {
@@ -797,7 +837,12 @@ async function runSandboxCommand(command, options = {}) {
     relative,
     workspaceKind,
     workspacePath
-  } = await resolveWorkingDirectory(options.cwd, workspaceId, options.hostWorkspacePath)
+  } = await resolveWorkingDirectory(
+    options.cwd,
+    workspaceId,
+    options.hostWorkspacePath,
+    options.workspaceScope
+  )
   const timeoutMs = clampTimeout(options.timeoutMs)
   const tempDirectory = path.join(runtimeRoot, '.runtime', 'tmp')
   fsSync.mkdirSync(tempDirectory, { recursive: true })
@@ -892,11 +937,16 @@ async function runBash(command, options = {}) {
 const ACTIONS = Object.freeze([
   {
     name: 'sandbox_status',
-    description: 'Inspect the active command workspace, the actual isolation level, and available toolchains. This does not execute a user command.',
+    description: 'Inspect either the chat sandbox or the user-selected host workspace, including the actual isolation level and available toolchains. Defaults to the chat sandbox and does not execute a user command.',
     inputSchema: {
       type: 'object',
       properties: {
-        workspace_id: { type: 'string', description: 'Workspace id. Default: default.' },
+        workspace_id: { type: 'string', description: 'Sandbox workspace id. Ignored for host scope. Default: current chat sandbox.' },
+        workspace_scope: {
+          type: 'string',
+          enum: ['sandbox', 'host'],
+          description: 'Target workspace. Default: sandbox. Use host only for the user-selected local workspace.'
+        },
         cwd: { type: 'string', description: 'Optional relative working directory.' },
         refresh_path: { type: 'boolean', description: 'Refresh user and machine PATH before probing tools.' }
       },
@@ -905,7 +955,7 @@ const ACTIONS = Object.freeze([
   },
   {
     name: 'sandbox_run',
-    description: 'Run a command in the active AI Tools command workspace. This uses a workspace path guard, not an OS-level process sandbox. A user-selected host workspace may be injected by the chat UI. On Windows, auto uses PowerShell.',
+    description: 'Run a command in the chat sandbox by default. Use host scope only when the task explicitly needs to inspect or modify the user-selected local workspace. This uses a path guard, not an OS-level process sandbox. On Windows, auto uses PowerShell.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -915,7 +965,12 @@ const ACTIONS = Object.freeze([
           enum: ['auto', 'powershell', 'bash'],
           description: 'Command shell. Default auto uses PowerShell on Windows and Bash elsewhere.'
         },
-        workspace_id: { type: 'string', description: 'Workspace id returned with imported attachments. Default: default.' },
+        workspace_id: { type: 'string', description: 'Sandbox workspace id returned with imported attachments. Ignored for host scope. Default: current chat sandbox.' },
+        workspace_scope: {
+          type: 'string',
+          enum: ['sandbox', 'host'],
+          description: 'Target workspace. Default: sandbox. Keep attachments, temporary files, and generated artifacts in sandbox unless the user explicitly asked to operate on the selected host workspace.'
+        },
         cwd: { type: 'string', description: 'Working directory relative to the active workspace. Default: workspace root.' },
         timeout_ms: { type: 'integer', minimum: 1000, maximum: MAX_TIMEOUT_MS }
       },
@@ -925,12 +980,17 @@ const ACTIONS = Object.freeze([
   },
   {
     name: 'bash_run',
-    description: 'Compatibility action that runs Bash inside the active guarded workspace. Prefer sandbox_run unless Bash syntax is specifically required.',
+    description: 'Compatibility action that runs Bash in the chat sandbox by default. Prefer sandbox_run unless Bash syntax is specifically required.',
     inputSchema: {
       type: 'object',
       properties: {
         command: { type: 'string', description: 'Bash command to execute inside the workspace.' },
-        workspace_id: { type: 'string', description: 'Workspace id returned with imported attachments. Default: default.' },
+        workspace_id: { type: 'string', description: 'Sandbox workspace id returned with imported attachments. Ignored for host scope. Default: current chat sandbox.' },
+        workspace_scope: {
+          type: 'string',
+          enum: ['sandbox', 'host'],
+          description: 'Target workspace. Default: sandbox.'
+        },
         cwd: { type: 'string', description: 'Working directory relative to the active workspace. Default: workspace root.' },
         timeout_ms: { type: 'integer', minimum: 1000, maximum: MAX_TIMEOUT_MS }
       },
@@ -940,11 +1000,16 @@ const ACTIONS = Object.freeze([
   },
   {
     name: 'sandbox_read_file',
-    description: 'Read one workspace-relative regular file without invoking a shell. Supports UTF-8 or base64 and enforces workspace/symlink boundaries.',
+    description: 'Read one workspace-relative regular file without invoking a shell. Defaults to the chat sandbox; use host scope for the user-selected local workspace. Supports UTF-8 or base64 and enforces workspace/symlink boundaries.',
     inputSchema: {
       type: 'object',
       properties: {
-        workspace_id: { type: 'string', description: 'Workspace id. Default: default.' },
+        workspace_id: { type: 'string', description: 'Sandbox workspace id. Ignored for host scope. Default: current chat sandbox.' },
+        workspace_scope: {
+          type: 'string',
+          enum: ['sandbox', 'host'],
+          description: 'Target workspace. Default: sandbox.'
+        },
         path: { type: 'string', description: 'Required path relative to the active workspace.' },
         encoding: { type: 'string', enum: ['utf8', 'base64'], description: 'Default: utf8.' }
       },
@@ -954,11 +1019,16 @@ const ACTIONS = Object.freeze([
   },
   {
     name: 'sandbox_write_file',
-    description: 'Write one workspace-relative file without embedding content in a shell command. This is the preferred action for source code, README files, and text containing slashes or absolute-path examples.',
+    description: 'Write one workspace-relative file without embedding content in a shell command. Defaults to the chat sandbox; use host scope only when the user explicitly asked to modify the selected local workspace.',
     inputSchema: {
       type: 'object',
       properties: {
-        workspace_id: { type: 'string', description: 'Workspace id. Default: default.' },
+        workspace_id: { type: 'string', description: 'Sandbox workspace id. Ignored for host scope. Default: current chat sandbox.' },
+        workspace_scope: {
+          type: 'string',
+          enum: ['sandbox', 'host'],
+          description: 'Target workspace. Default: sandbox.'
+        },
         path: { type: 'string', description: 'Required path relative to the active workspace.' },
         content: { type: 'string', description: 'File content encoded according to encoding.' },
         encoding: { type: 'string', enum: ['utf8', 'base64'], description: 'Default: utf8.' },
@@ -993,11 +1063,16 @@ const ACTIONS = Object.freeze([
   },
   {
     name: 'sandbox_list',
-    description: 'List regular non-symlink files in the active workspace, including a user-selected host workspace.',
+    description: 'List regular non-symlink files. With a selected host workspace, all scope searches both the chat sandbox and host workspace and labels every result by source.',
     inputSchema: {
       type: 'object',
       properties: {
-        workspace_id: { type: 'string', description: 'Sandbox workspace id. Default: default.' },
+        workspace_id: { type: 'string', description: 'Sandbox workspace id. Ignored for host-only entries. Default: current chat sandbox.' },
+        workspace_scope: {
+          type: 'string',
+          enum: ['sandbox', 'host', 'all'],
+          description: 'Search sandbox, host, or all available workspaces. The chat UI defaults this action to all when a host workspace is selected; otherwise sandbox.'
+        },
         path: { type: 'string', description: 'Optional path relative to the workspace.' },
         recursive: { type: 'boolean', description: 'List nested files. Default: true.' }
       },
@@ -1034,6 +1109,7 @@ class BuiltinShellSkillRuntime {
       if (!command) throw new Error('command is required')
       return runBash(command, {
         workspaceId,
+        workspaceScope: args.workspace_scope,
         cwd: args.cwd,
         hostWorkspacePath: args.__host_workspace_path,
         timeoutMs: args.timeout_ms
@@ -1045,6 +1121,7 @@ class BuiltinShellSkillRuntime {
       return runSandboxCommand(command, {
         shell: args.shell,
         workspaceId,
+        workspaceScope: args.workspace_scope,
         cwd: args.cwd,
         hostWorkspacePath: args.__host_workspace_path,
         timeoutMs: args.timeout_ms
@@ -1060,22 +1137,60 @@ class BuiltinShellSkillRuntime {
       return copyExternalFilesToWorkspace(workspaceId, args.source_paths)
     }
     if (action === 'sandbox_list') {
-      const workspace = await resolveWorkingDirectory(
-        '.',
-        workspaceId,
-        args.__host_workspace_path
-      )
-      const files = await walkActiveWorkspaceFiles(workspace, {
-        path: args.path,
-        recursive: args.recursive !== false
-      })
+      const scope = normalizeWorkspaceScope(args.workspace_scope, { allowAll: true })
+      const scopes = scope === 'all'
+        ? [
+            'sandbox',
+            ...(cleanString(args.__host_workspace_path) ? ['host'] : [])
+          ]
+        : [scope]
+      const workspaces = await Promise.all(scopes.map((workspaceScope) =>
+        resolveWorkingDirectory(
+          '.',
+          workspaceId,
+          args.__host_workspace_path,
+          workspaceScope
+        )
+      ))
+      const listedFiles = await Promise.all(workspaces.map((workspace) =>
+        walkActiveWorkspaceFiles(workspace, {
+          path: args.path,
+          recursive: args.recursive !== false,
+          limit: Math.max(1, Math.floor(MAX_LISTED_ACTIVE_FILES / workspaces.length))
+        })
+      ))
+      if (workspaces.length === 1) {
+        const [workspace] = workspaces
+        return {
+          kind: 'sandbox_list_result',
+          ok: true,
+          workspaceId: workspace.workspaceId,
+          workspaceKind: workspace.workspaceKind,
+          workspacePath: workspace.workspacePath,
+          ...getWorkspaceIsolationMetadata(workspace.workspaceKind),
+          files: listedFiles[0]
+        }
+      }
+      const files = workspaces.flatMap((workspace, index) =>
+        listedFiles[index].map((file) => ({
+          ...file,
+          workspaceId: workspace.workspaceId,
+          workspaceKind: workspace.workspaceKind,
+          workspacePath: workspace.workspacePath
+        }))
+      ).slice(0, MAX_LISTED_ACTIVE_FILES)
       return {
         kind: 'sandbox_list_result',
         ok: true,
-        workspaceId: workspace.workspaceId,
-        workspaceKind: workspace.workspaceKind,
-        workspacePath: workspace.workspacePath,
-        ...getWorkspaceIsolationMetadata(workspace.workspaceKind),
+        workspaceId,
+        workspaceKind: 'multiple',
+        workspacePath: '',
+        workspaces: workspaces.map((workspace) => ({
+          workspaceId: workspace.workspaceId,
+          workspaceKind: workspace.workspaceKind,
+          workspacePath: workspace.workspacePath
+        })),
+        ...getWorkspaceIsolationMetadata('multiple'),
         files
       }
     }
@@ -1096,6 +1211,7 @@ module.exports.ACTIONS = ACTIONS
 
 module.exports._test = {
   resolveWorkingDirectory,
+  normalizeWorkspaceScope,
   clampTimeout,
   validateCommandBoundary,
   normalizeShell,

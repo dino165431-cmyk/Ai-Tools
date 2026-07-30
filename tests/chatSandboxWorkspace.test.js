@@ -5,6 +5,7 @@ import {
   buildChatAttachmentReferenceBlock,
   buildChatSandboxWorkspaceId,
   extractChatSandboxDescriptors,
+  resolveChatToolWorkspaceScope,
   withDefaultChatSandboxWorkspaceId
 } from '../src/utils/chatSandboxWorkspace.js'
 
@@ -44,7 +45,30 @@ test('sandbox descriptors survive normalization and workspace id defaults are in
     { workspace_id: 'explicit' }
   )
   assert.deepEqual(
-    withDefaultChatSandboxWorkspaceId({ path: 'a.txt' }, 'session-a', { hasHostWorkspace: true }),
-    { path: 'a.txt' }
+    withDefaultChatSandboxWorkspaceId({ path: 'a.txt' }, 'session-a'),
+    { path: 'a.txt', workspace_id: 'chat-session-a' }
+  )
+})
+
+test('chat shell actions default to sandbox while file listing can search both roots', () => {
+  assert.equal(
+    resolveChatToolWorkspaceScope('sandbox_run', {}, { hasHostWorkspace: true }),
+    'sandbox'
+  )
+  assert.equal(
+    resolveChatToolWorkspaceScope('sandbox_write_file', {}, { hasHostWorkspace: true }),
+    'sandbox'
+  )
+  assert.equal(
+    resolveChatToolWorkspaceScope('sandbox_list', {}, { hasHostWorkspace: true }),
+    'all'
+  )
+  assert.equal(
+    resolveChatToolWorkspaceScope('sandbox_list', { workspace_scope: 'host' }, { hasHostWorkspace: true }),
+    'host'
+  )
+  assert.equal(
+    resolveChatToolWorkspaceScope('sandbox_run', { workspace_scope: 'all' }, { hasHostWorkspace: true }),
+    'all'
   )
 })

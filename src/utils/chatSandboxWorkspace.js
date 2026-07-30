@@ -81,11 +81,25 @@ export function extractChatSandboxDescriptors(value) {
   return descriptors.join('\n\n')
 }
 
-export function withDefaultChatSandboxWorkspaceId(args, sessionId, options = {}) {
+export function withDefaultChatSandboxWorkspaceId(args, sessionId) {
   const nextArgs = args && typeof args === 'object' && !Array.isArray(args) ? { ...args } : {}
-  if (options.hasHostWorkspace === true) return nextArgs
   if (cleanLineValue(nextArgs.workspace_id)) return nextArgs
   nextArgs.workspace_id = buildChatSandboxWorkspaceId(sessionId)
   return nextArgs
 }
 
+export function resolveChatToolWorkspaceScope(toolName, args, options = {}) {
+  const normalizedToolName = cleanLineValue(toolName)
+  const requested = cleanLineValue(args?.workspace_scope).toLowerCase()
+  if (requested === 'host') return 'host'
+  if (requested === 'all' && normalizedToolName === 'sandbox_list') return 'all'
+  if (requested) return requested
+  if (
+    !requested &&
+    normalizedToolName === 'sandbox_list' &&
+    options.hasHostWorkspace === true
+  ) {
+    return 'all'
+  }
+  return 'sandbox'
+}

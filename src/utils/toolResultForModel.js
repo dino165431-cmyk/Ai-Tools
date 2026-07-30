@@ -19,6 +19,21 @@ function stableStringify(obj, spaces = 2) {
   }
 }
 
+const MAX_TOOL_RESULT_CHARS = 32000
+const TOOL_RESULT_HEAD_CHARS = 22000
+
+function truncateToolResultText(value, maxChars = MAX_TOOL_RESULT_CHARS) {
+  const text = String(value || '')
+  const safeLimit = Math.max(1000, Math.floor(Number(maxChars) || MAX_TOOL_RESULT_CHARS))
+  if (text.length <= safeLimit) return text
+
+  const marker = `\n... (truncated tool result, total ${text.length} chars) ...\n`
+  const available = Math.max(0, safeLimit - marker.length)
+  const headChars = Math.min(TOOL_RESULT_HEAD_CHARS, Math.ceil(available * 0.7))
+  const tailChars = Math.max(0, available - headChars)
+  return `${text.slice(0, headChars)}${marker}${tailChars ? text.slice(-tailChars) : ''}`
+}
+
 export function sanitizeToolResultForModel(result) {
   const seen = new WeakSet()
   const KEY_HINT_IMAGE = /^(images|image|artifacts)$/i
@@ -63,10 +78,9 @@ export function sanitizeToolResultForModel(result) {
 
     if (Array.isArray(val)) {
       const limit = KEY_HINT_TRACE.test(String(keyHint || '')) ? 40 : 50
-      if (KEY_HINT_TRACE.test(String(keyHint || '')) && val.length > limit) {
-        return [...val.slice(0, limit).map((item) => walk(item, depth + 1, keyHint)), `（已截断：数组过长，共 ${val.length} 项）`]
-      }
-      return val.map((item) => walk(item, depth + 1, keyHint))
+      const items = val.slice(0, limit).map((item) => walk(item, depth + 1, keyHint))
+      if (val.length > limit) items.push(`（已截断：数组过长，共 ${val.length} 项）`)
+      return items
     }
 
     if (typeof val === 'object') {
@@ -86,6 +100,19 @@ export function sanitizeToolResultForModel(result) {
 }
 
 export function stringifyToolResultForModel(result) {
-  if (typeof result === 'string') return result
-  return stableStringify(sanitizeToolResultForModel(result))
+  if (typeof result === 'string') {
+    const trimmed = result.trim()
+    if (
+      (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+      (trimmed.startsWith('[') && trimmed.endsWith(']'))
+    ) {
+      try {
+        return truncateToolResultText(stableStringify(sanitizeToolResultForModel(JSON.parse(trimmed))))
+      } catch {
+        // Keep non-JSON tool text as text.
+      }
+    }
+    return truncateToolResultText(result)
+  }
+  return truncateToolResultText(stableStringify(sanitizeToolResultForModel(result)))
 }

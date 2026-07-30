@@ -403,7 +403,8 @@ export function createPreparedSkillToolExecutor(runtime) {
         ? result.scriptMeta
         : (resolvedScript.entry || null)
       const images = extractChatImagesFromToolResult(result)
-      const resultText = stableStringify({
+      const hasJsonOutput = outputType === 'json' && parsedOutput !== null
+      const resultText = stringifyToolResultForLlm({
         ok: true,
         tool: 'run_skill_script',
         skill_id: skillId,
@@ -413,8 +414,8 @@ export function createPreparedSkillToolExecutor(runtime) {
         command: command || '',
         exit_code: exitCode,
         output_type: outputType,
-        output: parsedOutput,
-        stdout,
+        output: hasJsonOutput ? parsedOutput : undefined,
+        stdout: hasJsonOutput ? '' : stdout,
         stderr,
         script_meta: scriptMeta
       })
@@ -432,13 +433,13 @@ export function createPreparedSkillToolExecutor(runtime) {
       } else if (scriptMeta?.runtime) {
         sections.push(`#### 脚本信息\n- 运行时：${scriptMeta.runtime}`)
       }
-      if (outputType === 'json' && parsedOutput !== null) {
+      if (hasJsonOutput) {
         sections.push(`#### 输出（JSON）\n\`\`\`json\n${stableStringify(parsedOutput)}\n\`\`\``)
       }
       if (images.length) sections.push(`#### 图片\n- ${images.length} 张（已在上方预览；base64/dataUrl 已省略）`)
-      if (stdout) sections.push(`#### 标准输出\n\`\`\`\n${stdout}\n\`\`\``)
+      if (stdout && !hasJsonOutput) sections.push(`#### 标准输出\n\`\`\`\n${stdout}\n\`\`\``)
       if (stderr) sections.push(`#### 标准错误\n\`\`\`\n${stderr}\n\`\`\``)
-      if (!stdout && !stderr) sections.push('（脚本未产生输出）')
+      if (!stdout && !stderr && !hasJsonOutput) sections.push('（脚本未产生输出）')
 
       throwIfAborted(abortState)
       const executionResult = { ok: true, content: resultText, images, serverName, toolName }

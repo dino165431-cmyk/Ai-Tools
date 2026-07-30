@@ -1555,8 +1555,57 @@ class FileOperations {
         return realPath
     }
 
-    async saveFileAs(relativePath, options = {}) {
-        const sourcePath = await this._resolveExportableFile(relativePath)
+    async _resolveExportableWorkspaceFile(workspacePath, relativePath) {
+        const rootRaw = String(workspacePath || '').trim()
+        if (!rootRaw || rootRaw.includes('\0') || !path.isAbsolute(rootRaw)) {
+            throw new Error('本机工作区必须是用户选择的绝对目录')
+        }
+
+        const rootStat = await fs.lstat(rootRaw)
+        if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+            throw new Error('本机工作区必须是普通目录，不能是符号链接')
+        }
+        const realRoot = await fs.realpath(rootRaw)
+        const relativeRaw = String(relativePath || '').trim().replace(/\\/g, '/')
+        if (
+            !relativeRaw ||
+            relativeRaw.includes('\0') ||
+            path.posix.isAbsolute(relativeRaw) ||
+            /^[a-zA-Z]:/.test(relativeRaw)
+        ) {
+            throw new Error('本机工作区文件路径必须是相对路径')
+        }
+        const normalized = path.posix.normalize(relativeRaw).replace(/^\.\/+/, '')
+        if (!normalized || normalized === '..' || normalized.startsWith('../')) {
+            throw new Error('本机工作区文件路径不能离开工作区')
+        }
+
+        const fullPath = path.resolve(realRoot, ...normalized.split('/'))
+        const relativeToRoot = path.relative(realRoot, fullPath)
+        if (
+            relativeToRoot === '..' ||
+            relativeToRoot.startsWith(`..${path.sep}`) ||
+            path.isAbsolute(relativeToRoot)
+        ) {
+            throw new Error('本机工作区文件路径不能离开工作区')
+        }
+        const statInfo = await fs.lstat(fullPath)
+        if (statInfo.isSymbolicLink() || !statInfo.isFile()) {
+            throw new Error('只能操作本机工作区内的普通文件，不能操作目录或符号链接')
+        }
+        const realPath = await fs.realpath(fullPath)
+        const realRelative = path.relative(realRoot, realPath)
+        if (
+            realRelative === '..' ||
+            realRelative.startsWith(`..${path.sep}`) ||
+            path.isAbsolute(realRelative)
+        ) {
+            throw new Error('文件路径不能通过符号链接离开本机工作区')
+        }
+        return realPath
+    }
+
+    async _saveResolvedFileAs(sourcePath, options = {}) {
         const suggestedName = String(options?.suggestedName || path.basename(sourcePath)).trim()
             .replace(/[\u0000-\u001f<>:"/\\|?*]/g, '_')
             .replace(/[.\s]+$/g, '') || path.basename(sourcePath)
@@ -1580,8 +1629,17 @@ class FileOperations {
         return { canceled: false, filePath: targetPath }
     }
 
-    async openFile(relativePath) {
-        const fullPath = await this._resolveExportableFile(relativePath)
+    async saveFileAs(relativePath, options = {}) {
+        const sourcePath = await this._resolveExportableFile(relativePath)
+        return this._saveResolvedFileAs(sourcePath, options)
+    }
+
+    async saveWorkspaceFileAs(workspacePath, relativePath, options = {}) {
+        const sourcePath = await this._resolveExportableWorkspaceFile(workspacePath, relativePath)
+        return this._saveResolvedFileAs(sourcePath, options)
+    }
+
+    async _openResolvedFile(fullPath) {
         if (typeof globalThis?.utools?.shellOpenPath === 'function') {
             globalThis.utools.shellOpenPath(fullPath)
             return true
@@ -1594,8 +1652,27 @@ class FileOperations {
         throw new Error('当前环境不支持使用系统默认程序打开文件')
     }
 
+    async openFile(relativePath) {
+        const fullPath = await this._resolveExportableFile(relativePath)
+        return this._openResolvedFile(fullPath)
+    }
+
+    async openWorkspaceFile(workspacePath, relativePath) {
+        const fullPath = await this._resolveExportableWorkspaceFile(workspacePath, relativePath)
+        return this._openResolvedFile(fullPath)
+    }
+
     async showItemInFolder(relativePath) {
         const fullPath = await this._resolveExportableFile(relativePath)
+        return this._showResolvedItemInFolder(fullPath, () => this.openInFileManager(relativePath))
+    }
+
+    async showWorkspaceItemInFolder(workspacePath, relativePath) {
+        const fullPath = await this._resolveExportableWorkspaceFile(workspacePath, relativePath)
+        return this._showResolvedItemInFolder(fullPath)
+    }
+
+    async _showResolvedItemInFolder(fullPath, fallback = null) {
         if (typeof globalThis?.utools?.shellShowItemInFolder === 'function') {
             globalThis.utools.shellShowItemInFolder(fullPath)
             return true
@@ -1604,7 +1681,8 @@ class FileOperations {
             electronShell.showItemInFolder(fullPath)
             return true
         }
-        return this.openInFileManager(relativePath)
+        if (typeof fallback === 'function') return fallback()
+        throw new Error('当前环境不支持在文件夹中显示文件')
     }
 
     _shouldRetryDeleteError(err) {

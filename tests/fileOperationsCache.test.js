@@ -121,6 +121,33 @@ test('cloud file scans keep sandbox workspaces local-only', async (t) => {
   )
 })
 
+test('host workspace file export resolves only regular files inside the selected root', async (t) => {
+  const { tempRoot } = setupFileOperationsTest(t)
+  const workspaceRoot = path.join(tempRoot, 'host-workspace')
+  const sourcePath = createFixtureFile(workspaceRoot, 'output/report.md', '# report')
+  const targetPath = path.join(tempRoot, 'exports', 'report.md')
+  const originalShowSaveDialog = globalThis.utools.showSaveDialog
+  globalThis.utools.showSaveDialog = () => targetPath
+  t.after(() => {
+    globalThis.utools.showSaveDialog = originalShowSaveDialog
+  })
+
+  const result = await fileOperations.saveWorkspaceFileAs(
+    workspaceRoot,
+    'output/report.md',
+    { suggestedName: 'report.md' }
+  )
+
+  assert.equal(result.canceled, false)
+  assert.equal(result.filePath, targetPath)
+  assert.equal(fs.readFileSync(targetPath, 'utf8'), '# report')
+  assert.equal(fs.existsSync(sourcePath), true)
+  await assert.rejects(
+    fileOperations.saveWorkspaceFileAs(workspaceRoot, '../outside.md'),
+    /不能离开工作区/
+  )
+})
+
 test('deleteItem clears cached asset blobs for deleted directories', async (t) => {
   const { tempRoot, revoked } = setupFileOperationsTest(t)
   createFixtureFile(tempRoot, 'note/demo.md.assets/cover.png')
