@@ -429,6 +429,23 @@ test('hybrid query embeddings are cached and respect the routing timeout budget'
   assert.equal(contentIndex._internal.getEmbeddingQueryCacheSize(), 1)
 
   contentIndex._internal.clearEmbeddingQueryCache()
+  globalThis.fetch = async () => new Promise((resolve) => {
+    setTimeout(() => {
+      resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [{ embedding: [1, 0, 0] }] }),
+        text: async () => JSON.stringify({ data: [{ embedding: [1, 0, 0] }] })
+      })
+    }, 80)
+  })
+  const waitedForHybrid = await contentIndex.searchIndex('note', {
+    query: 'semantic-no-deadline-token',
+    embeddingTimeoutMs: 0
+  })
+  assert.equal(waitedForHybrid.semanticUsed, true)
+
+  contentIndex._internal.clearEmbeddingQueryCache()
   console.warn = () => {}
   globalThis.fetch = async (_url, options = {}) => new Promise((_resolve, reject) => {
     options.signal?.addEventListener('abort', () => {
@@ -447,6 +464,18 @@ test('hybrid query embeddings are cached and respect the routing timeout budget'
 
   assert.equal(timedOut.semanticUsed, false)
   assert.ok(elapsedMs < 500, `expected timeout fallback under 500ms, got ${elapsedMs}ms`)
+
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ data: [{ embedding: [1, 0, 0] }] }),
+    text: async () => JSON.stringify({ data: [{ embedding: [1, 0, 0] }] })
+  })
+  const retriedWithoutDeadline = await contentIndex.searchIndex('note', {
+    query: 'semantic-timeout-token',
+    embeddingTimeoutMs: 0
+  })
+  assert.equal(retriedWithoutDeadline.semanticUsed, true)
 })
 
 test('content index sanitizes repeated embedding failures and logs them once per provider', async (t) => {

@@ -1151,6 +1151,7 @@ import {
   migrateLegacyDefaultAgentSkillState,
   resolveBuiltinSkillCall,
   resolveSelectedSkillTarget as resolveSelectedSkillTargetFromList,
+  SKILL_ROUTING_EMBEDDING_TIMEOUT_MS,
   selectSkillsByIds
 } from '@/utils/chatSkillTooling'
 import {
@@ -3468,7 +3469,7 @@ async function autoActivateAgentSkillsFromText(textRaw) {
       query: raw,
       limit: 12,
       capabilityType: 'skill',
-      embeddingTimeoutMs: 500
+      embeddingTimeoutMs: SKILL_ROUTING_EMBEDDING_TIMEOUT_MS
     }).catch(() => null)
     plan = buildAutoSkillActivationPlan({
       ...routingInput,

@@ -795,6 +795,7 @@ function buildEntryEmbeddingText(kind, metadata = {}, entry = {}) {
 function normalizeEmbeddingTimeoutMs(value, fallback = DEFAULT_EMBEDDING_REQUEST_TIMEOUT_MS) {
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return fallback
+  if (numeric === 0) return 0
   return Math.max(50, Math.min(60_000, Math.floor(numeric)))
 }
 
@@ -824,6 +825,10 @@ async function requestEmbeddingVector(text, selection, options = {}) {
 
   const inputText = String(text || '')
   const cacheEnabled = options?.cache === true
+  const timeoutMs = normalizeEmbeddingTimeoutMs(
+    options?.timeoutMs,
+    options?.cache === true ? DEFAULT_EMBEDDING_QUERY_TIMEOUT_MS : DEFAULT_EMBEDDING_REQUEST_TIMEOUT_MS
+  )
   const cacheKey = cacheEnabled
     ? [
         String(selection?.providerId || ''),
@@ -832,34 +837,41 @@ async function requestEmbeddingVector(text, selection, options = {}) {
         inputText
       ].join('\u0000')
     : ''
+  const inFlightKey = cacheEnabled ? `${cacheKey}\u0000timeout:${timeoutMs}` : ''
   const now = Date.now()
   if (cacheEnabled) {
     pruneEmbeddingQueryCache(now)
     const cached = embeddingQueryCache.get(cacheKey)
-    if (cached && Number(cached.expiresAt || 0) > now) return [...cached.vector]
-    if (embeddingQueryInFlight.has(cacheKey)) return embeddingQueryInFlight.get(cacheKey)
+    if (
+      cached &&
+      Number(cached.expiresAt || 0) > now &&
+      (Array.isArray(cached.vector) && cached.vector.length > 0 || timeoutMs > 0)
+    ) {
+      return [...cached.vector]
+    }
+    if (embeddingQueryInFlight.has(inFlightKey)) return embeddingQueryInFlight.get(inFlightKey)
   }
 
   const candidates = [`${baseUrl.replace(/\/+$/, '')}/embeddings`]
   if (!/\/v1$/i.test(baseUrl)) candidates.push(`${baseUrl.replace(/\/+$/, '')}/v1/embeddings`)
 
-  const timeoutMs = normalizeEmbeddingTimeoutMs(
-    options?.timeoutMs,
-    options?.cache === true ? DEFAULT_EMBEDDING_QUERY_TIMEOUT_MS : DEFAULT_EMBEDDING_REQUEST_TIMEOUT_MS
-  )
   const pending = (async () => {
     let lastError = null
     let lastFailedUrl = candidates[candidates.length - 1] || baseUrl
-    const controller = typeof AbortController === 'function' ? new AbortController() : null
+    const controller = timeoutMs > 0 && typeof AbortController === 'function'
+      ? new AbortController()
+      : null
     let timeoutId = null
-    const timeoutPromise = new Promise((_, reject) => {
-      timeoutId = setTimeout(() => {
-        controller?.abort()
-        const error = new Error(`Embedding request timed out after ${timeoutMs}ms`)
-        error.name = 'TimeoutError'
-        reject(error)
-      }, timeoutMs)
-    })
+    const timeoutPromise = timeoutMs > 0
+      ? new Promise((_, reject) => {
+          timeoutId = setTimeout(() => {
+            controller?.abort()
+            const error = new Error(`Embedding request timed out after ${timeoutMs}ms`)
+            error.name = 'TimeoutError'
+            reject(error)
+          }, timeoutMs)
+        })
+      : null
 
     try {
       for (const url of candidates) {
@@ -876,7 +888,9 @@ async function requestEmbeddingVector(text, selection, options = {}) {
             }),
             ...(controller ? { signal: controller.signal } : {})
           })
-          const response = await Promise.race([fetchPromise, timeoutPromise])
+          const response = timeoutPromise
+            ? await Promise.race([fetchPromise, timeoutPromise])
+            : await fetchPromise
 
           if (response.status === 404 && url !== candidates[candidates.length - 1]) {
             continue
@@ -935,7 +949,7 @@ async function requestEmbeddingVector(text, selection, options = {}) {
     return []
   })()
 
-  if (cacheEnabled) embeddingQueryInFlight.set(cacheKey, pending)
+  if (cacheEnabled) embeddingQueryInFlight.set(inFlightKey, pending)
   try {
     const vector = await pending
     if (cacheEnabled) {
@@ -950,7 +964,7 @@ async function requestEmbeddingVector(text, selection, options = {}) {
     }
     return vector
   } finally {
-    if (cacheEnabled) embeddingQueryInFlight.delete(cacheKey)
+    if (cacheEnabled) embeddingQueryInFlight.delete(inFlightKey)
   }
 }
 

@@ -54,7 +54,8 @@ import {
   DEFAULT_SKILL_ROUTING_MIN_CONFIDENCE,
   DEFAULT_SKILL_ROUTING_MIN_MARGIN,
   discoverBuiltinSkillActions,
-  resolveBuiltinSkillCall
+  resolveBuiltinSkillCall,
+  SKILL_ROUTING_EMBEDDING_TIMEOUT_MS
 } from '@/utils/chatSkillTooling'
 import {
   evaluateToolApproval,
@@ -617,52 +618,83 @@ async function resolveExecutionProfile(task) {
   const basePromptText = prompt ? String(prompt.content || '').trim() : fallbackSystemPrompt
 
   const isDefaultGeneralAgent = agent.builtin === true
+  const routingText = String(task?.content || '')
   const configuredSkillIds = unionStrings(agent.skills, task?.skillIds)
-  const capabilitySearchResult = isDefaultGeneralAgent
-    ? await searchCapabilities({
-        query: String(task?.content || ''),
-        limit: 18,
-        embeddingTimeoutMs: 600
-      }).catch(() => null)
+  const skillRoutingCandidates = skillsRef.value || []
+  const enabledMcpServers = (mcpServersRef.value || []).filter((server) => server?._id && !server.disabled)
+  const mcpRoutingCandidates = enabledMcpServers.map((server) => ({
+    _id: server._id,
+    name: server.name || server._id,
+    description: [
+      server.description,
+      server.command,
+      server.url
+    ].filter(Boolean).join(' ')
+  }))
+  const skillRoutingInput = {
+    skills: skillRoutingCandidates,
+    text: routingText,
+    selectedSkillIds: configuredSkillIds,
+    agentSkillIds: agent.skills,
+    minimumConfidence: DEFAULT_SKILL_ROUTING_MIN_CONFIDENCE,
+    minimumMargin: DEFAULT_SKILL_ROUTING_MIN_MARGIN,
+    limit: 1
+  }
+  const mcpRoutingInput = {
+    skills: mcpRoutingCandidates,
+    text: routingText,
+    retrievalCapabilityType: 'mcp',
+    minimumConfidence: DEFAULT_SKILL_ROUTING_MIN_CONFIDENCE,
+    minimumMargin: DEFAULT_SKILL_ROUTING_MIN_MARGIN,
+    limit: 1
+  }
+  let skillRoutingPlan = isDefaultGeneralAgent
+    ? buildAutoSkillActivationPlan(skillRoutingInput)
     : null
-  const capabilityMatches = Array.isArray(capabilitySearchResult?.items)
-    ? capabilitySearchResult.items
-    : []
-  const routedSkills = isDefaultGeneralAgent
-    ? buildAutoSkillActivationPlan({
-        skills: skillsRef.value || [],
-        text: String(task?.content || ''),
-        selectedSkillIds: configuredSkillIds,
-        agentSkillIds: agent.skills,
-        retrievalMatches: capabilityMatches,
-        minimumConfidence: DEFAULT_SKILL_ROUTING_MIN_CONFIDENCE,
-        minimumMargin: DEFAULT_SKILL_ROUTING_MIN_MARGIN,
-        limit: 1
-      }).picked.map((item) => item.id)
-    : []
+  let mcpRoutingPlan = isDefaultGeneralAgent
+    ? buildAutoSkillActivationPlan(mcpRoutingInput)
+    : null
+
+  const searchUnresolvedCapabilities = async ({ embeddingTimeoutMs } = {}) => {
+    const unresolvedTypes = []
+    if (skillRoutingCandidates.length && !skillRoutingPlan?.picked?.length) unresolvedTypes.push('skill')
+    if (mcpRoutingCandidates.length && !mcpRoutingPlan?.picked?.length) unresolvedTypes.push('mcp')
+    if (!unresolvedTypes.length) return
+
+    const results = await Promise.all(unresolvedTypes.map(async (capabilityType) => {
+      const result = await searchCapabilities({
+        query: routingText,
+        limit: 18,
+        capabilityType,
+        embeddingTimeoutMs
+      }).catch(() => null)
+      return Array.isArray(result?.items) ? result.items : []
+    }))
+    const retrievalMatches = results.flat()
+    if (!skillRoutingPlan?.picked?.length) {
+      skillRoutingPlan = buildAutoSkillActivationPlan({
+        ...skillRoutingInput,
+        retrievalMatches
+      })
+    }
+    if (!mcpRoutingPlan?.picked?.length) {
+      mcpRoutingPlan = buildAutoSkillActivationPlan({
+        ...mcpRoutingInput,
+        retrievalMatches
+      })
+    }
+  }
+
+  if (isDefaultGeneralAgent) {
+    await searchUnresolvedCapabilities({
+      embeddingTimeoutMs: SKILL_ROUTING_EMBEDDING_TIMEOUT_MS
+    })
+  }
+
+  const routedSkills = skillRoutingPlan?.picked?.map((item) => item.id) || []
   const skillIds = unionStrings(configuredSkillIds, routedSkills)
   const skillObjects = skillIds.map((id) => getSkillById(id)).filter(Boolean)
-
-  const enabledMcpServers = (mcpServersRef.value || []).filter((server) => server?._id && !server.disabled)
-  const routedMcpIds = isDefaultGeneralAgent
-    ? buildAutoSkillActivationPlan({
-        skills: enabledMcpServers.map((server) => ({
-          _id: server._id,
-          name: server.name || server._id,
-          description: [
-            server.description,
-            server.command,
-            server.url
-          ].filter(Boolean).join(' ')
-        })),
-        text: String(task?.content || ''),
-        retrievalMatches: capabilityMatches,
-        retrievalCapabilityType: 'mcp',
-        minimumConfidence: DEFAULT_SKILL_ROUTING_MIN_CONFIDENCE,
-        minimumMargin: DEFAULT_SKILL_ROUTING_MIN_MARGIN,
-        limit: 1
-      }).picked.map((item) => item.id)
-    : []
+  const routedMcpIds = mcpRoutingPlan?.picked?.map((item) => item.id) || []
   const manualMcpIds = unionStrings(agent.mcp, task?.mcpIds, routedMcpIds)
   const derivedMcpIds = unionStrings(...skillObjects.map((s) => s?.mcp))
   const activeMcpIds = unionStrings(manualMcpIds, derivedMcpIds)

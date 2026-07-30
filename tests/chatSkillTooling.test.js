@@ -10,8 +10,13 @@ import {
   discoverBuiltinSkillActions,
   migrateLegacyDefaultAgentSkillState,
   pickSkillsByTriggers,
-  resolveBuiltinSkillCall
+  resolveBuiltinSkillCall,
+  SKILL_ROUTING_EMBEDDING_TIMEOUT_MS
 } from '../src/utils/chatSkillTooling.js'
+
+test('skill routing does not discard configured hybrid retrieval on an application deadline', () => {
+  assert.equal(SKILL_ROUTING_EMBEDDING_TIMEOUT_MS, 0)
+})
 
 function makeBuiltinSkill(overrides = {}) {
   return {

@@ -14,6 +14,7 @@ export const BUILTIN_SKILL_SOURCE_TYPE = 'builtin-directory'
 export const DEFAULT_SKILL_ACTION_CACHE_TTL_MS = 30 * 60_000
 export const DEFAULT_SKILL_ROUTING_MIN_CONFIDENCE = 0.74
 export const DEFAULT_SKILL_ROUTING_MIN_MARGIN = 0.12
+export const SKILL_ROUTING_EMBEDDING_TIMEOUT_MS = 0
 
 function normalizeText(value) {
   return String(value || '').trim()
@@ -439,7 +440,9 @@ export async function discoverBuiltinSkillActions({
     try {
       capabilitySearchResult = await searchCapabilities({
         query: search,
-        limit: Math.max(limit, 30)
+        limit: Math.max(limit, 30),
+        capabilityType: 'skill',
+        embeddingTimeoutMs: SKILL_ROUTING_EMBEDDING_TIMEOUT_MS
       })
     } catch {
       // Persistent hybrid retrieval is an enhancement; local matching remains available.
