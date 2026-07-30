@@ -50,11 +50,20 @@ export function createPreparedSkillToolExecutor(runtime) {
     maybeScrollToBottomForRun,
     mcpServers,
     prepareBuiltinAgentToolCallArgs,
+    readSkillRegistryFile: readSkillRegistryFileOverride,
     resolveSelectedSkillTarget,
     resolveSkillScriptTarget,
+    runSkillRegistryScript: runSkillRegistryScriptOverride,
     searchCapabilities,
     selectedSkillObjects
   } = runtime
+  const readSkillFile = readSkillRegistryFileOverride || readSkillRegistryFile
+  const runSkillScript = runSkillRegistryScriptOverride || runSkillRegistryScript
+
+  function persistUsedSkill(skillId) {
+    const id = String(skillId || '').trim()
+    if (id) markSkillActivationPersistent?.([id])
+  }
 
   async function executePreparedSkillTool(prepared, executionContext, abortState = null) {
     const {
@@ -88,6 +97,7 @@ export function createPreparedSkillToolExecutor(runtime) {
 
     if (mapping?.type === 'internal' && mapping.internal === 'skill_discover') {
       try {
+        persistUsedSkill(argsObj?.skill_id ?? argsObj?.skillId ?? argsObj?.id)
         const result = await waitForAbortable(
           discoverBuiltinSkillActions({
             selectedSkills: selectedSkillObjects.value,
@@ -130,6 +140,7 @@ export function createPreparedSkillToolExecutor(runtime) {
         if (!skillId || typeof skillsApi?.runAction !== 'function') {
           throw new Error('内置 Skill 动作 API 不可用')
         }
+        persistUsedSkill(skillId)
         const callArgs = typeof mapping?.unwrapArgs === 'function' ? mapping.unwrapArgs(argsObj) : argsObj
         const runtimeArgs = prepareBuiltinAgentToolCallArgs(skillId, toolName, callArgs, pendingToolMessage)
         const hostWorkspacePath = String(runtimeArgs?.__host_workspace_path || '').trim()
@@ -261,11 +272,12 @@ export function createPreparedSkillToolExecutor(runtime) {
         await maybeScrollToBottomForRun(abortState)
         return { ok: false, content: errorText }
       }
+      persistUsedSkill(target._id)
 
       try {
         throwIfAborted(abortState)
         const result = await waitForAbortable(
-          Promise.resolve(readSkillRegistryFile(target._id, pathCandidate)),
+          Promise.resolve(readSkillFile(target._id, pathCandidate)),
           abortState
         )
         throwIfAborted(abortState)
@@ -374,12 +386,13 @@ export function createPreparedSkillToolExecutor(runtime) {
       await maybeScrollToBottomForRun(abortState)
       return { ok: false, content: errorText }
     }
+    persistUsedSkill(target._id)
 
     let successfulScriptResult = null
     try {
       throwIfAborted(abortState)
       const result = await waitForAbortable(
-        Promise.resolve(runSkillRegistryScript(target._id, resolvedScript.path, {
+        Promise.resolve(runSkillScript(target._id, resolvedScript.path, {
           args: Array.isArray(argsObj?.args) ? argsObj.args : [],
           input: argsObj?.input,
           timeout_ms: argsObj?.timeout_ms

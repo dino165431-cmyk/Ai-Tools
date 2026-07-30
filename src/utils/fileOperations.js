@@ -86,8 +86,8 @@ export function restoreSandboxTrashEntries(entries) {
     return callFileOpsAsync('restoreSandboxTrashEntries', entries);
 }
 
-export function listSandboxTrashEntries() {
-    return callFileOpsAsync('listSandboxTrashEntries');
+export function listSandboxTrashEntries(options) {
+    return callFileOpsAsync('listSandboxTrashEntries', options);
 }
 
 export function purgeSandboxTrashEntries(entries, options) {

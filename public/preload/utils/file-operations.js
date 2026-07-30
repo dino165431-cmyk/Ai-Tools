@@ -1554,9 +1554,9 @@ class FileOperations {
         return sandboxWorkspace.restoreSandboxTrashEntries(entries)
     }
 
-    async listSandboxTrashEntries() {
+    async listSandboxTrashEntries(options = {}) {
         const sandboxWorkspace = require('./sandbox-workspace')
-        return sandboxWorkspace.listSandboxTrashEntries()
+        return sandboxWorkspace.listSandboxTrashEntries(options)
     }
 
     async purgeSandboxTrashEntries(entries = [], options = {}) {

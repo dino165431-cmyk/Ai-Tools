@@ -6,6 +6,7 @@
     "test": "node --import ./tests/register-alias.mjs --test --experimental-test-isolation=none \"tests/*.test.js\""
   },
   "dependencies": {
+    "@tanstack/vue-virtual": "^3.13.35",
     "cropperjs": "^1.6.2",
     "dompurify": "^3.3.3",
     "echarts": "^6.0.0",

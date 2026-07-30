@@ -11,6 +11,7 @@ import { initTimedTaskRunner } from '@/utils/timedTaskRunner'
 import router from './router'
 import 'vfonts/Lato.css'
 import 'vfonts/FiraCode.css'
+import './styles/markdownContent.css'
 
 let app = null
 let rendererSessionBootstrapped = false

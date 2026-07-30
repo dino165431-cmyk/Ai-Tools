@@ -3,6 +3,7 @@
     ref="previewHostRef"
     :class="[
       'markdown-preview-renderer',
+      'ai-markdown-surface',
       {
         'is-streaming': streaming,
         'is-deferred-block-layout': deferBlockLayout
@@ -361,15 +362,6 @@ onBeforeUnmount(() => {
   max-width: 100%;
   height: auto;
   contain: paint;
-}
-
-.markdown-preview-renderer.is-deferred-block-layout :deep(.md-editor-preview pre),
-.markdown-preview-renderer.is-deferred-block-layout :deep(.md-editor-preview table),
-.markdown-preview-renderer.is-deferred-block-layout :deep(.md-editor-preview blockquote),
-.markdown-preview-renderer.is-deferred-block-layout :deep(.md-editor-preview .note-preview-diagram),
-.markdown-preview-renderer.is-deferred-block-layout :deep(.md-editor-preview img) {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 280px;
 }
 
 .markdown-preview-renderer.is-streaming :deep(.md-editor-preview pre) {

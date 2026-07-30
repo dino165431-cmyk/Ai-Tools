@@ -4,6 +4,187 @@ const DEFAULT_CHAT_HEAVY_RENDER_TUNING = Object.freeze({
   maxHydrated: 96
 })
 
+function isWideTextCodePoint(codePoint) {
+  return codePoint >= 0x1100 && (
+    codePoint <= 0x115f ||
+    codePoint === 0x2329 ||
+    codePoint === 0x232a ||
+    (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
+    (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+    (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+    (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+    (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+    (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+    (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
+    (codePoint >= 0x1f300 && codePoint <= 0x1faff) ||
+    (codePoint >= 0x20000 && codePoint <= 0x3fffd)
+  )
+}
+
+function estimateTextVisualUnits(text) {
+  let units = 0
+  for (const char of String(text || '')) {
+    if (char === '\t') {
+      units += 4
+      continue
+    }
+    units += isWideTextCodePoint(char.codePointAt(0)) ? 2 : 1
+  }
+  return units
+}
+
+export function estimateChatMarkdownContentHeight(content, options = {}) {
+  const text = String(content || '').replace(/\r\n?/g, '\n')
+  if (!text) return 0
+
+  const charsPerLine = Math.max(12, Number(options.charsPerLine) || 44)
+  const visualLineCapacity = charsPerLine * 2
+  const lineHeight = Math.max(14, Number(options.lineHeight) || 18)
+  const autoFoldThreshold = Math.max(1, Math.round(Number(options.autoFoldThreshold) || 30))
+  const maxHeight = Math.max(0, Number(options.maxHeight) || 30_000)
+  const lines = text.split('\n')
+  let estimatedLines = 0
+  let blockBonus = 0
+  let fenceMarker = ''
+  let fenceInfo = ''
+  let codeLineCount = 0
+
+  const flushCodeFence = () => {
+    const forcedOpen = /::open(?:\s|$)/.test(fenceInfo)
+    const forcedClosed = /::close(?:\s|$)/.test(fenceInfo)
+    const collapsed = forcedClosed || (!forcedOpen && codeLineCount >= autoFoldThreshold)
+    // 折叠代码只保留 summary；展开代码按真实行数估算，长行由横向滚动承载。
+    estimatedLines += collapsed ? 2 : Math.max(3, codeLineCount + 2)
+    blockBonus += collapsed ? 4 : 12
+    fenceMarker = ''
+    fenceInfo = ''
+    codeLineCount = 0
+  }
+
+  lines.forEach((rawLine) => {
+    const line = String(rawLine || '')
+    const trimmed = line.trim()
+    const fenceMatch = trimmed.match(/^(`{3,}|~{3,})(.*)$/)
+
+    if (fenceMarker) {
+      if (fenceMatch && fenceMatch[1][0] === fenceMarker[0] && fenceMatch[1].length >= fenceMarker.length) {
+        flushCodeFence()
+      } else {
+        codeLineCount += 1
+      }
+      return
+    }
+
+    if (fenceMatch) {
+      fenceMarker = fenceMatch[1]
+      fenceInfo = String(fenceMatch[2] || '').trim()
+      return
+    }
+
+    if (!trimmed) {
+      estimatedLines += 0.55
+      return
+    }
+
+    const visualUnits = estimateTextVisualUnits(line)
+    estimatedLines += Math.max(1, Math.ceil(visualUnits / visualLineCapacity))
+    if (/^!\[[^\]]*]\(/.test(trimmed)) estimatedLines += 12
+    if (/^(#{1,6}\s+|>\s+|[-*+]\s+|\d+\.\s+)/.test(trimmed)) blockBonus += 5
+    if (/^\|/.test(trimmed)) estimatedLines += 0.45
+  })
+
+  if (fenceMarker) flushCodeFence()
+
+  const height = Math.ceil(estimatedLines * lineHeight) + Math.min(480, blockBonus)
+  return Math.min(maxHeight, Math.max(lineHeight, height))
+}
+
+export function shouldEnableChatVirtualization(options = {}) {
+  const itemCount = Number.isFinite(Number(options.itemCount))
+    ? Math.max(0, Math.floor(Number(options.itemCount)))
+    : 0
+  const countThreshold = Math.max(1, Math.floor(Number(options.countThreshold) || 24))
+  if (itemCount >= countThreshold) return true
+
+  const minItemsForHeight = Math.max(2, Math.floor(Number(options.minItemsForHeight) || 8))
+  if (itemCount < minItemsForHeight) return false
+
+  const estimatedHeight = Number.isFinite(Number(options.estimatedHeight))
+    ? Math.max(0, Number(options.estimatedHeight))
+    : 0
+  const viewportHeight = Number.isFinite(Number(options.viewportHeight)) && Number(options.viewportHeight) > 0
+    ? Number(options.viewportHeight)
+    : 800
+  const minEstimatedHeight = Math.max(0, Number(options.minEstimatedHeight) || 5600)
+  const viewportMultiplier = Math.max(1, Number(options.viewportMultiplier) || 7)
+  const heightThreshold = Math.max(minEstimatedHeight, viewportHeight * viewportMultiplier)
+  return estimatedHeight >= heightThreshold
+}
+
+export function resolveChatAdaptiveVirtualRange(range = {}, options = {}) {
+  const count = Number.isFinite(Number(range.count))
+    ? Math.max(0, Math.floor(Number(range.count)))
+    : 0
+  if (!count) return []
+
+  const startIndex = Math.min(
+    count - 1,
+    Math.max(0, Math.floor(Number(range.startIndex) || 0))
+  )
+  const endIndex = Math.min(
+    count - 1,
+    Math.max(startIndex, Math.floor(Number(range.endIndex) || startIndex))
+  )
+  const viewportHeight = Number.isFinite(Number(options.viewportHeight)) && Number(options.viewportHeight) > 0
+    ? Number(options.viewportHeight)
+    : 800
+  const minBufferPx = Math.max(0, Number(options.minBufferPx) || 320)
+  const maxBufferPx = Math.max(minBufferPx, Number(options.maxBufferPx) || 720)
+  const bufferMultiplier = Math.max(0, Number(options.bufferMultiplier) || 0.75)
+  const targetBufferPx = Math.min(maxBufferPx, Math.max(minBufferPx, viewportHeight * bufferMultiplier))
+  const maxExtraItems = Math.max(1, Math.floor(Number(options.maxExtraItems) || 12))
+  const minExtraItems = Math.min(
+    maxExtraItems,
+    Math.max(0, Math.floor(Number(options.minExtraItems) || 1))
+  )
+  const estimateSize = typeof options.estimateSize === 'function'
+    ? options.estimateSize
+    : () => 180
+
+  const getEstimatedSize = (index) => {
+    const size = Number(estimateSize(index))
+    return Number.isFinite(size) && size > 0 ? size : 180
+  }
+
+  let first = startIndex
+  let beforePx = 0
+  let beforeCount = 0
+  while (
+    first > 0 &&
+    beforeCount < maxExtraItems &&
+    (beforeCount < minExtraItems || beforePx < targetBufferPx)
+  ) {
+    first -= 1
+    beforePx += getEstimatedSize(first)
+    beforeCount += 1
+  }
+
+  let last = endIndex
+  let afterPx = 0
+  let afterCount = 0
+  while (
+    last < count - 1 &&
+    afterCount < maxExtraItems &&
+    (afterCount < minExtraItems || afterPx < targetBufferPx)
+  ) {
+    last += 1
+    afterPx += getEstimatedSize(last)
+    afterCount += 1
+  }
+
+  return Array.from({ length: last - first + 1 }, (_, offset) => first + offset)
+}
+
 export function resolveChatHeavyRenderTuning(messageCount) {
   const count = Number.isFinite(Number(messageCount)) ? Math.max(0, Math.floor(Number(messageCount))) : 0
 
@@ -50,24 +231,6 @@ export function shouldDeferChatHeavyBlockLayout(message, options = {}) {
   return !visibleMessageIds.has(id)
 }
 
-export function resolveChatViewportCompensation(options = {}) {
-  const scrollTop = Number(options.scrollTop)
-  const deltaPx = Number(options.deltaPx)
-  const lastProcessedScrollTop = Number(options.lastProcessedScrollTop)
-  const safeScrollTop = Number.isFinite(scrollTop) ? Math.max(0, scrollTop) : 0
-  const safeDelta = Number.isFinite(deltaPx) ? deltaPx : 0
-  const nextScrollTop = Math.max(0, safeScrollTop + safeDelta)
-  const appliedDelta = nextScrollTop - safeScrollTop
-
-  return {
-    nextScrollTop,
-    appliedDelta,
-    nextLastProcessedScrollTop: options.didProcessScroll && Number.isFinite(lastProcessedScrollTop)
-      ? Math.max(0, lastProcessedScrollTop + appliedDelta)
-      : lastProcessedScrollTop
-  }
-}
-
 export function isExpectedChatProgrammaticScroll(options = {}) {
   const now = Number(options.now)
   const until = Number(options.until)
@@ -96,31 +259,6 @@ export function resolveChatBottomScrollTarget(options = {}) {
     distancePx,
     shouldScroll: Math.abs(distancePx) > tolerance
   }
-}
-
-export function resolveChatVirtualCanvasHeight(options = {}) {
-  const contentHeight = Number(options.contentHeight)
-  const paddingBlock = Number(options.paddingBlock)
-  const safeContentHeight = Number.isFinite(contentHeight) ? Math.max(0, contentHeight) : 0
-  const safePaddingBlock = Number.isFinite(paddingBlock) ? Math.max(0, paddingBlock) : 0
-  return Math.ceil(safeContentHeight) + (Math.ceil(safePaddingBlock) * 2)
-}
-
-export function resolveChatVirtualItemHeight(options = {}) {
-  const minimumHeight = Number(options.minimumHeight)
-  const measuredHeight = Number(options.measuredHeight)
-  const estimatedHeight = Number(options.estimatedHeight)
-  const fallbackHeight = Number(options.fallbackHeight)
-  const safeMinimumHeight = Number.isFinite(minimumHeight) ? Math.max(0, minimumHeight) : 0
-  const preferredHeight = Number.isFinite(measuredHeight) && measuredHeight > 0
-    ? measuredHeight
-    : Number.isFinite(estimatedHeight) && estimatedHeight > 0
-      ? estimatedHeight
-      : Number.isFinite(fallbackHeight) && fallbackHeight > 0
-        ? fallbackHeight
-        : safeMinimumHeight
-
-  return Math.max(safeMinimumHeight, Math.ceil(preferredHeight))
 }
 
 export function resolveChatVirtualItemGap(options = {}) {

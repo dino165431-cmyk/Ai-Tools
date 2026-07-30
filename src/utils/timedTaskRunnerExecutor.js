@@ -1270,12 +1270,17 @@ export async function runTimedTaskOnce(task, options = {}) {
         if (!mapping) {
           const errorText = `未找到工具映射：${fn}`
           updateTimedTaskToolMessage(toolMessage, { status: 'error', serverName: '未知', toolName: fn || '', errorText })
-          apiMessages.push(createToolResultApiMessage(tc, errorText))
+          apiMessages.push(createToolResultApiMessage(tc, errorText, {
+            ok: false,
+            status: 'error'
+          }))
           continue
         }
 
         const exec = await executeTimedTaskToolCall({ profile, toolCall: tc, mapping, argsObj })
-        apiMessages.push(createToolResultApiMessage(tc, exec?.content))
+        apiMessages.push(createToolResultApiMessage(tc, exec?.content, {
+          ok: exec?.ok
+        }))
 
         updateTimedTaskToolMessage(toolMessage, {
           status: exec?.ok === false ? 'error' : 'success',

@@ -1005,15 +1005,17 @@
   position: relative;
   display: block;
   box-sizing: border-box;
+  padding: 0;
 }
 
 .chat-list.is-virtualized .chat-item.is-virtualized {
   position: absolute;
-  top: var(--chat-list-padding-block);
+  top: var(--chat-virtual-item-top, 0px);
   left: var(--chat-list-padding-inline-start);
   right: var(--chat-list-padding-inline-end);
   width: auto;
-  transform: translate3d(0, var(--chat-virtual-item-top, 0px), 0);
+  box-sizing: border-box;
+  padding-top: var(--chat-virtual-item-gap, 0px);
 }
 
 @keyframes chat-fade-up {
@@ -1688,14 +1690,16 @@
 
 .chat-item__content :deep(.md-editor-preview .md-editor-code) {
   max-width: 100%;
-  overflow-x: auto !important;
-  overflow-y: hidden;
+  overflow: visible !important;
   position: relative;
-  overscroll-behavior: contain;
 }
 
 .chat-item__content :deep(.md-editor-preview .md-editor-code pre) {
-  overflow: visible !important;
+  max-width: 100%;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .chat-item__content :deep(.tool-message__details .md-editor-code) {

@@ -7,6 +7,8 @@
     :theme="theme"
     :toolbars="toolbars"
     :toolbars-exclude="toolbarsExclude"
+    :code-foldable="true"
+    :auto-fold-threshold="MARKDOWN_CODE_AUTO_FOLD_THRESHOLD"
     :sanitize="sanitizeHtml"
     :sanitize-mermaid="sanitizeSvgMarkup"
     :no-echarts="true"
@@ -32,6 +34,7 @@ import { computed, ref } from 'vue'
 import { MdEditor, allToolbar } from 'md-editor-v3'
 import NoteDiagramToolbar from './NoteDiagramToolbar.vue'
 import { getNoteConfig } from '@/utils/configListener'
+import { MARKDOWN_CODE_AUTO_FOLD_THRESHOLD } from '@/utils/chatMarkdownPreview'
 import { buildNoteTemplateView } from '@/utils/noteTemplateConfig'
 import { sanitizeHtml } from '@/utils/sanitizeHtml'
 import { sanitizeSvgMarkup } from '@/utils/sanitizeSvg'

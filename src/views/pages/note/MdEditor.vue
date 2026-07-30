@@ -17,7 +17,7 @@
   <div
     ref="editorContainerRef"
     v-else
-    :class="['editor-container', { 'is-dark': theme === 'dark' }]"
+    :class="['editor-container', 'ai-markdown-surface', { 'is-dark': theme === 'dark' }]"
     @contextmenu="handleEditorAreaContextMenu"
   >
     <div :class="['editor-shell', { 'is-catalog-collapsed': catalogCollapsed }]">
@@ -2988,7 +2988,6 @@ onBeforeUnmount(() => {
 
 .editor-container :deep(.md-editor-preview-wrapper) {
   min-height: 0;
-  contain: layout paint;
   border: 1px solid rgba(148, 163, 184, 0.16);
   border-radius: 18px;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(248, 250, 252, 0.92));
@@ -3027,15 +3026,6 @@ onBeforeUnmount(() => {
   max-width: 100%;
   height: auto;
   contain: paint;
-}
-
-.editor-container :deep(.md-editor-preview pre),
-.editor-container :deep(.md-editor-preview table),
-.editor-container :deep(.md-editor-preview blockquote),
-.editor-container :deep(.md-editor-preview .note-preview-diagram),
-.editor-container :deep(.md-editor-preview img) {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 280px;
 }
 
 .editor-container :deep(.md-editor.md-editor-previewOnly) {

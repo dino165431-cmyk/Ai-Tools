@@ -119,8 +119,9 @@
               class="chat-item"
               :class="[msg.role, chatItemStateClasses(msg), { 'is-virtualized': chatVirtualizedEnabled }]"
               :style="getChatVirtualItemStyle(msg)"
+              :data-index="getChatVirtualItemIndex(msg)"
               :id="msg.role === 'user' ? `q-${msg.id}` : undefined"
-              :ref="(el) => setChatItemEl(msg.id, msg.role, el)"
+              :ref="getChatVirtualItemRef(msg)"
             >
             <div class="chat-item__row">
               <div class="chat-item__avatar" :class="chatAvatarStateClasses(msg)">
@@ -1052,6 +1053,7 @@
 
 <script setup>
 import { computed, defineAsyncComponent, ref, reactive, watch, nextTick, onMounted, onActivated, onDeactivated, onBeforeUnmount } from 'vue'
+import { useVirtualizer } from '@tanstack/vue-virtual'
 import { useRouter } from 'vue-router'
 import {
   NCard,
@@ -1182,6 +1184,7 @@ import {
   calculateReservedRequestChars,
   createToolResultApiMessage,
   estimateToolDefinitionsChars,
+  formatToolResultContentForModel,
   normalizeAssistantToolCalls,
   shouldIncludeReasoningContent,
   shouldRetryWithReasoningContent
@@ -1328,14 +1331,14 @@ import {
   getToolActivityToolName
 } from '@/utils/chatToolActivity'
 import {
+  estimateChatMarkdownContentHeight,
   isExpectedChatProgrammaticScroll,
   resolveChatBottomScrollTarget,
+  resolveChatAdaptiveVirtualRange,
   resolveChatHeavyRenderTuning,
-  resolveChatVirtualCanvasHeight,
-  resolveChatViewportCompensation,
   resolveChatVirtualItemGap,
-  resolveChatVirtualItemHeight,
-  shouldDeferChatHeavyBlockLayout
+  shouldDeferChatHeavyBlockLayout,
+  shouldEnableChatVirtualization
 } from '@/utils/chatPerformance.js'
 import {
   ATTACH_ACCEPT,
@@ -2495,18 +2498,20 @@ const hasAppliedDefaultModel = ref(false)
 const COMPACT_CHAT_BREAKPOINT = 980
 const DENSE_CHAT_BREAKPOINT = 720
 const CHAT_VIRTUALIZATION_MIN_MESSAGES = 24
-const CHAT_VIRTUALIZATION_OVERSCAN_PX = 640
-const CHAT_VIRTUALIZATION_FORCE_RENDER_MARGIN_PX = 240
+const CHAT_VIRTUALIZATION_MIN_ITEMS_FOR_HEIGHT = 4
+const CHAT_VIRTUALIZATION_MIN_ESTIMATED_HEIGHT_PX = 4800
+const CHAT_VIRTUALIZATION_MIN_VIEWPORTS = 6
+const CHAT_VIRTUALIZATION_MIN_BUFFER_PX = 320
+const CHAT_VIRTUALIZATION_MAX_BUFFER_PX = 720
+const CHAT_VIRTUALIZATION_MAX_BUFFER_ITEMS = 12
 const CHAT_LIST_GAP_PX = 14
 const CHAT_ACTIVITY_LIST_GAP_PX = 5
 const CHAT_DEFAULT_MESSAGE_HEIGHT = 180
-const CHAT_DEFAULT_MIN_MESSAGE_HEIGHT = 96
 const CHAT_RECENT_HEAVY_RENDER_COUNT = 12
 const CHAT_HEAVY_RENDER_SEED_COUNT = 12
 const CHAT_HEAVY_RENDER_WARM_BUFFER_EXTRA = 2
 const CHAT_SCROLL_COMPENSATION_SUSPEND_MS = 640
-const CHAT_SCROLL_COMPENSATION_MARK_MS = 96
-const CHAT_USER_SCROLL_ACTIVE_MS = 480
+const CHAT_USER_SCROLL_INTENT_MS = 480
 const CHAT_TOOL_COMPACT_MIN_MESSAGES = 120
 const CHAT_TOOL_COMPACT_MIN_TOOL_MESSAGES = 32
 const CHAT_TOOL_COMPACT_ITEM_FIXED_HEIGHT = 26
@@ -5872,9 +5877,9 @@ function toggleToolActivityGroup(group) {
   if (next.has(id)) next.delete(id)
   else next.add(id)
   expandedToolActivityGroupIds.value = next
-  chatMessageHeightCache.delete(id)
   chatMessageEstimatedHeightCache.delete(id)
-  bumpChatMessageMetricsVersion()
+  scheduleRefreshUserAnchorMeta()
+  scheduleStickyChatBubbleSync()
 }
 
 function isAssistantActivityMessage(msg) {
@@ -6867,7 +6872,6 @@ function updateChatImageMetadata(img, event) {
   if (changed) {
     img.resolution = `${normalizeMediaDimension(img.width)}x${normalizeMediaDimension(img.height)}`
     img.metaLine = ''
-    bumpChatMessageMetricsVersion()
     scheduleRefreshUserAnchorMeta()
   }
 }
@@ -6897,7 +6901,6 @@ function updateChatVideoMetadata(video, event) {
       video.resolution = `${normalizeMediaDimension(video.width)}x${normalizeMediaDimension(video.height)}`
     }
     video.metaLine = ''
-    bumpChatMessageMetricsVersion()
     scheduleRefreshUserAnchorMeta()
   }
 }
@@ -7091,7 +7094,6 @@ const expandedToolActivityGroupIds = ref(new Set())
 const visibleHeavyChatMessageIds = ref(new Set())
 const hydratedHeavyChatMessageIds = ref(new Set())
 const chatSessionOpeningHeavyRender = ref(false)
-const chatMessageMetricsVersion = ref(0)
 const recentHeavyChatMessageIds = computed(() => {
   const ids = new Set()
   const tail = Array.isArray(session.messages) ? session.messages.slice(-CHAT_RECENT_HEAVY_RENDER_COUNT) : []
@@ -7109,21 +7111,15 @@ function resolveCurrentHeavyRenderViewportBuffer(extra = 0) {
 
 let chatLayoutResizeObserver = null
 let chatMessageVisibilityObserver = null
-let chatMessageResizeObserver = null
 const chatMessageElMap = new Map()
-const chatMessageHeightCache = new Map()
 const chatMessageEstimatedHeightCache = new Map()
 const chatMessageByIdMap = new Map()
 const intersectingHeavyChatMessageIds = new Set()
-const pendingChatItemHeightMeasureMap = new Map()
-let pendingChatItemHeightMeasureRafId = 0
-let pendingChatScrollCompensationPx = 0
-let pendingChatScrollCompensationRafId = 0
 let lastProcessedChatScrollTop = 0
 let didProcessChatScroll = false
 let programmaticChatScrollUntil = 0
 let programmaticChatScrollTop = Number.NaN
-let userChatScrollActiveUntil = 0
+let userChatScrollIntentUntil = 0
 let sessionResetPromise = null
 
 function estimateChatMessageHeight(msg) {
@@ -7149,22 +7145,6 @@ function estimateChatMessageHeight(msg) {
   const attachmentExtra = attachmentCount * 76
   const thinkingExtra = msg?.thinkingExpanded ? Math.min(320, Math.ceil(thinkingLength / 10)) : 0
   return Math.max(112, base + contentExtra + attachmentExtra + thinkingExtra)
-}
-
-function getChatMessageMinimumHeight(msg) {
-  const fixedHeight = getFixedCompactChatMessageHeight(msg)
-  if (fixedHeight) return fixedHeight
-  if (isAssistantActivityMessage(msg) && !msg?.thinkingExpanded) return CHAT_ASSISTANT_ACTIVITY_ITEM_HEIGHT
-  return CHAT_DEFAULT_MIN_MESSAGE_HEIGHT
-}
-
-function getChatMessageMeasuredHeight(msg, rawHeight) {
-  return resolveChatVirtualItemHeight({
-    measuredHeight: rawHeight,
-    estimatedHeight: getEstimatedChatMessageHeight(msg),
-    minimumHeight: getChatMessageMinimumHeight(msg),
-    fallbackHeight: CHAT_DEFAULT_MESSAGE_HEIGHT
-  })
 }
 
 function getChatMessageGapBefore(previousMsg, currentMsg, index) {
@@ -7210,41 +7190,11 @@ function getEstimatedChatMessageHeight(msg) {
 }
 
 function estimateChatMessageContentHeight(content) {
-  const text = String(content || '').replace(/\r\n/g, '\n')
-  if (!text) return 0
-
   const charsPerLine = isCompactChatLayout.value ? 24 : isDenseChatLayout.value ? 30 : 44
-  const lines = text.split('\n')
-  let estimatedLines = 0
-  let blockBonus = 0
-  let inCodeFence = false
-
-  lines.forEach((rawLine) => {
-    const line = String(rawLine || '')
-    const trimmed = line.trim()
-
-    if (!trimmed) {
-      estimatedLines += 0.6
-      return
-    }
-
-    if (/^```/.test(trimmed)) {
-      inCodeFence = !inCodeFence
-      estimatedLines += 1
-      blockBonus += 10
-      return
-    }
-
-    const effectiveCharsPerLine = inCodeFence ? Math.max(14, charsPerLine - 10) : charsPerLine
-    const visualLength = line.length + (inCodeFence ? 6 : 0)
-    estimatedLines += Math.max(1, Math.ceil(visualLength / effectiveCharsPerLine))
-    if (/^(#{1,6}\s+|>\s+|[-*+]\s+|\d+\.\s+|\|)/.test(trimmed)) blockBonus += 6
+  return estimateChatMarkdownContentHeight(content, {
+    charsPerLine,
+    autoFoldThreshold: CHAT_CODE_AUTO_FOLD_THRESHOLD
   })
-
-  const lengthFloor = Math.ceil(text.length / 9)
-  const lineBased = Math.ceil(estimatedLines * 18) + Math.min(360, blockBonus)
-  // 长正文如果估得太矮，首次进入可视区时会触发很大的滚动补偿跳变。
-  return Math.min(2400, Math.max(lengthFloor, lineBased))
 }
 
 function estimateCollapsedToolMessageHeight(msg) {
@@ -7277,6 +7227,7 @@ function resolveChatMessageById(messageId) {
 
 function isMarkdownHeavyRenderCandidate(msg) {
   if (!msg || typeof msg !== 'object') return false
+  if (isToolMessage(msg) || isToolActivityGroup(msg)) return false
   if (String(msg?.role || '').trim() === 'user' && shouldRenderUserMessageAsPlainText(msg)) return false
   if (String(msg.render || '').trim() === 'text') return false
   return !!String(msg.content || '').trim()
@@ -7361,9 +7312,8 @@ function pruneHydratedHeavyChatMessageIds(options = {}) {
   renderedIds.forEach((id) => keepIds.add(id))
   visibleHeavyChatMessageIds.value.forEach((id) => keepIds.add(id))
   recentHeavyChatMessageIds.value.forEach((id) => keepIds.add(id))
-  forcedRenderedChatMessageIdSet.value.forEach((id) => keepIds.add(id))
 
-  const items = Array.isArray(chatVirtualLayout.value?.items) ? chatVirtualLayout.value.items : []
+  const items = chatDisplayMessages.value
   const buffer = resolveCurrentHeavyRenderViewportBuffer()
   const start = Math.max(0, Number(renderedChatRange.value?.start || 0) - buffer)
   const end = Math.min(items.length - 1, Number(renderedChatRange.value?.end || -1) + buffer)
@@ -7373,7 +7323,7 @@ function pruneHydratedHeavyChatMessageIds(options = {}) {
   }
 
   for (let i = items.length - 1; i >= 0 && keepIds.size < limit; i -= 1) {
-    const msg = items[i]?.msg
+    const msg = items[i]
     const id = String(msg?.id || '').trim()
     if (!id || !current.has(id) || !isMarkdownHeavyRenderCandidate(msg)) continue
     keepIds.add(id)
@@ -7434,7 +7384,7 @@ async function maybeWarmMarkdownPreviewRuntimeForMessages(messages, options = {}
 }
 
 function primeHydratedRenderedChatMessages(options = {}) {
-  const items = Array.isArray(chatVirtualLayout.value?.items) ? chatVirtualLayout.value.items : []
+  const items = chatDisplayMessages.value
   if (!items.length) return false
 
   const range = renderedChatRange.value || { start: 0, end: -1 }
@@ -7448,7 +7398,7 @@ function primeHydratedRenderedChatMessages(options = {}) {
 
   const ids = new Set()
   for (let i = start; i <= end; i += 1) {
-    const msg = items[i]?.msg
+    const msg = items[i]
     const id = String(msg?.id || '').trim()
     if (!id || !isMarkdownHeavyRenderCandidate(msg)) continue
     ids.add(id)
@@ -7471,23 +7421,6 @@ function primeHydratedMountedHeavyChatMessages() {
   const changed = mergeHydratedHeavyChatMessageIds(ids)
   pruneHydratedHeavyChatMessageIds()
   return changed
-}
-
-function findFirstItemBottomGte(items, targetBottom) {
-  const list = Array.isArray(items) ? items : []
-  let left = 0
-  let right = list.length - 1
-  let answer = list.length
-  while (left <= right) {
-    const mid = (left + right) >> 1
-    if (Number(list[mid]?.bottom) >= targetBottom) {
-      answer = mid
-      right = mid - 1
-    } else {
-      left = mid + 1
-    }
-  }
-  return answer
 }
 
 function findLastItemTopLte(items, targetTop, startIndex = 0) {
@@ -7514,145 +7447,209 @@ const chatDisplayMessages = computed(() =>
   })
 )
 
-const chatVirtualizedEnabled = computed(() => chatDisplayMessages.value.length >= CHAT_VIRTUALIZATION_MIN_MESSAGES)
-
-const forcedRenderedChatMessageIdSet = computed(() => {
-  const ids = new Set(recentHeavyChatMessageIds.value)
-  for (const msg of session.messages || []) {
-    const id = String(msg?.id || '').trim()
-    if (!id) continue
-    const isLiveTool = isToolMessage(msg) && isLiveToolMessageStatus(getToolMessageStatus(msg))
-    if (msg.streaming || msg.editing || msg.thinkingExpanded || msg.toolExpanded || msg.attachmentsExpanded || isLiveTool) ids.add(id)
-  }
-  return ids
-})
-
-const chatVirtualLayout = computed(() => {
-  void chatMessageMetricsVersion.value
-  const items = []
-  const idToIndex = new Map()
-  const topById = new Map()
-  let offset = 0
+const chatEstimatedContentHeight = computed(() => {
   const displayMessages = chatDisplayMessages.value
-  displayMessages.forEach((msg, index) => {
-    const id = String(msg?.id || '').trim()
+  return displayMessages.reduce((total, msg, index) => {
     const previousMsg = index > 0 ? displayMessages[index - 1] : null
-    const gapBefore = getChatMessageGapBefore(previousMsg, msg, index)
-    const height = resolveChatVirtualItemHeight({
-      measuredHeight: chatMessageHeightCache.get(id),
-      estimatedHeight: getEstimatedChatMessageHeight(msg),
-      minimumHeight: getChatMessageMinimumHeight(msg),
-      fallbackHeight: CHAT_DEFAULT_MESSAGE_HEIGHT
-    })
-    offset += gapBefore
-    const top = offset
-    const bottom = top + height
-    items.push({
-      id,
-      index,
-      top,
-      bottom,
-      height,
-      gapBefore,
-      msg
-    })
-    if (id) {
-      idToIndex.set(id, index)
-      topById.set(id, top)
-    }
-    offset = bottom
-  })
-  const totalHeight = items.length ? Math.max(0, offset) : 0
-  return {
-    items,
-    idToIndex,
-    topById,
-    totalHeight
-  }
+    return total + getChatMessageGapBefore(previousMsg, msg, index) + getEstimatedChatMessageHeight(msg)
+  }, 0)
 })
 
-function resolveChatRenderRange(layout, scrollTop, viewportHeight) {
-  const items = Array.isArray(layout?.items) ? layout.items : []
-  if (!items.length) return { start: 0, end: -1 }
-  if (!chatVirtualizedEnabled.value) return { start: 0, end: items.length - 1 }
+const chatVirtualizedSessionKeys = ref(new Set())
+const currentChatVirtualizationSessionKey = computed(() => {
+  return String(activeMemorySessionId.value || activeSessionFilePath.value || '__current_chat__').trim()
+})
 
-  const overscan = CHAT_VIRTUALIZATION_OVERSCAN_PX
-  const viewportTop = Math.max(0, Number(scrollTop) - overscan)
-  const viewportBottom = Math.max(0, Number(scrollTop) + Math.max(0, Number(viewportHeight) || 0) + overscan)
-
-  let start = findFirstItemBottomGte(items, viewportTop)
-  if (start >= items.length) start = Math.max(0, items.length - 1)
-  let end = findLastItemTopLte(items, viewportBottom, start)
-  if (end < start) end = start
-
-  if (start >= items.length) end = items.length - 1
-
-  const forcedIds = forcedRenderedChatMessageIdSet.value
-  const forceMargin = Math.max(0, Number(CHAT_VIRTUALIZATION_FORCE_RENDER_MARGIN_PX) || 0)
-  const forceViewportTop = Math.max(0, viewportTop - forceMargin)
-  const forceViewportBottom = viewportBottom + forceMargin
-  let forcedStart = start
-  let forcedEnd = end
-  forcedIds.forEach((id) => {
-    const index = layout.idToIndex.get(id)
-    if (!Number.isInteger(index)) return
-    const item = items[index]
-    if (!item) return
-    // Keep nearby interactive items mounted without letting distant tail/history items
-    // stretch the render window into one huge continuous block.
-    if (item.bottom < forceViewportTop || item.top > forceViewportBottom) return
-    forcedStart = Math.min(forcedStart, index)
-    forcedEnd = Math.max(forcedEnd, index)
+const chatVirtualizationRequested = computed(() => {
+  const sessionKey = currentChatVirtualizationSessionKey.value
+  if (chatVirtualizedSessionKeys.value.has(sessionKey)) return true
+  return shouldEnableChatVirtualization({
+    itemCount: chatDisplayMessages.value.length,
+    estimatedHeight: chatEstimatedContentHeight.value,
+    viewportHeight: chatViewportHeight.value,
+    countThreshold: CHAT_VIRTUALIZATION_MIN_MESSAGES,
+    minItemsForHeight: CHAT_VIRTUALIZATION_MIN_ITEMS_FOR_HEIGHT,
+    minEstimatedHeight: CHAT_VIRTUALIZATION_MIN_ESTIMATED_HEIGHT_PX,
+    viewportMultiplier: CHAT_VIRTUALIZATION_MIN_VIEWPORTS
   })
+})
 
-  return {
-    start: Math.max(0, forcedStart),
-    end: Math.min(items.length - 1, Math.max(forcedEnd, forcedStart))
-  }
+watch(
+  [
+    currentChatVirtualizationSessionKey,
+    chatVirtualizationRequested,
+    () => chatDisplayMessages.value.length
+  ],
+  ([sessionKey, requested, itemCount]) => {
+    const key = String(sessionKey || '').trim()
+    if (!key) return
+    const next = new Set(chatVirtualizedSessionKeys.value)
+    if (!itemCount) {
+      if (!next.delete(key)) return
+    } else if (requested) {
+      if (next.has(key)) return
+      next.add(key)
+    } else {
+      return
+    }
+    chatVirtualizedSessionKeys.value = next
+  },
+  { immediate: true }
+)
+
+const chatVirtualizedEnabled = computed(() => {
+  if (!chatDisplayMessages.value.length) return false
+  return chatVirtualizationRequested.value
+})
+
+const chatDisplayMessageIndexById = computed(() => {
+  const indexById = new Map()
+  chatDisplayMessages.value.forEach((msg, index) => {
+    const id = String(msg?.id || '').trim()
+    if (id) indexById.set(id, index)
+  })
+  return indexById
+})
+
+function getChatVirtualItemKey(index) {
+  const msg = chatDisplayMessages.value[index]
+  return String(msg?.id || `chat-message-${index}`)
 }
 
-const renderedChatRange = computed(() =>
-  resolveChatRenderRange(chatVirtualLayout.value, chatScrollTop.value, chatViewportHeight.value)
+function estimateChatVirtualItemSize(index) {
+  const messages = chatDisplayMessages.value
+  const msg = messages[index]
+  if (!msg) return CHAT_DEFAULT_MESSAGE_HEIGHT
+  const previousMsg = index > 0 ? messages[index - 1] : null
+  return getChatMessageGapBefore(previousMsg, msg, index) + getEstimatedChatMessageHeight(msg)
+}
+
+function extractAdaptiveChatVirtualRange(range) {
+  return resolveChatAdaptiveVirtualRange(range, {
+    viewportHeight: chatViewportHeight.value,
+    minBufferPx: CHAT_VIRTUALIZATION_MIN_BUFFER_PX,
+    maxBufferPx: CHAT_VIRTUALIZATION_MAX_BUFFER_PX,
+    maxExtraItems: CHAT_VIRTUALIZATION_MAX_BUFFER_ITEMS,
+    estimateSize: estimateChatVirtualItemSize
+  })
+}
+
+const chatVirtualizer = useVirtualizer(computed(() => ({
+  count: chatDisplayMessages.value.length,
+  getScrollElement: () => chatScrollEl.value || resolveScrollbarContainerEl(),
+  estimateSize: estimateChatVirtualItemSize,
+  getItemKey: getChatVirtualItemKey,
+  overscan: 0,
+  rangeExtractor: extractAdaptiveChatVirtualRange,
+  paddingStart: isDenseChatLayout.value ? 8 : 14,
+  paddingEnd: isDenseChatLayout.value ? 8 : 14,
+  enabled: chatVirtualizedEnabled.value,
+  anchorTo: 'end',
+  followOnAppend: true,
+  scrollEndThreshold: SCROLL_BOTTOM_THRESHOLD_PX,
+  useAnimationFrameWithResizeObserver: true
+})))
+
+watch(
+  () => `${isCompactChatLayout.value ? 1 : 0}|${isDenseChatLayout.value ? 1 : 0}`,
+  async (next, previous) => {
+    if (!previous || next === previous || !chatVirtualizedEnabled.value) return
+    const shouldStayAtEnd = isAtBottom.value
+    await nextTick()
+    chatVirtualizer.value.measure()
+    scheduleRefreshUserAnchorMeta()
+    if (shouldStayAtEnd) scheduleScrollToBottom({ force: true })
+  }
 )
+
+watch(chatVirtualizedEnabled, async (enabled, wasEnabled) => {
+  if (!enabled || wasEnabled) return
+  const shouldStayAtEnd = isAtBottom.value || (autoScrollEnabled.value && !autoScrollSuspendedByUser.value)
+  await nextTick()
+  await waitForLayoutFrame()
+  scheduleRefreshUserAnchorMeta()
+  if (shouldStayAtEnd) scheduleScrollToBottom({ force: true })
+})
+
+const chatVirtualItems = computed(() => {
+  if (!chatVirtualizedEnabled.value) return []
+  return chatVirtualizer.value.getVirtualItems()
+})
+
+const chatVirtualItemByKey = computed(() => {
+  const itemByKey = new Map()
+  chatVirtualItems.value.forEach((item) => {
+    itemByKey.set(String(item.key), item)
+  })
+  return itemByKey
+})
+
+const renderedChatRange = computed(() => {
+  if (!chatDisplayMessages.value.length) return { start: 0, end: -1 }
+  if (!chatVirtualizedEnabled.value) {
+    return { start: 0, end: chatDisplayMessages.value.length - 1 }
+  }
+  const items = chatVirtualItems.value
+  if (!items.length) return { start: 0, end: -1 }
+  return {
+    start: Math.max(0, Number(items[0]?.index) || 0),
+    end: Math.max(0, Number(items[items.length - 1]?.index) || 0)
+  }
+})
 
 const renderedChatMessageIdSet = computed(() => {
   const ids = new Set()
-  const { items } = chatVirtualLayout.value
   const { start, end } = renderedChatRange.value
-  if (!items.length || end < start) return ids
+  if (end < start) return ids
   for (let i = start; i <= end; i += 1) {
-    const id = String(items[i]?.id || '').trim()
+    const id = String(chatDisplayMessages.value[i]?.id || '').trim()
     if (id) ids.add(id)
   }
   return ids
 })
 
 const renderedChatMessages = computed(() => {
-  const { items } = chatVirtualLayout.value
-  const { start, end } = renderedChatRange.value
-  if (!items.length || end < start) return []
-  return items.slice(start, end + 1).map((item) => item.msg)
+  if (!chatVirtualizedEnabled.value) return chatDisplayMessages.value
+  return chatVirtualItems.value
+    .map((item) => chatDisplayMessages.value[item.index])
+    .filter(Boolean)
 })
+
+watch(
+  () => {
+    const range = renderedChatRange.value
+    return `${chatVirtualizedEnabled.value ? 1 : 0}|${range.start}|${range.end}`
+  },
+  () => {
+    primeHydratedRenderedChatMessages()
+  },
+  { flush: 'post' }
+)
 
 const chatVirtualListStyle = computed(() => {
   if (!chatVirtualizedEnabled.value) return undefined
-  const paddingBlock = isDenseChatLayout.value ? 8 : 14
   return {
-    height: `${resolveChatVirtualCanvasHeight({
-      contentHeight: chatVirtualLayout.value.totalHeight,
-      paddingBlock
-    })}px`
+    height: `${Math.ceil(chatVirtualizer.value.getTotalSize())}px`
   }
 })
+
+function getChatVirtualItemIndex(msg) {
+  if (!chatVirtualizedEnabled.value) return undefined
+  const index = chatDisplayMessageIndexById.value.get(String(msg?.id || '').trim())
+  return Number.isInteger(index) ? index : undefined
+}
 
 function getChatVirtualItemStyle(msg) {
   if (!chatVirtualizedEnabled.value) return undefined
   const id = String(msg?.id || '').trim()
-  const index = chatVirtualLayout.value.idToIndex.get(id)
-  const item = Number.isInteger(index) ? chatVirtualLayout.value.items[index] : null
+  const item = chatVirtualItemByKey.value.get(id)
   if (!item) return undefined
+  const messages = chatDisplayMessages.value
+  const previousMsg = item.index > 0 ? messages[item.index - 1] : null
+  const gapBefore = getChatMessageGapBefore(previousMsg, msg, item.index)
   return {
-    '--chat-virtual-item-top': `${Math.max(0, Math.round(Number(item.top) || 0))}px`
+    '--chat-virtual-item-top': `${Math.max(0, Number(item.start) || 0)}px`,
+    '--chat-virtual-item-gap': `${Math.max(0, gapBefore)}px`
   }
 }
 
@@ -7834,14 +7831,45 @@ function setStickyChatBubbleState(next) {
   stickyChatBubble.value = next
 }
 
+function getChatMeasuredLayoutItems() {
+  const messages = chatDisplayMessages.value
+  if (chatVirtualizedEnabled.value) {
+    return chatVirtualizer.value.getVirtualItems().map((measurement) => {
+      const index = Number(measurement?.index)
+      const msg = Number.isInteger(index) ? messages[index] : null
+      if (!msg) return null
+      return {
+        id: String(msg?.id || ''),
+        index,
+        top: Number(measurement.start || 0),
+        bottom: Number(measurement.end || 0),
+        msg
+      }
+    }).filter(Boolean)
+  }
+
+  return messages.map((msg, index) => {
+    const id = String(msg?.id || '')
+    const el = chatMessageElMap.get(id)
+    if (!(el instanceof HTMLElement)) return null
+    const top = Number(el.offsetTop || 0)
+    return {
+      id,
+      index,
+      top,
+      bottom: top + Number(el.offsetHeight || 0),
+      msg
+    }
+  }).filter(Boolean)
+}
+
 function syncStickyChatBubble() {
   if (!chatScrollEl.value && !resolveScrollbarContainerEl()) {
     setStickyChatBubbleState(null)
     return
   }
 
-  const layout = chatVirtualLayout.value
-  const items = Array.isArray(layout?.items) ? layout.items : []
+  const items = getChatMeasuredLayoutItems()
   if (!items.length) {
     setStickyChatBubbleState(null)
     return
@@ -7910,162 +7938,6 @@ function syncVisibleHeavyChatMessageIds() {
   visibleHeavyChatMessageIds.value = new Set(intersectingHeavyChatMessageIds)
 }
 
-function bumpChatMessageMetricsVersion() {
-  chatMessageMetricsVersion.value += 1
-}
-
-function queueChatItemHeightMeasure(messageId, el) {
-  const id = String(messageId || '').trim()
-  if (!id || !(el instanceof HTMLElement)) return
-  pendingChatItemHeightMeasureMap.set(id, el)
-  if (pendingChatItemHeightMeasureRafId) return
-  const raf = window?.requestAnimationFrame || ((cb) => window.setTimeout(cb, 16))
-  pendingChatItemHeightMeasureRafId = raf(() => {
-    pendingChatItemHeightMeasureRafId = 0
-    const layoutBefore = chatVirtualLayout.value
-    const viewportTop = Number(chatScrollTop.value || 0)
-    let deltaAboveViewport = 0
-    let changed = false
-    const entries = Array.from(pendingChatItemHeightMeasureMap.entries())
-    pendingChatItemHeightMeasureMap.clear()
-    entries.forEach(([measureId, targetEl]) => {
-      if (!(targetEl instanceof HTMLElement)) return
-      const itemIndex = layoutBefore?.idToIndex?.get(measureId)
-      const layoutItem = Number.isInteger(itemIndex) ? layoutBefore?.items?.[itemIndex] : null
-      const previousHeight = Number(chatMessageHeightCache.get(measureId) || layoutItem?.height || 0)
-      const msg = resolveChatMessageById(measureId)
-      const nextHeight = getChatMessageMeasuredHeight(
-        msg,
-        targetEl.getBoundingClientRect().height || targetEl.offsetHeight || 0
-      )
-      if (!nextHeight || previousHeight === nextHeight) return
-      chatMessageHeightCache.set(measureId, nextHeight)
-      if (Number(layoutItem?.bottom) <= viewportTop + 1) {
-        deltaAboveViewport += (nextHeight - previousHeight)
-      }
-      changed = true
-    })
-    if (changed) {
-      bumpChatMessageMetricsVersion()
-      scheduleRefreshUserAnchorMeta()
-      if (deltaAboveViewport && shouldApplyChatScrollCompensation()) {
-        queueChatScrollCompensation(deltaAboveViewport)
-      }
-    }
-  })
-}
-
-function clearPendingChatItemHeightMeasure() {
-  pendingChatItemHeightMeasureMap.clear()
-  if (!pendingChatItemHeightMeasureRafId) return
-  if (typeof window?.cancelAnimationFrame === 'function') window.cancelAnimationFrame(pendingChatItemHeightMeasureRafId)
-  else clearTimeout(pendingChatItemHeightMeasureRafId)
-  pendingChatItemHeightMeasureRafId = 0
-}
-
-function queueChatScrollCompensation(deltaPx) {
-  const delta = Number(deltaPx) || 0
-  if (!delta) return
-  pendingChatScrollCompensationPx += delta
-  if (pendingChatScrollCompensationRafId) return
-  const raf = window?.requestAnimationFrame || ((cb) => window.setTimeout(cb, 16))
-  pendingChatScrollCompensationRafId = raf(() => {
-    pendingChatScrollCompensationRafId = 0
-    const totalDelta = pendingChatScrollCompensationPx
-    pendingChatScrollCompensationPx = 0
-    if (!totalDelta) return
-    const el = chatScrollEl.value || resolveScrollbarContainerEl()
-    if (!el) return
-    // User input or tail-follow may have happened after this correction was
-    // queued. A stale compensation must never fight the current scroll owner.
-    if (!shouldApplyChatScrollCompensation()) return
-    const compensation = resolveChatViewportCompensation({
-      scrollTop: el.scrollTop,
-      deltaPx: totalDelta,
-      lastProcessedScrollTop,
-      didProcessScroll: didProcessChatScroll
-    })
-    if (!compensation.appliedDelta) return
-    if (didProcessChatScroll && Number.isFinite(compensation.nextLastProcessedScrollTop)) {
-      lastProcessedChatScrollTop = compensation.nextLastProcessedScrollTop
-    }
-    markProgrammaticChatScroll(CHAT_SCROLL_COMPENSATION_MARK_MS, compensation.nextScrollTop)
-    el.scrollTop = compensation.nextScrollTop
-    updateAtBottomState(el)
-  })
-}
-
-function clearQueuedChatScrollCompensation() {
-  pendingChatScrollCompensationPx = 0
-  if (!pendingChatScrollCompensationRafId) return
-  if (typeof window?.cancelAnimationFrame === 'function') window.cancelAnimationFrame(pendingChatScrollCompensationRafId)
-  else clearTimeout(pendingChatScrollCompensationRafId)
-  pendingChatScrollCompensationRafId = 0
-}
-
-function shouldApplyChatScrollCompensation() {
-  if (isAtBottom.value) return false
-  if (autoScrollEnabled.value && !autoScrollSuspendedByUser.value) return false
-  if (Date.now() <= userChatScrollActiveUntil) return false
-  const el = chatScrollEl.value || resolveScrollbarContainerEl()
-  return !!el
-}
-
-function disconnectChatMessageResizeObserver() {
-  if (!chatMessageResizeObserver) return
-  try {
-    chatMessageResizeObserver.disconnect()
-  } catch {
-    // ignore
-  }
-  chatMessageResizeObserver = null
-}
-
-function ensureChatMessageResizeObserver() {
-  if (chatMessageResizeObserver || typeof ResizeObserver === 'undefined') return
-  chatMessageResizeObserver = new ResizeObserver((entries) => {
-    const layoutBefore = chatVirtualLayout.value
-    const viewportTop = Number(chatScrollTop.value || 0)
-    let deltaAboveViewport = 0
-    let changed = false
-    entries.forEach((entry) => {
-      const target = entry?.target
-      if (!(target instanceof HTMLElement)) return
-      const id = String(target.dataset.messageId || '').trim()
-      if (!id) return
-      const msg = resolveChatMessageById(id)
-      const fixedHeight = getFixedCompactChatMessageHeight(msg)
-      if (fixedHeight) {
-        const cachedHeight = Number(chatMessageHeightCache.get(id) || 0)
-        if (cachedHeight !== fixedHeight) {
-          chatMessageHeightCache.set(id, fixedHeight)
-          changed = true
-        }
-        return
-      }
-      const itemIndex = layoutBefore?.idToIndex?.get(id)
-      const layoutItem = Number.isInteger(itemIndex) ? layoutBefore?.items?.[itemIndex] : null
-      const prevHeight = Number(chatMessageHeightCache.get(id) || layoutItem?.height || estimateChatMessageHeight(msg) || 0)
-      const nextHeight = getChatMessageMeasuredHeight(
-        msg,
-        entry.contentRect?.height || target.getBoundingClientRect().height || target.offsetHeight || 0
-      )
-      if (!nextHeight || prevHeight === nextHeight) return
-      chatMessageHeightCache.set(id, nextHeight)
-      if (Number(layoutItem?.bottom) <= viewportTop + 1) {
-        deltaAboveViewport += (nextHeight - prevHeight)
-      }
-      changed = true
-    })
-    if (changed) {
-      bumpChatMessageMetricsVersion()
-      scheduleRefreshUserAnchorMeta()
-      if (deltaAboveViewport && shouldApplyChatScrollCompensation()) queueChatScrollCompensation(deltaAboveViewport)
-      maybeScheduleStreamingScroll()
-    }
-  })
-}
-
 function disconnectChatMessageVisibilityObserver(options = {}) {
   if (chatMessageVisibilityObserver) {
     try {
@@ -8119,6 +7991,8 @@ function setupChatMessageVisibilityObserver() {
 
   for (const [id, el] of chatMessageElMap.entries()) {
     if (!el) continue
+    const msg = resolveChatMessageById(id)
+    if (isToolMessage(msg) || isToolActivityGroup(msg)) continue
     el.dataset.messageId = id
     chatMessageVisibilityObserver.observe(el)
   }
@@ -8126,49 +8000,31 @@ function setupChatMessageVisibilityObserver() {
 
 function setChatItemEl(messageId, role, el) {
   const k = String(messageId || '')
-  if (!k) return
+  if (!k) return false
+
+  const prev = chatMessageElMap.get(k)
+  if (prev === el) return false
 
   if (role === 'user') {
     if (el) userAnchorElMap.set(k, el)
     else userAnchorElMap.delete(k)
   }
 
-  const prev = chatMessageElMap.get(k)
   if (prev && prev !== el) {
     try {
       chatMessageVisibilityObserver?.unobserve(prev)
     } catch {
       // ignore
     }
-    try {
-      chatMessageResizeObserver?.unobserve(prev)
-    } catch {
-      // ignore
-    }
   }
 
   if (el) {
-    ensureChatMessageResizeObserver()
     el.dataset.messageId = k
     chatMessageElMap.set(k, el)
     const msg = resolveChatMessageById(k)
-    const fixedHeight = getFixedCompactChatMessageHeight(msg)
-    if (fixedHeight) {
-      if (chatMessageHeightCache.get(k) !== fixedHeight) {
-        chatMessageHeightCache.set(k, fixedHeight)
-        bumpChatMessageMetricsVersion()
-      }
-    } else if (!chatMessageHeightCache.has(k)) {
-      queueChatItemHeightMeasure(k, el)
-    }
-    try {
-      chatMessageVisibilityObserver?.observe(el)
-    } catch {
-      // ignore
-    }
-    if (!fixedHeight) {
+    if (!isToolMessage(msg) && !isToolActivityGroup(msg)) {
       try {
-        chatMessageResizeObserver?.observe(el)
+        chatMessageVisibilityObserver?.observe(el)
       } catch {
         // ignore
       }
@@ -8177,6 +8033,36 @@ function setChatItemEl(messageId, role, el) {
     chatMessageElMap.delete(k)
     if (intersectingHeavyChatMessageIds.delete(k)) syncVisibleHeavyChatMessageIds()
   }
+  return true
+}
+
+const chatItemRefCallbackMap = new Map()
+
+function getChatVirtualItemRef(msg) {
+  const id = String(msg?.id || '').trim()
+  if (!id) return undefined
+  const role = String(msg?.role || '').trim()
+  const cached = chatItemRefCallbackMap.get(id)
+  if (cached?.role === role) return cached.callback
+
+  const callback = (el) => {
+    setChatVirtualItemEl(id, role, el)
+    if (!el && chatItemRefCallbackMap.get(id)?.callback === callback) {
+      chatItemRefCallbackMap.delete(id)
+    }
+  }
+  chatItemRefCallbackMap.set(id, { role, callback })
+  return callback
+}
+
+function setChatVirtualItemEl(id, role, el) {
+  const changed = setChatItemEl(id, role, el)
+  if (!changed) return
+  if (!chatVirtualizedEnabled.value || !(el instanceof HTMLElement)) return
+  const index = chatDisplayMessageIndexById.value.get(id)
+  if (!Number.isInteger(index)) return
+  el.dataset.index = String(index)
+  chatVirtualizer.value.measureElement(el)
 }
 
 function shouldRenderHeavyChatMessage(msg) {
@@ -8213,11 +8099,27 @@ function getFixedCompactChatMessageHeight(msg) {
   return 0
 }
 
+function getChatMessageTopById(messageId) {
+  const id = String(messageId || '').trim()
+  if (!id) return Number.NaN
+  if (chatVirtualizedEnabled.value) {
+    const index = chatDisplayMessageIndexById.value.get(id)
+    const measurement = Number.isInteger(index)
+      ? chatVirtualizer.value.measurementsCache[index]
+      : null
+    if (measurement && Number.isFinite(Number(measurement.start))) {
+      return Number(measurement.start)
+    }
+  }
+  const el = chatMessageElMap.get(id)
+  return el instanceof HTMLElement ? Number(el.offsetTop) : Number.NaN
+}
+
 function refreshUserAnchorMeta() {
   const next = userAnchors.value
     .map((a) => {
-      const top = chatVirtualLayout.value.topById.get(a.id)
-      if (top == null) return null
+      const top = getChatMessageTopById(a.id)
+      if (!Number.isFinite(top)) return null
       return { ...a, top }
     })
     .filter(Boolean)
@@ -8306,16 +8208,29 @@ async function scrollToUserAnchor(messageId) {
   const k = String(messageId || '')
   autoScrollEnabled.value = false
   autoScrollSuspendedByUser.value = true
-  clearQueuedChatScrollCompensation()
   await nextTick()
   const container = chatScrollEl.value || resolveScrollbarContainerEl()
-  const targetTop = chatVirtualLayout.value.topById.get(k)
   if (!container) return
+
+  if (chatVirtualizedEnabled.value) {
+    const index = chatDisplayMessageIndexById.value.get(k)
+    if (!Number.isInteger(index)) return
+    const measurement = chatVirtualizer.value.measurementsCache[index]
+    const targetTop = Number(measurement?.start)
+    markProgrammaticChatScroll(
+      CHAT_SCROLL_COMPENSATION_SUSPEND_MS,
+      Number.isFinite(targetTop) ? Math.max(0, targetTop) : Number.NaN
+    )
+    chatVirtualizer.value.scrollToIndex(index, { align: 'start', behavior: 'auto' })
+    await waitForLayoutFrame()
+    queueProcessChatScroll(container)
+    return
+  }
+
   const mountedEl = userAnchorElMap.get(k)
   const mountedTop = mountedEl ? Number(mountedEl.offsetTop) : Number.NaN
-  const resolvedTop = targetTop == null ? mountedTop : Number(targetTop)
-  if (!Number.isFinite(resolvedTop)) return
-  const nextTop = Math.max(0, resolvedTop - 8)
+  if (!Number.isFinite(mountedTop)) return
+  const nextTop = Math.max(0, mountedTop - 8)
   markProgrammaticChatScroll(CHAT_SCROLL_COMPENSATION_SUSPEND_MS, nextTop)
   try {
     // Native smooth scrolling traverses several virtual render windows; their
@@ -8354,7 +8269,7 @@ function setupChatLayoutResizeObserver() {
   chatScrollEl.value = container
   chatLayoutResizeObserver = new ResizeObserver(() => {
     scheduleRefreshUserAnchorMeta()
-    maybeScheduleStreamingScroll()
+    if (!chatVirtualizedEnabled.value) maybeScheduleStreamingScroll()
   })
   chatLayoutResizeObserver.observe(container)
   chatLayoutResizeObserver.observe(list)
@@ -8425,14 +8340,6 @@ watch(
 )
 
 watch(
-  () => chatMessageMetricsVersion.value,
-  () => {
-    scheduleRefreshUserAnchorMeta()
-    scheduleStickyChatBubbleSync()
-  }
-)
-
-watch(
   () => chatDisplayMessages.value.map((msg) => [
     String(msg?.id || ''),
     msg?.toolGroupExpanded ? 1 : 0,
@@ -8448,9 +8355,6 @@ watch(
       if (!id) return
       validIds.add(id)
       chatMessageByIdMap.set(id, msg)
-    })
-    Array.from(chatMessageHeightCache.keys()).forEach((id) => {
-      if (!validIds.has(id)) chatMessageHeightCache.delete(id)
     })
     Array.from(chatMessageEstimatedHeightCache.keys()).forEach((id) => {
       if (!validIds.has(id)) chatMessageEstimatedHeightCache.delete(id)
@@ -8471,7 +8375,8 @@ watch(
       if (!validIds.has(id)) userAnchorElMap.delete(id)
     })
     if (activeAnchorId.value && !validIds.has(activeAnchorId.value)) activeAnchorId.value = null
-    bumpChatMessageMetricsVersion()
+    scheduleRefreshUserAnchorMeta()
+    scheduleStickyChatBubbleSync()
   }
 )
 
@@ -8511,9 +8416,6 @@ onActivated(async () => {
 onDeactivated(() => {
   disconnectChatLayoutResizeObserver()
   disconnectChatMessageVisibilityObserver()
-  disconnectChatMessageResizeObserver()
-  clearPendingChatItemHeightMeasure()
-  clearQueuedChatScrollCompensation()
   clearQueuedChatScrollProcessing()
   clearStickyChatBubbleSync()
   setStickyChatBubbleState(null)
@@ -8536,10 +8438,8 @@ function handleChatScroll(e) {
   const currentTop = Number(targetEl?.scrollTop || 0)
   const previousTop = didProcessChatScroll ? lastProcessedChatScrollTop : Number(chatScrollTop.value || 0)
   const isProgrammaticScroll = isExpectedProgrammaticChatScroll(currentTop)
-  if (!isProgrammaticScroll && Math.abs(currentTop - previousTop) > 0.5) {
-    userChatScrollActiveUntil = Date.now() + CHAT_USER_SCROLL_ACTIVE_MS
-  }
-  if (!isProgrammaticScroll && currentTop + 1 < previousTop) {
+  const hasUserScrollIntent = Date.now() <= userChatScrollIntentUntil
+  if (!isProgrammaticScroll && currentTop + 1 < previousTop && (!chatVirtualizedEnabled.value || hasUserScrollIntent)) {
     autoScrollSuspendedByUser.value = true
     autoScrollEnabled.value = false
   }
@@ -8550,8 +8450,7 @@ function handleChatWheel(e) {
   const deltaY = Number(e?.deltaY || 0)
   if (!deltaY) return
   clearProgrammaticChatScrollMark()
-  clearQueuedChatScrollCompensation()
-  userChatScrollActiveUntil = Date.now() + CHAT_USER_SCROLL_ACTIVE_MS
+  userChatScrollIntentUntil = Date.now() + CHAT_USER_SCROLL_INTENT_MS
   if (deltaY < 0) {
     autoScrollSuspendedByUser.value = true
     autoScrollEnabled.value = false
@@ -8560,8 +8459,7 @@ function handleChatWheel(e) {
 
 function handleChatPointerDown() {
   clearProgrammaticChatScrollMark()
-  clearQueuedChatScrollCompensation()
-  userChatScrollActiveUntil = Date.now() + CHAT_USER_SCROLL_ACTIVE_MS
+  userChatScrollIntentUntil = Date.now() + CHAT_USER_SCROLL_INTENT_MS
 }
 
 let pendingChatScrollEl = null
@@ -8577,10 +8475,13 @@ function processChatScroll(elMaybe) {
 
   const prevScrollTop = didProcessChatScroll ? lastProcessedChatScrollTop : Number(chatScrollTop.value || 0)
   const { distanceFromBottom, atBottom } = updateAtBottomState(el)
-  primeHydratedRenderedChatMessages()
   const nextScrollTop = Number(chatScrollTop.value || 0)
   const isProgrammaticScroll = isExpectedProgrammaticChatScroll(nextScrollTop)
-  const isUserScrollingUp = didProcessChatScroll && (nextScrollTop + 1 < prevScrollTop)
+  const hasUserScrollIntent = Date.now() <= userChatScrollIntentUntil
+  const isUserScrollingUp =
+    didProcessChatScroll &&
+    (nextScrollTop + 1 < prevScrollTop) &&
+    (!chatVirtualizedEnabled.value || hasUserScrollIntent)
   const isUserScrollingDown = didProcessChatScroll && (nextScrollTop > prevScrollTop + 1)
   lastProcessedChatScrollTop = nextScrollTop
   didProcessChatScroll = true
@@ -8624,7 +8525,7 @@ function clearQueuedChatScrollProcessing() {
   lastProcessedChatScrollTop = 0
   didProcessChatScroll = false
   clearProgrammaticChatScrollMark()
-  userChatScrollActiveUntil = 0
+  userChatScrollIntentUntil = 0
 }
 
 let scrollScheduled = false
@@ -8649,7 +8550,16 @@ async function scrollToBottom(options = {}) {
 
     const el = chatScrollEl.value || resolveScrollbarContainerEl()
     if (!el) return
-    clearQueuedChatScrollCompensation()
+
+    if (chatVirtualizedEnabled.value) {
+      const targetScrollTop = Math.max(0, el.scrollHeight - el.clientHeight)
+      markProgrammaticChatScroll(CHAT_SCROLL_COMPENSATION_SUSPEND_MS, targetScrollTop)
+      chatVirtualizer.value.scrollToEnd({ behavior: 'auto' })
+      await waitForLayoutFrame()
+      updateAtBottomState(el)
+      primeHydratedRenderedChatMessages()
+      return
+    }
 
     const target = resolveChatBottomScrollTarget({
       scrollHeight: el.scrollHeight,
@@ -10334,11 +10244,11 @@ function toggleUserMessageExpanded(msg) {
   msg.userMessageExpanded = msg.userMessageExpanded !== true
   const id = String(msg?.id || '').trim()
   if (id) {
-    chatMessageHeightCache.delete(id)
     chatMessageEstimatedHeightCache.delete(id)
     if (msg.userMessageExpanded) rememberHydratedHeavyChatMessage(id)
   }
-  bumpChatMessageMetricsVersion()
+  scheduleRefreshUserAnchorMeta()
+  scheduleStickyChatBubbleSync()
 }
 
 function shouldKeepLoadedAssistantTextRender(raw, content) {
@@ -11239,7 +11149,6 @@ onBeforeUnmount(() => {
   }
   disconnectChatLayoutResizeObserver()
   disconnectChatMessageVisibilityObserver()
-  disconnectChatMessageResizeObserver()
   clearStickyChatBubbleSync()
   setStickyChatBubbleState(null)
   cleanupChatPreviewLinkHandlers()
@@ -11988,7 +11897,10 @@ async function runChatRounds({
     if (repeatedToolCallState.blocked) {
       const stopText = '检测到相同工具和参数连续调用 3 次，已停止重复执行。请调整操作方式，或直接说明当前阻塞原因。'
       normalizedToolCalls.forEach((toolCall) => {
-        targetSession.apiMessages.push(createToolResultApiMessage(toolCall, stopText))
+        targetSession.apiMessages.push(createToolResultApiMessage(toolCall, stopText, {
+          ok: false,
+          status: 'stopped'
+        }))
       })
       targetSession.apiMessages.push({ role: 'assistant', content: stopText })
       targetSession.messages.push(createDisplayMessage('assistant', stopText))
@@ -12007,7 +11919,9 @@ async function runChatRounds({
       const toolCall = normalizedToolCalls[index]
       const exec = toolExecResults[index]
       throwIfAborted(abortState)
-      targetSession.apiMessages.push(createToolResultApiMessage(toolCall, exec?.content))
+      targetSession.apiMessages.push(createToolResultApiMessage(toolCall, exec?.content, {
+        ok: exec?.ok
+      }))
       const latestUserPrompt = getLatestRealUserPromptText(targetSession.apiMessages)
       const shouldAttachToolImages =
         String(exec?.toolName || '').trim() === 'notes_read' ||
@@ -12203,7 +12117,9 @@ async function runUtoolsAiChatRound({
         abortState
       )
 
-      const raw = String(exec?.content || '')
+      const raw = formatToolResultContentForModel(exec?.content, {
+        ok: exec?.ok
+      })
       utoolsToolFallbackRecords.push({
         name,
         argsText,

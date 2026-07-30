@@ -51,6 +51,7 @@ test('prepared skill executor reports gateway parse errors as handled results', 
 
 test('prepared skill executor propagates a failed built-in runtime result', async () => {
   const context = createExecutionContext()
+  const persistedSkillIds = []
   const execute = createPreparedSkillToolExecutor({
     buildToolExecutionResultSubMeta: () => '',
     deepCopyJson: (value) => JSON.parse(JSON.stringify(value)),
@@ -64,6 +65,7 @@ test('prepared skill executor propagates a failed built-in runtime result', asyn
         stderr: 'uv is not recognized'
       })
     }),
+    markSkillActivationPersistent: (ids) => persistedSkillIds.push(...ids),
     maybeScrollToBottomForRun: async () => {},
     prepareBuiltinAgentToolCallArgs: (_skillId, _toolName, args) => ({ ...args })
   })
@@ -88,4 +90,89 @@ test('prepared skill executor propagates a failed built-in runtime result', asyn
   assert.equal(execution.result.ok, false)
   assert.equal(context.targetSession.messages[0].toolStatus, 'error')
   assert.equal(context.targetSession.messages[0].toolResultPayload.exitCode, 1)
+  assert.deepEqual(persistedSkillIds, ['builtin_skill_shell'])
+})
+
+test('prepared skill executor persists an auto-routed skill after reading one of its files', async () => {
+  const context = createExecutionContext()
+  const persistedSkillIds = []
+  const loadedSkillContentById = {}
+  const loadedSkillFileCacheBySkillId = {}
+  const skill = {
+    _id: 'skill_adjust',
+    name: '移动端 Adjust 分析',
+    entryFile: 'SKILL.md'
+  }
+  const execute = createPreparedSkillToolExecutor({
+    getLoadedSkillFilePathSet: () => new Set(),
+    loadedSkillContentById,
+    loadedSkillFileCacheBySkillId,
+    markSkillActivationPersistent: (ids) => persistedSkillIds.push(...ids),
+    maybeScrollToBottomForRun: async () => {},
+    readSkillRegistryFile: async () => ({
+      path: 'references/android-adjust.md',
+      content: '# Android Adjust'
+    }),
+    resolveSelectedSkillTarget: () => skill
+  })
+
+  const execution = await execute(
+    {
+      mapping: { type: 'internal', internal: 'read_skill_file' },
+      serverName: 'Skill',
+      toolName: 'read_skill_file',
+      argsObj: {
+        id: 'skill_adjust',
+        path: 'references/android-adjust.md'
+      }
+    },
+    context
+  )
+
+  assert.equal(execution.handled, true)
+  assert.equal(execution.result.ok, true)
+  assert.deepEqual(persistedSkillIds, ['skill_adjust'])
+  assert.deepEqual(
+    loadedSkillFileCacheBySkillId.skill_adjust,
+    ['references/android-adjust.md']
+  )
+})
+
+test('prepared skill executor keeps an auto-routed skill available when its script fails', async () => {
+  const context = createExecutionContext()
+  const persistedSkillIds = []
+  const skill = {
+    _id: 'skill_adjust',
+    name: '移动端 Adjust 分析'
+  }
+  const execute = createPreparedSkillToolExecutor({
+    markSkillActivationPersistent: (ids) => persistedSkillIds.push(...ids),
+    maybeScrollToBottomForRun: async () => {},
+    resolveSelectedSkillTarget: () => skill,
+    resolveSkillScriptTarget: () => ({
+      ok: true,
+      path: 'scripts/run.py'
+    }),
+    runSkillRegistryScript: async () => {
+      throw new Error('设备暂时离线')
+    }
+  })
+
+  const execution = await execute(
+    {
+      mapping: { type: 'internal', internal: 'run_skill_script' },
+      serverName: 'Skill',
+      toolName: 'run_skill_script',
+      argsObj: {
+        id: 'skill_adjust',
+        path: 'scripts/run.py'
+      }
+    },
+    context
+  )
+
+  assert.equal(execution.handled, true)
+  assert.equal(execution.result.ok, false)
+  assert.match(execution.result.content, /设备暂时离线/)
+  assert.deepEqual(persistedSkillIds, ['skill_adjust'])
 })

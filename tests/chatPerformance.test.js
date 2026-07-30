@@ -2,14 +2,14 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  estimateChatMarkdownContentHeight,
   isExpectedChatProgrammaticScroll,
+  resolveChatAdaptiveVirtualRange,
   resolveChatBottomScrollTarget,
-  resolveChatViewportCompensation,
   resolveChatHeavyRenderTuning,
-  resolveChatVirtualCanvasHeight,
   resolveChatVirtualItemGap,
-  resolveChatVirtualItemHeight,
-  shouldDeferChatHeavyBlockLayout
+  shouldDeferChatHeavyBlockLayout,
+  shouldEnableChatVirtualization
 } from '../src/utils/chatPerformance.js'
 
 test('programmatic scroll recognition rejects a user drag during the guard window', () => {
@@ -64,6 +64,78 @@ test('resolveChatHeavyRenderTuning tightens hydration as chats grow', () => {
   })
 })
 
+test('virtualization starts early for several long messages but not one giant message', () => {
+  assert.equal(shouldEnableChatVirtualization({
+    itemCount: 5,
+    estimatedHeight: 5200,
+    viewportHeight: 800,
+    minItemsForHeight: 4,
+    minEstimatedHeight: 4800,
+    viewportMultiplier: 6
+  }), true)
+  assert.equal(shouldEnableChatVirtualization({
+    itemCount: 3,
+    estimatedHeight: 20_000,
+    viewportHeight: 800,
+    minItemsForHeight: 4,
+    minEstimatedHeight: 4800,
+    viewportMultiplier: 6
+  }), false)
+  assert.equal(shouldEnableChatVirtualization({
+    itemCount: 24,
+    estimatedHeight: 1200,
+    viewportHeight: 800
+  }), true)
+})
+
+test('markdown height estimation accounts for wide text and folded code blocks', () => {
+  const ascii = estimateChatMarkdownContentHeight('a'.repeat(88), { charsPerLine: 44 })
+  const cjk = estimateChatMarkdownContentHeight('中'.repeat(88), { charsPerLine: 44 })
+  assert.ok(cjk > ascii)
+
+  const shortCode = `\`\`\`js\n${Array.from({ length: 20 }, (_, index) => `line${index}`).join('\n')}\n\`\`\``
+  const longCode = `\`\`\`js\n${Array.from({ length: 60 }, (_, index) => `line${index}`).join('\n')}\n\`\`\``
+  const forcedOpenCode = longCode.replace('```js', '```js ::open')
+  assert.ok(
+    estimateChatMarkdownContentHeight(longCode, { autoFoldThreshold: 30 }) <
+    estimateChatMarkdownContentHeight(shortCode, { autoFoldThreshold: 30 })
+  )
+  assert.ok(
+    estimateChatMarkdownContentHeight(forcedOpenCode, { autoFoldThreshold: 30 }) >
+    estimateChatMarkdownContentHeight(longCode, { autoFoldThreshold: 30 })
+  )
+})
+
+test('adaptive virtual range buffers many compact cards but only one very tall message', () => {
+  assert.deepEqual(
+    resolveChatAdaptiveVirtualRange(
+      { count: 100, startIndex: 20, endIndex: 29 },
+      {
+        viewportHeight: 800,
+        minBufferPx: 320,
+        maxBufferPx: 720,
+        maxExtraItems: 12,
+        estimateSize: () => 26
+      }
+    ),
+    Array.from({ length: 34 }, (_, index) => index + 8)
+  )
+
+  assert.deepEqual(
+    resolveChatAdaptiveVirtualRange(
+      { count: 100, startIndex: 20, endIndex: 29 },
+      {
+        viewportHeight: 800,
+        minBufferPx: 320,
+        maxBufferPx: 720,
+        maxExtraItems: 12,
+        estimateSize: () => 900
+      }
+    ),
+    Array.from({ length: 12 }, (_, index) => index + 19)
+  )
+})
+
 test('shouldDeferChatHeavyBlockLayout keeps active chat items eager', () => {
   const visibleMessageIds = new Set(['visible'])
 
@@ -91,66 +163,6 @@ test('shouldDeferChatHeavyBlockLayout defers offscreen heavy items', () => {
   assert.equal(
     shouldDeferChatHeavyBlockLayout({ id: '', content: 'no id' }, { visibleMessageIds }),
     true
-  )
-})
-
-test('resolveChatViewportCompensation keeps the virtual-list anchor in sync', () => {
-  assert.deepEqual(
-    resolveChatViewportCompensation({
-      scrollTop: 640,
-      deltaPx: 120,
-      lastProcessedScrollTop: 640,
-      didProcessScroll: true
-    }),
-    {
-      nextScrollTop: 760,
-      appliedDelta: 120,
-      nextLastProcessedScrollTop: 760
-    }
-  )
-})
-
-test('resolveChatViewportCompensation reports the clamped applied delta', () => {
-  assert.deepEqual(
-    resolveChatViewportCompensation({
-      scrollTop: 20,
-      deltaPx: -50,
-      lastProcessedScrollTop: 20,
-      didProcessScroll: true
-    }),
-    {
-      nextScrollTop: 0,
-      appliedDelta: -20,
-      nextLastProcessedScrollTop: 0
-    }
-  )
-})
-
-test('resolveChatVirtualItemHeight keeps compact activity rows below the regular message minimum', () => {
-  assert.equal(
-    resolveChatVirtualItemHeight({
-      estimatedHeight: 26,
-      minimumHeight: 26,
-      fallbackHeight: 180
-    }),
-    26
-  )
-  assert.equal(
-    resolveChatVirtualItemHeight({
-      measuredHeight: 44,
-      estimatedHeight: 26,
-      minimumHeight: 26,
-      fallbackHeight: 180
-    }),
-    44
-  )
-  assert.equal(
-    resolveChatVirtualItemHeight({
-      estimatedHeight: 40,
-      minimumHeight: 96,
-      fallbackHeight: 180
-    }),
-    96
   )
 })
 
@@ -183,11 +195,6 @@ test('resolveChatVirtualItemGap mirrors the tighter CSS gap between activity row
     }),
     14
   )
-})
-
-test('resolveChatVirtualCanvasHeight keeps the scroll extent independent of the rendered window', () => {
-  assert.equal(resolveChatVirtualCanvasHeight({ contentHeight: 1200.2, paddingBlock: 14 }), 1229)
-  assert.equal(resolveChatVirtualCanvasHeight({ contentHeight: -20, paddingBlock: 8 }), 16)
 })
 
 test('resolveChatBottomScrollTarget skips no-op tail commits', () => {

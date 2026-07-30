@@ -16,6 +16,13 @@ const DEFAULT_SANDBOX_TRASH_RETENTION_DAYS = 30
 const MAX_SESSION_REFERENCE_SCAN_FILES = 20000
 const MAX_SESSION_REFERENCE_FILE_BYTES = 20 * 1024 * 1024
 const MAX_SANDBOX_INVENTORY_ENTRIES = 50000
+const SESSION_DIRECTORY_SCAN_CONCURRENCY = 8
+const SESSION_FILE_SCAN_CONCURRENCY = 8
+const SANDBOX_DIRECTORY_SCAN_CONCURRENCY = 8
+const SANDBOX_ENTRY_STAT_CONCURRENCY = 32
+const SANDBOX_WORKSPACE_SCAN_CONCURRENCY = 4
+const SANDBOX_INVENTORY_CACHE_TTL_MS = 2 * 60 * 1000
+const sandboxInventoryCache = new Map()
 
 function cleanString(value) {
   return typeof value === 'string' ? value.trim() : ''
@@ -111,6 +118,26 @@ async function pathExists(targetPath) {
   }
 }
 
+async function mapWithConcurrency(items, concurrency, mapper) {
+  const source = Array.isArray(items) ? items : []
+  if (!source.length) return []
+  const results = new Array(source.length)
+  const workerCount = Math.min(
+    source.length,
+    Math.max(1, Math.floor(Number(concurrency) || 1))
+  )
+  let cursor = 0
+
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (cursor < source.length) {
+      const index = cursor
+      cursor += 1
+      results[index] = await mapper(source[index], index)
+    }
+  }))
+  return results
+}
+
 function createSandboxTrashId(workspaceId, now = Date.now()) {
   const safeWorkspaceId = normalizeWorkspaceId(workspaceId)
   return `${safeWorkspaceId}-${now.toString(36)}-${Math.random().toString(36).slice(2, 10)}`
@@ -197,42 +224,57 @@ async function collectReferencedWorkspaceIds(options = {}) {
     return { workspaceIds: output, scanComplete: true }
   }
 
-  let scannedFiles = 0
   let scanComplete = true
-  async function walk(directoryPath) {
-    if (scannedFiles >= MAX_SESSION_REFERENCE_SCAN_FILES) {
-      scanComplete = false
-      return
-    }
-    let entries = []
-    try {
-      entries = await fs.readdir(directoryPath, { withFileTypes: true })
-    } catch {
-      scanComplete = false
-      return
-    }
-    for (const entry of entries) {
-      if (scannedFiles >= MAX_SESSION_REFERENCE_SCAN_FILES) {
+  const jsonFiles = []
+  const pendingDirectories = [sessionRoot]
+
+  while (pendingDirectories.length && jsonFiles.length < MAX_SESSION_REFERENCE_SCAN_FILES) {
+    const directoryBatch = pendingDirectories.splice(0, SESSION_DIRECTORY_SCAN_CONCURRENCY)
+    const entryGroups = await Promise.all(directoryBatch.map(async (directoryPath) => {
+      try {
+        return {
+          directoryPath,
+          entries: await fs.readdir(directoryPath, { withFileTypes: true })
+        }
+      } catch {
         scanComplete = false
-        return
+        return { directoryPath, entries: [] }
       }
-      if (entry.isSymbolicLink()) {
-        scanComplete = false
-        continue
+    }))
+
+    for (const { directoryPath, entries } of entryGroups) {
+      for (const entry of entries) {
+        if (entry.isSymbolicLink()) {
+          scanComplete = false
+          continue
+        }
+        const entryPath = path.join(directoryPath, entry.name)
+        if (entry.isDirectory()) {
+          if (!entry.name.toLowerCase().endsWith('.assets')) {
+            pendingDirectories.push(entryPath)
+          }
+          continue
+        }
+        if (!entry.isFile() || !entry.name.toLowerCase().endsWith('.json')) continue
+        if (jsonFiles.length >= MAX_SESSION_REFERENCE_SCAN_FILES) {
+          scanComplete = false
+          break
+        }
+        jsonFiles.push(entryPath)
       }
-      const entryPath = path.join(directoryPath, entry.name)
-      if (entry.isDirectory()) {
-        if (entry.name.toLowerCase().endsWith('.assets')) continue
-        await walk(entryPath)
-        continue
-      }
-      if (!entry.isFile() || !entry.name.toLowerCase().endsWith('.json')) continue
-      scannedFiles += 1
+    }
+  }
+  if (pendingDirectories.length) scanComplete = false
+
+  await mapWithConcurrency(
+    jsonFiles,
+    SESSION_FILE_SCAN_CONCURRENCY,
+    async (entryPath) => {
       try {
         const stat = await fs.stat(entryPath)
         if (stat.size > MAX_SESSION_REFERENCE_FILE_BYTES) {
           scanComplete = false
-          continue
+          return
         }
         const payload = JSON.parse(await fs.readFile(entryPath, 'utf8'))
         collectWorkspaceIdsFromValue(payload, output)
@@ -240,13 +282,11 @@ async function collectReferencedWorkspaceIds(options = {}) {
         scanComplete = false
       }
     }
-  }
-
-  await walk(sessionRoot)
+  )
   return { workspaceIds: output, scanComplete }
 }
 
-async function inspectSandboxDirectory(directoryPath) {
+async function inspectSandboxDirectory(directoryPath, options = {}) {
   const result = {
     exists: false,
     fileCount: 0,
@@ -270,53 +310,87 @@ async function inspectSandboxDirectory(directoryPath) {
     }
   }
 
-  result.exists = true
-  result.modifiedAt = Number(rootStat.mtimeMs) || 0
-  let scannedEntries = 0
-
-  async function walk(currentPath) {
-    if (scannedEntries >= MAX_SANDBOX_INVENTORY_ENTRIES) {
-      result.scanComplete = false
-      return
-    }
-    let entries = []
-    try {
-      entries = await fs.readdir(currentPath, { withFileTypes: true })
-    } catch {
-      result.scanComplete = false
-      return
-    }
-
-    for (const entry of entries) {
-      if (scannedEntries >= MAX_SANDBOX_INVENTORY_ENTRIES) {
-        result.scanComplete = false
-        return
-      }
-      scannedEntries += 1
-      if (entry.isSymbolicLink()) {
-        result.scanComplete = false
-        continue
-      }
-
-      const entryPath = path.join(currentPath, entry.name)
-      let stat = null
-      try {
-        stat = await fs.stat(entryPath)
-      } catch {
-        result.scanComplete = false
-        continue
-      }
-      result.modifiedAt = Math.max(result.modifiedAt, Number(stat.mtimeMs) || 0)
-      if (stat.isDirectory()) {
-        await walk(entryPath)
-      } else if (stat.isFile()) {
-        result.fileCount += 1
-        result.totalBytes += Math.max(0, Number(stat.size) || 0)
-      }
-    }
+  const cacheKey = path.resolve(directoryPath)
+  const rootModifiedAt = Number(rootStat.mtimeMs) || 0
+  const cached = sandboxInventoryCache.get(cacheKey)
+  if (
+    options.refresh !== true &&
+    cached &&
+    cached.rootModifiedAt === rootModifiedAt &&
+    Date.now() - cached.cachedAt < SANDBOX_INVENTORY_CACHE_TTL_MS
+  ) {
+    return { ...cached.inventory }
   }
 
-  await walk(directoryPath)
+  result.exists = true
+  result.modifiedAt = rootModifiedAt
+  let scannedEntries = 0
+  const pendingDirectories = [directoryPath]
+
+  while (pendingDirectories.length && scannedEntries < MAX_SANDBOX_INVENTORY_ENTRIES) {
+    const directoryBatch = pendingDirectories.splice(0, SANDBOX_DIRECTORY_SCAN_CONCURRENCY)
+    const entryGroups = await Promise.all(directoryBatch.map(async (currentPath) => {
+      try {
+        return {
+          currentPath,
+          entries: await fs.readdir(currentPath, { withFileTypes: true })
+        }
+      } catch {
+        result.scanComplete = false
+        return { currentPath, entries: [] }
+      }
+    }))
+    const entriesToInspect = []
+
+    for (const { currentPath, entries } of entryGroups) {
+      for (const entry of entries) {
+        if (scannedEntries >= MAX_SANDBOX_INVENTORY_ENTRIES) {
+          result.scanComplete = false
+          break
+        }
+        scannedEntries += 1
+        if (entry.isSymbolicLink()) {
+          result.scanComplete = false
+          continue
+        }
+        entriesToInspect.push({
+          entry,
+          entryPath: path.join(currentPath, entry.name)
+        })
+      }
+    }
+
+    const childDirectories = []
+    await mapWithConcurrency(
+      entriesToInspect,
+      SANDBOX_ENTRY_STAT_CONCURRENCY,
+      async ({ entry, entryPath }) => {
+        let stat = null
+        try {
+          stat = await fs.stat(entryPath)
+        } catch {
+          result.scanComplete = false
+          return
+        }
+        result.modifiedAt = Math.max(result.modifiedAt, Number(stat.mtimeMs) || 0)
+        if (entry.isDirectory() && stat.isDirectory()) {
+          childDirectories.push(entryPath)
+        } else if (entry.isFile() && stat.isFile()) {
+          result.fileCount += 1
+          result.totalBytes += Math.max(0, Number(stat.size) || 0)
+        } else {
+          result.scanComplete = false
+        }
+      }
+    )
+    pendingDirectories.push(...childDirectories)
+  }
+  if (pendingDirectories.length) result.scanComplete = false
+  sandboxInventoryCache.set(cacheKey, {
+    rootModifiedAt,
+    cachedAt: Date.now(),
+    inventory: { ...result }
+  })
   return result
 }
 
@@ -329,43 +403,50 @@ async function listSandboxWorkspaces(options = {}) {
 
   const referenceScan = await collectReferencedWorkspaceIds(options)
   const entries = await fs.readdir(workspacesRoot, { withFileTypes: true }).catch(() => [])
-  const workspaces = []
-  for (const entry of entries) {
-    if (!entry.isDirectory() || entry.isSymbolicLink()) continue
-    let workspaceId = ''
-    let valid = true
-    try {
-      workspaceId = normalizeWorkspaceId(entry.name)
-    } catch {
-      workspaceId = String(entry.name || '')
-      valid = false
-    }
-    if (!workspaceId) continue
+  const workspaceEntries = entries.filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
+  const scannedWorkspaces = await mapWithConcurrency(
+    workspaceEntries,
+    SANDBOX_WORKSPACE_SCAN_CONCURRENCY,
+    async (entry) => {
+      let workspaceId = ''
+      let valid = true
+      try {
+        workspaceId = normalizeWorkspaceId(entry.name)
+      } catch {
+        workspaceId = String(entry.name || '')
+        valid = false
+      }
+      if (!workspaceId) return null
 
-    const inventory = await inspectSandboxDirectory(path.join(workspacesRoot, entry.name))
-    const referenced = valid && referenceScan.workspaceIds.has(workspaceId)
-    const referenceStatus = !valid
-      ? 'invalid'
-      : !referenceScan.scanComplete
-        ? 'unknown'
-        : referenced
-          ? 'referenced'
-          : 'orphaned'
-    workspaces.push({
-      workspaceId,
-      valid,
-      kind: workspaceId.startsWith('chat-') ? 'chat' : 'general',
-      referenced,
-      referenceStatus,
-      referenceScanComplete: referenceScan.scanComplete,
-      workspacePath: path.join(
-        SANDBOX_DATA_DIRECTORY,
-        SANDBOX_WORKSPACES_DIRECTORY,
-        entry.name
-      ).replace(/\\/g, '/'),
-      ...inventory
-    })
-  }
+      const inventory = await inspectSandboxDirectory(
+        path.join(workspacesRoot, entry.name),
+        { refresh: options.refreshInventory === true }
+      )
+      const referenced = valid && referenceScan.workspaceIds.has(workspaceId)
+      const referenceStatus = !valid
+        ? 'invalid'
+        : !referenceScan.scanComplete
+          ? 'unknown'
+          : referenced
+            ? 'referenced'
+            : 'orphaned'
+      return {
+        workspaceId,
+        valid,
+        kind: workspaceId.startsWith('chat-') ? 'chat' : 'general',
+        referenced,
+        referenceStatus,
+        referenceScanComplete: referenceScan.scanComplete,
+        workspacePath: path.join(
+          SANDBOX_DATA_DIRECTORY,
+          SANDBOX_WORKSPACES_DIRECTORY,
+          entry.name
+        ).replace(/\\/g, '/'),
+        ...inventory
+      }
+    }
+  )
+  const workspaces = scannedWorkspaces.filter(Boolean)
   return workspaces.sort((a, b) => {
     if (a.referenceStatus !== b.referenceStatus) {
       const order = { orphaned: 0, unknown: 1, referenced: 2, invalid: 3 }
@@ -375,32 +456,38 @@ async function listSandboxWorkspaces(options = {}) {
   })
 }
 
-async function listSandboxTrashEntries() {
+async function listSandboxTrashEntries(options = {}) {
   const trashRoot = getSandboxTrashRoot()
   if (!(await pathExists(trashRoot))) return []
   const entries = await fs.readdir(trashRoot, { withFileTypes: true }).catch(() => [])
-  const manifests = []
-  for (const entry of entries) {
-    if (!entry.isDirectory() || entry.isSymbolicLink()) continue
-    try {
-      const manifest = await readJsonFile(getSandboxTrashManifestPath(entry.name))
-      const trashId = normalizeTrashId(manifest?.trashId)
-      const workspaceId = normalizeWorkspaceId(manifest?.workspaceId)
-      if (trashId === entry.name) {
-        const inventory = await inspectSandboxDirectory(
-          path.join(getSandboxTrashEntryRoot(trashId), 'workspace')
-        )
-        manifests.push({
-          ...manifest,
-          trashId,
-          workspaceId,
-          ...inventory
-        })
+  const trashDirectories = entries.filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
+  const scannedManifests = await mapWithConcurrency(
+    trashDirectories,
+    SANDBOX_WORKSPACE_SCAN_CONCURRENCY,
+    async (entry) => {
+      try {
+        const manifest = await readJsonFile(getSandboxTrashManifestPath(entry.name))
+        const trashId = normalizeTrashId(manifest?.trashId)
+        const workspaceId = normalizeWorkspaceId(manifest?.workspaceId)
+        if (trashId === entry.name) {
+          const inventory = await inspectSandboxDirectory(
+            path.join(getSandboxTrashEntryRoot(trashId), 'workspace'),
+            { refresh: options.refreshInventory === true }
+          )
+          return {
+            ...manifest,
+            trashId,
+            workspaceId,
+            ...inventory
+          }
+        }
+      } catch {
+        // Corrupted trash entries are left in place for manual inspection.
       }
-    } catch {
-      // Corrupted trash entries are left in place for manual inspection.
+      return null
     }
-  }
+  )
+  const manifests = scannedManifests.filter(Boolean)
   return manifests.sort((a, b) => Date.parse(b?.deletedAt || 0) - Date.parse(a?.deletedAt || 0))
 }
 
@@ -850,6 +937,7 @@ module.exports = {
     isPathInside,
     sanitizeImportedFileName,
     collectWorkspaceIdsFromValue,
-    inspectSandboxDirectory
+    inspectSandboxDirectory,
+    mapWithConcurrency
   }
 }

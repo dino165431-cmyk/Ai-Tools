@@ -26,7 +26,7 @@
           >
             清理可回收项
           </n-button>
-          <n-button type="primary" :loading="loading" @click="refreshInventory">刷新</n-button>
+          <n-button type="primary" :loading="loading" @click="refreshInventory({ force: true })">刷新</n-button>
         </n-flex>
       </n-flex>
     </n-card>
@@ -371,12 +371,13 @@ const trashColumns = [
   }
 ]
 
-async function refreshInventory() {
+async function refreshInventory(options = {}) {
+  const force = options?.force === true
   loading.value = true
   try {
     const [active, trash] = await Promise.all([
-      listSandboxWorkspaces(),
-      listSandboxTrashEntries()
+      listSandboxWorkspaces({ refreshInventory: force }),
+      listSandboxTrashEntries({ refreshInventory: force })
     ])
     workspaces.value = Array.isArray(active) ? active : []
     trashEntries.value = Array.isArray(trash) ? trash : []

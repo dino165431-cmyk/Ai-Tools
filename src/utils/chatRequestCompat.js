@@ -187,14 +187,42 @@ export function normalizeAssistantToolCalls(toolCalls = [], options = {}) {
   return normalized
 }
 
-export function createToolResultApiMessage(toolCall, content = '') {
+const TOOL_EXECUTION_FAILURE_MARKER = '[TOOL_EXECUTION_STATUS: FAILED]'
+const FAILED_TOOL_EXECUTION_STATUSES = new Set([
+  'error',
+  'failed',
+  'failure',
+  'rejected',
+  'denied',
+  'stopped',
+  'aborted',
+  'cancelled',
+  'canceled'
+])
+
+export function formatToolResultContentForModel(content = '', options = {}) {
+  const text = String(content || '')
+  const status = String(options?.status || '').trim().toLowerCase()
+  const failed = options?.ok === false || FAILED_TOOL_EXECUTION_STATUSES.has(status)
+  if (!failed || text.startsWith(TOOL_EXECUTION_FAILURE_MARKER)) return text
+
+  return [
+    TOOL_EXECUTION_FAILURE_MARKER,
+    `状态：${status || 'error'}`,
+    '宿主已确定本次工具调用未成功完成。不得把下面的部分输出、日志或已生成文件解释为整体成功，也不得声称操作已完成；请根据错误调整方案，或如实说明失败。',
+    '原始工具结果：',
+    text || '（空结果）'
+  ].join('\n')
+}
+
+export function createToolResultApiMessage(toolCall, content = '', options = {}) {
   const id = String(toolCall?.id || '').trim()
   const callId = String(toolCall?.call_id || toolCall?.callId || '').trim()
   return {
     role: 'tool',
     tool_call_id: id || callId,
     ...(callId ? { call_id: callId } : {}),
-    content: String(content || '')
+    content: formatToolResultContentForModel(content, options)
   }
 }
 

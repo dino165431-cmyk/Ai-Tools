@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   createToolResultApiMessage,
+  formatToolResultContentForModel,
   hasAssistantReasoningContent,
   isDeepSeekReasonerModel,
   normalizeAssistantToolCalls,
@@ -29,6 +30,38 @@ test('tool history helpers preserve distinct Responses item id and call_id', () 
   assert.equal(toolCall.call_id, 'call_lookup')
   assert.equal(toolResult.tool_call_id, 'fc_lookup')
   assert.equal(toolResult.call_id, 'call_lookup')
+  assert.equal(toolResult.content, 'note body')
+})
+
+test('failed tool results carry an explicit host-controlled failure marker for the model', () => {
+  const toolCall = {
+    id: 'call_pack',
+    type: 'function',
+    function: { name: 'sandbox_run', arguments: '{"command":"npm run pack"}' }
+  }
+  const rawResult = JSON.stringify({
+    ok: false,
+    exitCode: 1,
+    stdout: 'dependencies installed',
+    changedFiles: [{ path: 'partial-output.exe' }]
+  })
+  const toolResult = createToolResultApiMessage(toolCall, rawResult, { ok: false })
+
+  assert.ok(toolResult.content.startsWith('[TOOL_EXECUTION_STATUS: FAILED]'))
+  assert.match(toolResult.content, /不得把下面的部分输出、日志或已生成文件解释为整体成功/)
+  assert.match(toolResult.content, /"exitCode":1/)
+  assert.match(toolResult.content, /partial-output\.exe/)
+})
+
+test('tool result failure formatting is status-aware and idempotent', () => {
+  const stopped = formatToolResultContentForModel('重复调用已停止', { status: 'stopped' })
+
+  assert.ok(stopped.startsWith('[TOOL_EXECUTION_STATUS: FAILED]'))
+  assert.match(stopped, /状态：stopped/)
+  assert.equal(
+    formatToolResultContentForModel(stopped, { ok: false }),
+    stopped
+  )
 })
 
 test('normalizeAssistantToolCalls deduplicates repeated entries with the same call_id', () => {
