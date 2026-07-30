@@ -98,6 +98,14 @@ export function resolveChatBottomScrollTarget(options = {}) {
   }
 }
 
+export function resolveChatVirtualCanvasHeight(options = {}) {
+  const contentHeight = Number(options.contentHeight)
+  const paddingBlock = Number(options.paddingBlock)
+  const safeContentHeight = Number.isFinite(contentHeight) ? Math.max(0, contentHeight) : 0
+  const safePaddingBlock = Number.isFinite(paddingBlock) ? Math.max(0, paddingBlock) : 0
+  return Math.ceil(safeContentHeight) + (Math.ceil(safePaddingBlock) * 2)
+}
+
 export function resolveChatVirtualItemHeight(options = {}) {
   const minimumHeight = Number(options.minimumHeight)
   const measuredHeight = Number(options.measuredHeight)

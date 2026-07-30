@@ -73,6 +73,8 @@
             <div
               ref="chatListRef"
               class="chat-list"
+              :class="{ 'is-virtualized': chatVirtualizedEnabled }"
+              :style="chatVirtualListStyle"
               @click="handleChatPreviewLinkClick"
               @contextmenu="handleChatPreviewLinkContextMenu"
             >
@@ -112,17 +114,11 @@
             </div>
 
             <div
-              v-if="chatVirtualTopSpacerHeight > 0"
-              class="chat-list__spacer"
-              :style="{ height: `${chatVirtualTopSpacerHeight}px` }"
-              aria-hidden="true"
-            />
-
-            <div
               v-for="msg in renderedChatMessages"
               :key="msg.id"
               class="chat-item"
               :class="[msg.role, chatItemStateClasses(msg), { 'is-virtualized': chatVirtualizedEnabled }]"
+              :style="getChatVirtualItemStyle(msg)"
               :id="msg.role === 'user' ? `q-${msg.id}` : undefined"
               :ref="(el) => setChatItemEl(msg.id, msg.role, el)"
             >
@@ -343,12 +339,6 @@
             <n-text v-if="!isChatActivityMessage(msg)" class="chat-item__time" depth="3">{{ formatTime(msg.time) }}</n-text>
           </div>
 
-            <div
-              v-if="chatVirtualBottomSpacerHeight > 0"
-              class="chat-list__spacer"
-              :style="{ height: `${chatVirtualBottomSpacerHeight}px` }"
-              aria-hidden="true"
-            />
           </div>
           </n-scrollbar>
 
@@ -400,18 +390,23 @@
         </div>
       </n-card>
 
-      <div v-if="showAnchorRail" class="chat-anchor-rail">
+      <nav v-if="showAnchorRail" class="chat-anchor-rail" aria-label="消息问题导航">
         <n-tooltip v-for="a in userAnchors" :key="a.id" trigger="hover">
           <template #trigger>
-            <div
+            <button
+              type="button"
               class="chat-anchor-marker"
               :class="{ active: a.id === activeAnchorId }"
+              :aria-label="`跳转到第 ${a.index} 问：${a.preview}`"
+              :aria-current="a.id === activeAnchorId ? 'location' : undefined"
               @click="scrollToUserAnchor(a.id)"
-            />
+            >
+              <span aria-hidden="true" />
+            </button>
           </template>
           第{{ a.index }} 问：{{ a.preview }}
         </n-tooltip>
-      </div>
+      </nav>
     </div>
 
     <transition name="tool-approval">
@@ -1326,6 +1321,7 @@ import {
   isExpectedChatProgrammaticScroll,
   resolveChatBottomScrollTarget,
   resolveChatHeavyRenderTuning,
+  resolveChatVirtualCanvasHeight,
   resolveChatViewportCompensation,
   resolveChatVirtualItemGap,
   resolveChatVirtualItemHeight,
@@ -7586,26 +7582,27 @@ const renderedChatMessages = computed(() => {
   return items.slice(start, end + 1).map((item) => item.msg)
 })
 
-const chatVirtualTopSpacerHeight = computed(() => {
-  if (!chatVirtualizedEnabled.value) return 0
-  const items = chatVirtualLayout.value.items
-  const start = renderedChatRange.value.start
-  const first = items[start]
-  if (!first) return 0
-  // `gap` 会自动插入 spacer 与消息项之间，因此这里要扣掉那一段间距，避免坐标系累计偏移。
-  const leadingGap = start > 0 ? CHAT_LIST_GAP_PX : 0
-  return Math.max(0, Math.round(first.top - leadingGap))
+const chatVirtualListStyle = computed(() => {
+  if (!chatVirtualizedEnabled.value) return undefined
+  const paddingBlock = isDenseChatLayout.value ? 8 : 14
+  return {
+    height: `${resolveChatVirtualCanvasHeight({
+      contentHeight: chatVirtualLayout.value.totalHeight,
+      paddingBlock
+    })}px`
+  }
 })
 
-const chatVirtualBottomSpacerHeight = computed(() => {
-  if (!chatVirtualizedEnabled.value) return 0
-  const items = chatVirtualLayout.value.items
-  const end = renderedChatRange.value.end
-  const last = items[end]
-  if (!last) return 0
-  const trailingGap = end < items.length - 1 ? CHAT_LIST_GAP_PX : 0
-  return Math.max(0, Math.round(chatVirtualLayout.value.totalHeight - last.bottom - trailingGap))
-})
+function getChatVirtualItemStyle(msg) {
+  if (!chatVirtualizedEnabled.value) return undefined
+  const id = String(msg?.id || '').trim()
+  const index = chatVirtualLayout.value.idToIndex.get(id)
+  const item = Number.isInteger(index) ? chatVirtualLayout.value.items[index] : null
+  if (!item) return undefined
+  return {
+    '--chat-virtual-item-top': `${Math.max(0, Math.round(Number(item.top) || 0))}px`
+  }
+}
 
 function getDistanceFromBottom(elMaybe) {
   const el = elMaybe || chatScrollEl.value || resolveScrollbarContainerEl()
@@ -7927,6 +7924,9 @@ function queueChatScrollCompensation(deltaPx) {
     if (!totalDelta) return
     const el = chatScrollEl.value || resolveScrollbarContainerEl()
     if (!el) return
+    // User input or tail-follow may have happened after this correction was
+    // queued. A stale compensation must never fight the current scroll owner.
+    if (!shouldApplyChatScrollCompensation()) return
     const compensation = resolveChatViewportCompensation({
       scrollTop: el.scrollTop,
       deltaPx: totalDelta,
@@ -8253,25 +8253,26 @@ function scheduleRefreshUserAnchorMeta() {
 async function scrollToUserAnchor(messageId) {
   const k = String(messageId || '')
   autoScrollEnabled.value = false
+  autoScrollSuspendedByUser.value = true
+  clearQueuedChatScrollCompensation()
   await nextTick()
-  const el = userAnchorElMap.get(k)
-  if (el) {
-    try {
-      el.scrollIntoView({ block: 'start', behavior: 'smooth' })
-      return
-    } catch {
-      el.scrollIntoView()
-      return
-    }
-  }
   const container = chatScrollEl.value || resolveScrollbarContainerEl()
   const targetTop = chatVirtualLayout.value.topById.get(k)
-  if (!container || targetTop == null) return
+  if (!container) return
+  const mountedEl = userAnchorElMap.get(k)
+  const mountedTop = mountedEl ? Number(mountedEl.offsetTop) : Number.NaN
+  const resolvedTop = targetTop == null ? mountedTop : Number(targetTop)
+  if (!Number.isFinite(resolvedTop)) return
+  const nextTop = Math.max(0, resolvedTop - 8)
+  markProgrammaticChatScroll(CHAT_SCROLL_COMPENSATION_SUSPEND_MS, nextTop)
   try {
-    container.scrollTo({ top: Math.max(0, targetTop - 8), behavior: 'smooth' })
+    // Native smooth scrolling traverses several virtual render windows; their
+    // measurements can otherwise compete with the animation.
+    container.scrollTo({ top: nextTop, behavior: 'auto' })
   } catch {
-    container.scrollTop = Math.max(0, targetTop - 8)
+    container.scrollTop = nextTop
   }
+  queueProcessChatScroll(container)
 }
 
 function resolveScrollbarContainerEl() {
@@ -8497,6 +8498,7 @@ function handleChatWheel(e) {
   const deltaY = Number(e?.deltaY || 0)
   if (!deltaY) return
   clearProgrammaticChatScrollMark()
+  clearQueuedChatScrollCompensation()
   userChatScrollActiveUntil = Date.now() + CHAT_USER_SCROLL_ACTIVE_MS
   if (deltaY < 0) {
     autoScrollSuspendedByUser.value = true
@@ -8506,6 +8508,7 @@ function handleChatWheel(e) {
 
 function handleChatPointerDown() {
   clearProgrammaticChatScrollMark()
+  clearQueuedChatScrollCompensation()
   userChatScrollActiveUntil = Date.now() + CHAT_USER_SCROLL_ACTIVE_MS
 }
 
@@ -8594,6 +8597,7 @@ async function scrollToBottom(options = {}) {
 
     const el = chatScrollEl.value || resolveScrollbarContainerEl()
     if (!el) return
+    clearQueuedChatScrollCompensation()
 
     const target = resolveChatBottomScrollTarget({
       scrollHeight: el.scrollHeight,

@@ -6,6 +6,7 @@ import {
   resolveChatBottomScrollTarget,
   resolveChatViewportCompensation,
   resolveChatHeavyRenderTuning,
+  resolveChatVirtualCanvasHeight,
   resolveChatVirtualItemGap,
   resolveChatVirtualItemHeight,
   shouldDeferChatHeavyBlockLayout
@@ -182,6 +183,11 @@ test('resolveChatVirtualItemGap mirrors the tighter CSS gap between activity row
     }),
     14
   )
+})
+
+test('resolveChatVirtualCanvasHeight keeps the scroll extent independent of the rendered window', () => {
+  assert.equal(resolveChatVirtualCanvasHeight({ contentHeight: 1200.2, paddingBlock: 14 }), 1229)
+  assert.equal(resolveChatVirtualCanvasHeight({ contentHeight: -20, paddingBlock: 8 }), 16)
 })
 
 test('resolveChatBottomScrollTarget skips no-op tail commits', () => {
