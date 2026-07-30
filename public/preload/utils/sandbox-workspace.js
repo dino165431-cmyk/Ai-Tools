@@ -6,11 +6,16 @@ const globalConfig = require('./global-config')
 
 const SANDBOX_DATA_DIRECTORY = '.ai-tools-sandbox'
 const SANDBOX_WORKSPACES_DIRECTORY = 'workspaces'
+const SANDBOX_TRASH_DIRECTORY = 'trash'
 const DEFAULT_WORKSPACE_ID = 'default'
 const MAX_WORKSPACE_ID_LENGTH = 80
 const MAX_IMPORTED_FILE_BYTES = 50 * 1024 * 1024
 const MAX_IMPORTED_BATCH_BYTES = 100 * 1024 * 1024
 const MAX_LISTED_FILES = 500
+const DEFAULT_SANDBOX_TRASH_RETENTION_DAYS = 30
+const MAX_SESSION_REFERENCE_SCAN_FILES = 20000
+const MAX_SESSION_REFERENCE_FILE_BYTES = 20 * 1024 * 1024
+const MAX_SANDBOX_INVENTORY_ENTRIES = 50000
 
 function cleanString(value) {
   return typeof value === 'string' ? value.trim() : ''
@@ -71,6 +76,496 @@ function getWorkspaceRoot(workspaceId = DEFAULT_WORKSPACE_ID) {
     SANDBOX_WORKSPACES_DIRECTORY,
     safeWorkspaceId
   )
+}
+
+function getSandboxDataRoot() {
+  return path.join(resolveDataRoot(), SANDBOX_DATA_DIRECTORY)
+}
+
+function getSandboxTrashRoot() {
+  return path.join(getSandboxDataRoot(), SANDBOX_TRASH_DIRECTORY)
+}
+
+function normalizeTrashId(value) {
+  const trashId = cleanString(value)
+  if (!trashId || trashId.length > 160 || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(trashId)) {
+    throw new Error('无效的沙盒回收站记录 ID')
+  }
+  return trashId
+}
+
+function getSandboxTrashEntryRoot(trashId) {
+  return path.join(getSandboxTrashRoot(), normalizeTrashId(trashId))
+}
+
+function getSandboxTrashManifestPath(trashId) {
+  return path.join(getSandboxTrashEntryRoot(trashId), 'manifest.json')
+}
+
+async function pathExists(targetPath) {
+  try {
+    await fs.access(targetPath)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function createSandboxTrashId(workspaceId, now = Date.now()) {
+  const safeWorkspaceId = normalizeWorkspaceId(workspaceId)
+  return `${safeWorkspaceId}-${now.toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+async function writeJsonAtomic(targetPath, value) {
+  const temporaryPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`
+  await fs.mkdir(path.dirname(targetPath), { recursive: true })
+  await fs.writeFile(temporaryPath, JSON.stringify(value, null, 2))
+  try {
+    await fs.rm(targetPath, { force: true })
+    await fs.rename(temporaryPath, targetPath)
+  } catch (error) {
+    await fs.rm(temporaryPath, { force: true }).catch(() => {})
+    throw error
+  }
+}
+
+async function readJsonFile(targetPath) {
+  const raw = await fs.readFile(targetPath, 'utf8')
+  const parsed = JSON.parse(String(raw || ''))
+  if (!parsed || typeof parsed !== 'object') throw new Error('沙盒回收站记录损坏')
+  return parsed
+}
+
+function collectWorkspaceIdsFromText(text, output) {
+  const raw = String(text || '')
+  const pattern = /(?:sandbox_workspace_id|sandboxWorkspaceId)\s*[:：=]\s*([a-zA-Z0-9][a-zA-Z0-9._-]{0,79})/g
+  let match = null
+  while ((match = pattern.exec(raw))) {
+    try {
+      output.add(normalizeWorkspaceId(match[1]))
+    } catch {
+      // Ignore malformed workspace ids embedded in historical text.
+    }
+  }
+}
+
+function collectWorkspaceIdsFromValue(value, output = new Set(), seen = new WeakSet(), depth = 0) {
+  if (depth > 30 || value == null) return output
+  if (typeof value === 'string') {
+    collectWorkspaceIdsFromText(value, output)
+    return output
+  }
+  if (typeof value !== 'object') return output
+  if (seen.has(value)) return output
+  seen.add(value)
+
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectWorkspaceIdsFromValue(item, output, seen, depth + 1))
+    return output
+  }
+
+  for (const [key, child] of Object.entries(value)) {
+    if (
+      typeof child === 'string' &&
+      ['sandboxWorkspaceId', 'sandbox_workspace_id', 'workspaceId', 'workspace_id'].includes(key)
+    ) {
+      try {
+        output.add(normalizeWorkspaceId(child))
+      } catch {
+        // Ignore unrelated or malformed workspace ids.
+      }
+    }
+    collectWorkspaceIdsFromValue(child, output, seen, depth + 1)
+  }
+  return output
+}
+
+async function collectReferencedWorkspaceIds(options = {}) {
+  const sessionRoot = path.join(resolveDataRoot(), 'session')
+  const output = new Set(
+    (Array.isArray(options.protectedWorkspaceIds) ? options.protectedWorkspaceIds : [])
+      .map((item) => {
+        try {
+          return normalizeWorkspaceId(item)
+        } catch {
+          return ''
+        }
+      })
+      .filter(Boolean)
+  )
+  if (!(await pathExists(sessionRoot))) {
+    return { workspaceIds: output, scanComplete: true }
+  }
+
+  let scannedFiles = 0
+  let scanComplete = true
+  async function walk(directoryPath) {
+    if (scannedFiles >= MAX_SESSION_REFERENCE_SCAN_FILES) {
+      scanComplete = false
+      return
+    }
+    let entries = []
+    try {
+      entries = await fs.readdir(directoryPath, { withFileTypes: true })
+    } catch {
+      scanComplete = false
+      return
+    }
+    for (const entry of entries) {
+      if (scannedFiles >= MAX_SESSION_REFERENCE_SCAN_FILES) {
+        scanComplete = false
+        return
+      }
+      if (entry.isSymbolicLink()) {
+        scanComplete = false
+        continue
+      }
+      const entryPath = path.join(directoryPath, entry.name)
+      if (entry.isDirectory()) {
+        if (entry.name.toLowerCase().endsWith('.assets')) continue
+        await walk(entryPath)
+        continue
+      }
+      if (!entry.isFile() || !entry.name.toLowerCase().endsWith('.json')) continue
+      scannedFiles += 1
+      try {
+        const stat = await fs.stat(entryPath)
+        if (stat.size > MAX_SESSION_REFERENCE_FILE_BYTES) {
+          scanComplete = false
+          continue
+        }
+        const payload = JSON.parse(await fs.readFile(entryPath, 'utf8'))
+        collectWorkspaceIdsFromValue(payload, output)
+      } catch {
+        scanComplete = false
+      }
+    }
+  }
+
+  await walk(sessionRoot)
+  return { workspaceIds: output, scanComplete }
+}
+
+async function inspectSandboxDirectory(directoryPath) {
+  const result = {
+    exists: false,
+    fileCount: 0,
+    totalBytes: 0,
+    modifiedAt: 0,
+    scanComplete: true
+  }
+  let rootStat = null
+  try {
+    rootStat = await fs.lstat(directoryPath)
+  } catch (error) {
+    if (error?.code === 'ENOENT') return result
+    throw error
+  }
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+    return {
+      ...result,
+      exists: true,
+      modifiedAt: Number(rootStat.mtimeMs) || 0,
+      scanComplete: false
+    }
+  }
+
+  result.exists = true
+  result.modifiedAt = Number(rootStat.mtimeMs) || 0
+  let scannedEntries = 0
+
+  async function walk(currentPath) {
+    if (scannedEntries >= MAX_SANDBOX_INVENTORY_ENTRIES) {
+      result.scanComplete = false
+      return
+    }
+    let entries = []
+    try {
+      entries = await fs.readdir(currentPath, { withFileTypes: true })
+    } catch {
+      result.scanComplete = false
+      return
+    }
+
+    for (const entry of entries) {
+      if (scannedEntries >= MAX_SANDBOX_INVENTORY_ENTRIES) {
+        result.scanComplete = false
+        return
+      }
+      scannedEntries += 1
+      if (entry.isSymbolicLink()) {
+        result.scanComplete = false
+        continue
+      }
+
+      const entryPath = path.join(currentPath, entry.name)
+      let stat = null
+      try {
+        stat = await fs.stat(entryPath)
+      } catch {
+        result.scanComplete = false
+        continue
+      }
+      result.modifiedAt = Math.max(result.modifiedAt, Number(stat.mtimeMs) || 0)
+      if (stat.isDirectory()) {
+        await walk(entryPath)
+      } else if (stat.isFile()) {
+        result.fileCount += 1
+        result.totalBytes += Math.max(0, Number(stat.size) || 0)
+      }
+    }
+  }
+
+  await walk(directoryPath)
+  return result
+}
+
+async function listSandboxWorkspaces(options = {}) {
+  const workspacesRoot = path.join(
+    getSandboxDataRoot(),
+    SANDBOX_WORKSPACES_DIRECTORY
+  )
+  if (!(await pathExists(workspacesRoot))) return []
+
+  const referenceScan = await collectReferencedWorkspaceIds(options)
+  const entries = await fs.readdir(workspacesRoot, { withFileTypes: true }).catch(() => [])
+  const workspaces = []
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.isSymbolicLink()) continue
+    let workspaceId = ''
+    let valid = true
+    try {
+      workspaceId = normalizeWorkspaceId(entry.name)
+    } catch {
+      workspaceId = String(entry.name || '')
+      valid = false
+    }
+    if (!workspaceId) continue
+
+    const inventory = await inspectSandboxDirectory(path.join(workspacesRoot, entry.name))
+    const referenced = valid && referenceScan.workspaceIds.has(workspaceId)
+    const referenceStatus = !valid
+      ? 'invalid'
+      : !referenceScan.scanComplete
+        ? 'unknown'
+        : referenced
+          ? 'referenced'
+          : 'orphaned'
+    workspaces.push({
+      workspaceId,
+      valid,
+      kind: workspaceId.startsWith('chat-') ? 'chat' : 'general',
+      referenced,
+      referenceStatus,
+      referenceScanComplete: referenceScan.scanComplete,
+      workspacePath: path.join(
+        SANDBOX_DATA_DIRECTORY,
+        SANDBOX_WORKSPACES_DIRECTORY,
+        entry.name
+      ).replace(/\\/g, '/'),
+      ...inventory
+    })
+  }
+  return workspaces.sort((a, b) => {
+    if (a.referenceStatus !== b.referenceStatus) {
+      const order = { orphaned: 0, unknown: 1, referenced: 2, invalid: 3 }
+      return (order[a.referenceStatus] ?? 9) - (order[b.referenceStatus] ?? 9)
+    }
+    return String(a.workspaceId || '').localeCompare(String(b.workspaceId || ''))
+  })
+}
+
+async function listSandboxTrashEntries() {
+  const trashRoot = getSandboxTrashRoot()
+  if (!(await pathExists(trashRoot))) return []
+  const entries = await fs.readdir(trashRoot, { withFileTypes: true }).catch(() => [])
+  const manifests = []
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.isSymbolicLink()) continue
+    try {
+      const manifest = await readJsonFile(getSandboxTrashManifestPath(entry.name))
+      const trashId = normalizeTrashId(manifest?.trashId)
+      const workspaceId = normalizeWorkspaceId(manifest?.workspaceId)
+      if (trashId === entry.name) {
+        const inventory = await inspectSandboxDirectory(
+          path.join(getSandboxTrashEntryRoot(trashId), 'workspace')
+        )
+        manifests.push({
+          ...manifest,
+          trashId,
+          workspaceId,
+          ...inventory
+        })
+      }
+    } catch {
+      // Corrupted trash entries are left in place for manual inspection.
+    }
+  }
+  return manifests.sort((a, b) => Date.parse(b?.deletedAt || 0) - Date.parse(a?.deletedAt || 0))
+}
+
+async function trashSandboxWorkspaces(workspaceIds = [], options = {}) {
+  const candidates = [...new Set(
+    (Array.isArray(workspaceIds) ? workspaceIds : [])
+      .map((item) => {
+        try {
+          return normalizeWorkspaceId(item)
+        } catch {
+          return ''
+        }
+      })
+      .filter(Boolean)
+  )]
+  if (!candidates.length) return []
+
+  const referenceScan = await collectReferencedWorkspaceIds(options)
+  const referenced = referenceScan.workspaceIds
+  const now = Number(options.now || Date.now()) || Date.now()
+  const retentionDays = Math.max(
+    1,
+    Math.round(Number(options.retentionDays || DEFAULT_SANDBOX_TRASH_RETENTION_DAYS))
+  )
+  const retentionMs = retentionDays * 24 * 60 * 60 * 1000
+  const results = []
+
+  for (const workspaceId of candidates) {
+    if (!workspaceId.startsWith('chat-') && options.allowNonChatWorkspace !== true) {
+      results.push({ workspaceId, status: 'retained', reason: 'not-session-owned' })
+      continue
+    }
+    if (!referenceScan.scanComplete) {
+      results.push({ workspaceId, status: 'retained', reason: 'reference-scan-incomplete' })
+      continue
+    }
+    if (referenced.has(workspaceId)) {
+      results.push({ workspaceId, status: 'retained', reason: 'referenced' })
+      continue
+    }
+
+    const workspaceRoot = getWorkspaceRoot(workspaceId)
+    if (!(await pathExists(workspaceRoot))) {
+      results.push({ workspaceId, status: 'missing' })
+      continue
+    }
+
+    const trashId = createSandboxTrashId(workspaceId, now)
+    const entryRoot = getSandboxTrashEntryRoot(trashId)
+    const trashedWorkspaceRoot = path.join(entryRoot, 'workspace')
+    const manifest = {
+      version: 1,
+      trashId,
+      workspaceId,
+      status: 'preparing',
+      deletedAt: new Date(now).toISOString(),
+      purgeAt: new Date(now + retentionMs).toISOString(),
+      retentionDays,
+      workspacePath: path.join(
+        SANDBOX_DATA_DIRECTORY,
+        SANDBOX_WORKSPACES_DIRECTORY,
+        workspaceId
+      ).replace(/\\/g, '/')
+    }
+
+    await fs.mkdir(entryRoot, { recursive: true })
+    await writeJsonAtomic(getSandboxTrashManifestPath(trashId), manifest)
+    try {
+      await fs.rename(workspaceRoot, trashedWorkspaceRoot)
+      const savedManifest = {
+        ...manifest,
+        status: 'trashed',
+        updatedAt: new Date().toISOString()
+      }
+      await writeJsonAtomic(getSandboxTrashManifestPath(trashId), savedManifest)
+      results.push(savedManifest)
+    } catch (error) {
+      try {
+        if (await pathExists(trashedWorkspaceRoot) && !(await pathExists(workspaceRoot))) {
+          await fs.mkdir(path.dirname(workspaceRoot), { recursive: true })
+          await fs.rename(trashedWorkspaceRoot, workspaceRoot)
+        }
+        await fs.rm(entryRoot, { recursive: true, force: true })
+      } catch {
+        // Preserve the original move error.
+      }
+      results.push({
+        workspaceId,
+        trashId,
+        status: 'error',
+        error: error?.message || String(error)
+      })
+    }
+  }
+  return results
+}
+
+async function restoreSandboxTrashEntries(entries = []) {
+  const source = Array.isArray(entries) ? entries : []
+  const results = []
+  for (const raw of source) {
+    if (String(raw?.status || '') !== 'trashed') {
+      results.push({
+        workspaceId: cleanString(raw?.workspaceId),
+        trashId: cleanString(raw?.trashId),
+        status: 'not-required'
+      })
+      continue
+    }
+    try {
+      const trashId = normalizeTrashId(raw.trashId)
+      const manifest = await readJsonFile(getSandboxTrashManifestPath(trashId))
+      const workspaceId = normalizeWorkspaceId(manifest.workspaceId)
+      const workspaceRoot = getWorkspaceRoot(workspaceId)
+      const trashedWorkspaceRoot = path.join(getSandboxTrashEntryRoot(trashId), 'workspace')
+      if (await pathExists(workspaceRoot)) {
+        results.push({ workspaceId, trashId, status: 'active-exists' })
+        continue
+      }
+      if (!(await pathExists(trashedWorkspaceRoot))) {
+        results.push({ workspaceId, trashId, status: 'missing' })
+        continue
+      }
+      await fs.mkdir(path.dirname(workspaceRoot), { recursive: true })
+      await fs.rename(trashedWorkspaceRoot, workspaceRoot)
+      await fs.rm(getSandboxTrashEntryRoot(trashId), { recursive: true, force: true })
+      results.push({ workspaceId, trashId, status: 'restored' })
+    } catch (error) {
+      results.push({
+        workspaceId: cleanString(raw?.workspaceId),
+        trashId: cleanString(raw?.trashId),
+        status: 'error',
+        error: error?.message || String(error)
+      })
+    }
+  }
+  return results
+}
+
+async function purgeSandboxTrashEntries(entries = [], options = {}) {
+  const requestedIds = new Set(
+    (Array.isArray(entries) ? entries : [])
+      .map((item) => cleanString(typeof item === 'string' ? item : item?.trashId))
+      .filter(Boolean)
+  )
+  if (!requestedIds.size && options.all !== true) return []
+  const now = Number(options.now || Date.now()) || Date.now()
+  const manifests = await listSandboxTrashEntries()
+  const purged = []
+  for (const manifest of manifests) {
+    if (requestedIds.size && !requestedIds.has(manifest.trashId)) continue
+    const purgeAt = Date.parse(String(manifest.purgeAt || ''))
+    if (options.force !== true && (!Number.isFinite(purgeAt) || purgeAt > now)) continue
+    await fs.rm(getSandboxTrashEntryRoot(manifest.trashId), { recursive: true, force: true })
+    purged.push({
+      trashId: manifest.trashId,
+      workspaceId: manifest.workspaceId,
+      status: 'purged'
+    })
+  }
+  return purged
+}
+
+async function purgeExpiredSandboxTrash(options = {}) {
+  return purgeSandboxTrashEntries([], { ...options, all: true })
 }
 
 function getWorkspaceDataPath(workspaceId, relativePath = '') {
@@ -331,6 +826,8 @@ module.exports = {
   DEFAULT_WORKSPACE_ID,
   SANDBOX_DATA_DIRECTORY,
   SANDBOX_WORKSPACES_DIRECTORY,
+  SANDBOX_TRASH_DIRECTORY,
+  DEFAULT_SANDBOX_TRASH_RETENTION_DAYS,
   normalizeWorkspaceId,
   normalizeSandboxRelativePath,
   getWorkspaceRoot,
@@ -343,8 +840,16 @@ module.exports = {
   snapshotWorkspace,
   collectChangedFiles,
   resetWorkspace,
+  listSandboxWorkspaces,
+  trashSandboxWorkspaces,
+  restoreSandboxTrashEntries,
+  listSandboxTrashEntries,
+  purgeSandboxTrashEntries,
+  purgeExpiredSandboxTrash,
   _test: {
     isPathInside,
-    sanitizeImportedFileName
+    sanitizeImportedFileName,
+    collectWorkspaceIdsFromValue,
+    inspectSandboxDirectory
   }
 }

@@ -24,6 +24,34 @@ export function inferStructuredToolResultStatus(result) {
   return ''
 }
 
+export function inferToolDisplayContentStatus(content) {
+  const text = String(content || '').replace(/\r\n?/g, '\n').trim()
+  if (!text) return ''
+  if (/^TOOL_REJECTED(?:\s|$)/i.test(text)) return 'rejected'
+
+  // Only inspect the display metadata before the first fenced payload. Tool output is
+  // arbitrary user-controlled text and may legitimately contain words such as
+  // "error", "failed", or "rejected".
+  const metadata = text.split(/^\s*```/m, 1)[0]
+  const statusMatch = metadata.match(/^\s*-\s*(?:状态|status)\s*[：:]\s*(.+?)\s*$/im)
+  if (statusMatch) {
+    const status = String(statusMatch[1] || '')
+      .replace(/[*_`]/g, '')
+      .trim()
+      .toLowerCase()
+    if (['已拒绝', '拒绝', 'rejected', 'denied'].includes(status)) return 'rejected'
+    if (['失败', '错误', 'error', 'failed', 'failure'].includes(status)) return 'error'
+    if (['已停止', '已中止', 'stopped', 'aborted', 'cancelled', 'canceled'].includes(status)) return 'stopped'
+    if (['已暂停', 'paused'].includes(status)) return 'paused'
+    if (['运行中', '正在执行', 'running'].includes(status)) return 'running'
+    if (['已完成', '成功', 'success', 'succeeded', 'completed', 'complete', 'ok'].includes(status)) return 'success'
+  }
+
+  if (/^\s*-\s*(?:错误|error)\s*[：:]/im.test(metadata)) return 'error'
+  if (/^(?:错误|error)\s*[：:]/i.test(metadata)) return 'error'
+  return ''
+}
+
 function resolveAgentRunTraceText(trace, phases, fieldNames) {
   const phaseSet = phases instanceof Set ? phases : new Set(Array.isArray(phases) ? phases : [])
   const traceList = Array.isArray(trace) ? trace : []

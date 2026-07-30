@@ -13,7 +13,7 @@ const CLOUD_AUTO_POLL_INTERVAL_MS = 60 * 1000
 const CLOUD_AUTO_REQUIRED_KEYS = ['region', 'accessKeyId', 'secretAccessKey', 'bucket']
 const CLOUD_DELETE_QUEUE_STORAGE_KEY = 'ai-tools-cloud-delete-queue-v1'
 const CLOUD_DELETE_SYNC_ROOTS = ['note', 'session']
-const LOCAL_ONLY_DATA_ROOTS = new Set(['.ai-tools-sandbox'])
+const LOCAL_ONLY_DATA_ROOTS = new Set(['.ai-tools-sandbox', '.ai-tools-trash'])
 const EXTERNAL_WATCH_DEBOUNCE_MS = 500
 const EXTERNAL_WATCH_RESCAN_DEBOUNCE_MS = 250
 const EXTERNAL_WATCH_POLL_INTERVAL_MS = 2000
@@ -1537,6 +1537,36 @@ class FileOperations {
     async importFilesToSandbox(workspaceId, files = []) {
         const sandboxWorkspace = require('./sandbox-workspace')
         return sandboxWorkspace.importWorkspaceFiles(workspaceId, files)
+    }
+
+    async listSandboxWorkspaces(options = {}) {
+        const sandboxWorkspace = require('./sandbox-workspace')
+        return sandboxWorkspace.listSandboxWorkspaces(options)
+    }
+
+    async trashSandboxWorkspaces(workspaceIds = [], options = {}) {
+        const sandboxWorkspace = require('./sandbox-workspace')
+        return sandboxWorkspace.trashSandboxWorkspaces(workspaceIds, options)
+    }
+
+    async restoreSandboxTrashEntries(entries = []) {
+        const sandboxWorkspace = require('./sandbox-workspace')
+        return sandboxWorkspace.restoreSandboxTrashEntries(entries)
+    }
+
+    async listSandboxTrashEntries() {
+        const sandboxWorkspace = require('./sandbox-workspace')
+        return sandboxWorkspace.listSandboxTrashEntries()
+    }
+
+    async purgeSandboxTrashEntries(entries = [], options = {}) {
+        const sandboxWorkspace = require('./sandbox-workspace')
+        return sandboxWorkspace.purgeSandboxTrashEntries(entries, options)
+    }
+
+    async purgeExpiredSandboxTrash(options = {}) {
+        const sandboxWorkspace = require('./sandbox-workspace')
+        return sandboxWorkspace.purgeExpiredSandboxTrash(options)
     }
 
     async _resolveExportableFile(relativePath) {

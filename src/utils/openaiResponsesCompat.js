@@ -266,6 +266,7 @@ export function buildResponsesRequestBodyFromChatBody(chatBody = {}, options = {
 function ensureAccumulator(state) {
   if (!state || typeof state !== 'object') return createResponsesStreamAccumulator()
   if (!(state.toolCallsByKey instanceof Map)) state.toolCallsByKey = new Map()
+  if (!(state.toolCallAliases instanceof Map)) state.toolCallAliases = new Map()
   if (!Array.isArray(state.payloads)) state.payloads = []
   if (typeof state.content !== 'string') state.content = ''
   if (typeof state.reasoning !== 'string') state.reasoning = ''
@@ -278,9 +279,30 @@ export function createResponsesStreamAccumulator() {
     reasoning: '',
     finishReason: null,
     toolCallsByKey: new Map(),
+    toolCallAliases: new Map(),
     payloads: [],
     usage: null
   }
+}
+
+function buildResponsesFunctionCallAliases(itemId, callId, outputIndex, name) {
+  const aliases = []
+  if (itemId) aliases.push(`item:${itemId}`)
+  if (callId) aliases.push(`call:${callId}`)
+  if (outputIndex !== '') aliases.push(`index:${outputIndex}`)
+  if (!aliases.length && name) aliases.push(`name:${name}`)
+  return aliases
+}
+
+function mergeResponsesFunctionCall(target, source) {
+  if (!target || !source || target === source) return target
+  if (!target.id || (!target.id.startsWith('fc_') && source.id?.startsWith('fc_'))) target.id = source.id
+  if (!target.call_id && source.call_id) target.call_id = source.call_id
+  if (!target.function?.name && source.function?.name) target.function.name = source.function.name
+  if (source.function?.arguments) {
+    target.function.arguments = source.function.arguments
+  }
+  return target
 }
 
 function upsertResponsesFunctionCall(state, item = {}) {
@@ -290,11 +312,18 @@ function upsertResponsesFunctionCall(state, item = {}) {
   // Responses 标准中 item.id（通常为 fc_...）和 call_id（call_...）是两个不同标识。
   // 仅对没有 fc_ item id 的非标准兼容响应使用 id 兜底，避免把两者错误合并。
   const callId = explicitCallId || (itemId && !itemId.startsWith('fc_') ? itemId : '')
-  const key = normalizeString(itemId || callId || item.output_index)
-  if (!key && !name) return null
+  const outputIndex = normalizeString(item.output_index ?? item.outputIndex)
+  const aliases = buildResponsesFunctionCallAliases(itemId, callId, outputIndex, name)
+  if (!aliases.length) return null
 
-  const prev = state.toolCallsByKey.get(key || callId || name) || {
-    id: itemId || sanitizeFunctionCallId(callId || key || name),
+  const matchedKeys = [...new Set(
+    aliases
+      .map((alias) => state.toolCallAliases.get(alias))
+      .filter((key) => key && state.toolCallsByKey.has(key))
+  )]
+  const key = matchedKeys[0] || aliases[0]
+  const prev = state.toolCallsByKey.get(key) || {
+    id: itemId || sanitizeFunctionCallId(callId || outputIndex || name),
     type: 'function',
     call_id: callId,
     function: {
@@ -303,13 +332,22 @@ function upsertResponsesFunctionCall(state, item = {}) {
     }
   }
 
+  matchedKeys.slice(1).forEach((duplicateKey) => {
+    mergeResponsesFunctionCall(prev, state.toolCallsByKey.get(duplicateKey))
+    state.toolCallsByKey.delete(duplicateKey)
+    state.toolCallAliases.forEach((aliasKey, alias) => {
+      if (aliasKey === duplicateKey) state.toolCallAliases.set(alias, key)
+    })
+  })
+
   if (itemId) prev.id = itemId
   if (callId) prev.call_id = callId
   if (name) prev.function.name = name
   if (typeof item.arguments === 'string') prev.function.arguments = item.arguments
   if (typeof item.delta === 'string') prev.function.arguments += item.delta
 
-  state.toolCallsByKey.set(key || prev.call_id || prev.id || prev.function.name, prev)
+  state.toolCallsByKey.set(key, prev)
+  aliases.forEach((alias) => state.toolCallAliases.set(alias, key))
   return prev
 }
 
@@ -317,7 +355,18 @@ function collectResponsesOutputItems(json) {
   const response = json?.response && typeof json.response === 'object' ? json.response : json
   const output = Array.isArray(response?.output) ? response.output : []
   const item = json?.item && typeof json.item === 'object' ? json.item : null
-  return item ? [...output, item] : output
+  const normalizedOutput = output.map((entry, index) => ({
+    ...entry,
+    output_index: entry?.output_index ?? entry?.outputIndex ?? index
+  }))
+  if (!item) return normalizedOutput
+  return [
+    ...normalizedOutput,
+    {
+      ...item,
+      output_index: item.output_index ?? item.outputIndex ?? json.output_index ?? json.outputIndex
+    }
+  ]
 }
 
 export function applyResponsesStreamEvent(state, json) {

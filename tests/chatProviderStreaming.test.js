@@ -56,3 +56,28 @@ test('streamChatCompletion retries the v1 endpoint after a 404', async (t) => {
   assert.equal(result.endpoint, 'chat-completions')
   assert.equal(deltas[0]?.delta, 'hello')
 })
+
+test('explicit Responses mode never falls back to Chat Completions', async (t) => {
+  const originalFetch = globalThis.fetch
+  const requestedUrls = []
+  t.after(() => {
+    globalThis.fetch = originalFetch
+  })
+
+  globalThis.fetch = async (url) => {
+    requestedUrls.push(String(url))
+    return new Response('not found', { status: 404 })
+  }
+
+  await assert.rejects(
+    streamChatCompletion({
+      baseUrl: 'https://example.com/v1',
+      apiKey: 'secret',
+      apiMode: 'responses',
+      body: { model: 'test-model', messages: [], stream: true }
+    }),
+    /Responses 请求失败/
+  )
+
+  assert.deepEqual(requestedUrls, ['https://example.com/v1/responses'])
+})

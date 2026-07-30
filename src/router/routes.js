@@ -22,6 +22,10 @@ import {
     Magento
 } from '@vicons/fa'
 
+import {
+    CubeOutline
+} from '@vicons/ionicons5'
+
 export const routers = [
     {
         path: '/chat',
@@ -81,6 +85,17 @@ export const routers = [
                     description: '查看和管理助手保存的长期信息',
                     icon: BrainCircuit20Regular,
                     requiresMemoryEnabled: true
+                }
+            },
+            {
+                path: 'sandboxes',
+                name: 'sandbox',
+                component: () => import('@/views/pages/setting/sandbox/Sandbox.vue'),
+                meta: {
+                    menu: true,
+                    label: '沙盒管理',
+                    description: '查看沙盒占用、会话引用和回收站',
+                    icon: CubeOutline
                 }
             },
             {

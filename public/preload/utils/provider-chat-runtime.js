@@ -282,9 +282,30 @@ function createResponsesStreamAccumulator() {
     reasoning: '',
     finishReason: null,
     toolCallsByKey: new Map(),
+    toolCallAliases: new Map(),
     payloads: [],
     usage: null
   }
+}
+
+function buildResponsesFunctionCallAliases(itemId, callId, outputIndex, name) {
+  const aliases = []
+  if (itemId) aliases.push(`item:${itemId}`)
+  if (callId) aliases.push(`call:${callId}`)
+  if (outputIndex !== '') aliases.push(`index:${outputIndex}`)
+  if (!aliases.length && name) aliases.push(`name:${name}`)
+  return aliases
+}
+
+function mergeResponsesFunctionCall(target, source) {
+  if (!target || !source || target === source) return target
+  if (!target.id || (!target.id.startsWith('fc_') && source.id?.startsWith('fc_'))) target.id = source.id
+  if (!target.call_id && source.call_id) target.call_id = source.call_id
+  if (!target.function?.name && source.function?.name) target.function.name = source.function.name
+  if (source.function?.arguments) {
+    target.function.arguments = source.function.arguments
+  }
+  return target
 }
 
 function upsertResponsesFunctionCall(state, item = {}) {
@@ -293,21 +314,37 @@ function upsertResponsesFunctionCall(state, item = {}) {
   const explicitCallId = cleanString(item.call_id || item.callId)
   // Responses 的 item.id（fc_...）与 call_id（call_...）必须分别保留。
   const callId = explicitCallId || (itemId && !itemId.startsWith('fc_') ? itemId : '')
-  const key = cleanString(itemId || callId || item.output_index)
-  if (!key && !name) return null
+  const outputIndex = cleanString(item.output_index ?? item.outputIndex)
+  const aliases = buildResponsesFunctionCallAliases(itemId, callId, outputIndex, name)
+  if (!aliases.length) return null
 
-  const previous = state.toolCallsByKey.get(key || callId || name) || {
-    id: itemId || sanitizeFunctionCallId(callId || key || name),
+  if (!(state.toolCallAliases instanceof Map)) state.toolCallAliases = new Map()
+  const matchedKeys = [...new Set(
+    aliases
+      .map((alias) => state.toolCallAliases.get(alias))
+      .filter((key) => key && state.toolCallsByKey.has(key))
+  )]
+  const key = matchedKeys[0] || aliases[0]
+  const previous = state.toolCallsByKey.get(key) || {
+    id: itemId || sanitizeFunctionCallId(callId || outputIndex || name),
     type: 'function',
     ...(callId ? { call_id: callId } : {}),
     function: { name, arguments: '' }
   }
+  matchedKeys.slice(1).forEach((duplicateKey) => {
+    mergeResponsesFunctionCall(previous, state.toolCallsByKey.get(duplicateKey))
+    state.toolCallsByKey.delete(duplicateKey)
+    state.toolCallAliases.forEach((aliasKey, alias) => {
+      if (aliasKey === duplicateKey) state.toolCallAliases.set(alias, key)
+    })
+  })
   if (itemId) previous.id = itemId
   if (callId) previous.call_id = callId
   if (name) previous.function.name = name
   if (typeof item.arguments === 'string') previous.function.arguments = item.arguments
   if (typeof item.delta === 'string') previous.function.arguments += item.delta
-  state.toolCallsByKey.set(key || previous.call_id || previous.id || previous.function.name, previous)
+  state.toolCallsByKey.set(key, previous)
+  aliases.forEach((alias) => state.toolCallAliases.set(alias, key))
   return previous
 }
 
@@ -315,7 +352,18 @@ function collectResponsesOutputItems(json) {
   const response = json?.response && typeof json.response === 'object' ? json.response : json
   const output = Array.isArray(response?.output) ? response.output : []
   const item = json?.item && typeof json.item === 'object' ? json.item : null
-  return item ? [...output, item] : output
+  const normalizedOutput = output.map((entry, index) => ({
+    ...entry,
+    output_index: entry?.output_index ?? entry?.outputIndex ?? index
+  }))
+  if (!item) return normalizedOutput
+  return [
+    ...normalizedOutput,
+    {
+      ...item,
+      output_index: item.output_index ?? item.outputIndex ?? json.output_index ?? json.outputIndex
+    }
+  ]
 }
 
 function applyResponsesStreamEvent(state, json) {

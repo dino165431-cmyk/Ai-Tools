@@ -5,6 +5,7 @@ import {
   buildChatAttachmentReferenceBlock,
   buildChatSandboxWorkspaceId,
   extractChatSandboxDescriptors,
+  isChatSandboxWorkspaceId,
   resolveChatToolWorkspaceScope,
   withDefaultChatSandboxWorkspaceId
 } from '../src/utils/chatSandboxWorkspace.js'
@@ -12,6 +13,9 @@ import {
 test('chat sandbox workspace ids are stable, safe, and bounded', () => {
   assert.equal(buildChatSandboxWorkspaceId('session id/with spaces'), 'chat-session-id-with-spaces')
   assert.ok(buildChatSandboxWorkspaceId('x'.repeat(200)).length <= 80)
+  assert.equal(isChatSandboxWorkspaceId('chat-session-1'), true)
+  assert.equal(isChatSandboxWorkspaceId('default'), false)
+  assert.equal(isChatSandboxWorkspaceId('../escape'), false)
 })
 
 test('attachment references point to the sandbox without embedding parsed content', () => {

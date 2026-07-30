@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   inferStructuredToolResultStatus,
+  inferToolDisplayContentStatus,
   stripToolIdentityFromDisplayContent
 } from '../src/utils/chatToolDisplay.js'
 
@@ -48,4 +49,34 @@ test('structured tool result status treats nested runtime failures as errors', (
   assert.equal(inferStructuredToolResultStatus({ isError: true }), 'error')
   assert.equal(inferStructuredToolResultStatus({ status: 'rejected' }), 'rejected')
   assert.equal(inferStructuredToolResultStatus({ status: 'paused' }), 'paused')
+})
+
+test('tool display status ignores failure words inside successful fenced output', () => {
+  const content = [
+    '### 技能文件读取结果',
+    '- 技能：**示例技能**',
+    '- 路径：`references/example.md`',
+    '',
+    '```',
+    'If a request is rejected, return an error message.',
+    '失败时不要伪造结果。',
+    '```'
+  ].join('\n')
+
+  assert.equal(inferToolDisplayContentStatus(content), '')
+})
+
+test('tool display status recognizes controlled status and error metadata', () => {
+  assert.equal(
+    inferToolDisplayContentStatus('### 工具结果\n- 状态：**已拒绝**\n\n用户拒绝了调用。'),
+    'rejected'
+  )
+  assert.equal(
+    inferToolDisplayContentStatus('### 技能脚本执行结果\n- 错误：脚本不存在'),
+    'error'
+  )
+  assert.equal(
+    inferToolDisplayContentStatus('### 工具调用\n- 状态：**已完成**'),
+    'success'
+  )
 })

@@ -444,6 +444,21 @@
               <n-text depth="3">达到上限后会自动优先保留高价值画像、常用记忆和手动维护的条目。</n-text>
             </n-flex>
           </n-form-item>
+          <n-form-item label="动态记忆保鲜期">
+            <n-flex vertical :size="6" style="width: 100%;">
+              <n-input-number
+                v-model:value="memoryDraft.dynamicMemoryMaxAgeDays"
+                :min="0"
+                :max="3650"
+                :step="30"
+                :disabled="memoryDraft.enabled !== true"
+                style="width: 220px;"
+              >
+                <template #suffix>天</template>
+              </n-input-number>
+              <n-text depth="3">超过保鲜期且未再次使用的自动记忆会归档；画像和手动维护的记忆不受影响。填 0 表示不自动归档。</n-text>
+            </n-flex>
+          </n-form-item>
           <n-form-item label="召回 TopK">
             <n-input-number v-model:value="memoryDraft.topK" :min="1" :max="20" :disabled="memoryDraft.enabled !== true" style="width: 220px;" />
           </n-form-item>
@@ -1124,6 +1139,9 @@ const memoryConfigSummary = computed(() => {
     extractionText,
     embeddingText,
     `总上限 ${memory.storeMaxItems} 条`,
+    memory.dynamicMemoryMaxAgeDays > 0
+      ? `动态记忆保鲜 ${memory.dynamicMemoryMaxAgeDays} 天`
+      : '动态记忆不过期',
     `召回 TopK ${memory.topK}`,
     `注入上限 ${memory.maxInjectChars} 字符`
   ].join(' / ')
@@ -2008,6 +2026,8 @@ async function handleCleanMemoryStore() {
     const correctedKindCount = Number(result?.stats?.correctedKindCount || 0)
     const refreshedEmbeddingCount = Number(result?.stats?.refreshedEmbeddingCount || 0)
     const profileTrimmedCount = Number(result?.stats?.profileTrimmedCount || 0)
+    const resolvedProfileConflictCount = Number(result?.stats?.resolvedProfileConflictCount || 0)
+    const staleArchivedCount = Number(result?.stats?.staleArchivedCount || 0)
     if (
       mergedCount > 0 ||
       trimmedCount > 0 ||
@@ -2015,7 +2035,9 @@ async function handleCleanMemoryStore() {
       clearedProfileKeyCount > 0 ||
       correctedKindCount > 0 ||
       refreshedEmbeddingCount > 0 ||
-      profileTrimmedCount > 0
+      profileTrimmedCount > 0 ||
+      resolvedProfileConflictCount > 0 ||
+      staleArchivedCount > 0
     ) {
       const parts = []
       if (mergedCount > 0) parts.push(`合并 ${mergedCount} 条重复项`)
@@ -2025,6 +2047,8 @@ async function handleCleanMemoryStore() {
       if (correctedKindCount > 0) parts.push(`纠正 ${correctedKindCount} 条错分类记忆`)
       if (refreshedEmbeddingCount > 0) parts.push(`补齐 ${refreshedEmbeddingCount} 条缺失向量`)
       if (profileTrimmedCount > 0) parts.push(`收敛 ${profileTrimmedCount} 条低优先级画像`)
+      if (resolvedProfileConflictCount > 0) parts.push(`解决 ${resolvedProfileConflictCount} 个画像值冲突`)
+      if (staleArchivedCount > 0) parts.push(`归档 ${staleArchivedCount} 条过期动态记忆`)
       message.success(`记忆已完成清洗与整理，本次${parts.join('，')}`)
       return
     }

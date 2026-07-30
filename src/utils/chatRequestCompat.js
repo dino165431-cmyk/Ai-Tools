@@ -136,7 +136,11 @@ export function normalizeAssistantToolCalls(toolCalls = [], options = {}) {
     ? options.createFallbackId
     : (index) => `call_${index + 1}`
 
-  return (Array.isArray(toolCalls) ? toolCalls : []).map((toolCall, index) => {
+  const normalized = []
+  const normalizedIndexByCallId = new Map()
+  const normalizedIndexByItemId = new Map()
+
+  ;(Array.isArray(toolCalls) ? toolCalls : []).forEach((toolCall, index) => {
     const source = toolCall && typeof toolCall === 'object' ? toolCall : {}
     const id = String(source.id || '').trim() || String(createFallbackId(index) || '').trim() || `call_${index + 1}`
     const callId = String(source.call_id || source.callId || '').trim()
@@ -148,7 +152,7 @@ export function normalizeAssistantToolCalls(toolCalls = [], options = {}) {
         args = String(args || '')
       }
     }
-    return {
+    const next = {
       id,
       type: source.type || 'function',
       ...(callId ? { call_id: callId } : {}),
@@ -157,7 +161,30 @@ export function normalizeAssistantToolCalls(toolCalls = [], options = {}) {
         arguments: args
       }
     }
+
+    const duplicateIndex =
+      (callId && normalizedIndexByCallId.has(callId) ? normalizedIndexByCallId.get(callId) : undefined) ??
+      (id && normalizedIndexByItemId.has(id) ? normalizedIndexByItemId.get(id) : undefined)
+    if (duplicateIndex !== undefined) {
+      const previous = normalized[duplicateIndex]
+      if (!previous.id.startsWith('fc_') && next.id.startsWith('fc_')) previous.id = next.id
+      if (!previous.call_id && next.call_id) previous.call_id = next.call_id
+      if (!previous.function.name && next.function.name) previous.function.name = next.function.name
+      if (next.function.arguments) {
+        previous.function.arguments = next.function.arguments
+      }
+      if (callId) normalizedIndexByCallId.set(callId, duplicateIndex)
+      if (id) normalizedIndexByItemId.set(id, duplicateIndex)
+      return
+    }
+
+    const normalizedIndex = normalized.length
+    normalized.push(next)
+    if (callId) normalizedIndexByCallId.set(callId, normalizedIndex)
+    if (id) normalizedIndexByItemId.set(id, normalizedIndex)
   })
+
+  return normalized
 }
 
 export function createToolResultApiMessage(toolCall, content = '') {

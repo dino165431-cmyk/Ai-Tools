@@ -31,6 +31,28 @@ test('tool history helpers preserve distinct Responses item id and call_id', () 
   assert.equal(toolResult.call_id, 'call_lookup')
 })
 
+test('normalizeAssistantToolCalls deduplicates repeated entries with the same call_id', () => {
+  const toolCalls = normalizeAssistantToolCalls([
+    {
+      id: 'fc_lookup',
+      call_id: 'call_lookup',
+      type: 'function',
+      function: { name: 'notes_read', arguments: '' }
+    },
+    {
+      id: 'call_lookup',
+      call_id: 'call_lookup',
+      type: 'function',
+      function: { name: 'notes_read', arguments: '{"path":"demo.md"}' }
+    }
+  ])
+
+  assert.equal(toolCalls.length, 1)
+  assert.equal(toolCalls[0].id, 'fc_lookup')
+  assert.equal(toolCalls[0].call_id, 'call_lookup')
+  assert.equal(toolCalls[0].function.arguments, '{"path":"demo.md"}')
+})
+
 test('isDeepSeekReasonerModel recognizes DeepSeek reasoner variants', () => {
   assert.equal(isDeepSeekReasonerModel('deepseek-reasoner'), true)
   assert.equal(isDeepSeekReasonerModel('deepseek-r1'), true)

@@ -14,13 +14,13 @@
 
       <n-tooltip trigger="hover">
         <template #trigger>
-          <n-button class="session-tree__cleanup" size="small" tertiary circle title="清理 3 天前的历史会话" @click="emit('cleanup-auto-sessions')">
+          <n-button class="session-tree__cleanup" size="small" tertiary circle title="会话回收站" @click="openTrashModal">
             <template #icon>
               <n-icon :component="TrashOutline" size="14" />
             </template>
           </n-button>
         </template>
-        清理 3 天前的历史会话
+        会话回收站
       </n-tooltip>
     </div>
 
@@ -136,6 +136,61 @@
         </div>
       </template>
     </n-modal>
+
+    <n-modal
+      v-model:show="trashModal.show"
+      preset="card"
+      title="会话回收站"
+      style="width: 760px; max-width: 95%;"
+    >
+      <n-alert type="info" :show-icon="false" style="margin-bottom: 12px;">
+        删除的会话及其专属沙盒会保留 30 天。恢复会话时会同时恢复可用的沙盒。
+      </n-alert>
+      <n-spin :show="trashModal.loading">
+        <div v-if="!trashModal.items.length" class="session-trash__empty">回收站为空</div>
+        <div v-else class="session-trash__list">
+          <div v-for="item in trashModal.items" :key="item.trashId" class="session-trash__item">
+            <div class="session-trash__content">
+              <div class="session-trash__title">{{ item.label || '会话' }}</div>
+              <div class="session-trash__meta">{{ item.originalPath }}</div>
+              <div class="session-trash__meta">
+                删除于 {{ formatTrashDate(item.deletedAt) }}，{{ getChatSessionTrashRemainingDays(item) }} 天后彻底清除
+                <template v-if="item.ownedWorkspaceIds?.length">
+                  · {{ item.ownedWorkspaceIds.length }} 个专属沙盒
+                </template>
+              </div>
+            </div>
+            <div class="session-trash__actions">
+              <n-button size="small" :loading="trashModal.busyId === item.trashId" @click="restoreTrashItem(item)">
+                恢复
+              </n-button>
+              <n-button
+                size="small"
+                type="error"
+                secondary
+                :loading="trashModal.busyId === item.trashId"
+                @click="confirmPurgeTrashItem(item)"
+              >
+                彻底删除
+              </n-button>
+            </div>
+          </div>
+        </div>
+      </n-spin>
+      <template #footer>
+        <div class="modal-footer">
+          <n-button
+            type="error"
+            secondary
+            :disabled="!trashModal.items.length || trashModal.loading"
+            @click="confirmEmptyTrash"
+          >
+            清空回收站
+          </n-button>
+          <n-button @click="trashModal.show = false">关闭</n-button>
+        </div>
+      </template>
+    </n-modal>
   </div>
 </template>
 
@@ -151,14 +206,25 @@ import {
   listDirectoryWithStats,
   exists,
   stat,
-  deleteItem,
   moveItem,
   openInFileManager,
-  describeFileOperationsError
+  describeFileOperationsError,
+  purgeSandboxTrashEntries,
+  restoreSandboxTrashEntries,
+  trashSandboxWorkspaces
 } from '@/utils/fileOperations'
 import { buildChatSessionAssetsDirectory, isChatSessionAssetsDirectoryPath } from '@/utils/chatMediaAssets.js'
 import { resolveChatSessionCreatedTimeMs } from '@/utils/chatSessionCreatedTime.js'
 import { readSessionJsonFile } from '@/utils/sessionFileJson.js'
+import {
+  collectChatSessionOwnedSandboxWorkspaceIds,
+  getChatSessionTrashRemainingDays,
+  listChatSessionTrashItems,
+  purgeChatSessionTrashItem,
+  restoreChatSessionTrashItem,
+  trashChatSessionPath,
+  updateChatSessionTrashManifest
+} from '@/utils/chatSessionTrash.js'
 
 const props = defineProps({
   root: {
@@ -168,10 +234,18 @@ const props = defineProps({
   theme: {
     type: String,
     default: 'light'
+  },
+  activeSessionPath: {
+    type: String,
+    default: ''
+  },
+  lockedSessionPaths: {
+    type: Array,
+    default: () => []
   }
 })
 
-const emit = defineEmits(['select', 'saved', 'rename', 'delete', 'cleanup-auto-sessions'])
+const emit = defineEmits(['select', 'saved', 'rename', 'delete'])
 
 const message = useMessage()
 const dialog = useDialog()
@@ -213,6 +287,12 @@ const newSessionName = ref('')
 
 const pendingPayload = ref(null)
 const pendingSaveOptions = ref({})
+const trashModal = reactive({
+  show: false,
+  loading: false,
+  busyId: '',
+  items: []
+})
 
 const TIMED_TASK_DIR_NAME = '定时任务'
 const AUTO_CHAT_DIR_NAME = '历史会话'
@@ -586,6 +666,116 @@ async function handleMenuSelect(key) {
   if (!node) return
   if (key === 'rename') await handleRenameNode(node)
   if (key === 'delete') await deleteNode(node)
+}
+
+function formatTrashDate(value) {
+  const ms = Date.parse(String(value || ''))
+  if (!Number.isFinite(ms)) return '-'
+  const date = new Date(ms)
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`
+}
+
+async function refreshTrashItems() {
+  trashModal.loading = true
+  try {
+    trashModal.items = await listChatSessionTrashItems()
+  } catch (err) {
+    message.error('读取会话回收站失败：' + (err?.message || String(err)))
+  } finally {
+    trashModal.loading = false
+  }
+}
+
+async function openTrashModal() {
+  trashModal.show = true
+  await refreshTrashItems()
+}
+
+async function restoreTrashItem(item) {
+  const trashId = String(item?.trashId || '').trim()
+  if (!trashId || trashModal.busyId) return
+  trashModal.busyId = trashId
+  try {
+    const sandboxEntries = Array.isArray(item?.sandboxTrashEntries) ? item.sandboxTrashEntries : []
+    const sandboxResults = await restoreSandboxTrashEntries(sandboxEntries)
+    const failedSandbox = (sandboxResults || []).find((result) => result?.status === 'error')
+    if (failedSandbox) {
+      throw new Error(failedSandbox.error || `沙盒 ${failedSandbox.workspaceId || ''} 恢复失败`)
+    }
+    const restored = await restoreChatSessionTrashItem(trashId)
+    await refreshTree({ silent: true })
+    if (restored?.originalPath) {
+      await selectPath(restored.originalPath).catch(() => {})
+    }
+    await refreshTrashItems()
+    message.success('会话及可用沙盒已恢复')
+  } catch (err) {
+    message.error('恢复失败：' + (err?.message || String(err)))
+  } finally {
+    trashModal.busyId = ''
+  }
+}
+
+async function purgeTrashItem(item) {
+  const trashId = String(item?.trashId || '').trim()
+  if (!trashId || trashModal.busyId) return
+  trashModal.busyId = trashId
+  try {
+    const sandboxEntries = Array.isArray(item?.sandboxTrashEntries) ? item.sandboxTrashEntries : []
+    await purgeChatSessionTrashItem(trashId)
+    let sandboxCleanupError = null
+    try {
+      await purgeSandboxTrashEntries(sandboxEntries, { force: true })
+    } catch (err) {
+      sandboxCleanupError = err
+    }
+    await refreshTrashItems()
+    if (sandboxCleanupError) {
+      message.warning('会话已彻底删除，但专属沙盒清理失败，沙盒数据仍保留')
+    } else {
+      message.success('已彻底删除会话及专属沙盒')
+    }
+  } catch (err) {
+    message.error('彻底删除失败：' + (err?.message || String(err)))
+  } finally {
+    trashModal.busyId = ''
+  }
+}
+
+function confirmPurgeTrashItem(item) {
+  dialog.warning({
+    title: '彻底删除',
+    content: `确定彻底删除“${item?.label || '会话'}”吗？会话及无共享引用的沙盒将无法恢复。`,
+    positiveText: '彻底删除',
+    negativeText: '取消',
+    onPositiveClick: () => purgeTrashItem(item)
+  })
+}
+
+function confirmEmptyTrash() {
+  dialog.warning({
+    title: '清空回收站',
+    content: `确定彻底删除回收站中的 ${trashModal.items.length} 项内容吗？此操作不可撤销。`,
+    positiveText: '清空',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      const items = [...trashModal.items]
+      for (const item of items) {
+        await purgeTrashItem(item)
+      }
+    }
+  })
+}
+
+function getDeletionLockedPath(targetPath) {
+  const target = normalizeTreePath(targetPath)
+  const candidates = [
+    props.activeSessionPath,
+    ...(Array.isArray(props.lockedSessionPaths) ? props.lockedSessionPaths : [])
+  ]
+    .map(normalizeTreePath)
+    .filter(Boolean)
+  return candidates.find((lockedPath) => isPathInside(lockedPath, target)) || ''
 }
 
 watch(expandedKeys, async (newKeys, oldKeys) => {
@@ -1569,16 +1759,21 @@ async function deleteNode(node) {
     message.warning('系统目录不支持删除')
     return
   }
+  const lockedPath = getDeletionLockedPath(protectedPath)
+  if (lockedPath) {
+    message.warning('当前会话或运行中的会话不能删除，请先切换、关闭或等待任务结束')
+    return
+  }
 
   const isFolder = node && node.children !== undefined
   const label = String(node?.label || '')
-  let confirmMessage = `确定删除“${label}”吗？此操作不可撤销。`
+  let confirmMessage = `确定删除“${label}”吗？会话及无共享引用的专属沙盒会移入回收站并保留 30 天。`
 
   if (isFolder) {
     try {
       const entries = await listDirectory(node.key)
       if (Array.isArray(entries) && entries.length) {
-        confirmMessage = '该文件夹包含内容，确定删除吗？其所有内容将被永久移除。'
+        confirmMessage = '该文件夹包含内容，确定删除吗？其中的会话及无共享引用的专属沙盒会移入回收站并保留 30 天。'
       }
     } catch {
       // ignore
@@ -1588,15 +1783,34 @@ async function deleteNode(node) {
   dialog.warning({
     title: '删除',
     content: confirmMessage,
-    positiveText: '删除',
+    positiveText: '移入回收站',
     negativeText: '取消',
     onPositiveClick: async () => {
       try {
         const p = String(node?.key || '').trim()
         if (!p) return
         const deletedSessionPayloads = await collectDeletedSessionPayloads(p)
-        await deleteItem(p)
-        message.success('删除成功')
+        const trashRecord = await trashChatSessionPath(p, deletedSessionPayloads)
+        const ownedWorkspaceIds = collectChatSessionOwnedSandboxWorkspaceIds(deletedSessionPayloads)
+        const sandboxTrashEntries = await trashSandboxWorkspaces(ownedWorkspaceIds, {
+          retentionDays: 30
+        })
+        const savedTrashRecord = await updateChatSessionTrashManifest(trashRecord.trashId, {
+          sandboxTrashEntries
+        })
+        const trashedSandboxCount = sandboxTrashEntries.filter((item) => item?.status === 'trashed').length
+        const retainedSandboxCount = sandboxTrashEntries.filter((item) => item?.status === 'retained').length
+        const failedSandboxCount = sandboxTrashEntries.filter((item) => item?.status === 'error').length
+        const details = [
+          trashedSandboxCount ? `${trashedSandboxCount} 个沙盒已一并移入回收站` : '',
+          retainedSandboxCount ? `${retainedSandboxCount} 个沙盒因引用或安全保护而保留` : '',
+          failedSandboxCount ? `${failedSandboxCount} 个沙盒移动失败但原数据仍保留` : ''
+        ].filter(Boolean)
+        if (failedSandboxCount) {
+          message.warning(`会话已移入回收站，${details.join('，')}`)
+        } else {
+          message.success(details.length ? `已移入回收站，${details.join('，')}` : '已移入回收站，将保留 30 天')
+        }
 
         const selected = selectedKeys.value?.[0]
         if (selected && (selected === p || selected.startsWith(p + '/'))) {
@@ -1611,8 +1825,12 @@ async function deleteNode(node) {
           (k) => k !== p && !String(k || '').startsWith(p + '/')
         )
 
-        emit('delete', p, deletedSessionPayloads)
+        emit('delete', p, deletedSessionPayloads, {
+          softDeleted: true,
+          trashRecord: savedTrashRecord
+        })
         await refreshTree({ silent: true })
+        if (trashModal.show) await refreshTrashItems()
       } catch (err) {
         message.error('删除失败：' + (err?.message || String(err)))
       }
@@ -2065,5 +2283,55 @@ defineExpose({
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+.session-trash__empty {
+  padding: 28px 12px;
+  text-align: center;
+  color: rgba(100, 116, 139, 0.86);
+}
+.session-trash__list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 52vh;
+  overflow-y: auto;
+}
+.session-trash__item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid rgba(100, 116, 139, 0.18);
+  border-radius: 10px;
+}
+.session-trash__content {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.session-trash__title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-trash__meta {
+  margin-top: 4px;
+  color: rgba(100, 116, 139, 0.9);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.session-trash__actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+@media (max-width: 640px) {
+  .session-trash__item {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .session-trash__actions {
+    justify-content: flex-end;
+  }
 }
 </style>

@@ -155,6 +155,45 @@ test('Responses function argument events retain call_id before the completed res
   assert.equal(result.toolCalls[0].function.arguments, '{"path":"a.md"}')
 })
 
+test('Responses stream merges item_id and call_id aliases for one function call', () => {
+  const state = createResponsesStreamAccumulator()
+
+  applyResponsesStreamEvent(state, {
+    type: 'response.output_item.added',
+    output_index: 0,
+    item: {
+      type: 'function_call',
+      id: 'fc_lookup',
+      name: 'notes_read',
+      arguments: ''
+    }
+  })
+  applyResponsesStreamEvent(state, {
+    type: 'response.function_call_arguments.done',
+    output_index: 0,
+    call_id: 'call_lookup',
+    name: 'notes_read',
+    arguments: '{"path":"a.md"}'
+  })
+  applyResponsesStreamEvent(state, {
+    type: 'response.output_item.done',
+    output_index: 0,
+    item: {
+      type: 'function_call',
+      id: 'fc_lookup',
+      call_id: 'call_lookup',
+      name: 'notes_read',
+      arguments: '{"path":"a.md"}'
+    }
+  })
+
+  const result = finalizeResponsesStreamAccumulator(state)
+  assert.equal(result.toolCalls.length, 1)
+  assert.equal(result.toolCalls[0].id, 'fc_lookup')
+  assert.equal(result.toolCalls[0].call_id, 'call_lookup')
+  assert.equal(result.toolCalls[0].function.arguments, '{"path":"a.md"}')
+})
+
 test('shouldFallbackChatCompletionsToResponses recognizes Responses-only errors', () => {
   assert.equal(shouldFallbackChatCompletionsToResponses('This model is supported only in the Responses API.'), true)
   assert.equal(shouldFallbackChatCompletionsToResponses('Use /v1/responses instead.'), true)

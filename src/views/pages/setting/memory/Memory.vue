@@ -12,6 +12,7 @@
           <n-text depth="3" style="font-size: 12px;">
             查看、编辑、删除长期记忆与用户画像。这里的内容会参与后续聊天的召回与回答风格适配。
           </n-text>
+          <n-text depth="3" style="font-size: 12px;">{{ memoryStatsText }}</n-text>
         </n-flex>
         <n-flex :size="10" wrap>
           <n-button @click="openEditor()">新增记忆</n-button>
@@ -106,6 +107,20 @@
         </n-form-item>
         <n-form-item label="去重键">
           <n-input v-model:value="editor.form.dedupeKey" placeholder="可选，留空则系统自动推断" />
+        </n-form-item>
+        <n-form-item v-if="editor.form.history.length" label="历史版本">
+          <div class="memory-history">
+            <div
+              v-for="(revision, index) in [...editor.form.history].reverse()"
+              :key="`${revision.replacedAt || index}-${index}`"
+              class="memory-history__item"
+            >
+              <div class="memory-history__meta">
+                {{ formatMemoryDate(revision.replacedAt) }} · {{ revision.profileKey || revision.kind || '记忆' }}
+              </div>
+              <div class="memory-history__text">{{ revision.summary || revision.text }}</div>
+            </div>
+          </div>
         </n-form-item>
       </n-form>
       <template #footer>
@@ -202,7 +217,8 @@ const editor = reactive({
     text: '',
     tagsText: '',
     confidence: 0.8,
-    dedupeKey: ''
+    dedupeKey: '',
+    history: []
   }
 })
 
@@ -219,6 +235,14 @@ function toDisplayText(value, fallback = '-') {
   return text || fallback
 }
 
+function formatMemoryDate(value) {
+  const ms = Date.parse(String(value || ''))
+  if (!Number.isFinite(ms)) return '-'
+  const date = new Date(ms)
+  const pad = (part) => String(part).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
 function fillEditor(item = null) {
   const src = item && typeof item === 'object' ? item : {}
   editor.form.id = String(src.id || '')
@@ -230,6 +254,7 @@ function fillEditor(item = null) {
   editor.form.tagsText = Array.isArray(src.tags) ? src.tags.join(', ') : ''
   editor.form.confidence = Number.isFinite(Number(src.confidence)) ? Number(src.confidence) : 0.8
   editor.form.dedupeKey = String(src.dedupeKey || '')
+  editor.form.history = Array.isArray(src.history) ? src.history.map((item) => ({ ...item })) : []
 }
 
 function openEditor(item = null) {
@@ -259,6 +284,15 @@ const filteredItems = computed(() => {
     ].join(' ').toLowerCase()
     return hay.includes(keyword)
   })
+})
+
+const memoryStatsText = computed(() => {
+  const list = items.value || []
+  const active = list.filter((item) => item?.status === 'active')
+  const archived = list.filter((item) => item?.status === 'archived')
+  const profileCount = active.filter((item) => getMemoryLane(item) === 'profile').length
+  const memoryCount = active.length - profileCount
+  return `当前启用 ${active.length} 条（画像 ${profileCount} / 动态记忆 ${memoryCount}），归档 ${archived.length} 条`
 })
 
 const columns = [
@@ -336,6 +370,23 @@ const columns = [
     }
   },
   {
+    title: '使用 / 版本',
+    key: 'usage',
+    width: 104,
+    render(row) {
+      const version = Math.max(1, (Array.isArray(row.history) ? row.history.length : 0) + 1)
+      return `命中 ${Number(row.hitCount || 0)} · v${version}`
+    }
+  },
+  {
+    title: '更新时间',
+    key: 'updatedAt',
+    width: 132,
+    render(row) {
+      return formatMemoryDate(row.updatedAt)
+    }
+  },
+  {
     title: '状态',
     key: 'status',
     width: 88,
@@ -344,8 +395,17 @@ const columns = [
       const type = status === 'active' ? 'success' : status === 'archived' ? 'warning' : status === 'deleted' ? 'error' : 'default'
       return h(
         NTag,
-        { bordered: false, type },
-        { default: () => statusLabelMap.get(status) || status || '-' }
+        {
+          bordered: false,
+          type,
+          title: row?.source?.autoArchivedReason === 'stale' ? '超过动态记忆保鲜期后自动归档' : ''
+        },
+        {
+          default: () =>
+            row?.source?.autoArchivedReason === 'stale'
+              ? '过期归档'
+              : statusLabelMap.get(status) || status || '-'
+        }
       )
     }
   },
@@ -472,6 +532,8 @@ async function handleClean() {
     const correctedKindCount = Number(result?.stats?.correctedKindCount || 0)
     const refreshedEmbeddingCount = Number(result?.stats?.refreshedEmbeddingCount || 0)
     const profileTrimmedCount = Number(result?.stats?.profileTrimmedCount || 0)
+    const resolvedProfileConflictCount = Number(result?.stats?.resolvedProfileConflictCount || 0)
+    const staleArchivedCount = Number(result?.stats?.staleArchivedCount || 0)
     const parts = []
     if (mergedCount > 0) parts.push(`合并 ${mergedCount} 条重复项`)
     if (trimmedCount > 0) parts.push(`清理 ${trimmedCount} 条低优先级记忆`)
@@ -480,6 +542,8 @@ async function handleClean() {
     if (correctedKindCount > 0) parts.push(`纠正 ${correctedKindCount} 条错分类记忆`)
     if (refreshedEmbeddingCount > 0) parts.push(`补齐 ${refreshedEmbeddingCount} 条缺失向量`)
     if (profileTrimmedCount > 0) parts.push(`收敛 ${profileTrimmedCount} 条低优先级画像`)
+    if (resolvedProfileConflictCount > 0) parts.push(`解决 ${resolvedProfileConflictCount} 个画像值冲突`)
+    if (staleArchivedCount > 0) parts.push(`归档 ${staleArchivedCount} 条过期动态记忆`)
     message.success(parts.length ? `记忆已完成清洗与整理，本次${parts.join('，')}` : '记忆已完成清洗，未发现可整理的条目')
   } catch (err) {
     message.error(err?.message || String(err))
@@ -561,6 +625,31 @@ refreshList()
   align-items: center;
   gap: 8px;
   white-space: nowrap;
+}
+
+.memory-history {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.memory-history__item {
+  padding: 8px 10px;
+  border: 1px solid rgba(100, 116, 139, 0.2);
+  border-radius: 8px;
+}
+
+.memory-history__meta {
+  color: rgba(100, 116, 139, 0.9);
+  font-size: 12px;
+}
+
+.memory-history__text {
+  margin-top: 4px;
+  overflow-wrap: anywhere;
 }
 
 .memory-table :deep(.n-data-table-wrapper) {

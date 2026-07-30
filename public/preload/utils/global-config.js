@@ -86,6 +86,7 @@ const DEFAULT_CHAT_MEMORY_CONFIG = Object.freeze({
     minSimilarity: 0.38,
     minConfidence: 0.6,
     storeMaxItems: 200,
+    dynamicMemoryMaxAgeDays: 180,
     profileMaxItems: 8,
     relevantMaxItems: 6
 })
@@ -800,6 +801,12 @@ function normalizeChatMemoryConfig(raw) {
         minSimilarity: normalizeChatMemoryNumber(src.minSimilarity, DEFAULT_CHAT_MEMORY_CONFIG.minSimilarity, 0, 1),
         minConfidence: normalizeChatMemoryNumber(src.minConfidence, DEFAULT_CHAT_MEMORY_CONFIG.minConfidence, 0, 1),
         storeMaxItems: normalizeChatMemoryInteger(src.storeMaxItems, DEFAULT_CHAT_MEMORY_CONFIG.storeMaxItems, 20, 5000),
+        dynamicMemoryMaxAgeDays: normalizeChatMemoryInteger(
+            src.dynamicMemoryMaxAgeDays,
+            DEFAULT_CHAT_MEMORY_CONFIG.dynamicMemoryMaxAgeDays,
+            0,
+            3650
+        ),
         profileMaxItems: normalizeChatMemoryInteger(src.profileMaxItems, DEFAULT_CHAT_MEMORY_CONFIG.profileMaxItems, 1, 20),
         relevantMaxItems: normalizeChatMemoryInteger(src.relevantMaxItems, DEFAULT_CHAT_MEMORY_CONFIG.relevantMaxItems, 1, 20)
     }

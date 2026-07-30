@@ -1110,6 +1110,22 @@ test('chatConfig memory storeMaxItems persists through config updates', () => {
   assert.equal(storage.get('global-config')?.chatConfig?.memory?.storeMaxItems, 320)
 })
 
+test('chatConfig memory freshness window persists through config updates', () => {
+  resetConfigStorage()
+
+  globalConfig.ensureBuiltins()
+
+  const updated = globalConfig.updateChatConfig({
+    memory: {
+      dynamicMemoryMaxAgeDays: 365
+    }
+  })
+
+  assert.equal(updated.memory.dynamicMemoryMaxAgeDays, 365)
+  assert.equal(globalConfig.getConfig().chatConfig.memory.dynamicMemoryMaxAgeDays, 365)
+  assert.equal(storage.get('global-config')?.chatConfig?.memory?.dynamicMemoryMaxAgeDays, 365)
+})
+
 test('legacy cloud flags are normalized to auto sync and memory autoExtract persists', () => {
   resetConfigStorage()
 

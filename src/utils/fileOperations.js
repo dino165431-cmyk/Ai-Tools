@@ -74,6 +74,30 @@ export function importFilesToSandbox(workspaceId, files) {
     return callFileOpsAsync('importFilesToSandbox', workspaceId, files);
 }
 
+export function listSandboxWorkspaces(options) {
+    return callFileOpsAsync('listSandboxWorkspaces', options);
+}
+
+export function trashSandboxWorkspaces(workspaceIds, options) {
+    return callFileOpsAsync('trashSandboxWorkspaces', workspaceIds, options);
+}
+
+export function restoreSandboxTrashEntries(entries) {
+    return callFileOpsAsync('restoreSandboxTrashEntries', entries);
+}
+
+export function listSandboxTrashEntries() {
+    return callFileOpsAsync('listSandboxTrashEntries');
+}
+
+export function purgeSandboxTrashEntries(entries, options) {
+    return callFileOpsAsync('purgeSandboxTrashEntries', entries, options);
+}
+
+export function purgeExpiredSandboxTrash(options) {
+    return callFileOpsAsync('purgeExpiredSandboxTrash', options);
+}
+
 export function readFile(relativePath, encoding) {
     return callFileOpsAsync('readFile', relativePath, encoding);
 }

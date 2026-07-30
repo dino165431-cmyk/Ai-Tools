@@ -1028,11 +1028,12 @@
         <SessionTree
           ref="sessionTreeRef"
           :theme="theme"
+          :active-session-path="activeSessionFilePath"
+          :locked-session-paths="lockedSessionPaths"
           @select="handleSessionHistorySelect"
           @saved="handleSessionSaved"
           @rename="handleSessionPathRenamed"
           @delete="handleSessionPathDeleted"
-          @cleanup-auto-sessions="cleanupAutoChatSessions({ notify: true })"
         />
       </n-layout-sider>
     </n-layout>
@@ -1275,15 +1276,18 @@ import {
 } from '@/utils/chatInlinePicker'
 import {
   createDirectory,
-  deleteItem,
   exists,
   importFilesToSandbox,
   listDirectory,
   moveItem,
+  purgeSandboxTrashEntries,
   resolvePath,
-  stat,
   writeFile
 } from '@/utils/fileOperations'
+import {
+  collectChatSessionOwnedSandboxWorkspaceIds,
+  purgeExpiredChatSessionTrash
+} from '@/utils/chatSessionTrash.js'
 import { requestOpenNoteFile } from '@/utils/noteOpenBridge'
 import { buildNoteHrefFromPath, resolveNoteAbsPathFromHref, safeDecodeURIComponent } from '@/utils/notePathUtils'
 import { getSafeExternalUrl, safeOpenExternal } from '@/utils/safeOpenExternal'
@@ -1299,7 +1303,11 @@ import {
   shouldAutoAttachToolImagesForVision,
   shouldFallbackVisionInputToText
 } from '@/utils/toolVisionContext'
-import { inferStructuredToolResultStatus, isAgentRunToolResult } from '@/utils/chatToolDisplay'
+import {
+  inferStructuredToolResultStatus,
+  inferToolDisplayContentStatus,
+  isAgentRunToolResult
+} from '@/utils/chatToolDisplay'
 import { getAgentRunMessageStatus, isAgentRunToolName, mergeAgentRunTraceEntries } from '@/utils/chatAgentRun'
 import { CHAT_CODE_AUTO_FOLD_THRESHOLD } from '@/utils/chatMarkdownPreview'
 import {
@@ -1309,6 +1317,7 @@ import {
 import {
   buildChatAttachmentReferenceBlock,
   buildChatSandboxWorkspaceId,
+  isChatSandboxWorkspaceId,
   resolveChatToolWorkspaceScope,
   withDefaultChatSandboxWorkspaceId
 } from '@/utils/chatSandboxWorkspace'
@@ -1485,9 +1494,7 @@ const AUTO_CHAT_SESSION_DIR_NAME = '历史会话'
 const TIMED_TASK_SESSION_DIR_NAME = '定时任务'
 const AUTO_CHAT_SESSION_ROOT = `${CHAT_SESSION_ROOT}/${AUTO_CHAT_SESSION_DIR_NAME}`
 const TIMED_TASK_SESSION_ROOT = `${CHAT_SESSION_ROOT}/${TIMED_TASK_SESSION_DIR_NAME}`
-const AUTO_CHAT_SESSION_RETENTION_DAYS = 3
-const AUTO_CHAT_SESSION_RETENTION_MS = AUTO_CHAT_SESSION_RETENTION_DAYS * 24 * 60 * 60 * 1000
-const AUTO_CHAT_SESSION_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000
+const SESSION_TRASH_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000
 const AUTO_CHAT_SESSION_SOURCE_TYPE = 'auto_chat_session'
 const DEFAULT_MEMORY_SESSION_TITLE = '新建会话'
 
@@ -1709,7 +1716,18 @@ const memorySessions = ref([])
 const activeMemorySessionId = ref('')
 const autoPersistMemorySessionInFlight = new Map()
 const sessionTitleRequestTokens = new Map()
-let autoChatCleanupTimer = null
+let sessionTrashCleanupTimer = null
+const lockedSessionPaths = computed(() => {
+  const paths = new Set()
+  const activePath = String(activeSessionFilePath.value || '').trim()
+  if (activePath) paths.add(activePath)
+  memorySessions.value.forEach((record) => {
+    if (!isMemorySessionRunning(record)) return
+    const filePath = String(record?.activeSessionFilePath || '').trim()
+    if (filePath) paths.add(filePath)
+  })
+  return [...paths]
+})
 function createEmptyContextSummaryState() {
   return {
     summaryText: '',
@@ -1759,8 +1777,14 @@ function normalizeContextTokenTelemetry(raw) {
 function createMemorySessionRecord(options = {}) {
   const now = Date.now()
   const id = String(options.id || '').trim() || `mem-${newId()}`
+  const requestedSandboxWorkspaceId =
+    String(options.sandboxWorkspaceId || options?.sandbox?.workspaceId || '').trim()
+  const sandboxWorkspaceId = isChatSandboxWorkspaceId(requestedSandboxWorkspaceId)
+    ? requestedSandboxWorkspaceId
+    : buildChatSandboxWorkspaceId(id)
   return {
     id,
+    sandboxWorkspaceId,
     title: String(options.title || '').trim() || DEFAULT_MEMORY_SESSION_TITLE,
     titleSource: String(options.titleSource || '').trim(),
     titleRetryCount: Number(options.titleRetryCount || 0) || 0,
@@ -1798,6 +1822,17 @@ function createMemorySessionRecord(options = {}) {
     approvalPromptActive: false,
     autoManaged: options.autoManaged === true
   }
+}
+
+function resolveMemorySessionSandboxWorkspaceId(record = null) {
+  const target = record && typeof record === 'object' ? record : null
+  const existing = String(target?.sandboxWorkspaceId || '').trim()
+  if (isChatSandboxWorkspaceId(existing)) return existing
+  const workspaceId = buildChatSandboxWorkspaceId(
+    target?.id || activeMemorySessionId.value || 'default'
+  )
+  if (target) target.sandboxWorkspaceId = workspaceId
+  return workspaceId
 }
 
 function getActiveMemorySession() {
@@ -2232,6 +2267,7 @@ function resolveMemoryVisionRequestConfig(chatRequestConfig = null) {
           providerId,
           baseUrl,
           apiKey,
+          apiMode: normalizeProviderApiMode(provider.apiMode),
           model,
           supportsVision: true,
           source: 'memory-extraction'
@@ -2250,6 +2286,7 @@ function resolveMemoryVisionRequestConfig(chatRequestConfig = null) {
         providerId: String(chatRequestConfig?.providerId || selectedProviderId.value || '').trim(),
         baseUrl,
         apiKey,
+        apiMode: normalizeProviderApiMode(chatRequestConfig?.apiMode),
         model,
         supportsVision: true,
         source: 'chat-provider'
@@ -2268,6 +2305,7 @@ async function buildAttachmentVisionRecallSummary(att, cfg) {
 
   const baseUrl = String(requestCfg?.baseUrl || '').trim()
   const apiKey = String(requestCfg?.apiKey || '').trim()
+  const apiMode = normalizeProviderApiMode(requestCfg?.apiMode)
   const model = String(requestCfg?.model || '').trim()
   if (!baseUrl || !apiKey || !model) return ''
 
@@ -2281,6 +2319,7 @@ async function buildAttachmentVisionRecallSummary(att, cfg) {
     const result = await streamChatCompletion({
       baseUrl,
       apiKey,
+      apiMode,
       body: {
         model,
         stream: true,
@@ -5784,9 +5823,8 @@ function getToolMessageStatus(msg) {
   )
   if (structuredStatus) return structuredStatus
   if (explicit) return explicit
-  const text = String(msg?.content || '').trim()
-  if (/rejected|拒绝/i.test(text)) return 'rejected'
-  if (/failed|error[:?]?|错误|失败/i.test(text)) return 'error'
+  const contentStatus = normalizeToolMessageStatus(inferToolDisplayContentStatus(msg?.content))
+  if (contentStatus) return contentStatus
   return String(msg?.role || '').trim() === 'tool_call' ? 'running' : 'success'
 }
 
@@ -5924,9 +5962,8 @@ function inferToolResultStatus(messageLike) {
   if (explicit) return explicit
   const role = String(messageLike?.role || '').trim()
   if (role === 'tool_call') return 'running'
-  const text = String(messageLike?.content || '').trim()
-  if (/rejected|拒绝/i.test(text)) return 'rejected'
-  if (/failed|error[:?]?|错误|失败/i.test(text)) return 'error'
+  const contentStatus = normalizeToolMessageStatus(inferToolDisplayContentStatus(messageLike?.content))
+  if (contentStatus) return contentStatus
   return 'success'
 }
 
@@ -6508,12 +6545,19 @@ function prepareBuiltinAgentToolCallArgs(skillId, toolName, argsObj, pendingMess
       pendingMessage?.toolAbortState || abortController.value || null
     ) || getActiveMemorySession()
     const sessionId = targetRecord?.id || activeMemorySessionId.value || 'default'
+    const defaultWorkspaceId = resolveMemorySessionSandboxWorkspaceId(targetRecord)
+    const withSessionWorkspace = (args) => withDefaultChatSandboxWorkspaceId(
+      String(args?.workspace_id || '').trim()
+        ? args
+        : { ...(args || {}), workspace_id: defaultWorkspaceId },
+      sessionId
+    )
     if (normalizedToolName === 'sandbox_import' || normalizedToolName === 'sandbox_reset') {
-      return withDefaultChatSandboxWorkspaceId(nextArgs, sessionId)
+      return withSessionWorkspace(nextArgs)
     }
     const workspacePath = resolveSessionHostWorkspacePath(targetRecord)
     if (normalizedToolName === 'sandbox_export') {
-      const routedArgs = withDefaultChatSandboxWorkspaceId(nextArgs, sessionId)
+      const routedArgs = withSessionWorkspace(nextArgs)
       if (workspacePath) routedArgs.__host_workspace_path = workspacePath
       return routedArgs
     }
@@ -6522,12 +6566,11 @@ function prepareBuiltinAgentToolCallArgs(skillId, toolName, argsObj, pendingMess
       nextArgs,
       { hasHostWorkspace: !!workspacePath }
     )
-    const routedArgs = withDefaultChatSandboxWorkspaceId(
+    const routedArgs = withSessionWorkspace(
       {
         ...nextArgs,
         workspace_scope: workspaceScope
-      },
-      sessionId
+      }
     )
     if (workspacePath && (workspaceScope === 'host' || workspaceScope === 'all')) {
       routedArgs.__host_workspace_path = workspacePath
@@ -8452,11 +8495,11 @@ onMounted(async () => {
   window?.addEventListener?.('resize', syncChatResponsiveState)
   window?.addEventListener?.(BUILTIN_AGENTS_TRACE_EVENT, handleBuiltinAgentsTraceEvent)
   window?.addEventListener?.(BUILTIN_AGENTS_TOOL_APPROVAL_REQUEST_EVENT, handleBuiltinAgentsToolApprovalRequest)
-  void cleanupAutoChatSessions()
+  void cleanupExpiredSessionTrash()
   void migrateLegacyAutoChatSessionCreatedAt()
-  autoChatCleanupTimer = window.setInterval(() => {
-    void cleanupAutoChatSessions()
-  }, AUTO_CHAT_SESSION_CLEANUP_INTERVAL_MS)
+  sessionTrashCleanupTimer = window.setInterval(() => {
+    void cleanupExpiredSessionTrash()
+  }, SESSION_TRASH_CLEANUP_INTERVAL_MS)
   await refreshChatViewportState({ reconnectObserver: true })
 })
 
@@ -8972,6 +9015,7 @@ async function requestSessionTitleFromModel({
   providerId = '',
   baseUrl = '',
   apiKey = '',
+  apiMode = 'auto',
   model = '',
   prompt = ''
 } = {}) {
@@ -9002,6 +9046,7 @@ async function requestSessionTitleFromModel({
   const result = await streamChatCompletion({
     baseUrl,
     apiKey,
+    apiMode,
     body: {
       model,
       stream: true,
@@ -9148,6 +9193,7 @@ function requestSessionTitleAsync({
         providerId: String(cfg?.providerId || '').trim(),
         baseUrl: String(cfg?.baseUrl || '').trim(),
         apiKey: String(cfg?.apiKey || '').trim(),
+        apiMode: normalizeProviderApiMode(cfg?.apiMode),
         model: String(cfg?.model || '').trim(),
         prompt
       })
@@ -9267,7 +9313,9 @@ async function autoPersistMemorySession(record, options = {}) {
       payload.updatedAt = new Date().toISOString()
       payload.source = {
         type: AUTO_CHAT_SESSION_SOURCE_TYPE,
-        retentionDays: AUTO_CHAT_SESSION_RETENTION_DAYS,
+        sessionId: String(record.id || '').trim(),
+        sandboxWorkspaceId: resolveMemorySessionSandboxWorkspaceId(record),
+        retentionPolicy: 'manual',
         managed: true,
         createdAt: payload.createdAt,
         titleReadyAt: new Date(titleReadyAt).toISOString(),
@@ -9321,58 +9369,17 @@ function autoPersistMemorySessionWhenIdle(record, options = {}) {
   return autoPersistMemorySession(record, options)
 }
 
-function getStatMtimeMs(statInfo) {
-  const direct = Number(statInfo?.mtimeMs)
-  if (Number.isFinite(direct) && direct > 0) return direct
-  const mtime = statInfo?.mtime ? new Date(statInfo.mtime).getTime() : 0
-  if (Number.isFinite(mtime) && mtime > 0) return mtime
-  return 0
-}
-
-async function cleanupAutoChatSessions(options = {}) {
-  const notify = options.notify === true
-  const now = Date.now()
-  const cutoff = now - AUTO_CHAT_SESSION_RETENTION_MS
-  let removed = 0
-
+async function cleanupExpiredSessionTrash() {
   try {
-    await ensureAutoChatSessionRoot()
-    const entries = await listDirectory(AUTO_CHAT_SESSION_ROOT)
-    for (const entry of entries) {
-      const entryPath = String(entry || '').trim().replace(/\\/g, '/')
-      if (!entryPath || !entryPath.toLowerCase().endsWith('.json')) continue
-
-      const inMemory = memorySessions.value.some((record) => String(record?.activeSessionFilePath || '').trim() === entryPath)
-      if (inMemory) continue
-
-      let mtimeMs = 0
-      try {
-        mtimeMs = getStatMtimeMs(await stat(entryPath))
-      } catch {
-        mtimeMs = 0
-      }
-      if (!mtimeMs || mtimeMs >= cutoff) continue
-
-      try {
-        let payload = null
-      try {
-          const parsedPayload = await readSessionJsonFile(entryPath)
-          payload = parsedPayload.ok ? parsedPayload.value : null
-        } catch {
-          payload = null
-        }
-        await deleteItem(entryPath)
-        if (payload) await deleteChatMediaAssetPaths(collectChatMediaAssetPathsFromPayload(payload, { sessionFilePath: entryPath }))
-        await deleteChatSessionAssetDirectory(entryPath)
-        removed += 1
-      } catch {
-        // ignore individual cleanup failures
-      }
+    const purgedSessions = await purgeExpiredChatSessionTrash()
+    const sandboxTrashEntries = purgedSessions.flatMap((item) =>
+      Array.isArray(item?.sandboxTrashEntries) ? item.sandboxTrashEntries : []
+    )
+    if (sandboxTrashEntries.length) {
+      await purgeSandboxTrashEntries(sandboxTrashEntries, { force: true })
     }
-    if (removed) void sessionTreeRef.value?.refreshTree?.({ silent: true })
-    if (notify) message.success(removed ? `已清理 ${removed} 个历史会话` : '没有需要清理的历史会话')
   } catch (err) {
-    if (notify) message.error('清理历史会话失败：' + (err?.message || String(err)))
+    console.warn('[chat session trash] cleanup failed:', err)
   }
 }
 
@@ -9770,6 +9777,8 @@ function buildSessionSavePayload(options = {}) {
     savedAt: new Date().toISOString(),
     state,
     session: {
+      id: String(memorySource?.id || '').trim(),
+      sandboxWorkspaceId: resolveMemorySessionSandboxWorkspaceId(memorySource),
       messages: (sessionLike.messages || []).map(serializeDisplayMessageForSave).filter(Boolean),
       apiMessages: deepCopyJson(sessionLike.apiMessages || [], [])
     },
@@ -9840,6 +9849,13 @@ async function persistMemorySessionToBoundPath(record, options = {}) {
     const title = getPersistedMemorySessionTitle(record, filePath)
     if (title) payload.title = title
     payload.updatedAt = new Date().toISOString()
+    payload.source = {
+      ...(previousPayload?.source && typeof previousPayload.source === 'object' ? previousPayload.source : {}),
+      ...(payload?.source && typeof payload.source === 'object' ? payload.source : {}),
+      sessionId: String(record.id || '').trim(),
+      sandboxWorkspaceId: resolveMemorySessionSandboxWorkspaceId(record),
+      retentionPolicy: 'manual'
+    }
 
     await writeFile(filePath, JSON.stringify(payload, null, 2))
     if (resolvedCreatedAtMs > 0) record.createdAt = resolvedCreatedAtMs
@@ -10143,12 +10159,12 @@ function handleSessionPathRenamed(oldPath, newPath) {
   if (activeChanged) void sessionTreeRef.value?.selectPath?.(next)
 }
 
-async function handleSessionPathDeleted(deletedPath, deletedSessionPayloads = []) {
+async function handleSessionPathDeleted(deletedPath, deletedSessionPayloads = [], deleteInfo = {}) {
   const cur = String(activeSessionFilePath.value || '').trim()
   const p = String(deletedPath || '').trim()
   if (!p) return
 
-  if (Array.isArray(deletedSessionPayloads) && deletedSessionPayloads.length) {
+  if (deleteInfo?.softDeleted !== true && Array.isArray(deletedSessionPayloads) && deletedSessionPayloads.length) {
     const mediaAssetPaths = new Set()
     deletedSessionPayloads.forEach((item) => {
       const payload = item?.payload && typeof item.payload === 'object' ? item.payload : item
@@ -10818,6 +10834,20 @@ async function loadSessionFromFile(filePath, options = {}) {
       : Array.isArray(data?.apiMessages)
         ? data.apiMessages
         : []
+    const persistedSessionId =
+      String(data?.session?.id || data?.source?.sessionId || data?.sessionId || '').trim()
+    const persistedOwnedWorkspaceIds = collectChatSessionOwnedSandboxWorkspaceIds([data])
+    const persistedSandboxWorkspaceIdCandidate =
+      String(
+        data?.session?.sandboxWorkspaceId ||
+        data?.sandbox?.workspaceId ||
+        data?.source?.sandboxWorkspaceId ||
+        persistedOwnedWorkspaceIds[0] ||
+        ''
+      ).trim()
+    const persistedSandboxWorkspaceId = isChatSandboxWorkspaceId(persistedSandboxWorkspaceIdCandidate)
+      ? persistedSandboxWorkspaceIdCandidate
+      : ''
     const memoryCandidates = normalizeMemoryCandidateQueue(data?.memory?.candidates)
     const memoryCandidateUpdatedAt = Number(data?.memory?.candidateUpdatedAt || 0) || 0
     const contextSummary =
@@ -10863,6 +10893,8 @@ async function loadSessionFromFile(filePath, options = {}) {
     let record = memorySessions.value.find((item) => String(item?.activeSessionFilePath || '').trim() === relPath)
     if (!record) {
       record = createMemorySessionRecord({
+        id: persistedSessionId || undefined,
+        sandboxWorkspaceId: persistedSandboxWorkspaceId || undefined,
         title: loadedTitle,
         createdAt: sessionCreatedAtMs,
         titleReadyAt: titleReadyAtMs,
@@ -10885,6 +10917,11 @@ async function loadSessionFromFile(filePath, options = {}) {
       memorySessions.value = [...memorySessions.value, record]
     } else {
       record.title = loadedTitle
+      if (persistedSandboxWorkspaceId) {
+        record.sandboxWorkspaceId = persistedSandboxWorkspaceId
+      } else {
+        resolveMemorySessionSandboxWorkspaceId(record)
+      }
       if (sessionCreatedAtMs > 0) {
         const existingCreatedAtMs = Number(record.createdAt || 0)
         record.createdAt = existingCreatedAtMs > 0 ? Math.min(existingCreatedAtMs, sessionCreatedAtMs) : sessionCreatedAtMs
@@ -11193,9 +11230,9 @@ onBeforeUnmount(() => {
     // ignore
   }
   try {
-    if (autoChatCleanupTimer) {
-      window.clearInterval(autoChatCleanupTimer)
-      autoChatCleanupTimer = null
+    if (sessionTrashCleanupTimer) {
+      window.clearInterval(sessionTrashCleanupTimer)
+      sessionTrashCleanupTimer = null
     }
   } catch {
     // ignore
@@ -13864,8 +13901,8 @@ async function runChatSession({
 
 async function stageChatAttachmentsInSandbox(attachments, sessionTarget = null) {
   const list = Array.isArray(attachments) ? attachments : []
-  const sandboxWorkspaceId = buildChatSandboxWorkspaceId(
-    sessionTarget?.id || activeMemorySessionId.value || 'default'
+  const sandboxWorkspaceId = resolveMemorySessionSandboxWorkspaceId(
+    sessionTarget || getMemorySessionById(activeMemorySessionId.value)
   )
   const unstagedAttachments = list.filter((attachment) =>
     attachment?.file &&
@@ -15055,6 +15092,7 @@ async function requestContextWindowSummary({
   providerId = '',
   baseUrl = '',
   apiKey = '',
+  apiMode = 'auto',
   model = '',
   systemPrompt = '',
   conversationPairs = []
@@ -15101,6 +15139,7 @@ async function requestContextWindowSummary({
   const result = await streamChatCompletion({
     baseUrl,
     apiKey,
+    apiMode,
     body: {
       model,
       stream: true,
@@ -15257,6 +15296,7 @@ async function ensureContextWindowSummary({
     providerId: cfg.providerId,
     baseUrl: cfg.baseUrl,
     apiKey: cfg.apiKey,
+    apiMode: normalizeProviderApiMode(cfg.apiMode),
     model: cfg.model,
     systemPrompt: '你是一个对话历史压缩器，只输出供后续对话继续使用的忠实摘要。',
     conversationPairs
@@ -17066,9 +17106,7 @@ async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, ab
   pendingToolMessage.toolAbortState = abortState || null
   pendingToolMessage.toolApprovalMode = currentApprovalMode
   if (usesCommandWorkspace) {
-    const chatWorkspaceId = buildChatSandboxWorkspaceId(
-      targetRecord?.id || activeMemorySessionId.value || 'default'
-    )
+    const chatWorkspaceId = resolveMemorySessionSandboxWorkspaceId(targetRecord)
     pendingToolMessage.toolSubMeta =
       commandWorkspaceScope === 'all'
         ? approvedHostWorkspacePath

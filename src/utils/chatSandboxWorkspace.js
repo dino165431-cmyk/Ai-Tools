@@ -21,6 +21,14 @@ export function buildChatSandboxWorkspaceId(sessionId = 'default') {
     .slice(0, MAX_CHAT_SANDBOX_WORKSPACE_ID_LENGTH)
 }
 
+export function isChatSandboxWorkspaceId(value) {
+  const workspaceId = cleanLineValue(value)
+  return (
+    workspaceId.length <= MAX_CHAT_SANDBOX_WORKSPACE_ID_LENGTH &&
+    /^chat-[a-zA-Z0-9._-]+$/.test(workspaceId)
+  )
+}
+
 export function buildChatAttachmentReferenceBlock(attachment = {}, options = {}) {
   const fallbackWorkspaceId = buildChatSandboxWorkspaceId(options.sessionId)
   const workspaceId = cleanLineValue(attachment?.sandboxWorkspaceId) || fallbackWorkspaceId

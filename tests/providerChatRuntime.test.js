@@ -98,6 +98,44 @@ test('preload Responses stream keeps call_id from function call events', () => {
   assert.equal(result.toolCalls[0].function.arguments, '{"query":"notes"}')
 })
 
+test('preload Responses stream merges item_id and call_id aliases for one function call', () => {
+  const state = compat.createResponsesStreamAccumulator()
+  compat.applyResponsesStreamEvent(state, {
+    type: 'response.output_item.added',
+    output_index: 0,
+    item: {
+      type: 'function_call',
+      id: 'fc_item_1',
+      name: 'search',
+      arguments: ''
+    }
+  })
+  compat.applyResponsesStreamEvent(state, {
+    type: 'response.function_call_arguments.done',
+    output_index: 0,
+    call_id: 'call_real_1',
+    name: 'search',
+    arguments: '{"query":"notes"}'
+  })
+  compat.applyResponsesStreamEvent(state, {
+    type: 'response.output_item.done',
+    output_index: 0,
+    item: {
+      type: 'function_call',
+      id: 'fc_item_1',
+      call_id: 'call_real_1',
+      name: 'search',
+      arguments: '{"query":"notes"}'
+    }
+  })
+
+  const result = compat.finalizeResponsesStreamAccumulator(state)
+  assert.equal(result.toolCalls.length, 1)
+  assert.equal(result.toolCalls[0].id, 'fc_item_1')
+  assert.equal(result.toolCalls[0].call_id, 'call_real_1')
+  assert.equal(result.toolCalls[0].function.arguments, '{"query":"notes"}')
+})
+
 test('provider chat runtime honors explicit API mode and only auto mode crosses endpoints', async () => {
   const originalFetch = globalThis.fetch
   const urls = []
