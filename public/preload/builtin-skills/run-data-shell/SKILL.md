@@ -1,6 +1,6 @@
 ---
 name: run-data-shell
-description: Work on files in a guarded command workspace with structured file reads/writes, explicit file import, bounded PowerShell or Bash execution, toolchain probing, file listing, and user-controlled result export. Use when the user asks to run commands, modify attached/local files, run a script, archive files, or automate a local file task.
+description: Work on files in a guarded command workspace with structured file reads/writes, explicit file import, sandbox-to-host result export, bounded PowerShell or Bash execution, toolchain probing, and file listing. Use when the user asks to run commands, modify attached/local files, run a script, create or archive files, save a generated result to the selected local workspace, or automate a local file task.
 ---
 
 # Sandboxed Command Workspace
@@ -13,6 +13,18 @@ workspace is a separate data source/target: use `workspace_scope: host` only whe
 inspect or modify files there. The host injects its root internally; keep `cwd` relative and never
 invent or pass an absolute workspace path.
 
+Choose the workspace from the artifact lifecycle:
+
+- Put attachments in sandbox `inbox/`.
+- Keep scratch files, exploratory scripts, extracted data, caches, temporary archives, and
+  intermediate transformations in the chat sandbox.
+- Put final artifacts in sandbox `output/` when the user did not name a destination.
+- When the user explicitly asks to save a sandbox result to the selected local workspace, call
+  `sandbox_export`. Do not read the result as Base64, split it into chunks, or reconstruct it with
+  `sandbox_write_file`.
+- Use direct host reads, writes, or commands only when the task concerns an existing local project
+  or the user explicitly asks to create or modify files there.
+
 The host exposes actions progressively. Use `skill_discover` for exact schemas, then call them through `skill_call`.
 
 - Call `sandbox_status` before a build or runtime task when tool availability is unknown. It reports the real isolation level and discovers Python, uv, Node, npm, Git, and Bash from a refreshed user/machine PATH.
@@ -22,10 +34,9 @@ The host exposes actions progressively. Use `skill_discover` for exact schemas, 
 - Use `bash_run` or `sandbox_run` with `shell: bash` only when Bash syntax or Git tools are specifically useful.
 - When an attachment block contains `sandbox_workspace_id` and `sandbox_path`, pass that workspace id with `workspace_scope: sandbox` and use the listed relative file path.
 - Use `sandbox_import` only when the user explicitly supplied an external absolute path and wants that file copied into the workspace.
+- Use `sandbox_export` to copy one completed sandbox file to the selected host workspace. Keep both source and destination paths relative, and use `mode: overwrite` only when replacement is explicit.
 - Use `sandbox_list` with `workspace_scope: all` to find files across both the chat sandbox and the selected host workspace. Every result is labeled with its source. Use `sandbox` or `host` when only one side is relevant.
-- Keep exploratory scripts, extracted data, caches, temporary archives, and intermediate transformations in the chat sandbox. Use `workspace_scope: host` for reads/writes/commands only when the task explicitly concerns the selected local project or the user asks to save there.
 - Use `sandbox_reset` only when the user explicitly asks to clear the workspace.
-- Put generated artifacts in the chat sandbox's `output/` where practical so they remain downloadable. Copy or write them to the host workspace only when the user explicitly requests that destination.
 - Shell/code execution, writes, imports, resets, and destructive actions require approval. Read-only status/list/read actions can run automatically in low-risk mode.
 - Never print tokens, credentials, cookies, private keys, or unrelated user files.
 - Treat timeout or non-zero exit as failure even if partial output exists.

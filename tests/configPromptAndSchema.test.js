@@ -333,9 +333,11 @@ test('builtin assistant prompt prevents redundant discovery, blind retries, and 
   assert.ok(prompt.content.includes('只有 action 实际返回 `downloadHref` 时'))
   assert.ok(prompt.content.includes('本机工作区文件没有沙盒下载链接'))
   assert.ok(prompt.content.includes('不要自行拼接或猜测 `sandbox-file://`'))
-  assert.ok(prompt.content.includes('附件、临时脚本、中间产物和默认生成结果都使用 `workspace_scope: sandbox`'))
+  assert.ok(prompt.content.includes('临时脚本、中间产物和未指定目标的生成结果都使用 `workspace_scope: sandbox`'))
   assert.ok(prompt.content.includes('不要自动改到那里执行'))
   assert.ok(prompt.content.includes('`workspace_scope: all` 同时检索沙盒和本机工作区'))
+  assert.ok(prompt.content.includes('使用 `sandbox_export` 从沙盒直接复制到本机相对路径'))
+  assert.ok(prompt.content.includes('不要回读 Base64、切块或手工重写二进制文件'))
   assert.equal(prompt.content.includes('能用工具就用工具'), false)
 })
 

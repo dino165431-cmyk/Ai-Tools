@@ -4,7 +4,8 @@ import assert from 'node:assert/strict'
 import {
   extractImageGenerationTextResult,
   extractImageOutputEntries,
-  extractVideoOutputEntries
+  extractVideoOutputEntries,
+  reconcilePersistedSandboxToolImages
 } from '../src/utils/chatImageGeneration.js'
 
 test('extractImageGenerationTextResult reads text-only responses payloads', () => {
@@ -84,6 +85,53 @@ test('extractImageOutputEntries treats OpenAI image stream event type as metadat
   assert.equal(images.length, 1)
   assert.equal(images[0].mime, 'image/png')
   assert.ok(images[0].src.startsWith('data:image/png;base64,'))
+})
+
+test('extractImageOutputEntries does not treat generic base64 file content as an image', () => {
+  const zipBytes = Buffer.concat([
+    Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+    Buffer.alloc(256, 0x61)
+  ])
+  const textBytes = Buffer.from(`plain base64 chunk ${'x'.repeat(256)}`)
+
+  assert.deepEqual(extractImageOutputEntries({
+    kind: 'sandbox_read_file_result',
+    path: 'output/report.xlsx',
+    encoding: 'base64',
+    content: zipBytes.toString('base64')
+  }), [])
+  assert.deepEqual(extractImageOutputEntries({
+    kind: 'sandbox_read_file_result',
+    path: 'output/chunks/000.txt',
+    encoding: 'utf8',
+    content: textBytes.toString('base64')
+  }), [])
+})
+
+test('reconcilePersistedSandboxToolImages hides stale fake images from historical file reads', () => {
+  const staleImages = [{ id: 'legacy-image', mime: 'image/png', assetRef: 'legacy.png' }]
+  const xlsxContent = Buffer.concat([
+    Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+    Buffer.alloc(256, 0x61)
+  ]).toString('base64')
+
+  assert.deepEqual(reconcilePersistedSandboxToolImages(staleImages, {
+    kind: 'sandbox_read_file_result',
+    path: 'output/report.xlsx',
+    encoding: 'base64',
+    content: xlsxContent
+  }), [])
+
+  const pngContent = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.alloc(256, 0x61)
+  ]).toString('base64')
+  assert.equal(reconcilePersistedSandboxToolImages(staleImages, {
+    kind: 'sandbox_read_file_result',
+    path: 'output/chart.png',
+    encoding: 'base64',
+    content: pngContent
+  }), staleImages)
 })
 
 test('extractVideoOutputEntries preserves video resolution, duration, and timing metadata', () => {

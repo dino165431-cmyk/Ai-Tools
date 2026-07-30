@@ -40,6 +40,7 @@ test('shell Skill runtime exposes explicit sandbox lifecycle actions', () => {
       'sandbox_read_file',
       'sandbox_write_file',
       'sandbox_import',
+      'sandbox_export',
       'sandbox_list',
       'sandbox_reset'
     ]
@@ -69,6 +70,8 @@ test('shell action policy lets approval mode distinguish ordinary from dangerous
   assert.equal(byName.get('sandbox_run').approvalKind, 'shell')
   assert.equal(byName.get('sandbox_write_file').forceApproval, true)
   assert.equal(byName.get('sandbox_write_file').hardApproval, false)
+  assert.equal(byName.get('sandbox_export').forceApproval, true)
+  assert.equal(byName.get('sandbox_export').hardApproval, false)
   assert.equal(byName.get('sandbox_reset').hardApproval, true)
 })
 
@@ -348,6 +351,61 @@ test('chat sandbox remains the default while all-scope listing searches sandbox 
   ))
 })
 
+test('sandbox_export copies a sandbox result to the selected host workspace without base64', async (t) => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-shell-export-data-'))
+  const hostRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-shell-export-host-'))
+  const originalGetDataStorageRoot = globalConfig.getDataStorageRoot
+  globalConfig.getDataStorageRoot = () => tempRoot
+  t.after(() => {
+    globalConfig.getDataStorageRoot = originalGetDataStorageRoot
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+    fs.rmSync(hostRoot, { recursive: true, force: true })
+  })
+
+  const runtime = createShellSkillRuntime()
+  const workspaceId = 'chat-export-test'
+  const binary = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0xff, 0x10])
+  await runtime.runAction('sandbox_write_file', {
+    workspace_id: workspaceId,
+    path: 'output/report.xlsx',
+    encoding: 'base64',
+    content: binary.toString('base64')
+  })
+
+  const exported = await runtime.runAction('sandbox_export', {
+    workspace_id: workspaceId,
+    __host_workspace_path: hostRoot,
+    source_path: 'output/report.xlsx',
+    destination_path: 'deliverables/report.xlsx'
+  })
+  assert.equal(exported.ok, true)
+  assert.equal(exported.workspaceKind, 'host')
+  assert.equal(exported.file.path, 'deliverables/report.xlsx')
+  assert.equal(exported.file.downloadHref, undefined)
+  assert.deepEqual(
+    fs.readFileSync(path.join(hostRoot, 'deliverables', 'report.xlsx')),
+    binary
+  )
+
+  await assert.rejects(
+    runtime.runAction('sandbox_export', {
+      workspace_id: workspaceId,
+      __host_workspace_path: hostRoot,
+      source_path: 'output/report.xlsx',
+      destination_path: 'deliverables/report.xlsx'
+    }),
+    /目标文件已存在/
+  )
+
+  await runtime.runAction('sandbox_export', {
+    workspace_id: workspaceId,
+    __host_workspace_path: hostRoot,
+    source_path: 'output/report.xlsx',
+    destination_path: 'deliverables/report.xlsx',
+    mode: 'overwrite'
+  })
+})
+
 test('built-in Skill registry ignores model-supplied host paths and accepts only host context', {
   skip: process.platform !== 'win32'
 }, async (t) => {
@@ -386,4 +444,22 @@ test('built-in Skill registry ignores model-supplied host paths and accepts only
   )
   assert.equal(authorized.workspaceKind, 'host')
   assert.equal(fs.existsSync(path.join(hostRoot, 'authorized.txt')), true)
+
+  await createShellSkillRuntime().runAction('sandbox_write_file', {
+    workspace_id: 'registry-export-test',
+    path: 'output/result.txt',
+    content: 'exported'
+  })
+  const exported = await builtinSkills.runBuiltinSkillActionWithHostContext(
+    builtinSkills.BUILTIN_SKILL_IDS.shell,
+    'sandbox_export',
+    {
+      workspace_id: 'registry-export-test',
+      source_path: 'output/result.txt',
+      destination_path: 'exported.txt'
+    },
+    { hostWorkspacePath: hostRoot }
+  )
+  assert.equal(exported.workspaceKind, 'host')
+  assert.equal(fs.readFileSync(path.join(hostRoot, 'exported.txt'), 'utf8'), 'exported')
 })

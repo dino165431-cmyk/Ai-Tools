@@ -21,6 +21,7 @@ const MAX_OUTPUT_CHARS = 20000
 const MAX_OUTPUT_BYTES = MAX_OUTPUT_CHARS * 6
 const MAX_STRUCTURED_FILE_BYTES = 5 * 1024 * 1024
 const MAX_READ_FILE_BYTES = 1024 * 1024
+const MAX_EXPORTED_FILE_BYTES = 50 * 1024 * 1024
 const MAX_LISTED_ACTIVE_FILES = 500
 const DEFAULT_TIMEOUT_MS = 30000
 const MAX_TIMEOUT_MS = 120000
@@ -805,6 +806,86 @@ async function writeWorkspaceFile(args = {}) {
   }
 }
 
+async function exportSandboxFile(args = {}) {
+  const workspaceId = normalizeWorkspaceId(args.workspace_id)
+  const source = await resolveWorkspaceTarget(
+    args.source_path,
+    workspaceId,
+    '',
+    {
+      mustExist: true,
+      workspaceScope: 'sandbox'
+    }
+  )
+  const sourceStat = await fs.lstat(source.absolutePath)
+  if (sourceStat.isSymbolicLink() || !sourceStat.isFile()) {
+    throw new Error('source_path 必须指向会话沙盒内的普通文件，且不能是符号链接')
+  }
+  if (sourceStat.size > MAX_EXPORTED_FILE_BYTES) {
+    throw new Error('文件超过 50MB 的本机工作区导出上限')
+  }
+
+  const destinationPath =
+    cleanString(args.destination_path) ||
+    path.posix.basename(source.relativePath)
+  const target = await resolveWorkspaceTarget(
+    destinationPath,
+    workspaceId,
+    args.__host_workspace_path,
+    { workspaceScope: 'host' }
+  )
+  const mode = cleanString(args.mode).toLowerCase() || 'create'
+  if (!['create', 'overwrite'].includes(mode)) {
+    throw new Error('mode 仅支持 create 或 overwrite')
+  }
+
+  const existed = fsSync.existsSync(target.absolutePath)
+  if (existed) {
+    const existingStat = fsSync.lstatSync(target.absolutePath)
+    if (existingStat.isSymbolicLink() || !existingStat.isFile()) {
+      throw new Error('destination_path 必须指向普通文件，且不能是符号链接')
+    }
+  }
+  if (mode === 'create' && existed) {
+    throw new Error('目标文件已存在；如需替换请明确使用 mode=overwrite')
+  }
+
+  await fs.mkdir(path.dirname(target.absolutePath), { recursive: true })
+  const verified = await resolveWorkspaceTarget(
+    target.relativePath,
+    workspaceId,
+    args.__host_workspace_path,
+    { workspaceScope: 'host' }
+  )
+  await fs.copyFile(
+    source.absolutePath,
+    verified.absolutePath,
+    mode === 'create' ? fsSync.constants.COPYFILE_EXCL : 0
+  )
+  const stat = await fs.stat(verified.absolutePath)
+  const file = buildWorkspaceFileEntry(verified, verified.relativePath, stat, {
+    changeType: existed ? 'modified' : 'created'
+  })
+  return {
+    kind: 'sandbox_export_result',
+    ok: true,
+    workspaceId: verified.workspaceId,
+    workspaceKind: verified.workspaceKind,
+    workspacePath: verified.workspacePath,
+    tracksChanges: true,
+    changeTracking: 'structured',
+    ...getWorkspaceIsolationMetadata(verified.workspaceKind),
+    source: {
+      workspaceId: source.workspaceId,
+      workspaceKind: source.workspaceKind,
+      path: source.relativePath,
+      size: Number(sourceStat.size) || 0
+    },
+    file,
+    changedFiles: [file]
+  }
+}
+
 async function getSandboxStatus(args = {}) {
   const workspaceId = normalizeWorkspaceId(args.workspace_id)
   const workspace = await resolveWorkingDirectory(
@@ -1062,6 +1143,25 @@ const ACTIONS = Object.freeze([
     }
   },
   {
+    name: 'sandbox_export',
+    description: 'Copy one generated file from the chat sandbox to the user-selected host workspace without base64 conversion. Use this when the user explicitly asks to save or deliver a sandbox result to the current local workspace.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workspace_id: { type: 'string', description: 'Source chat sandbox workspace id. Default: current chat sandbox.' },
+        source_path: { type: 'string', description: 'Required source path relative to the chat sandbox.' },
+        destination_path: { type: 'string', description: 'Destination path relative to the selected host workspace. Default: source filename in the workspace root.' },
+        mode: {
+          type: 'string',
+          enum: ['create', 'overwrite'],
+          description: 'Default create refuses to replace an existing host file.'
+        }
+      },
+      required: ['source_path'],
+      additionalProperties: false
+    }
+  },
+  {
     name: 'sandbox_list',
     description: 'List regular non-symlink files. With a selected host workspace, all scope searches both the chat sandbox and host workspace and labels every result by source.',
     inputSchema: {
@@ -1135,6 +1235,9 @@ class BuiltinShellSkillRuntime {
     }
     if (action === 'sandbox_import') {
       return copyExternalFilesToWorkspace(workspaceId, args.source_paths)
+    }
+    if (action === 'sandbox_export') {
+      return exportSandboxFile(args)
     }
     if (action === 'sandbox_list') {
       const scope = normalizeWorkspaceScope(args.workspace_scope, { allowAll: true })
@@ -1229,5 +1332,6 @@ module.exports._test = {
   resolveWorkspaceTarget,
   readWorkspaceFile,
   writeWorkspaceFile,
+  exportSandboxFile,
   getSandboxStatus
 }

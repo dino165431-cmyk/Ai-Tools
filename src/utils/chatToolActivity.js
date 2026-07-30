@@ -2,6 +2,7 @@ const TOOL_LABELS = {
   sandbox_run: ['正在沙盒中执行命令', '已在沙盒中执行命令'],
   bash_run: ['正在沙盒中执行 Bash 命令', '已在沙盒中执行 Bash 命令'],
   sandbox_import: ['正在把文件复制到沙盒', '已把文件复制到沙盒'],
+  sandbox_export: ['正在把结果保存到本机工作区', '已把结果保存到本机工作区'],
   sandbox_list: ['正在查看沙盒文件', '已查看沙盒文件'],
   sandbox_reset: ['正在清理沙盒工作区', '已清理沙盒工作区'],
   web_search: ['正在搜索资料', '已搜索资料'],

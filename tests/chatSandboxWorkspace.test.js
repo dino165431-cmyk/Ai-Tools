@@ -68,6 +68,10 @@ test('chat shell actions default to sandbox while file listing can search both r
     'host'
   )
   assert.equal(
+    resolveChatToolWorkspaceScope('sandbox_export', {}, { hasHostWorkspace: true }),
+    'host'
+  )
+  assert.equal(
     resolveChatToolWorkspaceScope('sandbox_run', { workspace_scope: 'all' }, { hasHostWorkspace: true }),
     'all'
   )

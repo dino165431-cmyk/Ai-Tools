@@ -1,9 +1,9 @@
 interface:
   display_name: "沙盒命令工作区"
-  short_description: "在受路径守卫的工作区内结构化读写文件并执行经审批的命令。"
+  short_description: "在会话沙盒处理文件与命令，并按需将最终结果导出到本机工作区。"
   icon_small: "./assets/icon.svg"
   icon_large: "./assets/icon.svg"
   brand_color: "#3C4658"
-  default_prompt: "Use $run-data-shell for structured workspace file operations and approved commands; check sandbox_status when isolation or tool availability matters."
+  default_prompt: "Use $run-data-shell to process files in the chat sandbox and export only the requested final results to the selected local workspace."
 policy:
   allow_implicit_invocation: true

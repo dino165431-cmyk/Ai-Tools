@@ -262,7 +262,7 @@
                   circle
                   :type="hostWorkspacePath ? 'primary' : 'default'"
                   :disabled="busy"
-                  aria-label="选择命令工作区"
+                  aria-label="连接本机工作区"
                 >
                   <template #icon>
                     <n-icon :component="FolderOpenOutline" size="12" />
@@ -271,10 +271,10 @@
               </n-dropdown>
             </template>
             <div class="chat-composer-workspace-tooltip">
-              <strong>{{ hostWorkspacePath ? '本机工作区' : '默认隔离沙盒' }}</strong>
+              <strong>{{ hostWorkspacePath ? '默认会话沙盒 + 已连接本机目录' : '默认会话沙盒' }}</strong>
               <span v-if="hostWorkspacePath">{{ hostWorkspacePath }}</span>
               <span>
-                {{ hostWorkspacePath ? '点击可更换目录或恢复默认沙盒' : '点击选择本机目录作为当前会话工作区' }}
+                {{ hostWorkspacePath ? '临时与中间文件仍在沙盒；明确读取或交付到本机时才使用此目录' : '点击连接本机目录，作为按需输入或最终交付目标' }}
               </span>
             </div>
           </n-tooltip>
@@ -938,11 +938,11 @@ const interactionLocked = computed(() => props.preparingSend)
 const normalizedHostWorkspacePath = computed(() => String(props.hostWorkspacePath || '').trim())
 const hostWorkspaceMenuOptions = computed(() => [
   {
-    label: normalizedHostWorkspacePath.value ? '更换工作区…' : '选择工作区…',
+    label: normalizedHostWorkspacePath.value ? '更换本机目录…' : '连接本机目录…',
     key: 'choose'
   },
   {
-    label: '使用默认沙盒',
+    label: '断开本机目录',
     key: 'clear',
     disabled: !normalizedHostWorkspacePath.value
   }

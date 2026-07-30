@@ -46,6 +46,15 @@ It defaults to the chat sandbox.
 
 Copies explicitly named absolute source file paths into `inbox/`. It only accepts regular files, rejects symlinks, applies per-file and batch size limits, never changes the sources, and returns imported file entries.
 
+## `sandbox_export`
+
+Copies one regular file from the chat sandbox to a relative path in the user-selected host
+workspace. Use it only when the user explicitly requested that destination. It rejects symlinks
+and workspace escapes, has a 50MB file limit, and refuses to replace an existing host file by
+default. Pass `mode: "overwrite"` only for an explicit replacement. The result reports the source,
+the host-relative destination, and `changedFiles`; it intentionally has no sandbox download link.
+Do not use Base64 or chunked reads to transfer a generated binary file between workspaces.
+
 ## `sandbox_list`
 
 Lists regular non-symlink files. `workspace_scope` accepts `sandbox`, `host`, or `all`. When a host

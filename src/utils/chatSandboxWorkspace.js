@@ -91,6 +91,7 @@ export function withDefaultChatSandboxWorkspaceId(args, sessionId) {
 export function resolveChatToolWorkspaceScope(toolName, args, options = {}) {
   const normalizedToolName = cleanLineValue(toolName)
   const requested = cleanLineValue(args?.workspace_scope).toLowerCase()
+  if (normalizedToolName === 'sandbox_export') return 'host'
   if (requested === 'host') return 'host'
   if (requested === 'all' && normalizedToolName === 'sandbox_list') return 'all'
   if (requested) return requested

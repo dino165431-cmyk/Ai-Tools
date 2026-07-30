@@ -30,6 +30,18 @@ test('tool activity summarizes returned files', () => {
   assert.equal(getToolActivityMeta(message), 'result.zip 等 2 个文件')
 })
 
+test('tool activity identifies final-result export to the host workspace', () => {
+  const message = {
+    role: 'tool',
+    toolName: 'sandbox_export',
+    toolResultPayload: {
+      changedFiles: [{ path: 'deliverables/report.xlsx' }]
+    }
+  }
+  assert.equal(getToolActivityLabel(message, 'success'), '已把结果保存到本机工作区')
+  assert.equal(getToolActivityMeta(message), 'deliverables/report.xlsx')
+})
+
 test('MCP activity keeps technical identity available without showing it as default metadata', () => {
   const message = {
     role: 'tool',

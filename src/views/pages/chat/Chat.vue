@@ -1205,7 +1205,8 @@ import {
   extractImageGenerationPromptFromContent,
   extractImageGenerationTextResult,
   isLikelyImageGenerationModel,
-  isLikelyVideoGenerationModel
+  isLikelyVideoGenerationModel,
+  reconcilePersistedSandboxToolImages
 } from '@/utils/chatImageGeneration.js'
 import {
   imageMetaLabel,
@@ -3814,11 +3815,13 @@ function buildHostWorkspacePrompt(sessionRecord = null) {
   const workspacePath = resolveSessionHostWorkspacePath(sessionRecord)
   if (!workspacePath) return ''
   return [
-    '## 当前会话工作区',
-    `- 用户已明确选择本机目录作为当前会话工作区：${workspacePath}`,
-    '- `sandbox_read_file` / `sandbox_write_file` / `sandbox_list` / `sandbox_run` / `bash_run` 会自动作用于该工作区；不要在工具参数中填写或猜测绝对路径。',
-    '- `path` 和 `cwd` 必须使用工作区内的相对路径；未填写 cwd 时使用工作区根目录。',
-    '- 这是用户授权的本机目录，结构化写入和命令都可能直接修改其中的文件；当前命令执行没有操作系统级进程沙盒，执行前应保持改动范围与用户请求一致。'
+    '## 已连接的本机工作区',
+    `- 用户已授权本机目录作为按需输入或交付目标：${workspacePath}`,
+    '- 连接本机目录不会改变默认执行位置：聊天附件、临时脚本、中间产物和未指定目标的生成结果仍放在会话沙盒。',
+    '- 只有用户明确要求读取或修改当前本机项目时，才对相应读写或命令使用 `workspace_scope: host`。',
+    '- 用户明确要求把沙盒生成结果保存到当前本机工作区时，使用 `sandbox_export`；不要回读 Base64、切块或手工重写二进制文件。',
+    '- 工具中的 `path`、`source_path`、`destination_path` 和 `cwd` 必须使用工作区内相对路径；不要填写或猜测绝对路径。',
+    '- 本机写入会直接修改用户目录，执行前应保持改动范围与用户请求一致。'
   ].join('\n')
 }
 
@@ -4120,8 +4123,8 @@ async function chooseSandboxHostWorkspace() {
 
   try {
     const selected = extractDirectoryDialogPath(await Promise.resolve(api.showOpenDialog({
-      title: '选择当前会话工作区',
-      buttonLabel: '使用此目录',
+      title: '连接本机工作区',
+      buttonLabel: '连接此目录',
       properties: ['openDirectory']
     })))
     const nextPath = normalizeSelectedHostWorkspacePath(selected)
@@ -4129,7 +4132,7 @@ async function chooseSandboxHostWorkspace() {
     sandboxHostWorkspacePath.value = nextPath
     const record = saveActiveMemorySessionDraft()
     void autoPersistMemorySessionWhenIdle(record)
-    message.success('已为当前会话启用本机工作区；命令执行仍会单独确认')
+    message.success('已连接本机工作区；默认仍使用会话沙盒，明确读取或保存时才访问该目录')
   } catch (error) {
     message.error(`选择工作区失败：${error?.message || String(error)}`)
   }
@@ -4144,7 +4147,7 @@ function clearSandboxHostWorkspace() {
   sandboxHostWorkspacePath.value = ''
   const record = saveActiveMemorySessionDraft()
   void autoPersistMemorySessionWhenIdle(record)
-  message.info('已改回默认隔离沙盒')
+  message.info('已断开本机工作区；继续使用默认会话沙盒')
 }
 
 function resolveContextEstimateSource(record, rawMessages) {
@@ -4852,8 +4855,8 @@ const footerHint = computed(() => {
     sandboxHostWorkspacePath.value
   ).split(/[\\/]/).filter(Boolean)
   const workspaceText = sandboxHostWorkspacePath.value
-    ? `本机工作区：${workspaceSegments[workspaceSegments.length - 1] || sandboxHostWorkspacePath.value}`
-    : '工作区：默认沙盒'
+    ? `默认：会话沙盒 | 本机目录：${workspaceSegments[workspaceSegments.length - 1] || sandboxHostWorkspacePath.value}（按需）`
+    : '默认：会话沙盒'
   return `联网：${webSearchEnabled.value ? '开' : '关'} | MCP 工具：${activeMcpServers.value.length} | 自动批准：${autoApproveTools.value ? '开' : '关'} | ${workspaceText}`
 })
 
@@ -6496,6 +6499,7 @@ function prepareBuiltinAgentToolCallArgs(skillId, toolName, argsObj, pendingMess
       'sandbox_read_file',
       'sandbox_write_file',
       'sandbox_import',
+      'sandbox_export',
       'sandbox_list',
       'sandbox_reset'
     ].includes(normalizedToolName)
@@ -6508,6 +6512,11 @@ function prepareBuiltinAgentToolCallArgs(skillId, toolName, argsObj, pendingMess
       return withDefaultChatSandboxWorkspaceId(nextArgs, sessionId)
     }
     const workspacePath = resolveSessionHostWorkspacePath(targetRecord)
+    if (normalizedToolName === 'sandbox_export') {
+      const routedArgs = withDefaultChatSandboxWorkspaceId(nextArgs, sessionId)
+      if (workspacePath) routedArgs.__host_workspace_path = workspacePath
+      return routedArgs
+    }
     const workspaceScope = resolveChatToolWorkspaceScope(
       normalizedToolName,
       nextArgs,
@@ -10399,6 +10408,9 @@ function normalizeLoadedDisplayMessage(msg) {
     if (typeof raw.toolLiveFinalReasoning !== 'string') raw.toolLiveFinalReasoning = String(raw.toolLiveFinalReasoning || '')
     raw.toolLiveRound = Number.isFinite(Number(raw.toolLiveRound)) ? Number(raw.toolLiveRound) : 0
     if (!raw.toolResultPayload || typeof raw.toolResultPayload !== 'object' || Array.isArray(raw.toolResultPayload)) raw.toolResultPayload = null
+    if (raw.role === 'tool') {
+      raw.images = reconcilePersistedSandboxToolImages(raw.images, raw.toolResultPayload)
+    }
 
     if (!raw.toolServerName) raw.toolServerName = extractServerNameFromToolMeta(raw.toolMeta)
     if (!raw.toolName) raw.toolName = extractToolNameFromToolMeta(raw.toolMeta)

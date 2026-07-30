@@ -20,7 +20,7 @@ function looksLikeBase64ImagePayload(value) {
   if (/\s/.test(text)) return false
   if (!/^[a-z0-9+/]+=*$/i.test(text)) return false
   if (text.length % 4 !== 0) return false
-  return true
+  return !!guessImageMimeFromBase64(text)
 }
 
 function guessImageMimeFromBase64(b64) {
@@ -30,7 +30,7 @@ function guessImageMimeFromBase64(b64) {
   if (head.startsWith('R0lGOD')) return 'image/gif'
   if (head.startsWith('UklGR')) return 'image/webp'
   if (head.startsWith('Qk')) return 'image/bmp'
-  return 'image/png'
+  return ''
 }
 
 function normalizeMediaMime(value, kind = '') {
@@ -53,6 +53,7 @@ function buildImageDataUrl(base64, mime) {
   const text = String(base64 || '').trim()
   if (!text) return ''
   const finalMime = String(mime || '').trim() || guessImageMimeFromBase64(text)
+  if (!finalMime) return ''
   return `data:${finalMime};base64,${text}`
 }
 
@@ -541,6 +542,16 @@ export function extractImageOutputEntries(payload, options = {}) {
 
   visit(payload)
   return out
+}
+
+export function reconcilePersistedSandboxToolImages(images, payload) {
+  const persisted = Array.isArray(images) ? images : []
+  if (!persisted.length || !payload || typeof payload !== 'object' || Array.isArray(payload)) return persisted
+
+  const kind = String(payload.kind || '').trim().toLowerCase()
+  if (!kind.startsWith('sandbox_')) return persisted
+
+  return extractImageOutputEntries(payload).length > 0 ? persisted : []
 }
 
 export function extractVideoOutputEntries(payload, options = {}) {

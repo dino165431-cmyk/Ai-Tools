@@ -130,6 +130,7 @@ const DEFINITIONS = Object.freeze([
       'sandbox_read_file',
       'sandbox_write_file',
       'sandbox_import',
+      'sandbox_export',
       'sandbox_list',
       'sandbox_reset'
     ])
@@ -420,6 +421,7 @@ async function runBuiltinSkillActionWithHostContext(
       name === 'bash_run' ||
       name === 'sandbox_read_file' ||
       name === 'sandbox_write_file' ||
+      name === 'sandbox_export' ||
       name === 'sandbox_list'
     )
   ) {
