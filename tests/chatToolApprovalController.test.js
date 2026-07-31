@@ -51,3 +51,27 @@ test('chat approval controller cancels every queued request', async () => {
   assert.deepEqual(await Promise.all([first, second]), [null, null])
   assert.equal(controller.pendingApprovalCount.value, 0)
 })
+
+test('hard approvals cannot be remembered for the session', async () => {
+  const controller = createChatToolApprovalController({
+    createId: () => 'hard',
+    throwIfAborted() {}
+  })
+  let remembered = false
+  const pending = controller.requestApproval({
+    serverName: 'Notebook',
+    toolName: 'notebook_execute_cell',
+    argsText: '{"path":"demo.ipynb","cell_index":1}',
+    approvalKind: 'execution',
+    hardApproval: true,
+    onRememberForSession: () => {
+      remembered = true
+    }
+  })
+
+  assert.equal(controller.activeApproval.value.canRemember, false)
+  assert.match(controller.activeApproval.value.scopeHint, /每次调用都必须重新确认/)
+  controller.resolveActive('session')
+  assert.equal(await pending, true)
+  assert.equal(remembered, false)
+})

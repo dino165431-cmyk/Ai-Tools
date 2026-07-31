@@ -363,6 +363,8 @@ function normalizeActionSpec(skillId, action) {
     hardApproval:
       source.hardApproval === true ||
       name === 'sandbox_reset' ||
+      name === 'notebook_execute_cell' ||
+      name === 'notebook_execute_all' ||
       source.annotations?.destructiveHint === true,
     approvalKind: isShell ? 'shell' : isExecution ? 'execution' : 'tool'
   }

@@ -121,6 +121,18 @@ export function shouldEnableChatVirtualization(options = {}) {
   return estimatedHeight >= heightThreshold
 }
 
+export function shouldRetainChatVirtualization(options = {}) {
+  if (options.active === true) return true
+
+  return shouldEnableChatVirtualization({
+    ...options,
+    countThreshold: Math.max(1, Math.floor(Number(options.countThreshold) || 12)),
+    minItemsForHeight: Math.max(2, Math.floor(Number(options.minItemsForHeight) || 4)),
+    minEstimatedHeight: Math.max(0, Number(options.minEstimatedHeight) || 2400),
+    viewportMultiplier: Math.max(1, Number(options.viewportMultiplier) || 3)
+  })
+}
+
 export function resolveChatAdaptiveVirtualRange(range = {}, options = {}) {
   const count = Number.isFinite(Number(range.count))
     ? Math.max(0, Math.floor(Number(range.count)))

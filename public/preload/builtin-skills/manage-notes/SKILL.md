@@ -37,7 +37,10 @@ The host exposes actions progressively. Use `skill_discover` for an action schem
 ## Execute super notes
 
 - Call `notebook_execute_cell` for one code cell and `notebook_execute_all` for all code cells in order.
-- Treat execution as an important action that requires approval.
+- Notebook execution runs in the host Python/JavaScript runtime, not in the chat sandbox. It can access host files and start processes.
+- Treat every execution as a high-risk host action that requires a fresh, non-reusable approval in normal and high-risk-auto modes. Trusted tool mode intentionally approves all tools without prompting.
+- Never add or rewrite a code cell and then execute it as a way to bypass the sandbox. Use the sandbox Skill for AI-authored scripts and intermediate artifacts.
+- Only use the host Notebook runtime when the user explicitly asks to run that notebook or cell and accepts the host-execution warning.
 - Outputs are persisted to the `.ipynb` by default. Use `save: false` when the user wants a transient run.
 - Stop on the first error by default. Continue only when the user asks for it.
 - Never claim a cell ran unless the action returned a successful execution result.

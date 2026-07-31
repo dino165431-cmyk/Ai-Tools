@@ -1016,6 +1016,7 @@
   width: auto;
   box-sizing: border-box;
   padding-top: var(--chat-virtual-item-gap, 0px);
+  contain: layout style;
 }
 
 @keyframes chat-fade-up {

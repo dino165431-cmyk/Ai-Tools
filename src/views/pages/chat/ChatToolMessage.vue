@@ -421,7 +421,7 @@ async function handleSandboxFileMenuSelect(key) {
   width: min(100%, 780px);
   max-width: 100%;
   padding: 9px 10px 10px;
-  overflow: hidden;
+  overflow: clip;
   box-sizing: border-box;
   border: 1px solid rgba(148, 163, 184, 0.20);
   border-radius: 12px;
@@ -604,7 +604,7 @@ async function handleSandboxFileMenuSelect(key) {
   max-width: 100%;
   margin-top: 9px;
   padding-top: 9px;
-  overflow: hidden;
+  overflow: visible;
   box-sizing: border-box;
   border-top: 1px solid rgba(148, 163, 184, 0.16);
 }
@@ -617,7 +617,7 @@ async function handleSandboxFileMenuSelect(key) {
   width: 100%;
   min-width: 0;
   max-width: 100%;
-  overflow: hidden;
+  overflow: visible;
   box-sizing: border-box;
 }
 
@@ -646,7 +646,7 @@ async function handleSandboxFileMenuSelect(key) {
 .tool-message__details :deep(pre) {
   width: 100%;
   max-width: 100%;
-  max-height: 360px;
+  max-height: min(720px, 68vh);
   margin: 6px 0 8px;
   overflow: auto;
   box-sizing: border-box;
@@ -657,7 +657,7 @@ async function handleSandboxFileMenuSelect(key) {
 .tool-message__details :deep(.md-editor-code) {
   width: 100%;
   max-width: 100%;
-  max-height: min(360px, 52vh);
+  max-height: min(720px, 68vh);
   overflow: auto;
   box-sizing: border-box;
   overscroll-behavior: contain;
@@ -671,6 +671,13 @@ async function handleSandboxFileMenuSelect(key) {
   max-height: none;
   margin: 0;
   overflow: visible;
+}
+
+.tool-message__details :deep(.language-json),
+.tool-message__details :deep(code.language-json) {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .tool-message__sandbox {

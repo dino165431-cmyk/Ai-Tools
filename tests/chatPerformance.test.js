@@ -9,7 +9,8 @@ import {
   resolveChatHeavyRenderTuning,
   resolveChatVirtualItemGap,
   shouldDeferChatHeavyBlockLayout,
-  shouldEnableChatVirtualization
+  shouldEnableChatVirtualization,
+  shouldRetainChatVirtualization
 } from '../src/utils/chatPerformance.js'
 
 test('programmatic scroll recognition rejects a user drag during the guard window', () => {
@@ -84,6 +85,30 @@ test('virtualization starts early for several long messages but not one giant me
   assert.equal(shouldEnableChatVirtualization({
     itemCount: 24,
     estimatedHeight: 1200,
+    viewportHeight: 800
+  }), true)
+})
+
+test('virtualization retention uses hysteresis and releases compacted histories', () => {
+  assert.equal(shouldRetainChatVirtualization({
+    active: true,
+    itemCount: 2,
+    estimatedHeight: 200,
+    viewportHeight: 800
+  }), true)
+  assert.equal(shouldRetainChatVirtualization({
+    itemCount: 6,
+    estimatedHeight: 1200,
+    viewportHeight: 800
+  }), false)
+  assert.equal(shouldRetainChatVirtualization({
+    itemCount: 12,
+    estimatedHeight: 1200,
+    viewportHeight: 800
+  }), true)
+  assert.equal(shouldRetainChatVirtualization({
+    itemCount: 6,
+    estimatedHeight: 2600,
     viewportHeight: 800
   }), true)
 })

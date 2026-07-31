@@ -58,6 +58,16 @@ test('consecutive completed tool activities collapse into one stable display gro
   })
 })
 
+test('two adjacent completed tool activities group early to avoid dense row churn', () => {
+  const display = buildChatDisplayMessages([tool('t1'), tool('t2')], {
+    resolveToolStatus: (message) => message.toolStatus
+  })
+
+  assert.equal(display.length, 1)
+  assert.equal(display[0].role, 'tool_group')
+  assert.equal(display[0].toolGroupMessages.length, 2)
+})
+
 test('tool activity groups stay stable while more completed tools append', () => {
   const options = { resolveToolStatus: (message) => message.toolStatus }
   const first = buildChatDisplayMessages([tool('t1'), tool('t2'), tool('t3'), tool('t4')], options)

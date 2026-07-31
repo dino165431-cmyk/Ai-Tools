@@ -83,7 +83,7 @@ export function createChatToolApprovalController({
         } catch {
           // ignore
         }
-        if (rememberForSession && typeof onRememberForSession === 'function') {
+        if (rememberForSession && hardApproval !== true && typeof onRememberForSession === 'function') {
           try {
             onRememberForSession()
           } catch {
@@ -111,11 +111,13 @@ export function createChatToolApprovalController({
           hardApproval: hardApproval === true,
           commandText: normalizedKind === 'shell' ? shellCommand.command : '',
           cwdText: normalizedKind === 'shell' ? shellCommand.cwd : '',
-          canRemember: typeof onRememberForSession === 'function',
+          canRemember: hardApproval !== true && typeof onRememberForSession === 'function',
           rememberText: String(rememberText || '').trim() || '本会话允许此工具',
           scopeHint:
             normalizedKind === 'shell'
               ? '会话内允许只匹配当前 cwd 和完全相同的命令；其他 Bash 命令仍会再次询问。'
+              : hardApproval === true
+                ? '这是不可记忆的高风险操作；每次调用都必须重新确认。'
               : normalizedKind === 'execution'
                 ? '会话内允许只匹配当前技能、脚本和完全相同的参数；其他代码执行仍会再次询问。'
                 : '会话内允许只对当前会话中的此工具生效。',

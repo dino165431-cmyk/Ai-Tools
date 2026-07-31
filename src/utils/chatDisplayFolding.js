@@ -2,7 +2,7 @@ export const DEFAULT_USER_MESSAGE_FOLD_CHAR_THRESHOLD = 1600
 export const DEFAULT_USER_MESSAGE_FOLD_LINE_THRESHOLD = 18
 export const DEFAULT_USER_MESSAGE_PREVIEW_CHARS = 1200
 export const DEFAULT_USER_MESSAGE_PREVIEW_LINES = 12
-export const DEFAULT_TOOL_ACTIVITY_GROUP_MIN_SIZE = 4
+export const DEFAULT_TOOL_ACTIVITY_GROUP_MIN_SIZE = 2
 
 export function shouldShowChatAnchorRail(anchorCount, options = {}) {
   return options.dense !== true && Math.max(0, Number(anchorCount) || 0) > 1

@@ -29,3 +29,5 @@ Mutations require approval. Move and delete operations must use the exact relati
 - `notebook_execute_all`: execute code cells in document order.
 
 Supported runtimes are Python, JavaScript, and SQL. Execution requires approval. The default persists normalized outputs and execution metadata; `save: false` returns transient outputs without rewriting the notebook. Whole-notebook execution stops at the first failure unless `continue_on_error` is explicitly enabled.
+
+Notebook execution uses the host runtime and is outside the chat sandbox. Agent-triggered execution therefore requires a fresh hard approval for every call and cannot be remembered for the session unless trusted tool mode is enabled; trusted mode intentionally approves every tool call. AI-authored code should run through the sandbox Skill instead of being staged in a super note.

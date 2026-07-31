@@ -160,6 +160,10 @@ test('unattended approval policy blocks calls that would require confirmation', 
     evaluateToolApproval({ mode: 'full', hardApproval: true, interactive: false }).action,
     'deny'
   )
+  assert.equal(
+    evaluateToolApproval({ mode: 'trusted', hardApproval: true, interactive: false }).action,
+    'allow'
+  )
 })
 
 test('safe mode auto-approves declared or conventionally named read-only MCP tools', () => {

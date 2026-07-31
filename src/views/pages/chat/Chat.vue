@@ -1341,7 +1341,8 @@ import {
   resolveChatHeavyRenderTuning,
   resolveChatVirtualItemGap,
   shouldDeferChatHeavyBlockLayout,
-  shouldEnableChatVirtualization
+  shouldEnableChatVirtualization,
+  shouldRetainChatVirtualization
 } from '@/utils/chatPerformance.js'
 import {
   ATTACH_ACCEPT,
@@ -5874,6 +5875,7 @@ function toggleToolActivityGroup(group) {
   else next.add(id)
   expandedToolActivityGroupIds.value = next
   chatMessageEstimatedHeightCache.delete(id)
+  scheduleChatVirtualItemRemeasure(id, { followTail: isAtBottom.value })
   scheduleRefreshUserAnchorMeta()
   scheduleStickyChatBubbleSync()
 }
@@ -6282,7 +6284,11 @@ async function flushMemorySessionApprovalQueue(record) {
     interactive: true
   })
   if (
-    (nextRequest.approvalKey && sessionApprovedToolKeys.has(nextRequest.approvalKey)) ||
+    (
+      nextRequest.hardApproval !== true &&
+      nextRequest.approvalKey &&
+      sessionApprovedToolKeys.has(nextRequest.approvalKey)
+    ) ||
     approvalDecision.action === 'allow'
   ) {
     removeMemorySessionApprovalRequest(record, nextRequest.requestId)
@@ -6314,7 +6320,7 @@ async function flushMemorySessionApprovalQueue(record) {
             ? '本会话允许相同脚本调用'
             : '本会话允许此工具',
       onRememberForSession:
-        nextRequest.approvalKey
+        nextRequest.hardApproval !== true && nextRequest.approvalKey
           ? () => sessionApprovedToolKeys.add(nextRequest.approvalKey)
           : null
     })
@@ -6693,7 +6699,7 @@ async function handleBuiltinAgentsToolApprovalRequest(event) {
     targetRecord?.autoApproveTools === false ? TOOL_APPROVAL_MODE_MANUAL : toolApprovalMode.value
   )
   const autoApproved =
-    sessionApprovedToolKeys.has(approvalKey) ||
+    (hardApproval !== true && sessionApprovedToolKeys.has(approvalKey)) ||
     evaluateToolApproval({
       mode: inheritedMode,
       forceApproval,
@@ -7054,6 +7060,7 @@ function formatTime(ts) {
 function toggleThinking(msg) {
   if (!msg) return
   msg.thinkingExpanded = !msg.thinkingExpanded
+  scheduleChatVirtualItemRemeasure(msg, { followTail: isAtBottom.value })
   scheduleRefreshUserAnchorMeta()
   scheduleStickyChatBubbleSync()
 }
@@ -7061,7 +7068,8 @@ function toggleThinking(msg) {
 function toggleToolExpanded(msg) {
   if (!msg || (msg.role !== 'tool' && msg.role !== 'tool_call')) return
   msg.toolExpanded = !msg.toolExpanded
-  if (msg.toolExpanded) scheduleScrollToBottom()
+  scheduleChatVirtualItemRemeasure(msg, { followTail: msg.toolExpanded && isAtBottom.value })
+  if (msg.toolExpanded && !chatVirtualizedEnabled.value) scheduleScrollToBottom()
   scheduleRefreshUserAnchorMeta()
   scheduleStickyChatBubbleSync()
 }
@@ -7069,7 +7077,8 @@ function toggleToolExpanded(msg) {
 function toggleAttachmentsExpanded(msg) {
   if (!msg || msg.role !== 'user') return
   msg.attachmentsExpanded = !msg.attachmentsExpanded
-  if (msg.attachmentsExpanded) scheduleScrollToBottom()
+  scheduleChatVirtualItemRemeasure(msg, { followTail: msg.attachmentsExpanded && isAtBottom.value })
+  if (msg.attachmentsExpanded && !chatVirtualizedEnabled.value) scheduleScrollToBottom()
   scheduleRefreshUserAnchorMeta()
   scheduleStickyChatBubbleSync()
 }
@@ -7464,7 +7473,21 @@ const currentChatVirtualizationSessionKey = computed(() => {
 
 const chatVirtualizationRequested = computed(() => {
   const sessionKey = currentChatVirtualizationSessionKey.value
-  if (chatVirtualizedSessionKeys.value.has(sessionKey)) return true
+  if (chatVirtualizedSessionKeys.value.has(sessionKey)) {
+    const hasActiveLayoutChanges =
+      sending.value ||
+      preparingSend.value ||
+      chatDisplayMessages.value.some((msg) => (
+        msg?.streaming ||
+        (isToolMessage(msg) && isLiveToolMessageStatus(getToolMessageStatus(msg)))
+      ))
+    return shouldRetainChatVirtualization({
+      active: hasActiveLayoutChanges,
+      itemCount: chatDisplayMessages.value.length,
+      estimatedHeight: chatEstimatedContentHeight.value,
+      viewportHeight: chatViewportHeight.value
+    })
+  }
   return shouldEnableChatVirtualization({
     itemCount: chatDisplayMessages.value.length,
     estimatedHeight: chatEstimatedContentHeight.value,
@@ -7486,7 +7509,7 @@ watch(
     const key = String(sessionKey || '').trim()
     if (!key) return
     const next = new Set(chatVirtualizedSessionKeys.value)
-    if (!itemCount) {
+    if (!itemCount || !requested) {
       if (!next.delete(key)) return
     } else if (requested) {
       if (next.has(key)) return
@@ -7551,6 +7574,127 @@ const chatVirtualizer = useVirtualizer(computed(() => ({
   scrollEndThreshold: SCROLL_BOTTOM_THRESHOLD_PX,
   useAnimationFrameWithResizeObserver: true
 })))
+
+let chatVirtualMeasureFrame = 0
+let chatVirtualMeasureSettleFrame = 0
+let chatVirtualMeasureFollowTail = false
+let chatVirtualMeasureGeneration = 0
+const pendingChatVirtualMeasureIds = new Set()
+
+function resolveChatVirtualMeasurementOwnerId(messageOrId) {
+  const id = typeof messageOrId === 'string'
+    ? String(messageOrId || '').trim()
+    : String(messageOrId?.id || '').trim()
+  if (!id) return ''
+  if (chatDisplayMessageIndexById.value.has(id)) return id
+
+  const owner = chatDisplayMessages.value.find((message) => (
+    isToolActivityGroup(message) &&
+    message.toolGroupMessages.some((child) => String(child?.id || '').trim() === id)
+  ))
+  return String(owner?.id || '').trim()
+}
+
+function measurePendingChatVirtualItems(ids) {
+  if (!chatVirtualizedEnabled.value) return false
+  let measured = false
+  ids.forEach((id) => {
+    const el = chatMessageElMap.get(id)
+    if (!(el instanceof HTMLElement)) return
+    const index = chatDisplayMessageIndexById.value.get(id)
+    if (Number.isInteger(index)) el.dataset.index = String(index)
+    chatVirtualizer.value.measureElement(el)
+    measured = true
+  })
+  return measured
+}
+
+function scheduleChatVirtualItemRemeasure(messageOrId, options = {}) {
+  if (!chatVirtualizedEnabled.value) return
+  const ownerId = resolveChatVirtualMeasurementOwnerId(messageOrId)
+  if (ownerId) {
+    pendingChatVirtualMeasureIds.add(ownerId)
+    chatMessageEstimatedHeightCache.delete(ownerId)
+  }
+  if (options.followTail === true) chatVirtualMeasureFollowTail = true
+  if (chatVirtualMeasureFrame) return
+
+  chatVirtualMeasureFrame = -1
+  const generation = chatVirtualMeasureGeneration
+  void nextTick().then(() => {
+    if (generation !== chatVirtualMeasureGeneration) return
+    const raf = window?.requestAnimationFrame || ((callback) => window.setTimeout(callback, 16))
+    chatVirtualMeasureFrame = raf(() => {
+      if (generation !== chatVirtualMeasureGeneration) return
+      chatVirtualMeasureFrame = 0
+      const ids = Array.from(pendingChatVirtualMeasureIds)
+      pendingChatVirtualMeasureIds.clear()
+      const followTail = chatVirtualMeasureFollowTail
+      chatVirtualMeasureFollowTail = false
+      measurePendingChatVirtualItems(ids)
+      scheduleRefreshUserAnchorMeta()
+      scheduleStickyChatBubbleSync()
+
+      if (chatVirtualMeasureSettleFrame) {
+        if (typeof window?.cancelAnimationFrame === 'function') {
+          window.cancelAnimationFrame(chatVirtualMeasureSettleFrame)
+        } else {
+          clearTimeout(chatVirtualMeasureSettleFrame)
+        }
+      }
+      chatVirtualMeasureSettleFrame = raf(() => {
+        chatVirtualMeasureSettleFrame = 0
+        measurePendingChatVirtualItems(ids)
+        if (followTail) scheduleScrollToBottom({ force: true })
+      })
+    })
+  })
+}
+
+function clearChatVirtualItemRemeasure() {
+  chatVirtualMeasureGeneration += 1
+  if (chatVirtualMeasureFrame > 0) {
+    if (typeof window?.cancelAnimationFrame === 'function') {
+      window.cancelAnimationFrame(chatVirtualMeasureFrame)
+    } else {
+      clearTimeout(chatVirtualMeasureFrame)
+    }
+  }
+  if (chatVirtualMeasureSettleFrame > 0) {
+    if (typeof window?.cancelAnimationFrame === 'function') {
+      window.cancelAnimationFrame(chatVirtualMeasureSettleFrame)
+    } else {
+      clearTimeout(chatVirtualMeasureSettleFrame)
+    }
+  }
+  chatVirtualMeasureFrame = 0
+  chatVirtualMeasureSettleFrame = 0
+  chatVirtualMeasureFollowTail = false
+  pendingChatVirtualMeasureIds.clear()
+}
+
+const chatToolGroupLayoutRevision = computed(() => (
+  chatDisplayMessages.value
+    .filter((message) => isToolActivityGroup(message))
+    .map((group) => [
+      group.id,
+      group.toolGroupExpanded ? 1 : 0,
+      group.toolGroupMessages.length,
+      group.toolGroupMessages.map((child) => child?.toolExpanded ? 1 : 0).join('')
+    ].join(':'))
+    .join('|')
+))
+
+watch(
+  chatToolGroupLayoutRevision,
+  () => {
+    if (!chatVirtualizedEnabled.value) return
+    chatDisplayMessages.value
+      .filter((message) => isToolActivityGroup(message))
+      .forEach((group) => scheduleChatVirtualItemRemeasure(group, { followTail: isAtBottom.value }))
+  },
+  { flush: 'post' }
+)
 
 watch(
   () => `${isCompactChatLayout.value ? 1 : 0}|${isDenseChatLayout.value ? 1 : 0}`,
@@ -8420,6 +8564,7 @@ onDeactivated(() => {
   disconnectChatLayoutResizeObserver()
   disconnectChatMessageVisibilityObserver()
   clearQueuedChatScrollProcessing()
+  clearChatVirtualItemRemeasure()
   clearStickyChatBubbleSync()
   setStickyChatBubbleState(null)
   cleanupChatPreviewLinkHandlers()
@@ -10250,6 +10395,7 @@ function toggleUserMessageExpanded(msg) {
     chatMessageEstimatedHeightCache.delete(id)
     if (msg.userMessageExpanded) rememberHydratedHeavyChatMessage(id)
   }
+  scheduleChatVirtualItemRemeasure(msg, { followTail: isAtBottom.value })
   scheduleRefreshUserAnchorMeta()
   scheduleStickyChatBubbleSync()
 }
@@ -11152,6 +11298,7 @@ onBeforeUnmount(() => {
   }
   disconnectChatLayoutResizeObserver()
   disconnectChatMessageVisibilityObserver()
+  clearChatVirtualItemRemeasure()
   clearStickyChatBubbleSync()
   setStickyChatBubbleState(null)
   cleanupChatPreviewLinkHandlers()
@@ -14236,7 +14383,7 @@ function setToolApprovalMode(value) {
   if (nextMode === TOOL_APPROVAL_MODE_TRUSTED) {
     dialog.error({
       title: '启用完全信任？',
-      content: '此模式会记住为后续新会话的默认选项，并直接批准所有工具调用，包括命令、代码执行、删除及其他破坏性操作；子 Agent 也会继承。请仅在当前智能体、技能和 MCP 服务全部可信时启用。',
+      content: '此模式会记住为后续新会话的默认选项，并直接批准所有工具调用，包括命令、主机代码执行、删除及其他破坏性操作；子 Agent 也会继承。请仅在当前智能体、技能和 MCP 服务全部可信时启用。',
       positiveText: '完全信任并记住',
       negativeText: '取消',
       onPositiveClick: () => commitToolApprovalMode(nextMode)
@@ -17001,7 +17148,11 @@ function resolveToolApprovalTarget(context = {}) {
       : isShell
         ? '低风险模式下，命令执行需要确认具体命令和工作目录'
         : configuredApprovalKind === 'execution'
-          ? '低风险模式下，技能脚本或代码执行需要确认具体脚本和参数'
+          ? (
+              toolName === 'notebook_execute_cell' || toolName === 'notebook_execute_all'
+                ? '将在主机 Notebook Runtime 中执行代码，可访问电脑文件并启动进程，不受会话沙盒限制'
+                : '低风险模式下，技能脚本或代码执行需要确认具体脚本和参数'
+            )
           : String(mapping.approvalReason || resolvedPolicy.approvalReason || (
               mapping.forceApproval === true ? '技能将写入数据或改变外部状态' : ''
             )).trim()
@@ -17067,7 +17218,7 @@ async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, ab
   })
   const currentApprovalMode = resolveCurrentToolApprovalMode(abortState)
   const autoApproved =
-    sessionApprovedToolKeys.has(approvalKey) ||
+    (approvalTarget.hardApproval !== true && sessionApprovedToolKeys.has(approvalKey)) ||
     evaluateToolApproval({
       mode: currentApprovalMode,
       forceApproval: approvalTarget.forceApproval === true,
@@ -17144,7 +17295,10 @@ async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, ab
           : approvalTarget.approvalKind === 'execution'
             ? '本会话允许相同脚本调用'
             : '本会话允许此工具',
-      onRememberForSession: () => sessionApprovedToolKeys.add(approvalKey)
+      onRememberForSession:
+        approvalTarget.hardApproval === true
+          ? null
+          : () => sessionApprovedToolKeys.add(approvalKey)
     })
     if (ok === null) throw createAbortError()
     throwIfAborted(abortState)

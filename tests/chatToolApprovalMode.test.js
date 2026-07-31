@@ -28,6 +28,9 @@ test('chat high-risk mode distinguishes ordinary and destructive command executi
 
   assert.match(source, /isDangerousShellApprovalCommand\(argsObj,\s*argsText\)/)
   assert.match(source, /普通写入、常规命令和一般代码/)
+  assert.match(source, /直接批准所有工具调用，包括命令、主机代码执行、删除及其他破坏性操作/)
+  assert.match(catalogSource, /name === 'notebook_execute_cell'/)
+  assert.match(catalogSource, /name === 'notebook_execute_all'/)
   assert.doesNotMatch(
     catalogSource,
     /hardApproval:\s*[\s\S]{0,100}\|\|\s*isShell\s*\|\|/

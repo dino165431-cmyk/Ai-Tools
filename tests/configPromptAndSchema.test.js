@@ -230,6 +230,8 @@ test('builtin Skills expose standard packages, icons, references, and native act
   assert.equal(noteActions.find((action) => action.name === 'notes_read').forceApproval, false)
   assert.equal(noteActions.find((action) => action.name === 'notes_delete').forceApproval, true)
   assert.equal(noteActions.find((action) => action.name === 'notebook_execute_all').approvalKind, 'execution')
+  assert.equal(noteActions.find((action) => action.name === 'notebook_execute_cell').hardApproval, true)
+  assert.equal(noteActions.find((action) => action.name === 'notebook_execute_all').hardApproval, true)
   await builtinSkills.closeBuiltinSkillRuntimes()
 })
 
