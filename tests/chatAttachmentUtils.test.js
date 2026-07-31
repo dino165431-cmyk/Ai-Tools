@@ -11,6 +11,7 @@ import {
   buildChatLongTextAttachmentName,
   getFileExt,
   guessExtensionFromMime,
+  isImageAttachmentLike,
   isSupportedAttachmentFile,
   mergeReferenceImagesIntoRequestOptions,
   normalizeAttachmentName,
@@ -31,8 +32,20 @@ test('attachment detection handles extension, MIME fallback, and generated names
   assert.equal(getFileExt('report.FINAL.MD'), 'md')
   assert.equal(guessExtensionFromMime('APPLICATION/PDF'), 'pdf')
   assert.equal(normalizeAttachmentName({ name: '', type: 'image/png' }), 'pasted-file.png')
-  assert.equal(isSupportedAttachmentFile({ name: 'notes.unknown', type: 'application/octet-stream' }), false)
+  assert.equal(isSupportedAttachmentFile({
+    name: 'notes.unknown',
+    type: 'application/octet-stream',
+    size: 12,
+    arrayBuffer: async () => new ArrayBuffer(12)
+  }), true)
+  assert.equal(isSupportedAttachmentFile({
+    name: '',
+    type: '',
+    size: 0,
+    arrayBuffer: async () => new ArrayBuffer(0)
+  }), true)
   assert.equal(isSupportedAttachmentFile({ name: 'notes.md', type: '' }), true)
+  assert.equal(isImageAttachmentLike({ mime: 'image/png', kind: 'file' }), false)
 })
 
 test('reference normalization deduplicates images and keeps provider aliases', () => {

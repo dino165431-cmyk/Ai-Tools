@@ -1086,6 +1086,7 @@ import {
   analyzeUserMessageFolding,
   buildChatDisplayMessages,
   buildUserMessagePreview,
+  ensureUniqueChatMessageIds,
   shouldShowChatAnchorRail
 } from '@/utils/chatDisplayFolding.js'
 import { ChatMultiple24Filled } from '@vicons/fluent'
@@ -1115,7 +1116,6 @@ import { useUtoolsEnterData } from '@/utils/utoolsListener.js'
 import { getOrCreateMCPClient, getMcpPrompt, releaseMCPClient, closePooledMCPClient, closeAllPooledMCPClients } from '@/utils/mcpClient'
 import { getTheme, getAgents, getProviders, getPrompts, getSkills, getMcpServers, getChatConfig, readSkillFile as readSkillRegistryFile, updateChatConfig } from '@/utils/configListener'
 import { buildRequestOverridesFromAgentModelParams, getAgentReasoningEffortOverride, normalizeAgentModelParams } from '@/utils/agentModelParams'
-import { parseAttachmentTextWithFallback, resetAttachmentTextParserWorker } from '@/utils/attachmentTextParser'
 import { getSkillFileIndex, getSkillScriptCatalog, isDirectorySkill, isRunnableSkillScriptPath } from '@/utils/skillUtils'
 import {
   buildUtoolsAiMessages,
@@ -1348,8 +1348,6 @@ import {
   ATTACH_ACCEPT,
   MAX_ATTACHMENT_BATCH_BYTES,
   MAX_ATTACHMENT_FILE_BYTES,
-  MAX_ATTACHMENT_PREVIEW_BYTES,
-  MAX_ATTACHMENT_TEXT_CHARS,
   MAX_IMAGE_BYTES,
   buildDisplayImagesFromReferenceAttachments as buildDisplayImagesFromReferences,
   buildImageAttachmentSummary,
@@ -1359,12 +1357,8 @@ import {
   fileToDataUrl,
   getFileExt,
   guessExtensionFromMime,
-  isConvertibleAttachmentExtension,
-  isDirectTextAttachmentExtension,
   isImageAttachmentLike,
   isSupportedAttachmentFile,
-  isTextAttachmentMime,
-  isWorkerParsedAttachmentExtension,
   normalizeAttachmentName,
   normalizeMediaReferenceImagesForRequest,
   resolveChatLongTextAttachmentPlan,
@@ -2503,10 +2497,14 @@ const hasAppliedDefaultModel = ref(false)
 
 const COMPACT_CHAT_BREAKPOINT = 980
 const DENSE_CHAT_BREAKPOINT = 720
-const CHAT_VIRTUALIZATION_MIN_MESSAGES = 24
-const CHAT_VIRTUALIZATION_MIN_ITEMS_FOR_HEIGHT = 4
-const CHAT_VIRTUALIZATION_MIN_ESTIMATED_HEIGHT_PX = 4800
-const CHAT_VIRTUALIZATION_MIN_VIEWPORTS = 6
+const CHAT_VIRTUALIZATION_MIN_MESSAGES = 72
+const CHAT_VIRTUALIZATION_MIN_ITEMS_FOR_HEIGHT = 16
+const CHAT_VIRTUALIZATION_MIN_ESTIMATED_HEIGHT_PX = 12_000
+const CHAT_VIRTUALIZATION_MIN_VIEWPORTS = 12
+const CHAT_VIRTUALIZATION_RETAIN_MIN_MESSAGES = 48
+const CHAT_VIRTUALIZATION_RETAIN_MIN_ITEMS_FOR_HEIGHT = 12
+const CHAT_VIRTUALIZATION_RETAIN_MIN_ESTIMATED_HEIGHT_PX = 8_000
+const CHAT_VIRTUALIZATION_RETAIN_MIN_VIEWPORTS = 8
 const CHAT_VIRTUALIZATION_MIN_BUFFER_PX = 320
 const CHAT_VIRTUALIZATION_MAX_BUFFER_PX = 720
 const CHAT_VIRTUALIZATION_MAX_BUFFER_ITEMS = 12
@@ -2662,7 +2660,15 @@ async function parseAttachment(att) {
 
   if (isImageAttachmentLike({ mime, ext })) {
     if (file.size > MAX_IMAGE_BYTES) {
-      throw new Error(`Image too large (${Math.ceil(file.size / 1024 / 1024)}MB). Limit: ${Math.ceil(MAX_IMAGE_BYTES / 1024 / 1024)}MB`)
+      return {
+        kind: 'file',
+        name,
+        ext,
+        mime,
+        text: '',
+        sandboxOnly: true,
+        previewError: `图片超过 ${Math.ceil(MAX_IMAGE_BYTES / 1024 / 1024)}MB，本地预览已跳过`
+      }
     }
     const dataUrl = await fileToDataUrl(file)
     const imageSummary = await buildImageAttachmentSummary({ file, name, ext, mime, dataUrl })
@@ -2680,25 +2686,11 @@ async function parseAttachment(att) {
     }
   }
 
-  if (file.size > MAX_ATTACHMENT_PREVIEW_BYTES) {
-    return { kind: 'file', name, ext, mime, text: '' }
-  }
-
-  if (isDirectTextAttachmentExtension(ext) || (!ext && isTextAttachmentMime(mime))) {
-    const t = await file.text()
-    return { kind: 'text', name, ext, mime, text: truncateText(t, MAX_ATTACHMENT_TEXT_CHARS) }
-  }
-
-  if (isWorkerParsedAttachmentExtension(ext)) {
-    const text = await parseAttachmentTextWithFallback({ file, ext, fileName: name, maxChars: MAX_ATTACHMENT_TEXT_CHARS })
-    return { kind: 'text', name, ext, mime, text }
-  }
-
-  if (isConvertibleAttachmentExtension(ext)) {
-    throw new Error(`暂不支持解析 .${ext}，建议另存为 .${ext}x 后再上传`)
-  }
-
-  throw new Error(`不支持的附件类型：${ext || 'unknown'}`)
+  // Non-image attachments are consumed from the per-chat sandbox. Extracting
+  // their full text in the renderer duplicates work and can fail or stall on
+  // uncommon/corrupt archives and office documents without adding request
+  // context (sandbox-backed attachments use their sandbox reference instead).
+  return { kind: 'file', name, ext, mime, text: '', sandboxOnly: true }
 }
 
 async function ensureAttachmentParsed(att) {
@@ -2710,6 +2702,7 @@ async function ensureAttachmentParsed(att) {
   const p = (async () => {
     att.status = 'processing'
     att.error = ''
+    att.previewError = ''
     try {
       const parsed = await parseAttachment(att)
       att.kind = parsed.kind
@@ -2719,10 +2712,32 @@ async function ensureAttachmentParsed(att) {
       att.height = Number(parsed.height || 0)
       att.metaLine = parsed.metaLine || ''
       att.svgTextPreview = parsed.svgTextPreview || ''
+      att.sandboxOnly = parsed.sandboxOnly === true
+      att.previewError = parsed.previewError || ''
       att.status = 'ready'
     } catch (err) {
-      att.status = 'error'
-      att.error = err?.message || String(err)
+      // Parsing is only a local preview optimization. A readable File can
+      // still be imported into the chat sandbox and should not become a
+      // blocking/red attachment failure when its preview parser rejects it.
+      if (
+        att.file &&
+        typeof att.file.arrayBuffer === 'function' &&
+        Number(att.file.size || 0) <= MAX_ATTACHMENT_FILE_BYTES
+      ) {
+        att.kind = 'file'
+        att.text = ''
+        att.dataUrl = ''
+        att.width = 0
+        att.height = 0
+        att.metaLine = ''
+        att.svgTextPreview = ''
+        att.sandboxOnly = true
+        att.previewError = err?.message || String(err)
+        att.status = 'ready'
+      } else {
+        att.status = 'error'
+        att.error = err?.message || String(err)
+      }
     } finally {
       attachmentParseQueue.delete(att.id)
     }
@@ -2748,6 +2763,8 @@ function createPendingAttachment(file, options = {}) {
     height: 0,
     metaLine: '',
     svgTextPreview: '',
+    sandboxOnly: false,
+    previewError: '',
     status: 'pending', // pending | processing | ready | error
     error: '',
     autoWrappedLongText: options.autoWrappedLongText === true
@@ -7485,7 +7502,11 @@ const chatVirtualizationRequested = computed(() => {
       active: hasActiveLayoutChanges,
       itemCount: chatDisplayMessages.value.length,
       estimatedHeight: chatEstimatedContentHeight.value,
-      viewportHeight: chatViewportHeight.value
+      viewportHeight: chatViewportHeight.value,
+      countThreshold: CHAT_VIRTUALIZATION_RETAIN_MIN_MESSAGES,
+      minItemsForHeight: CHAT_VIRTUALIZATION_RETAIN_MIN_ITEMS_FOR_HEIGHT,
+      minEstimatedHeight: CHAT_VIRTUALIZATION_RETAIN_MIN_ESTIMATED_HEIGHT_PX,
+      viewportMultiplier: CHAT_VIRTUALIZATION_RETAIN_MIN_VIEWPORTS
     })
   }
   return shouldEnableChatVirtualization({
@@ -7685,6 +7706,22 @@ const chatToolGroupLayoutRevision = computed(() => (
     .join('|')
 ))
 
+const chatDynamicLayoutRevision = computed(() => (
+  chatDisplayMessages.value
+    .map((message) => [
+      message?.id,
+      String(message?.content || '').length,
+      message?.thinkingExpanded ? String(message?.thinking || '').length : 0,
+      Array.isArray(message?.attachments) ? message.attachments.length : 0,
+      Array.isArray(message?.images) ? message.images.length : 0,
+      Array.isArray(message?.videos) ? message.videos.length : 0,
+      message?.streaming ? 1 : 0,
+      message?.editing ? 1 : 0,
+      message?.userMessageExpanded ? 1 : 0
+    ].join(':'))
+    .join('|')
+))
+
 watch(
   chatToolGroupLayoutRevision,
   () => {
@@ -7692,6 +7729,19 @@ watch(
     chatDisplayMessages.value
       .filter((message) => isToolActivityGroup(message))
       .forEach((group) => scheduleChatVirtualItemRemeasure(group, { followTail: isAtBottom.value }))
+  },
+  { flush: 'post' }
+)
+
+watch(
+  chatDynamicLayoutRevision,
+  () => {
+    if (!chatVirtualizedEnabled.value) return
+    const shouldFollowTail = isAtBottom.value
+    chatVirtualItems.value.forEach((item) => {
+      const message = chatDisplayMessages.value[item.index]
+      if (message) scheduleChatVirtualItemRemeasure(message, { followTail: shouldFollowTail })
+    })
   },
   { flush: 'post' }
 )
@@ -9672,6 +9722,8 @@ function serializeDisplayMessageForSave(msg) {
           kind: a.kind,
           status: a.status,
           error: a.error,
+          sandboxOnly: a.sandboxOnly,
+          previewError: a.previewError,
           sandboxWorkspaceId: a.sandboxWorkspaceId,
           sandboxPath: a.sandboxPath,
           sandboxDataPath: a.sandboxDataPath
@@ -10535,7 +10587,10 @@ function normalizeLoadedDisplayMessages(messages) {
     return msg
   })
 
-  return coalesceToolExecutionDisplayMessages(normalized)
+  return ensureUniqueChatMessageIds(
+    coalesceToolExecutionDisplayMessages(normalized),
+    newId
+  )
 }
 
 function applyLoadedChatState(state) {
@@ -11322,11 +11377,6 @@ onBeforeUnmount(() => {
   }
   try {
     closeAllPooledMCPClients()
-  } catch {
-    // ignore
-  }
-  try {
-    resetAttachmentTextParserWorker()
   } catch {
     // ignore
   }

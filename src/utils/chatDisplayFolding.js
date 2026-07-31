@@ -125,3 +125,28 @@ export function buildChatDisplayMessages(messages, options = {}) {
   flush()
   return out
 }
+
+export function ensureUniqueChatMessageIds(messages, createId) {
+  const list = Array.isArray(messages) ? messages : []
+  const generateId = typeof createId === 'function'
+    ? createId
+    : (index, attempt) => `chat-message-${index + 1}-${attempt + 1}`
+  const used = new Set()
+
+  return list.map((message, index) => {
+    const source = message && typeof message === 'object' ? message : {}
+    let id = String(source.id || '').trim()
+    let attempt = 0
+
+    while (!id || used.has(id)) {
+      id = String(generateId(index, attempt) || '').trim()
+      attempt += 1
+      if (attempt > 100 && (!id || used.has(id))) {
+        id = `chat-message-${index + 1}-${attempt}`
+      }
+    }
+
+    used.add(id)
+    return id === source.id ? source : { ...source, id }
+  })
+}

@@ -52,7 +52,8 @@
         class="chat-file-attachment-card"
         :class="{
           'is-processing': a.status === 'processing',
-          'is-error': a.status === 'error'
+          'is-error': a.status === 'error',
+          'is-preview-unavailable': a.status === 'ready' && !!a.previewError
         }"
         :title="helpers.attachmentCardTitle(a)"
       >
@@ -294,6 +295,16 @@ defineProps({
 .chat-file-attachment-card.is-error {
   border-color: rgba(208, 48, 80, 0.24);
   background: rgba(208, 48, 80, 0.06);
+}
+
+.chat-file-attachment-card.is-preview-unavailable {
+  border-color: rgba(240, 160, 32, 0.24);
+  background: rgba(240, 160, 32, 0.06);
+}
+
+:deep(.chat-page.dark) .chat-file-attachment-card.is-preview-unavailable {
+  border-color: rgba(240, 160, 32, 0.32);
+  background: rgba(240, 160, 32, 0.1);
 }
 
 :deep(.chat-page.dark) .chat-file-attachment-card.is-error {

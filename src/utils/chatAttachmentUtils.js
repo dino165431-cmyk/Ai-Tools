@@ -33,11 +33,6 @@ const DIRECT_TEXT_ATTACHMENT_EXTENSIONS = new Set([
 ])
 const WORKER_PARSED_ATTACHMENT_EXTENSIONS = new Set(['pdf', 'docx', 'xls', 'xlsx', 'pptx'])
 const CONVERTIBLE_ATTACHMENT_EXTENSIONS = new Set(['doc', 'ppt'])
-const SUPPORTED_ATTACHMENT_EXTENSIONS = new Set([
-  ...DIRECT_TEXT_ATTACHMENT_EXTENSIONS,
-  ...WORKER_PARSED_ATTACHMENT_EXTENSIONS,
-  ...CONVERTIBLE_ATTACHMENT_EXTENSIONS
-])
 const TEXT_ATTACHMENT_MIME_TYPES = new Set([
   'application/json',
   'application/ld+json',
@@ -95,7 +90,9 @@ const MIME_EXTENSION_MAP = Object.freeze({
 const IMAGE_ATTACHMENT_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'ico'])
 const SVG_TEXT_PREVIEW_MAX_CHARS = 240
 
-export const ATTACH_ACCEPT = ['image/*', ...Array.from(SUPPORTED_ATTACHMENT_EXTENSIONS).map((ext) => `.${ext}`)].join(',')
+// Every selected file can be imported into the per-chat sandbox. The extension
+// lists below now describe local preview capabilities, not upload eligibility.
+export const ATTACH_ACCEPT = '*/*'
 
 export function getFileExt(name) {
   const value = String(name || '')
@@ -398,7 +395,9 @@ export function isSvgAttachmentLike({ mime = '', ext = '' } = {}) {
 }
 
 export function isImageAttachmentLike({ mime = '', ext = '', kind = '' } = {}) {
-  if (String(kind || '').trim().toLowerCase() === 'image') return true
+  const normalizedKind = String(kind || '').trim().toLowerCase()
+  if (normalizedKind === 'image') return true
+  if (normalizedKind === 'file' || normalizedKind === 'text') return false
   const normalizedMime = String(mime || '').trim().toLowerCase()
   const normalizedExtension = String(ext || '').trim().toLowerCase()
   return normalizedMime.startsWith('image/') || IMAGE_ATTACHMENT_EXTENSIONS.has(normalizedExtension)
@@ -423,12 +422,15 @@ export function isTextAttachmentMime(mime) {
 }
 
 export function isSupportedAttachmentFile(file) {
-  if (!file) return false
-  const mime = String(file?.type || '').trim().toLowerCase()
-  const extension = getFileExt(file?.name) || guessExtensionFromMime(mime)
-  if (isImageAttachmentLike({ mime, ext: extension })) return true
-  if (SUPPORTED_ATTACHMENT_EXTENSIONS.has(extension)) return true
-  return !extension && isTextAttachmentMime(mime)
+  if (!file || typeof file !== 'object') return false
+  // Clipboard File objects can have an empty name/MIME (notably for files
+  // copied from Explorer). They are still valid sandbox inputs.
+  return (
+    typeof file.arrayBuffer === 'function' ||
+    typeof file.text === 'function' ||
+    typeof file.name === 'string' ||
+    Number.isFinite(Number(file.size))
+  )
 }
 
 function parseSvgDimensionValue(raw) {

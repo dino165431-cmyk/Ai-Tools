@@ -5,6 +5,7 @@ import {
   analyzeUserMessageFolding,
   buildChatDisplayMessages,
   buildUserMessagePreview,
+  ensureUniqueChatMessageIds,
   shouldShowChatAnchorRail
 } from '../src/utils/chatDisplayFolding.js'
 
@@ -109,4 +110,20 @@ test('message anchor rail remains available in compact layouts but hides in dens
   assert.equal(shouldShowChatAnchorRail(4, { dense: false }), true)
   assert.equal(shouldShowChatAnchorRail(1, { dense: false }), false)
   assert.equal(shouldShowChatAnchorRail(4, { dense: true }), false)
+})
+
+test('loaded chat messages receive stable unique ids before virtualization', () => {
+  let sequence = 0
+  const messages = ensureUniqueChatMessageIds([
+    { id: 'same', role: 'user', content: 'one' },
+    { id: 'same', role: 'assistant', content: 'two' },
+    { id: '', role: 'user', content: 'three' }
+  ], () => `generated-${++sequence}`)
+
+  assert.deepEqual(messages.map((message) => message.id), [
+    'same',
+    'generated-1',
+    'generated-2'
+  ])
+  assert.equal(new Set(messages.map((message) => message.id)).size, messages.length)
 })

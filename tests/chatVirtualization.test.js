@@ -34,3 +34,10 @@ test('dense short chat messages use calibrated estimates instead of tall generic
   assert.match(chatSource, /const CHAT_TEXT_MESSAGE_MIN_HEIGHT = 92/)
   assert.doesNotMatch(chatSource, /role === 'assistant' \? 156 : 140/)
 })
+
+test('ordinary multi-turn chats stay in normal document flow and dynamic virtual cards remeasure', () => {
+  assert.match(chatSource, /const CHAT_VIRTUALIZATION_MIN_MESSAGES = 72/)
+  assert.match(chatSource, /const CHAT_VIRTUALIZATION_MIN_ITEMS_FOR_HEIGHT = 16/)
+  assert.match(chatSource, /const chatDynamicLayoutRevision = computed/)
+  assert.match(chatSource, /watch\(\s*chatDynamicLayoutRevision[\s\S]*scheduleChatVirtualItemRemeasure/)
+})

@@ -43,6 +43,7 @@ export function attachmentStatusText(attachment) {
   const status = String(attachment?.status || '')
   if (status === 'processing') return '解析中'
   if (status === 'error') return `解析失败：${attachment?.error || '未知错误'}`
+  if (status === 'ready' && attachment?.previewError) return '本地预览不可用，将作为沙盒文件发送'
   return ''
 }
 
@@ -50,6 +51,8 @@ function attachmentStatusLabel(attachment) {
   const status = String(attachment?.status || '')
   if (status === 'processing') return '解析中'
   if (status === 'error') return '解析失败'
+  if (status === 'ready' && attachment?.previewError) return '沙盒文件'
+  if (status === 'ready' && attachment?.sandboxOnly) return '沙盒文件'
   return ''
 }
 
@@ -74,9 +77,8 @@ export function attachmentMetaSummary(attachment) {
 
 export function attachmentCardTitle(attachment) {
   const name = String(attachment?.name || '').trim()
-  return String(attachment?.status || '') === 'error' && attachment?.error
-    ? `${name}\n${attachment.error}`
-    : name
+  const detail = String(attachment?.error || attachment?.previewError || '').trim()
+  return detail ? `${name}\n${detail}` : name
 }
 
 export function imageInsightLabel(item) {
