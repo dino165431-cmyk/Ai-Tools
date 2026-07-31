@@ -11864,9 +11864,9 @@ async function runChatRounds({
 
   throwIfAborted(abortState)
   await refreshToolsBundleIfNeeded()
-  // Keep runaway tool loops bounded. A normal tool workflow usually completes
-  // within a handful of rounds; 32 still leaves room for complex agent runs.
-  const maxRounds = 32
+  // Do not impose a fixed round limit: long searches can legitimately need many
+  // distinct tool calls. Identical consecutive batches are still stopped by the
+  // repeated-call guard below, and the user can abort the run at any time.
   let omitReasoningEffort = false
   let forceReasoningContent = false
   let imagesFallbackToText = false
@@ -11876,7 +11876,7 @@ async function runChatRounds({
   let repeatedToolCallRecoveryPending = false
   const repeatedToolCallGuard = createRepeatedToolCallGuard({ maxConsecutive: 3 })
 
-  for (let round = 0; round < maxRounds; round++) {
+  for (let round = 0; ; round += 1) {
     throwIfAborted(abortState)
     await refreshToolsBundleIfNeeded()
     if (round > 0) await injectPendingGuidanceMessages(abortState, { preferVision: supportsVision })
@@ -12086,7 +12086,7 @@ async function runChatRounds({
 
     if (!normalizedToolCalls.length) {
       const guidanceInjected =
-        !isRepeatedToolCallRecoveryRound && round < maxRounds - 1
+        !isRepeatedToolCallRecoveryRound
           ? await injectPendingGuidanceMessages(abortState, { preferVision: supportsVision })
           : false
       if (guidanceInjected) continue
@@ -12110,11 +12110,6 @@ async function runChatRounds({
         targetSession.messages.push(assistantDisplay)
       }
       await maybeScrollToBottomForRun(abortState)
-      break
-    }
-
-    if (round === maxRounds - 1) {
-      targetSession.messages.push(createDisplayMessage('assistant', '工具调用轮次已达到上限。'))
       break
     }
 

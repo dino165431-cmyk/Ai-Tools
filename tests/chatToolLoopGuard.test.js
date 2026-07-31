@@ -36,6 +36,13 @@ test('tool loop guard blocks the third identical consecutive batch and resets on
   assert.equal(guard.observe([toolCall('{"query":"different"}')]).blocked, false)
 })
 
+test('tool loop guard allows distinct calls beyond the former 32-round cap', () => {
+  const guard = createRepeatedToolCallGuard({ maxConsecutive: 3 })
+  for (let round = 0; round < 64; round += 1) {
+    assert.equal(guard.observe([toolCall(JSON.stringify({ round }))]).blocked, false)
+  }
+})
+
 test('chat recovers from a repeated tool loop with one tool-free model round', () => {
   assert.match(chatSource, /let repeatedToolCallRecoveryPending = false/)
   assert.match(
@@ -51,4 +58,11 @@ test('chat recovers from a repeated tool loop with one tool-free model round', (
     chatSource,
     /targetSession\.messages\.push\(createDisplayMessage\('assistant', stopText\)\)/
   )
+})
+
+test('chat has no fixed tool round limit while retaining the repeated-call guard', () => {
+  assert.match(chatSource, /for \(let round = 0; ; round \+= 1\)/)
+  assert.doesNotMatch(chatSource, /const maxRounds = \d+/)
+  assert.doesNotMatch(chatSource, /工具调用轮次已达到上限/)
+  assert.match(chatSource, /const repeatedToolCallState = repeatedToolCallGuard\.observe\(normalizedToolCalls\)/)
 })
