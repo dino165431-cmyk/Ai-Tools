@@ -76,7 +76,9 @@ const INDEX_FILE_NAMES = Object.freeze({
 })
 
 const rebuildPromises = new Map()
+const indexWritePromises = new Map()
 const maintenanceTimers = new Map()
+const maintenanceRevisions = new Map()
 const indexCacheCleanupPromises = new Map()
 const INDEX_MAINTENANCE_DEBOUNCE_MS = 1200
 let lastObservedContentSearchConfigSignature = ''
@@ -84,6 +86,7 @@ let lastObservedAgentConfigSignature = ''
 let lastObservedCapabilityConfigSignature = ''
 let globalConfigMaintenanceListener = null
 let contentIndexInitialized = false
+let contentIndexLifecycleGeneration = 0
 const embeddingFailureLogTimes = new Map()
 const embeddingQueryCache = new Map()
 const embeddingQueryInFlight = new Map()
@@ -1001,6 +1004,7 @@ function cancelIndexMaintenance(kind) {
   const timer = maintenanceTimers.get(key)
   if (timer) clearTimeout(timer)
   maintenanceTimers.delete(key)
+  maintenanceRevisions.set(key, (maintenanceRevisions.get(key) || 0) + 1)
 }
 
 function clearAllMaintenanceTimers() {
@@ -1009,21 +1013,60 @@ function clearAllMaintenanceTimers() {
   }
 }
 
+function createMaintenanceCancelledError() {
+  const error = new Error('Content index maintenance was cancelled')
+  error.code = 'ERR_CONTENT_INDEX_MAINTENANCE_CANCELLED'
+  return error
+}
+
+function assertMaintenanceActive(options = {}) {
+  const generation = Number(options?.maintenanceGeneration)
+  if (!Number.isInteger(generation)) return true
+  if (!contentIndexInitialized || generation !== contentIndexLifecycleGeneration) {
+    throw createMaintenanceCancelledError()
+  }
+
+  const expectedRoot = String(options?.storageRootAbs || '').trim()
+  if (expectedRoot && path.relative(path.resolve(expectedRoot), getDataStorageRootAbs()) !== '') {
+    throw createMaintenanceCancelledError()
+  }
+  const maintenanceKind = String(options?.maintenanceKind || '').trim()
+  const maintenanceRevision = Number(options?.maintenanceRevision)
+  if (
+    maintenanceKind &&
+    Number.isInteger(maintenanceRevision) &&
+    maintenanceRevisions.get(maintenanceKind) !== maintenanceRevision
+  ) {
+    throw createMaintenanceCancelledError()
+  }
+  return true
+}
+
 function scheduleIndexMaintenance(kind, options = {}) {
   const key = String(kind || '').trim()
-  if (!key || !INDEX_KINDS[key]) return null
+  if (!key || !INDEX_KINDS[key] || !contentIndexInitialized) return null
 
   cancelIndexMaintenance(key)
+  const maintenanceRevision = maintenanceRevisions.get(key)
 
   const delay = Number.isFinite(Number(options?.delayMs))
     ? Math.max(0, Math.floor(Number(options.delayMs)))
     : INDEX_MAINTENANCE_DEBOUNCE_MS
 
+  const maintenanceGeneration = contentIndexLifecycleGeneration
+  const storageRootAbs = getDataStorageRootAbs()
   const timer = setTimeout(() => {
     maintenanceTimers.delete(key)
+    if (!contentIndexInitialized || maintenanceGeneration !== contentIndexLifecycleGeneration) return
     void ensureIndex(key, {
-      searchConfig: options?.searchConfig || getContentSearchConfig()
+      ...options,
+      searchConfig: options?.searchConfig || getContentSearchConfig(),
+      maintenanceGeneration,
+      maintenanceKind: key,
+      maintenanceRevision,
+      storageRootAbs
     }).catch((err) => {
+      if (err?.code === 'ERR_CONTENT_INDEX_MAINTENANCE_CANCELLED') return
       console.warn?.('[Content index] scheduled maintenance failed:', err)
     })
   }, delay)
@@ -1073,6 +1116,7 @@ function syncMaintenanceForCapabilityConfigChange(config = getCurrentConfig()) {
 function init() {
   if (contentIndexInitialized) return dispose
   contentIndexInitialized = true
+  contentIndexLifecycleGeneration += 1
   try {
     if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return dispose
     void ensureIndexCacheCleanup().catch((err) => {
@@ -1097,6 +1141,9 @@ function init() {
 
 function dispose() {
   contentIndexInitialized = false
+  contentIndexLifecycleGeneration += 1
+  const pendingRebuilds = [...rebuildPromises.values()]
+  const pendingWrites = [...indexWritePromises.values()]
   clearAllMaintenanceTimers()
   clearEmbeddingQueryCache()
   lastObservedContentSearchConfigSignature = ''
@@ -1112,6 +1159,7 @@ function dispose() {
   } finally {
     globalConfigMaintenanceListener = null
   }
+  return Promise.allSettled([...pendingRebuilds, ...pendingWrites])
 }
 
 function stripEntryEmbedding(entry) {
@@ -1158,8 +1206,8 @@ function getIndexRelPath(kind) {
   return `${getIndexDirRelPath()}/${INDEX_FILE_NAMES[config.kind]}`
 }
 
-function getIndexAbsPath(kind) {
-  return path.join(getDataStorageRootAbs(), ...getIndexRelPath(kind).split('/'))
+function getIndexAbsPath(kind, storageRootAbs = getDataStorageRootAbs()) {
+  return path.join(path.resolve(storageRootAbs), ...getIndexRelPath(kind).split('/'))
 }
 
 function classifyIndexCacheFileName(filename) {
@@ -1414,10 +1462,13 @@ async function readIndex(kind) {
   }
 }
 
-async function writeIndex(kind, indexData) {
-  const absPath = getIndexAbsPath(kind)
+async function writeIndexAtomic(kind, indexData, options = {}) {
+  assertMaintenanceActive(options)
+  const storageRootAbs = options?.storageRootAbs || getDataStorageRootAbs()
+  const absPath = getIndexAbsPath(kind, storageRootAbs)
   const dirAbs = path.dirname(absPath)
   await fs.mkdir(dirAbs, { recursive: true })
+  assertMaintenanceActive(options)
   const searchConfig = normalizeContentSearchConfig(indexData?.searchConfig || DEFAULT_CONTENT_SEARCH_CONFIG)
   const payload = JSON.stringify({
     ...createEmptyIndex(kind),
@@ -1426,24 +1477,54 @@ async function writeIndex(kind, indexData) {
     searchConfigSignature: getContentSearchConfigSignature(searchConfig),
     entries: Array.isArray(indexData?.entries) ? indexData.entries : []
   }, null, 2)
-  const tempPath = `${absPath}.tmp`
-  await fs.writeFile(tempPath, payload, 'utf-8')
+  const tempPath = `${absPath}.${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.tmp`
+  const writeTempFile = async () => {
+    let lastWriteError = null
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await fs.mkdir(dirAbs, { recursive: true })
+        assertMaintenanceActive(options)
+        await fs.writeFile(tempPath, payload, 'utf-8')
+        return
+      } catch (err) {
+        lastWriteError = err
+        if (err?.code !== 'ENOENT' || attempt >= 2) throw err
+      }
+    }
+    throw lastWriteError || new Error(`Failed to write content index temp file: ${kind}`)
+  }
+  await writeTempFile()
+  try {
+    assertMaintenanceActive(options)
+  } catch (err) {
+    await fs.unlink(tempPath).catch(() => {})
+    throw err
+  }
 
   const canRetryRename = (err) => {
     const code = String(err?.code || '').toUpperCase()
-    return code === 'EPERM' || code === 'EBUSY' || code === 'EACCES'
+    return code === 'EPERM' || code === 'EBUSY' || code === 'EACCES' || code === 'ENOENT'
   }
 
   let renamed = false
   let lastError = null
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
+      assertMaintenanceActive(options)
       await fs.rename(tempPath, absPath)
       renamed = true
       break
     } catch (err) {
       lastError = err
-      if (!canRetryRename(err) || attempt >= 4) break
+      if (err?.code === 'ERR_CONTENT_INDEX_MAINTENANCE_CANCELLED') {
+        await fs.unlink(tempPath).catch(() => {})
+        throw err
+      }
+      if (!canRetryRename(err)) break
+      if (err?.code === 'ENOENT') {
+        await writeTempFile()
+      }
+      if (attempt >= 4) break
       await new Promise((resolve) => setTimeout(resolve, 40 * (attempt + 1)))
     }
   }
@@ -1474,6 +1555,29 @@ async function writeIndex(kind, indexData) {
   }
 
   return absPath
+}
+
+async function writeIndex(kind, indexData, options = {}) {
+  const storageRootAbs = path.resolve(options?.storageRootAbs || getDataStorageRootAbs())
+  const writeOptions = {
+    ...options,
+    storageRootAbs
+  }
+  const writeKey = getIndexAbsPath(kind, storageRootAbs)
+  const previousWrite = indexWritePromises.get(writeKey)
+  const writePromise = (async () => {
+    if (previousWrite) await previousWrite.catch(() => {})
+    return writeIndexAtomic(kind, indexData, writeOptions)
+  })()
+
+  indexWritePromises.set(writeKey, writePromise)
+  try {
+    return await writePromise
+  } finally {
+    if (indexWritePromises.get(writeKey) === writePromise) {
+      indexWritePromises.delete(writeKey)
+    }
+  }
 }
 
 async function scanEntries(kind, options = {}) {
@@ -1719,7 +1823,8 @@ async function scanEntries(kind, options = {}) {
     return entries
   }
 
-  const rootAbs = path.join(getDataStorageRootAbs(), ...kindConfig.root.split('/'))
+  const storageRootAbs = options?.storageRootAbs || getDataStorageRootAbs()
+  const rootAbs = path.join(path.resolve(storageRootAbs), ...kindConfig.root.split('/'))
   await fs.mkdir(rootAbs, { recursive: true })
   const entries = []
 
@@ -1778,23 +1883,37 @@ async function scanEntries(kind, options = {}) {
 }
 
 async function rebuildIndex(kind, options = {}) {
-  const cacheKey = String(kind)
+  const storageRootAbs = path.resolve(options?.storageRootAbs || getDataStorageRootAbs())
+  const searchConfig = getContentSearchConfig(options)
+  const sourceSignature = getIndexSourceSignature(kind)
+  const maintenanceOptions = {
+    ...options,
+    storageRootAbs
+  }
+  assertMaintenanceActive(maintenanceOptions)
+  const cacheKey = [
+    String(kind),
+    storageRootAbs,
+    Number.isInteger(Number(options?.maintenanceGeneration)) ? Number(options.maintenanceGeneration) : 'manual',
+    getContentSearchConfigSignature(searchConfig),
+    sourceSignature
+  ].join('\0')
   if (rebuildPromises.has(cacheKey)) return rebuildPromises.get(cacheKey)
 
   const promise = (async () => {
-    const searchConfig = getContentSearchConfig(options)
-    const entries = await scanEntries(kind, { searchConfig })
+    const entries = await scanEntries(kind, { searchConfig, storageRootAbs })
+    assertMaintenanceActive(maintenanceOptions)
     const now = new Date().toISOString()
     const nextIndex = createEmptyIndex(kind, {
       searchConfig,
-      sourceSignature: getIndexSourceSignature(kind),
+      sourceSignature,
       builtAt: now,
       updatedAt: now,
       dirty: false,
       reason: options.reason || 'rebuilt',
       entries
     })
-    await writeIndex(kind, nextIndex)
+    await writeIndex(kind, nextIndex, maintenanceOptions)
     return nextIndex
   })()
 
@@ -1807,13 +1926,17 @@ async function rebuildIndex(kind, options = {}) {
 }
 
 async function ensureIndex(kind, options = {}) {
+  assertMaintenanceActive(options)
   const currentSearchConfig = getContentSearchConfig(options)
   await ensureIndexCacheCleanup({ searchConfig: currentSearchConfig })
+  assertMaintenanceActive(options)
   const index = await readIndex(kind)
-  if (!index) return rebuildIndex(kind, { reason: 'missing', searchConfig: currentSearchConfig })
+  assertMaintenanceActive(options)
+  if (!index) return rebuildIndex(kind, { ...options, reason: 'missing', searchConfig: currentSearchConfig })
   const currentSourceSignature = getIndexSourceSignature(kind)
   if (currentSourceSignature && String(index.sourceSignature || '') !== currentSourceSignature) {
     return rebuildIndex(kind, {
+      ...options,
       reason: 'source_config_changed',
       searchConfig: currentSearchConfig
     })
@@ -1823,12 +1946,19 @@ async function ensureIndex(kind, options = {}) {
     const storedSignature = String(index.searchConfigSignature || '')
     if (storedSignature !== currentSignature) {
       return rebuildIndex(kind, {
+        ...options,
         reason: 'search_config_changed',
         searchConfig: currentSearchConfig
       })
     }
   }
-  if (index.dirty) return rebuildIndex(kind, { reason: index.reason || 'dirty', searchConfig: currentSearchConfig })
+  if (index.dirty) {
+    return rebuildIndex(kind, {
+      ...options,
+      reason: index.reason || 'dirty',
+      searchConfig: currentSearchConfig
+    })
+  }
   return index
 }
 
@@ -2339,6 +2469,7 @@ module.exports = {
     isRelevantWatchedPath,
     createEmptyIndex,
     readIndex,
+    writeIndex,
     scheduleIndexMaintenance,
     cancelIndexMaintenance,
     syncMaintenanceForConfigChange,

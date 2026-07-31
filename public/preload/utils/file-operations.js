@@ -1461,6 +1461,45 @@ class FileOperations {
         }
     }
 
+    _assertNoSymlinkEscape(rootAbs, targetAbs) {
+        const realpathSync = fsSync.realpathSync.native || fsSync.realpathSync
+        let realRoot
+        try {
+            realRoot = realpathSync(rootAbs)
+        } catch (err) {
+            if (err?.code === 'ENOENT') return
+            throw err
+        }
+
+        let nearestExistingPath = targetAbs
+        while (!fsSync.existsSync(nearestExistingPath)) {
+            const parentPath = path.dirname(nearestExistingPath)
+            if (parentPath === nearestExistingPath) {
+                throw new Error('无法确认数据目录路径边界')
+            }
+            nearestExistingPath = parentPath
+        }
+
+        const realNearestPath = realpathSync(nearestExistingPath)
+        const unresolvedSuffix = path.relative(nearestExistingPath, targetAbs)
+        const realTargetPath = path.resolve(realNearestPath, unresolvedSuffix)
+        const relativeToRealRoot = path.relative(realRoot, realTargetPath)
+        if (
+            relativeToRealRoot === '..' ||
+            relativeToRealRoot.startsWith(`..${path.sep}`) ||
+            path.isAbsolute(relativeToRealRoot)
+        ) {
+            throw new Error('路径越界：不允许通过符号链接访问数据存储根目录以外的路径')
+        }
+    }
+
+    _assertMutablePathIsNotStorageRoot(fullPath) {
+        const rootAbs = path.resolve(this._getDataStorageRootAbs())
+        if (path.relative(rootAbs, path.resolve(fullPath)) === '') {
+            throw new Error('不允许删除、移动或覆盖数据存储根目录')
+        }
+    }
+
     _resolvePath(relativePath) {
         this._assertSafeRelativePath(relativePath)
 
@@ -1471,6 +1510,7 @@ class FileOperations {
         if (escapedRoot) {
             throw new Error('路径越界：不允许访问数据存储根目录以外的路径')
         }
+        this._assertNoSymlinkEscape(rootAbs, targetAbs)
         return targetAbs
     }
 
@@ -1743,6 +1783,7 @@ class FileOperations {
 
     async deleteItem(relativePath) {
         const fullPath = this._resolvePath(relativePath)
+        this._assertMutablePathIsNotStorageRoot(fullPath)
         const stat = await fs.stat(fullPath)
         this._queuePendingCloudDelete(relativePath, { recursive: stat.isDirectory() })
         this._markInternalMutation(relativePath)
@@ -1787,6 +1828,8 @@ class FileOperations {
 
         const fromAbs = this._resolvePath(fromRel)
         const toAbs = this._resolvePath(toRel)
+        this._assertMutablePathIsNotStorageRoot(fromAbs)
+        this._assertMutablePathIsNotStorageRoot(toAbs)
         if (fromAbs === toAbs) return true
         const fromStat = await fs.stat(fromAbs)
         const recursiveCacheClear = fromStat.isDirectory()

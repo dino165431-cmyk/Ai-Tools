@@ -149,16 +149,17 @@
               <div class="tool-message__web-item-index">{{ index + 1 }}</div>
               <div class="tool-message__web-item-body">
                 <a
-                  v-if="item.url"
+                  v-if="item.safeUrl"
                   class="tool-message__web-link"
-                  :href="item.url"
+                  :href="item.safeUrl"
                   target="_blank"
-                  rel="noreferrer"
+                  rel="noopener noreferrer"
+                  @click="openExternalWebLink($event, item.safeUrl)"
                 >
-                  {{ item.title || item.url }}
+                  {{ item.title || item.safeUrl }}
                 </a>
                 <div v-else class="tool-message__web-link is-plain">{{ item.title || `结果 ${index + 1}` }}</div>
-                <div v-if="item.url" class="tool-message__web-url">{{ item.url }}</div>
+                <div v-if="item.safeUrl" class="tool-message__web-url">{{ item.safeUrl }}</div>
                 <p v-if="item.snippet" class="tool-message__web-snippet">
                   {{ item.snippet }}
                 </p>
@@ -185,7 +186,8 @@
             class="tool-message__web-source"
             :href="webReadUrl"
             target="_blank"
-            rel="noreferrer"
+            rel="noopener noreferrer"
+            @click="openExternalWebLink($event, webReadUrl)"
           >
             原文链接：{{ webReadUrl }}
           </a>
@@ -239,6 +241,7 @@ import { stripToolIdentityFromDisplayContent } from '@/utils/chatToolDisplay'
 import { ChevronUpOutline } from '@vicons/ionicons5'
 import ChatAgentRunFlow from './ChatAgentRunFlow.vue'
 import { copyTextToClipboard } from '@/utils/clipboard'
+import { getSafeExternalUrl, safeOpenExternal } from '@/utils/safeOpenExternal'
 
 const props = defineProps({
   msg: {
@@ -276,7 +279,14 @@ const webToolPayload = computed(() => {
 })
 const webSearchResults = computed(() => {
   if (webToolPayload.value?.kind !== 'web_search_result') return []
-  return Array.isArray(webToolPayload.value.results) ? webToolPayload.value.results : []
+  return (Array.isArray(webToolPayload.value.results) ? webToolPayload.value.results : [])
+    .map((item) => {
+      const rawUrl = String(item?.url || '').trim()
+      return {
+        ...(item && typeof item === 'object' ? item : {}),
+        safeUrl: getSafeExternalUrl(rawUrl)?.toString() || ''
+      }
+    })
 })
 const webSearchAttemptLines = computed(() => {
   if (webToolPayload.value?.kind !== 'web_search_result') return []
@@ -289,7 +299,8 @@ const webSearchAttemptLines = computed(() => {
 })
 const webReadUrl = computed(() => {
   if (webToolPayload.value?.kind !== 'web_read_result') return ''
-  return String(webToolPayload.value.finalUrl || webToolPayload.value.url || '').trim()
+  const rawUrl = String(webToolPayload.value.finalUrl || webToolPayload.value.url || '').trim()
+  return getSafeExternalUrl(rawUrl)?.toString() || ''
 })
 const webReadExcerpt = computed(() => {
   const text = String(webToolPayload.value?.text || '').trim()
@@ -330,6 +341,12 @@ function formatFileSize(value) {
   if (size < 1024) return `${size} B`
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
   return `${(size / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function openExternalWebLink(event, href) {
+  event?.preventDefault?.()
+  event?.stopPropagation?.()
+  safeOpenExternal(href)
 }
 
 function closeSandboxFileMenu() {

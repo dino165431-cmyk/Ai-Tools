@@ -1,14 +1,138 @@
 ﻿const fs = require('fs');
+const http = require('http');
+const https = require('https');
 const path = require('path');
 const { exec, execFile } = require('child_process');
 const { parseEnv: parseNodeEnv } = require('util');
 const { fileURLToPath } = require('url');
-const { buildExportableSkillPackage, normalizeSkillPackage, slugify } = require('./skill-package');
+const {
+    MAX_SKILL_PACKAGE_DOWNLOAD_BYTES,
+    MAX_SKILL_PACKAGE_FILE_BYTES,
+    MAX_SKILL_PACKAGE_FILE_COUNT,
+    MAX_SKILL_PACKAGE_TOTAL_FILE_BYTES,
+    buildExportableSkillPackage,
+    normalizeSkillPackage,
+    slugify
+} = require('./skill-package');
 const { DEFAULT_CONTENT_SEARCH_CONFIG, normalizeContentSearchConfig } = require('./contentSearchConfig');
+const {
+    assertPublicNetworkUrl,
+    createPublicNetworkLookup
+} = require('./network-safety');
 const {
     BUILTIN_SKILL_IDS: BUILTIN_SKILL_ID_MAP,
     buildBuiltinSkillRecords
 } = require('../builtin-skills');
+
+const SKILL_PACKAGE_DOWNLOAD_TIMEOUT_MS = 30_000;
+const MAX_SKILL_PACKAGE_ERROR_RESPONSE_BYTES = 512 * 1024;
+const MAX_SKILL_PACKAGE_REDIRECTS = 4;
+
+function formatBytesAsMiB(bytes) {
+    return `${Math.floor(Number(bytes) / 1024 / 1024)}MiB`;
+}
+
+function requestPublicSkillPackageOnce(parsedUrl) {
+    return new Promise((resolve, reject) => {
+        const client = parsedUrl.protocol === 'https:' ? https : http;
+        let settled = false;
+        const finish = (callback, value) => {
+            if (settled) return;
+            settled = true;
+            callback(value);
+        };
+        const req = client.request(parsedUrl, {
+            method: 'GET',
+            headers: {
+                Accept: 'application/json,text/plain;q=0.9,*/*;q=0.1',
+                'User-Agent': 'AiTools/1.0'
+            },
+            lookup: createPublicNetworkLookup()
+        }, (response) => {
+            const status = Number(response.statusCode) || 0;
+            const location = String(response.headers?.location || '').trim();
+            if ([301, 302, 303, 307, 308].includes(status) && location) {
+                response.destroy();
+                finish(resolve, { status, location, text: '' });
+                return;
+            }
+
+            const responseLimit = status >= 200 && status < 300
+                ? MAX_SKILL_PACKAGE_DOWNLOAD_BYTES
+                : MAX_SKILL_PACKAGE_ERROR_RESPONSE_BYTES;
+            const contentLength = Number(response.headers?.['content-length']);
+            if (Number.isFinite(contentLength) && contentLength > responseLimit) {
+                req.destroy();
+                finish(reject, new Error(
+                    status >= 200 && status < 300
+                        ? `Skill 包下载内容过大（网络响应上限 ${formatBytesAsMiB(MAX_SKILL_PACKAGE_DOWNLOAD_BYTES)}）`
+                        : 'Skill 包下载失败，错误响应内容过大'
+                ));
+                return;
+            }
+
+            const chunks = [];
+            let totalBytes = 0;
+            response.on('data', (chunk) => {
+                if (settled) return;
+                totalBytes += chunk.length;
+                if (totalBytes > responseLimit) {
+                    req.destroy();
+                    finish(reject, new Error(
+                        status >= 200 && status < 300
+                            ? `Skill 包下载内容过大（网络响应上限 ${formatBytesAsMiB(MAX_SKILL_PACKAGE_DOWNLOAD_BYTES)}）`
+                            : 'Skill 包下载失败，错误响应内容过大'
+                    ));
+                    return;
+                }
+                chunks.push(chunk);
+            });
+            response.once('end', () => {
+                finish(resolve, {
+                    status,
+                    location: '',
+                    text: Buffer.concat(chunks, totalBytes).toString('utf-8')
+                });
+            });
+            response.once('error', (error) => finish(reject, error));
+        });
+
+        req.setTimeout(SKILL_PACKAGE_DOWNLOAD_TIMEOUT_MS, () => {
+            req.destroy(new Error(`Skill 包下载超时（${SKILL_PACKAGE_DOWNLOAD_TIMEOUT_MS}ms）`));
+        });
+        req.once('error', (error) => finish(reject, error));
+        req.end();
+    });
+}
+
+async function downloadPublicSkillPackageText(rawUrl) {
+    let currentUrl = String(rawUrl || '').trim();
+
+    for (let redirectCount = 0; redirectCount <= MAX_SKILL_PACKAGE_REDIRECTS; redirectCount += 1) {
+        const parsedUrl = assertPublicNetworkUrl(currentUrl);
+        const response = await requestPublicSkillPackageOnce(parsedUrl);
+        if (response.location) {
+            if (redirectCount >= MAX_SKILL_PACKAGE_REDIRECTS) {
+                throw new Error(`Skill 包下载重定向次数超过 ${MAX_SKILL_PACKAGE_REDIRECTS} 次`);
+            }
+            currentUrl = new URL(response.location, parsedUrl).toString();
+            continue;
+        }
+        if (response.status < 200 || response.status >= 300) {
+            const errorPreview = String(response.text || 'Unknown error')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .slice(0, 500);
+            throw new Error(`下载失败 (${response.status || 'unknown'})：${errorPreview || 'Unknown error'}`);
+        }
+        return {
+            text: response.text,
+            finalUrl: parsedUrl.toString()
+        };
+    }
+
+    throw new Error('Skill 包下载失败');
+}
 
 const DEFAULT_SYSTEM_PROMPT = [
     '你是一个可靠、审慎的 AI 助手（AI Assistant）。',
@@ -3093,6 +3217,132 @@ class GlobalConfig {
         return Array.from(found)
     }
 
+    _buildSkillPackageFiles(skill) {
+        if (!skill || String(skill.sourceType || '').trim() !== 'directory') return []
+
+        const skillRoot = this._ensureAbsoluteDirectory(skill.sourcePath, 'sourcePath')
+        const fileIndex = this._scanSkillDirectoryFiles(skillRoot)
+        const relativePaths = [
+            skill.entryFile || fileIndex.skill || 'SKILL.md',
+            ...fileIndex.references,
+            ...fileIndex.scripts,
+            ...fileIndex.assets,
+            ...fileIndex.agents,
+            ...fileIndex.extra
+        ]
+        const uniquePaths = Array.from(new Set(relativePaths.map((item) => this._normalizeSkillInnerPath(item))))
+        if (uniquePaths.length > MAX_SKILL_PACKAGE_FILE_COUNT) {
+            throw new Error(`Skill 包文件数不能超过 ${MAX_SKILL_PACKAGE_FILE_COUNT}`)
+        }
+
+        let totalBytes = 0
+        return uniquePaths.map((relativePath) => {
+            const resolved = this._resolveSkillFileAbs(skillRoot, relativePath)
+            const stat = fs.lstatSync(resolved.abs)
+            if (stat.isSymbolicLink() || !stat.isFile()) {
+                throw new Error(`Skill 包只能包含普通文件：${resolved.inner}`)
+            }
+            if (stat.size > MAX_SKILL_PACKAGE_FILE_BYTES) {
+                throw new Error(
+                    `Skill 包单文件（${resolved.inner}）不能超过 ${formatBytesAsMiB(MAX_SKILL_PACKAGE_FILE_BYTES)}`
+                )
+            }
+            totalBytes += stat.size
+            if (totalBytes > MAX_SKILL_PACKAGE_TOTAL_FILE_BYTES) {
+                throw new Error(
+                    `Skill 包展开后的文件总大小不能超过 ${formatBytesAsMiB(MAX_SKILL_PACKAGE_TOTAL_FILE_BYTES)}`
+                )
+            }
+
+            const content = fs.readFileSync(resolved.abs)
+            return {
+                path: resolved.inner,
+                encoding: 'base64',
+                content: content.toString('base64'),
+                size: content.length
+            }
+        })
+    }
+
+    _materializeSkillPackageFiles(config, pkg) {
+        const files = Array.isArray(pkg?.files) ? pkg.files : []
+        if (!files.length) return null
+
+        const skillId = String(pkg?.skill?._id || '').trim()
+        if (!/^[A-Za-z0-9_-]+$/.test(skillId)) {
+            throw new Error('带文件的 Skill 包要求 skill._id 仅包含字母、数字、下划线或短横线')
+        }
+
+        const entryFile = files.find((file) => String(file?.path || '') === 'SKILL.md')
+        const entryContent = entryFile?.encoding === 'base64'
+            ? Buffer.from(entryFile.content, 'base64').toString('utf8')
+            : String(entryFile?.content || '')
+        const { frontmatter } = extractSkillFrontmatter(entryContent)
+        const packageName = String(frontmatter?.name || '').trim()
+        if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(packageName)) {
+            throw new Error('Skill 包内 SKILL.md 的 name 不是有效的包名')
+        }
+
+        const managedRoot = this._getManagedSkillsRoot(config)
+        const version = `${Date.now().toString(36)}-${hashString(`${skillId}:${process.pid}:${process.hrtime.bigint()}`)}`
+        const versionRoot = path.resolve(managedRoot, skillId, version)
+        const target = path.resolve(versionRoot, packageName)
+        if (!isPathInside(managedRoot, target)) {
+            throw new Error('Skill 包托管目录越过了 dataStorageRoot')
+        }
+
+        fs.mkdirSync(target, { recursive: true })
+        try {
+            files.forEach((file) => {
+                const relativePath = this._normalizeSkillInnerPath(file.path, '')
+                const destination = path.resolve(target, ...relativePath.split('/'))
+                if (!isPathInside(target, destination)) {
+                    throw new Error(`Skill 包文件越过了托管目录：${relativePath}`)
+                }
+                const content = file.encoding === 'base64'
+                    ? Buffer.from(file.content, 'base64')
+                    : Buffer.from(file.content, 'utf8')
+                fs.mkdirSync(path.dirname(destination), { recursive: true })
+                fs.writeFileSync(destination, content, { flag: 'wx' })
+            })
+            return { root: target, cleanupRoot: versionRoot }
+        } catch (error) {
+            if (isPathInside(managedRoot, versionRoot)) {
+                fs.rmSync(versionRoot, { recursive: true, force: true })
+            }
+            throw error
+        }
+    }
+
+    _buildInstalledFilePackageSkill(config, pkg) {
+        const materialized = this._materializeSkillPackageFiles(config, pkg)
+        if (!materialized) return null
+
+        try {
+            const record = this._buildDirectorySkillRecord(materialized.root, {
+                id: pkg.skill._id
+            })
+            const bindings = this._normalizeDirectorySkillBindings(null, pkg.skill)
+            record.name = String(pkg.skill.name || record.name || record._id)
+            record.triggers = bindings.triggers
+            record.mcp = bindings.mcp
+            record.packageInfo = this._clone(pkg.skill.packageInfo || {})
+            record.install = {
+                type: 'package',
+                source: String(pkg?.meta?.source || ''),
+                importedAt: new Date().toISOString(),
+                managed: true
+            }
+            return { skill: record, cleanupRoot: materialized.cleanupRoot }
+        } catch (error) {
+            const managedRoot = this._getManagedSkillsRoot(config)
+            if (isPathInside(managedRoot, materialized.cleanupRoot)) {
+                fs.rmSync(materialized.cleanupRoot, { recursive: true, force: true })
+            }
+            throw error
+        }
+    }
+
     _prepareSkillPackage(rawPackage, sourceHint = '') {
         const normalized = normalizeSkillPackage(rawPackage, { source: sourceHint });
         const skill = this._clone(normalized.skill || {});
@@ -3139,6 +3389,17 @@ class GlobalConfig {
         if (!this._isPlainObject(config.skills)) config.skills = {};
         if (!this._isPlainObject(config.mcpServers)) config.mcpServers = {};
 
+        const packagedSkill = this._clone(pkg.skill);
+        const skillId = String(packagedSkill?._id || '').trim();
+        const existingSkill = config.skills[skillId];
+        const hasPackagedFiles = Array.isArray(pkg.files) && pkg.files.length > 0;
+        if (existingSkill && BUILTIN_SKILL_IDS.includes(skillId)) {
+            throw new Error(`内置 Skill 冲突：${skillId}`);
+        }
+        if (hasPackagedFiles && existingSkill && !overwrite) {
+            throw new Error(`Skill 已存在：${skillId}（如需覆盖请启用 overwrite）`);
+        }
+
         const addedMcpIds = [];
         const updatedMcpIds = [];
         const skippedMcpIds = [];
@@ -3169,55 +3430,67 @@ class GlobalConfig {
             }
         }
 
-        const skill = this._clone(pkg.skill);
-        const skillId = String(skill?._id || '').trim();
-        const existingSkill = config.skills[skillId];
+        let materializedPackage = null;
+        let skill = packagedSkill;
         let skillAction = 'added';
+        let committed = false;
 
-        if (existingSkill) {
-            if (BUILTIN_SKILL_IDS.includes(skillId)) {
-                throw new Error(`内置 Skill 冲突：${skillId}`);
+        try {
+            if (hasPackagedFiles) {
+                materializedPackage = this._buildInstalledFilePackageSkill(config, pkg);
+                skill = materializedPackage.skill;
             }
-            if (safeJsonEquals(existingSkill, skill)) {
-                skillAction = 'skipped';
-            } else {
-                if (!overwrite) {
-                    throw new Error(`Skill 已存在：${skillId}（如需覆盖请启用 overwrite）`);
+
+            if (existingSkill) {
+                if (!hasPackagedFiles && safeJsonEquals(existingSkill, skill)) {
+                    skillAction = 'skipped';
+                } else {
+                    if (!overwrite) {
+                        throw new Error(`Skill 已存在：${skillId}（如需覆盖请启用 overwrite）`);
+                    }
+                    config.skills[skillId] = skill;
+                    skillAction = 'updated';
                 }
+            } else {
                 config.skills[skillId] = skill;
-                skillAction = 'updated';
             }
-        } else {
-            config.skills[skillId] = skill;
+
+            if (!existingSkill || skillAction === 'updated') {
+                config.skills[skillId] = skill;
+            }
+
+            this._applyBuiltinsInPlace(config);
+            this._save(config);
+            committed = true;
+
+            const missingMcpIds = (Array.isArray(skill?.mcp) ? skill.mcp : [])
+                .map((id) => String(id || '').trim())
+                .filter(Boolean)
+                .filter((id) => !config.mcpServers[id]);
+
+            return {
+                ok: true,
+                source: String(pkg?.meta?.source || ''),
+                skill: {
+                    id: skillId,
+                    name: String(skill?.name || skillId),
+                    action: skillAction
+                },
+                mcpServers: {
+                    added: addedMcpIds,
+                    updated: updatedMcpIds,
+                    skipped: skippedMcpIds
+                },
+                missingMcpIds
+            };
+        } finally {
+            if (!committed && materializedPackage?.cleanupRoot) {
+                const managedRoot = this._getManagedSkillsRoot(config);
+                if (isPathInside(managedRoot, materializedPackage.cleanupRoot)) {
+                    fs.rmSync(materializedPackage.cleanupRoot, { recursive: true, force: true });
+                }
+            }
         }
-
-        if (!existingSkill || skillAction === 'updated') {
-            config.skills[skillId] = skill;
-        }
-
-        this._applyBuiltinsInPlace(config);
-        this._save(config);
-
-        const missingMcpIds = (Array.isArray(skill?.mcp) ? skill.mcp : [])
-            .map((id) => String(id || '').trim())
-            .filter(Boolean)
-            .filter((id) => !config.mcpServers[id]);
-
-        return {
-            ok: true,
-            source: String(pkg?.meta?.source || ''),
-            skill: {
-                id: skillId,
-                name: String(skill?.name || skillId),
-                action: skillAction
-            },
-            mcpServers: {
-                added: addedMcpIds,
-                updated: updatedMcpIds,
-                skipped: skippedMcpIds
-            },
-            missingMcpIds
-        };
     }
 
     getConfig() {
@@ -3327,10 +3600,12 @@ class GlobalConfig {
                 .map((mcpId) => config.mcpServers?.[mcpId])
                 .filter(Boolean)
             : [];
+        const files = this._buildSkillPackageFiles(skill);
 
         const payload = buildExportableSkillPackage({
             skill,
-            mcpServers
+            mcpServers,
+            files
         });
 
         this._ensureParentDir(outputPath);
@@ -3346,6 +3621,15 @@ class GlobalConfig {
 
     installSkillPackageFromFile(filePath, options = {}) {
         const inputPath = this._cleanFilePath(filePath);
+        const stat = fs.lstatSync(inputPath);
+        if (stat.isSymbolicLink() || !stat.isFile()) {
+            throw new Error('Skill 包路径必须指向普通文件');
+        }
+        if (stat.size > MAX_SKILL_PACKAGE_DOWNLOAD_BYTES) {
+            throw new Error(
+                `Skill 包文件过大（读取上限 ${formatBytesAsMiB(MAX_SKILL_PACKAGE_DOWNLOAD_BYTES)}）`
+            );
+        }
         const text = fs.readFileSync(inputPath, 'utf-8');
         const parsed = this._parseJsonText(text, inputPath);
         return this.installSkillPackage(parsed, { ...options, source: inputPath });
@@ -3355,28 +3639,9 @@ class GlobalConfig {
         const normalizedUrl = typeof url === 'string' ? url.trim() : '';
         if (!normalizedUrl) throw new Error('url 不能为空');
 
-        let parsedUrl = null;
-        try {
-            parsedUrl = new URL(normalizedUrl);
-        } catch (err) {
-            throw new Error(`url 不合法：${err?.message || String(err)}`);
-        }
-
-        if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
-            throw new Error(`仅支持 http/https：${parsedUrl.protocol}`);
-        }
-        if (typeof fetch !== 'function') {
-            throw new Error('当前环境不支持 fetch');
-        }
-
-        const response = await fetch(parsedUrl.toString(), { method: 'GET' });
-        const text = await response.text();
-        if (!response.ok) {
-            throw new Error(`下载失败 (${response.status})：${text || response.statusText || 'Unknown error'}`);
-        }
-
-        const parsed = this._parseJsonText(text, normalizedUrl);
-        return this.installSkillPackage(parsed, { ...options, source: normalizedUrl });
+        const download = await downloadPublicSkillPackageText(normalizedUrl);
+        const parsed = this._parseJsonText(download.text, download.finalUrl);
+        return this.installSkillPackage(parsed, { ...options, source: download.finalUrl });
     }
 
     importSkillDirectory(sourcePath, options = {}) {

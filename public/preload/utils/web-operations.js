@@ -1,9 +1,15 @@
 const http = require('http')
 const https = require('https')
+const net = require('net')
 const tls = require('tls')
 const zlib = require('zlib')
 const { URL } = require('url')
 const globalConfig = require('./global-config')
+const {
+  assertPublicNetworkUrl,
+  createPublicNetworkLookup,
+  resolvePublicNetworkHost
+} = require('./network-safety')
 
 const DEFAULT_TIMEOUT_MS = 15000
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024
@@ -213,10 +219,15 @@ function getProxyAuthHeader(proxy) {
   return `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`
 }
 
-function createHttpsTunnelSocket(target, proxy, timeoutMs, insecureTls = false) {
+function formatNetworkHost(address) {
+  return net.isIP(String(address || '')) === 6 ? `[${address}]` : String(address || '')
+}
+
+function createHttpsTunnelSocket(target, proxy, timeoutMs, insecureTls = false, resolvedTargetAddress = '') {
   const proxyClient = proxy.protocol === 'https:' ? https : http
   const proxyPort = Number(proxy.port) || (proxy.protocol === 'https:' ? 443 : 80)
   const targetPort = Number(target.port) || 443
+  const connectHost = formatNetworkHost(resolvedTargetAddress || target.hostname)
   const auth = getProxyAuthHeader(proxy)
 
   return new Promise((resolve, reject) => {
@@ -224,9 +235,9 @@ function createHttpsTunnelSocket(target, proxy, timeoutMs, insecureTls = false) 
       host: proxy.hostname,
       port: proxyPort,
       method: 'CONNECT',
-      path: `${target.hostname}:${targetPort}`,
+      path: `${connectHost}:${targetPort}`,
       headers: {
-        Host: `${target.hostname}:${targetPort}`,
+        Host: `${connectHost}:${targetPort}`,
         ...(auth ? { 'Proxy-Authorization': auth } : {})
       },
       timeout: timeoutMs,
@@ -376,7 +387,7 @@ function warnInsecureTlsFallback(target, err, viaProxy = false) {
   console.warn(buildInsecureTlsFallbackWarning(target, err, viaProxy))
 }
 
-function requestTextViaHttpsProxy(target, proxy, { timeoutMs, maxBytes, redirects, headers, options, method = 'GET', bodyBuffer = Buffer.alloc(0), proxyTunnelRetries = 1, insecureTls = false }) {
+function requestTextViaHttpsProxy(target, proxy, { timeoutMs, maxBytes, redirects, headers, options, method = 'GET', bodyBuffer = Buffer.alloc(0), proxyTunnelRetries = 1, insecureTls = false, resolvedTargetAddress = '' }) {
   return new Promise((resolve, reject) => {
     let settled = false
     let tlsSocket = null
@@ -392,7 +403,7 @@ function requestTextViaHttpsProxy(target, proxy, { timeoutMs, maxBytes, redirect
       resolve(value)
     }
 
-    createHttpsTunnelSocket(target, proxy, timeoutMs, insecureTls)
+    createHttpsTunnelSocket(target, proxy, timeoutMs, insecureTls, resolvedTargetAddress)
       .then((socket) => {
         tlsSocket = tls.connect({
           socket,
@@ -451,6 +462,7 @@ function requestTextViaHttpsProxy(target, proxy, { timeoutMs, maxBytes, redirect
                 method,
                 bodyBuffer,
                 insecureTls,
+                resolvedTargetAddress,
                 proxyTunnelRetries: proxyTunnelRetries - 1
               }).then(done, fail)
               return
@@ -884,8 +896,8 @@ function buildWebReadAttempts(config = {}) {
   return attempts
 }
 
-function requestText(url, options = {}) {
-  const target = new URL(url)
+async function requestText(url, options = {}) {
+  const target = assertPublicNetworkUrl(url)
   const timeoutMs = Math.max(1000, Number(options.timeoutMs) || DEFAULT_TIMEOUT_MS)
   const maxBytes = Math.max(64 * 1024, Number(options.maxBytes) || MAX_RESPONSE_BYTES)
   const redirects = Math.max(0, Number(options.redirects ?? 4))
@@ -897,6 +909,9 @@ function requestText(url, options = {}) {
       : Buffer.from(typeof options.body === 'string' ? options.body : JSON.stringify(options.body), 'utf8')
   const webSearchConfig = getConfiguredWebSearchConfig()
   const proxy = options.useProxy === false ? null : normalizeProxyUrl(getConfiguredProxyUrl(options.proxyUrl))
+  const resolvedTargetAddress = proxy
+    ? (await resolvePublicNetworkHost(target.hostname))[0]?.address || ''
+    : ''
   const client = target.protocol === 'http:' ? http : https
   let requestClient = client
   const allowInsecureTlsFallback = isInsecureTlsFallbackEnabled(options, webSearchConfig)
@@ -915,6 +930,9 @@ function requestText(url, options = {}) {
     headers,
     timeout: timeoutMs
   }
+  if (!proxy) {
+    requestOptions.lookup = createPublicNetworkLookup()
+  }
   if (target.protocol === 'https:' && options.insecureTls) {
     requestOptions.rejectUnauthorized = false
   }
@@ -924,7 +942,9 @@ function requestText(url, options = {}) {
     requestUrl = proxy
     requestClient = proxy.protocol === 'https:' ? https : http
     const proxyAuth = getProxyAuthHeader(proxy)
-    requestOptions.path = target.toString()
+    const targetPort = target.port ? `:${target.port}` : ''
+    requestOptions.path =
+      `${target.protocol}//${formatNetworkHost(resolvedTargetAddress)}${targetPort}${target.pathname || '/'}${target.search || ''}`
     requestOptions.headers = {
       ...headers,
       Host: target.host,
@@ -942,6 +962,7 @@ function requestText(url, options = {}) {
       method,
       bodyBuffer,
       insecureTls: !!options.insecureTls,
+      resolvedTargetAddress,
       proxyTunnelRetries: Number.isFinite(Number(options.proxyTunnelRetries))
         ? Math.max(0, Math.floor(Number(options.proxyTunnelRetries)))
         : 1
@@ -1202,8 +1223,9 @@ async function webSearch(params = {}) {
 }
 
 async function webRead(params = {}) {
-  const url = resolveUrl(params.url, 'https://example.com')
-  if (!url) throw new Error('url is required')
+  const rawUrl = String(params.url || '').trim()
+  if (!rawUrl) throw new Error('url is required')
+  const url = assertPublicNetworkUrl(rawUrl).toString()
   const maxChars = Math.min(Math.max(1000, Math.floor(Number(params.maxChars) || 12000)), 40000)
   const webSearchConfig = {
     ...getConfiguredWebSearchConfig(),

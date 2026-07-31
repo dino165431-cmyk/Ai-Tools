@@ -135,6 +135,34 @@ test('file operations keep session index in sync and cloud restore marks it dirt
   assert.equal(fs.existsSync(path.join(tempRoot, 'session', 'demo.json')), true)
 })
 
+test('content index atomic write recovers when its directory is replaced before rename', async (t) => {
+  const { tempRoot } = setupIndexTest(t)
+  const originalRename = fs.promises.rename
+  let renameAttempts = 0
+
+  fs.promises.rename = async (...args) => {
+    renameAttempts += 1
+    if (renameAttempts === 1) {
+      fs.rmSync(path.dirname(args[0]), { recursive: true, force: true })
+    }
+    return originalRename(...args)
+  }
+  t.after(() => {
+    fs.promises.rename = originalRename
+  })
+
+  await contentIndex._internal.writeIndex(
+    'note',
+    contentIndex._internal.createEmptyIndex('note', { reason: 'directory_replaced' })
+  )
+
+  assert.equal(renameAttempts, 2)
+  assert.equal(
+    fs.existsSync(path.join(tempRoot, '.ai-tools-settings', 'indexes', 'notes-index-v3.json')),
+    true
+  )
+})
+
 test('content index watcher filters ignore asset and hidden paths', () => {
   assert.equal(contentIndex._internal.isRelevantWatchedPath('note', 'note/demo.md'), true)
   assert.equal(contentIndex._internal.isRelevantWatchedPath('note', 'note/demo.assets/image.png'), false)

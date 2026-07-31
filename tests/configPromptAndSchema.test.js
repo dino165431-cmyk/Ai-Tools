@@ -56,6 +56,21 @@ function resetConfigStorage() {
   fs.rmSync(path.join(globalThis.utools.getPath('userData'), '.ai-tools-settings'), { recursive: true, force: true })
 }
 
+test('remote Skill package installation rejects local and private network targets', async () => {
+  await assert.rejects(
+    globalConfig.installSkillPackageFromUrl('http://127.0.0.1/skill.json'),
+    { code: 'ERR_UNSAFE_NETWORK_TARGET' }
+  )
+  await assert.rejects(
+    globalConfig.installSkillPackageFromUrl('http://169.254.169.254/latest/meta-data'),
+    { code: 'ERR_UNSAFE_NETWORK_TARGET' }
+  )
+  await assert.rejects(
+    globalConfig.installSkillPackageFromUrl('file:///tmp/skill.json'),
+    /http\/https/
+  )
+})
+
 function createSkillFixture(t, {
   folderName = 'sample-skill',
   skillName = 'Sample Skill',
@@ -111,6 +126,51 @@ function createSkillFixture(t, {
     skillFile: path.join(skillDir, 'SKILL.md')
   }
 }
+
+test('directory Skill package export and install preserve scripts, references, assets, and safe env examples', (t) => {
+  resetConfigStorage()
+  globalConfig.ensureBuiltins()
+
+  const { skillDir } = createSkillFixture(t, {
+    folderName: 'package-roundtrip',
+    skillName: 'Package Roundtrip',
+    scriptName: 'run.js',
+    scriptContent: 'process.stdout.write(JSON.stringify({ ok: true }))\n'
+  })
+  fs.mkdirSync(path.join(skillDir, 'references'), { recursive: true })
+  fs.mkdirSync(path.join(skillDir, 'assets'), { recursive: true })
+  fs.writeFileSync(path.join(skillDir, 'references', 'usage.md'), '# Usage\n', 'utf8')
+  fs.writeFileSync(path.join(skillDir, 'assets', 'icon.bin'), Buffer.from([0, 1, 2, 255]))
+  fs.writeFileSync(path.join(skillDir, '.env'), 'TOKEN=must-not-be-exported\n', 'utf8')
+  fs.writeFileSync(path.join(skillDir, '.env.example'), 'TOKEN=replace-me\n', 'utf8')
+
+  const imported = globalConfig.importSkillDirectory(skillDir)
+  const packagePath = path.join(path.dirname(skillDir), 'package-roundtrip.skill.json')
+  globalConfig.exportSkillToFile(imported._id, packagePath)
+
+  const payload = JSON.parse(fs.readFileSync(packagePath, 'utf8'))
+  const packagedPaths = payload.files.map((file) => file.path).sort()
+  assert.equal(payload.schemaVersion, 2)
+  assert.ok(packagedPaths.includes('SKILL.md'))
+  assert.ok(packagedPaths.includes('scripts/run.js'))
+  assert.ok(packagedPaths.includes('references/usage.md'))
+  assert.ok(packagedPaths.includes('assets/icon.bin'))
+  assert.ok(packagedPaths.includes('.env.example'))
+  assert.equal(packagedPaths.includes('.env'), false)
+
+  globalConfig.deleteSkill(imported._id)
+  const result = globalConfig.installSkillPackageFromFile(packagePath)
+  const installed = globalConfig.getSkill(result.skill.id)
+
+  assert.equal(result.skill.action, 'added')
+  assert.equal(installed.sourceType, 'directory')
+  assert.equal(installed.install.type, 'package')
+  assert.equal(globalConfig.readSkillFile(installed._id, 'scripts/run.js').content, 'process.stdout.write(JSON.stringify({ ok: true }))\n')
+  assert.equal(globalConfig.readSkillFile(installed._id, 'references/usage.md').content, '# Usage\n')
+  assert.equal(globalConfig.readSkillFile(installed._id, '.env.example').content, 'TOKEN=replace-me\n')
+  assert.deepEqual(fs.readFileSync(path.join(installed.sourcePath, 'assets', 'icon.bin')), Buffer.from([0, 1, 2, 255]))
+  assert.equal(fs.existsSync(path.join(installed.sourcePath, '.env')), false)
+})
 
 test('builtin config Skill includes native action rules and import guidance', () => {
   resetConfigStorage()

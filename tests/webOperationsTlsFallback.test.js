@@ -8,7 +8,7 @@ import { createRequire } from 'node:module'
 function loadWebOperationsModule() {
   const filePath = path.resolve('public/preload/utils/web-operations.js')
   const source = fs.readFileSync(filePath, 'utf8')
-  const require = createRequire(import.meta.url)
+  const require = createRequire(filePath)
   const module = { exports: {} }
   const mockGlobalConfig = {
     getWebSearchConfig() {

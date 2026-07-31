@@ -104,6 +104,35 @@ test('deleteItem clears cached file blobs for deleted files', async (t) => {
   assert.ok(revoked.includes(blobUrl))
 })
 
+test('destructive file operations cannot target the storage root', async (t) => {
+  const { tempRoot } = setupFileOperationsTest(t)
+  createFixtureFile(tempRoot, 'note/keep.md', 'keep')
+
+  await assert.rejects(fileOperations.deleteItem(''), /存储根目录/)
+  await assert.rejects(fileOperations.moveItem('.', 'moved-root'), /存储根目录/)
+
+  assert.equal(fs.existsSync(path.join(tempRoot, 'note', 'keep.md')), true)
+})
+
+test('file operations reject paths that escape through a symbolic link', async (t) => {
+  const { tempRoot } = setupFileOperationsTest(t)
+  const outsideRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-tools-file-ops-outside-'))
+  const linkPath = path.join(tempRoot, 'linked-outside')
+  createFixtureFile(outsideRoot, 'secret.txt', 'outside')
+  fs.symlinkSync(outsideRoot, linkPath, process.platform === 'win32' ? 'junction' : 'dir')
+  t.after(() => fs.rmSync(outsideRoot, { recursive: true, force: true }))
+
+  await assert.rejects(
+    fileOperations.readFile('linked-outside/secret.txt'),
+    /符号链接/
+  )
+  await assert.rejects(
+    fileOperations.writeFile('linked-outside/created.txt', 'should-not-write'),
+    /符号链接/
+  )
+  assert.equal(fs.existsSync(path.join(outsideRoot, 'created.txt')), false)
+})
+
 test('cloud file scans keep sandbox workspaces local-only', async (t) => {
   const { tempRoot } = setupFileOperationsTest(t)
   createFixtureFile(tempRoot, 'note/demo.md', 'note')
