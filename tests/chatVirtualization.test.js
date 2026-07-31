@@ -27,3 +27,10 @@ test('virtual chat item refs stay stable while the parent reacts to scrolling', 
   assert.match(chatSource, /const changed = setChatItemEl\(id, role, el\)\s+if \(!changed\) return/)
   assert.doesNotMatch(chatSource, /:ref="\s*\(el\)\s*=>\s*setChatVirtualItemEl/)
 })
+
+test('dense short chat messages use calibrated estimates instead of tall generic cards', () => {
+  assert.match(chatSource, /const CHAT_USER_MESSAGE_BASE_HEIGHT = 78/)
+  assert.match(chatSource, /const CHAT_ASSISTANT_MESSAGE_BASE_HEIGHT = 82/)
+  assert.match(chatSource, /const CHAT_TEXT_MESSAGE_MIN_HEIGHT = 92/)
+  assert.doesNotMatch(chatSource, /role === 'assistant' \? 156 : 140/)
+})

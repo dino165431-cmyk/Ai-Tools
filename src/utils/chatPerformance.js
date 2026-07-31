@@ -223,6 +223,12 @@ export function shouldDeferChatHeavyBlockLayout(message, options = {}) {
     return false
   }
 
+  // The outer virtual list already limits how many messages are mounted.
+  // Applying content-visibility inside those items introduces a second,
+  // estimate-based layout pass that changes the measured item height as it
+  // approaches the viewport and makes the scrollbar jump.
+  if (options.virtualized === true) return false
+
   const id = String(message.id || '').trim()
   if (!id) return true
 

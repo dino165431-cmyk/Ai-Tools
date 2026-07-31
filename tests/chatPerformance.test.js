@@ -153,6 +153,16 @@ test('shouldDeferChatHeavyBlockLayout keeps active chat items eager', () => {
   )
 })
 
+test('shouldDeferChatHeavyBlockLayout avoids double virtualization', () => {
+  assert.equal(
+    shouldDeferChatHeavyBlockLayout(
+      { id: 'virtual-item', content: 'long markdown' },
+      { virtualized: true, visibleMessageIds: new Set() }
+    ),
+    false
+  )
+})
+
 test('shouldDeferChatHeavyBlockLayout defers offscreen heavy items', () => {
   const visibleMessageIds = new Set(['visible'])
 

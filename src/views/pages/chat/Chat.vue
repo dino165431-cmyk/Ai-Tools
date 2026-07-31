@@ -2512,6 +2512,9 @@ const CHAT_VIRTUALIZATION_MAX_BUFFER_ITEMS = 12
 const CHAT_LIST_GAP_PX = 14
 const CHAT_ACTIVITY_LIST_GAP_PX = 5
 const CHAT_DEFAULT_MESSAGE_HEIGHT = 180
+const CHAT_USER_MESSAGE_BASE_HEIGHT = 78
+const CHAT_ASSISTANT_MESSAGE_BASE_HEIGHT = 82
+const CHAT_TEXT_MESSAGE_MIN_HEIGHT = 92
 const CHAT_RECENT_HEAVY_RENDER_COUNT = 12
 const CHAT_HEAVY_RENDER_SEED_COUNT = 12
 const CHAT_HEAVY_RENDER_WARM_BUFFER_EXTRA = 2
@@ -7133,11 +7136,17 @@ function estimateChatMessageHeight(msg) {
   const toolCollapsed = isToolRole && !msg?.toolExpanded
   if (toolCollapsed) return estimateCollapsedToolMessageHeight(msg)
   const content = isUserMessageCollapsed(msg) ? userMessagePreview(msg) : String(msg?.content || '')
-  const base = isToolRole ? 168 : role === 'assistant' ? 156 : 140
+  const base = isToolRole
+    ? 168
+    : role === 'assistant'
+      ? CHAT_ASSISTANT_MESSAGE_BASE_HEIGHT
+      : CHAT_USER_MESSAGE_BASE_HEIGHT
   const contentExtra = estimateChatMessageContentHeight(content)
   const attachmentExtra = attachmentCount * 76
   const thinkingExtra = msg?.thinkingExpanded ? Math.min(320, Math.ceil(thinkingLength / 10)) : 0
-  return Math.max(112, base + contentExtra + attachmentExtra + thinkingExtra)
+  const guidanceExtra = msg?.guidance ? 22 : 0
+  const minHeight = isToolRole ? 112 : CHAT_TEXT_MESSAGE_MIN_HEIGHT
+  return Math.max(minHeight, base + contentExtra + attachmentExtra + thinkingExtra + guidanceExtra)
 }
 
 function getChatMessageGapBefore(previousMsg, currentMsg, index) {
@@ -8072,6 +8081,7 @@ function shouldRenderHeavyChatMessage(msg) {
 
 function shouldDeferHeavyChatBlockLayout(msg) {
   return shouldDeferChatHeavyBlockLayout(msg, {
+    virtualized: chatVirtualizedEnabled.value,
     visibleMessageIds: visibleHeavyChatMessageIds.value
   })
 }
@@ -11666,6 +11676,7 @@ async function runChatRounds({
   let compatFcToolCallId = isFcToolCallIdCompatEnabled(baseUrl)
   let plainTextToolFallback = false
   let parallelToolCallsMode = 'enabled'
+  let repeatedToolCallRecoveryPending = false
   const repeatedToolCallGuard = createRepeatedToolCallGuard({ maxConsecutive: 3 })
 
   for (let round = 0; round < maxRounds; round++) {
@@ -11700,8 +11711,12 @@ async function runChatRounds({
 
     let result = null
     let successfulRequestChars = 0
+    const isRepeatedToolCallRecoveryRound = repeatedToolCallRecoveryPending
     for (let attempt = 0; attempt < 3; attempt++) {
-        const activeTools = plainTextToolFallback ? [] : tools
+        // A loop recovery round is deliberately tool-free so the model can
+        // explain the current result instead of immediately entering the same
+        // call sequence again.
+        const activeTools = plainTextToolFallback || isRepeatedToolCallRecoveryRound ? [] : tools
         const attemptBody = {
           model,
           stream: true,
@@ -11874,10 +11889,30 @@ async function runChatRounds({
 
     if (!normalizedToolCalls.length) {
       const guidanceInjected =
-        round < maxRounds - 1
+        !isRepeatedToolCallRecoveryRound && round < maxRounds - 1
           ? await injectPendingGuidanceMessages(abortState, { preferVision: supportsVision })
           : false
       if (guidanceInjected) continue
+      break
+    }
+
+    if (isRepeatedToolCallRecoveryRound) {
+      // A provider should not return tool calls when no tools were supplied.
+      // If it does, do not execute hallucinated calls or leave an unmatched
+      // tool_calls message in the persisted API history.
+      const fallbackText = '任务已暂停：工具连续返回了相同调用，系统为避免循环已停止。请补充更明确的目标后重试。'
+      const recoveryApiMessage = targetSession.apiMessages[assistantDisplay.apiIndex]
+      if (recoveryApiMessage && typeof recoveryApiMessage === 'object') {
+        recoveryApiMessage.content = fallbackText
+        delete recoveryApiMessage.tool_calls
+      }
+      prepareAssistantDisplayForTextResponse(assistantDisplay)
+      assistantDisplay.content = fallbackText
+      assistantDisplay.thinking = ''
+      if (!targetSession.messages.some((msg) => msg?.id === assistantDisplay.id)) {
+        targetSession.messages.push(assistantDisplay)
+      }
+      await maybeScrollToBottomForRun(abortState)
       break
     }
 
@@ -11888,17 +11923,20 @@ async function runChatRounds({
 
     const repeatedToolCallState = repeatedToolCallGuard.observe(normalizedToolCalls)
     if (repeatedToolCallState.blocked) {
-      const stopText = '检测到相同工具和参数连续调用 3 次，已停止重复执行。请调整操作方式，或直接说明当前阻塞原因。'
+      const stopText = [
+        '系统已阻止本批工具执行：检测到相同工具和参数连续调用 3 次。',
+        '不要再次调用任何工具。请根据已经获得的结果，直接向用户说明当前进展、阻塞原因和可行的下一步；不要复述这条内部提示。'
+      ].join('\n')
       normalizedToolCalls.forEach((toolCall) => {
         targetSession.apiMessages.push(createToolResultApiMessage(toolCall, stopText, {
           ok: false,
           status: 'stopped'
         }))
       })
-      targetSession.apiMessages.push({ role: 'assistant', content: stopText })
-      targetSession.messages.push(createDisplayMessage('assistant', stopText))
+      repeatedToolCallRecoveryPending = true
+      repeatedToolCallGuard.reset()
       await maybeScrollToBottomForRun(abortState)
-      break
+      continue
     }
 
     const toolExecResults = await executeToolCallsParallel(
