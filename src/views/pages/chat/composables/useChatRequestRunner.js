@@ -45,6 +45,8 @@ export function useChatRequestRunner(dependencies) {
     applyVideoGenerationTextToDisplay,
     applyVideoGenerationVideosToDisplay,
     assistantImageTaskStatusLabel,
+    assistantVideoTaskStatusLabel,
+    assistantVisibleVideoCount,
     attachMediaRequestSnapshot,
     autoActivateAgentSkills,
     autoActivateAgentSkillsFromText,
@@ -255,6 +257,7 @@ export function useChatRequestRunner(dependencies) {
     mcpToolsRevision,
     mcpToolsStatusByServerId,
     memorySessions,
+    mergeReferenceImagesIntoRequestOptions,
     mergeUserTextWithExistingAttachments,
     message,
     messageContentHasImageUrl,
@@ -389,7 +392,6 @@ export function useChatRequestRunner(dependencies) {
     withDefaultChatSandboxWorkspaceId,
     withTimeout
   } = dependencies
-  let historySessionLoadHideTimer = null
   let mcpPromptCatalogLoadPromise = null
 
   function enqueueMemorySessionApprovalRequest(record, request) {
@@ -724,12 +726,6 @@ export function useChatRequestRunner(dependencies) {
   }
   
   onBeforeUnmount(() => {
-    if (historySessionLoadHideTimer) {
-      window.clearTimeout(historySessionLoadHideTimer)
-      historySessionLoadHideTimer = null
-    }
-    historySessionLoadInFlight = false
-    pendingHistorySessionLoadPath = ''
     chatMessageEstimatedHeightCache.clear()
     cancelPendingToolApprovals()
     sessionApprovedToolKeys.clear()
@@ -1774,10 +1770,16 @@ export function useChatRequestRunner(dependencies) {
     resumeMediaTask
   } = useChatMediaGeneration({
     ...dependencies,
+    assistantVideoTaskStatusLabel,
+    assistantVisibleVideoCount,
+    buildImageGenerationPromptFromHistory,
+    buildVideoGenerationPromptFromHistory,
     clearAllUserEditingState,
     createDisplayMessage,
+    isDisplayMessageTracked,
     isDisplayMessageInActiveSession,
     prepareUserApiMessage,
+    recordModelUsageFromPayload,
     runChatSession
   })
 
@@ -3452,7 +3454,11 @@ export function useChatRequestRunner(dependencies) {
       normalized
     )
   }
-  
+
+  function extractRequestMessageTextContent(content) {
+    return extractImageGenerationPromptFromContent(content)
+  }
+
   function buildEmptyAssistantResponseText(apiMessages = session.apiMessages) {
     const imageMode = normalizeImageGenerationMode(imageGenerationMode.value)
     const videoMode = normalizeImageGenerationMode(videoGenerationMode.value)

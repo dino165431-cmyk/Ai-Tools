@@ -56,6 +56,7 @@ export function useChatPageRuntime({
   isToolActivityGroup,
   isToolMessage,
   isUserMessageCollapsed,
+  userMessagePreview,
   maybeCoalesceLatestToolMessages,
   migrateLegacyAutoChatSessionCreatedAt,
   preparingSend,

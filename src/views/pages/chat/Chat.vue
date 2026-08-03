@@ -557,6 +557,7 @@ import {
   buildImageGenerationRequestOptionsWithReferences,
   buildVideoGenerationRequestOptionsWithReferences,
   clearAttachmentFileReferences,
+  mergeReferenceImagesIntoRequestOptions,
   resolveChatLongTextAttachmentPlan,
   truncateInlineText,
   truncateText
@@ -3467,6 +3468,7 @@ const {
   isToolActivityGroup,
   isToolMessage,
   isUserMessageCollapsed,
+  userMessagePreview,
   maybeCoalesceLatestToolMessages,
   migrateLegacyAutoChatSessionCreatedAt: (...args) => migrateLegacyAutoChatSessionCreatedAt(...args),
   preparingSend,
@@ -3753,6 +3755,10 @@ const {
   buildSessionTitleGenerationPrompt,
   normalizeProviderApiMode,
   getMemorySessionById,
+  activeMemorySessionId,
+  getMemorySessionAutoPersistKey,
+  hasResolvedMemorySessionTitle,
+  markMemorySessionTitleReady,
   isGeneratedSessionTitle,
   shouldStampHistoryCreatedAtOnGeneratedTitle,
   applyFallbackMemorySessionTitle,
@@ -4121,8 +4127,18 @@ function applyLoadedChatState(state) {
   }
 }
 
+let historySessionLoadHideTimer = null
 let historySessionLoadInFlight = false
 let pendingHistorySessionLoadPath = ''
+
+onBeforeUnmount(() => {
+  if (historySessionLoadHideTimer) {
+    window.clearTimeout(historySessionLoadHideTimer)
+    historySessionLoadHideTimer = null
+  }
+  historySessionLoadInFlight = false
+  pendingHistorySessionLoadPath = ''
+})
 
 function beginHistorySessionLoad(filePath) {
   if (historySessionLoadHideTimer) {
@@ -4942,6 +4958,8 @@ const {
   applyVideoGenerationTextToDisplay,
   applyVideoGenerationVideosToDisplay,
   assistantImageTaskStatusLabel,
+  assistantVideoTaskStatusLabel: assistantMediaHelpers.assistantVideoTaskStatusLabel,
+  assistantVisibleVideoCount: assistantMediaHelpers.assistantVisibleVideoCount,
   attachMediaRequestSnapshot,
   autoActivateAgentSkills,
   autoActivateAgentSkillsFromText,
@@ -5152,6 +5170,7 @@ const {
   mcpToolsRevision,
   mcpToolsStatusByServerId,
   memorySessions,
+  mergeReferenceImagesIntoRequestOptions,
   mergeUserTextWithExistingAttachments,
   message,
   messageContentHasImageUrl,

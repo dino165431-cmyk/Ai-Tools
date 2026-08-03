@@ -559,6 +559,34 @@ test('chat delegates the session management domain to a composable', () => {
   }
 })
 
+test('chat keeps runtime-only dependencies wired after composable extraction', () => {
+  assert.match(chatSource, /let historySessionLoadHideTimer = null/)
+  assert.doesNotMatch(chatRequestRunnerSource, /\bhistorySessionLoadInFlight\b/)
+  assert.doesNotMatch(chatRequestRunnerSource, /\bpendingHistorySessionLoadPath\b/)
+
+  assert.match(chatPageRuntimeSource, /\bisUserMessageCollapsed,\s+userMessagePreview,/)
+  assert.match(chatSource, /\bisUserMessageCollapsed,\s+userMessagePreview,\s+maybeCoalesceLatestToolMessages,/)
+
+  for (const dependency of [
+    'assistantVideoTaskStatusLabel',
+    'assistantVisibleVideoCount',
+    'buildImageGenerationPromptFromHistory',
+    'buildVideoGenerationPromptFromHistory',
+    'isDisplayMessageTracked',
+    'mergeReferenceImagesIntoRequestOptions',
+    'recordModelUsageFromPayload'
+  ]) {
+    assert.match(chatMediaGenerationSource, new RegExp(`^\\s{4}${dependency},$`, 'm'))
+  }
+
+  assert.match(
+    chatRequestRunnerSource,
+    /function extractRequestMessageTextContent\(content\) \{\s+return extractImageGenerationPromptFromContent\(content\)\s+\}/
+  )
+  assert.match(chatRequestRunnerSource, /^\s{4}mergeReferenceImagesIntoRequestOptions,$/m)
+  assert.match(chatSource, /\bmergeReferenceImagesIntoRequestOptions,\s+mergeUserTextWithExistingAttachments,/)
+})
+
 test('chat delegates request execution, streaming, cancellation, and approvals to a composable', () => {
   assert.match(
     chatSource,

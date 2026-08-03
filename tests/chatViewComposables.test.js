@@ -98,6 +98,7 @@ import { useChatRunSessionTargeting } from '../src/views/pages/chat/composables/
 import { useChatMemorySessionRegistry } from '../src/views/pages/chat/composables/useChatMemorySessionRegistry.js'
 import { useChatMemorySessionLifecycle } from '../src/views/pages/chat/composables/useChatMemorySessionLifecycle.js'
 import { useChatSessionManager } from '../src/views/pages/chat/composables/useChatSessionManager.js'
+import { useChatMediaGeneration } from '../src/views/pages/chat/composables/useChatMediaGeneration.js'
 
 test('chat media controls normalize and cycle generation modes', () => {
   assert.equal(normalizeChatMediaGenerationMode(' ON '), 'on')
@@ -1077,4 +1078,148 @@ test('chat session manager retains session path title behavior without page stat
   assert.equal(manager.getSessionTitleFromPath('chat-auto/design-discussion.json'), 'design-discussion')
   assert.equal(manager.getSessionTitleFromPath('nested/session'), 'session')
   assert.equal(manager.getSessionTitleFromPath(''), '')
+})
+
+test('chat session manager persists a bound session with the injected active session id', async () => {
+  const activeMemorySessionId = ref('saved-session')
+  const activeSessionFilePath = ref('history/current.json')
+  const record = {
+    id: 'saved-session',
+    activeSessionFilePath: activeSessionFilePath.value
+  }
+  const requestedIds = []
+  const manager = useChatSessionManager({
+    activeMemorySessionId,
+    activeSessionFilePath,
+    saveActiveMemorySessionDraft: () => record,
+    isMemorySessionRunning: () => false,
+    isMemorySessionEmptyDraft: () => false,
+    flushMemoryCandidatesForRecord: async () => {},
+    isAutoChatSessionPath: () => false,
+    getMemorySessionById: (id) => {
+      requestedIds.push(id)
+      return record
+    },
+    isMemorySessionChatRunning: () => true
+  })
+
+  const persisted = await manager.persistActiveMemorySessionBeforeLeaving({
+    targetPath: 'history/next.json'
+  })
+
+  assert.equal(persisted, record)
+  assert.deepEqual(requestedIds, ['saved-session'])
+})
+
+test('chat session manager receives auto-persist title and identity helpers', async () => {
+  const calls = []
+  const record = {
+    id: 'draft-session',
+    messages: [{ role: 'user', content: 'hello' }],
+    activeSessionFilePath: ''
+  }
+  const manager = useChatSessionManager({
+    saveActiveMemorySessionDraft: () => record,
+    isMemorySessionRunning: () => false,
+    isMemorySessionEmptyDraft: () => false,
+    flushMemoryCandidatesForRecord: async () => {},
+    isAutoChatSessionPath: () => false,
+    markMemorySessionTitleReady: () => {
+      calls.push('mark-title-ready')
+      return 1
+    },
+    getMemorySessionAutoPersistKey: () => {
+      calls.push('get-persist-key')
+      return ''
+    },
+    hasResolvedMemorySessionTitle: () => {
+      calls.push('has-resolved-title')
+      return false
+    },
+    canPersistMemorySessionToHistory: () => true
+  })
+
+  await manager.persistActiveMemorySessionBeforeLeaving({ targetPath: 'history/next.json' })
+  assert.equal(manager.autoPersistMemorySessionWhenIdle(record), '')
+  assert.deepEqual(calls, ['mark-title-ready', 'get-persist-key', 'has-resolved-title'])
+})
+
+test('chat media generation receives prompt, usage, and video presentation helpers', async () => {
+  const targetSession = {
+    messages: [],
+    apiMessages: [{ role: 'user', content: 'draw a lighthouse' }]
+  }
+  const promptCalls = []
+  const usageCalls = []
+  const videoStatusCalls = []
+  const media = useChatMediaGeneration({
+    getRunSessionTarget: () => targetSession,
+    throwIfAborted: () => {},
+    extractEditableUserTextFromContent: (value) => String(value || ''),
+    extractImageGenerationPromptFromContent: (value) => String(value || ''),
+    buildImageGenerationRequestOptionsWithReferences: (value) => value,
+    buildVideoGenerationRequestOptionsWithReferences: (value) => value,
+    buildManualImageGenerationRequestInfo: () => '',
+    buildManualVideoGenerationRequestInfo: () => '',
+    createImageGenerationPlaceholderDisplay: () => ({ id: 'image-result' }),
+    createVideoGenerationPlaceholderDisplay: () => ({ id: 'video-result' }),
+    attachMediaRequestSnapshot: () => {},
+    buildMediaRequestSnapshot: () => ({}),
+    maybeScrollToBottomForRun: async () => {},
+    buildImageGenerationPromptFromHistory: (prompt) => {
+      promptCalls.push(`image:${prompt}`)
+      return `image history: ${prompt}`
+    },
+    buildVideoGenerationPromptFromHistory: (prompt) => {
+      promptCalls.push(`video:${prompt}`)
+      return `video history: ${prompt}`
+    },
+    requestImageGeneration: async ({ prompt }) => {
+      assert.equal(prompt, 'image history: draw a lighthouse')
+      return { payload: { kind: 'image-result' }, requestMeta: { kind: 'images' } }
+    },
+    requestVideoGeneration: async ({ prompt }) => {
+      assert.equal(prompt, 'video history: draw a lighthouse')
+      return { payload: { kind: 'video-task' }, requestMeta: { kind: 'videos' } }
+    },
+    recordModelUsageFromPayload: (payload, options) => usageCalls.push([payload.kind, options.purpose]),
+    extractImageGenerationTaskState: () => null,
+    extractVideoGenerationTaskState: () => ({ id: 'video-task', status: 'queued' }),
+    persistChatMediaListAssets: async (items) => items,
+    extractChatImagesFromToolResult: () => [],
+    extractImageGenerationTextResult: () => 'generated image text',
+    applyImageGenerationTextToDisplay: (message, text) => { message.content = text },
+    applyVideoGenerationTaskToDisplay: () => {},
+    assistantVideoTaskStatusLabel: () => {
+      videoStatusCalls.push('status')
+      return '处理中'
+    },
+    preparingSend: ref(false),
+    resumingMediaTaskKeys: ref([]),
+    assistantVisibleVideoCount: () => 0
+  })
+
+  await media.runImageGenerationRound({
+    providerId: 'provider',
+    model: 'image-model',
+    setCurrentAssistantDisplay: () => {}
+  })
+  await media.runVideoGenerationRound({
+    providerId: 'provider',
+    model: 'video-model',
+    placeholderMode: 'video',
+    setCurrentAssistantDisplay: () => {}
+  })
+
+  assert.deepEqual(promptCalls, ['image:draw a lighthouse', 'video:draw a lighthouse'])
+  assert.deepEqual(usageCalls, [
+    ['image-result', 'image-generation'],
+    ['video-task', 'video-generation']
+  ])
+  assert.deepEqual(videoStatusCalls, ['status'])
+  assert.equal(media.canResumeMediaTask({
+    id: 'video-result',
+    videoTask: { id: 'video-task', status: 'processing' },
+    mediaRequest: { requestMeta: { baseEndpoint: 'https://example.test/videos' } }
+  }), true)
 })
