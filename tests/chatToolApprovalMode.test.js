@@ -9,13 +9,15 @@ function readSource(filePath) {
 
 test('chat remembers the selected approval mode and exposes complete trust', () => {
   const source = readSource('src/views/pages/chat/Chat.vue')
+  const requestRunnerSource = readSource('src/views/pages/chat/composables/useChatRequestRunner.js')
+  const sessionManagerSource = readSource('src/views/pages/chat/composables/useChatSessionManager.js')
   const configSource = readSource('public/preload/utils/global-config.js')
 
   assert.match(source, /完全信任（任何工具都直接批准）/)
   assert.match(source, /key:\s*TOOL_APPROVAL_MODE_TRUSTED/)
-  assert.match(source, /updateChatConfig\(\{\s*toolApprovalMode:\s*nextMode\s*}\)/)
+  assert.match(requestRunnerSource, /updateChatConfig\(\{\s*toolApprovalMode:\s*nextMode\s*}\)/)
   assert.match(
-    source,
+    sessionManagerSource,
     /toolApprovalMode:\s*normalizeToolApprovalMode\(chatConfig\.value\?\.toolApprovalMode\)/
   )
   assert.match(configSource, /toolApprovalMode:\s*'safe'/)
@@ -23,7 +25,7 @@ test('chat remembers the selected approval mode and exposes complete trust', () 
 })
 
 test('chat high-risk mode distinguishes ordinary and destructive command execution', () => {
-  const source = readSource('src/views/pages/chat/Chat.vue')
+  const source = readSource('src/views/pages/chat/composables/useChatRequestRunner.js')
   const catalogSource = readSource('public/preload/builtin-skills/index.js')
 
   assert.match(source, /isDangerousShellApprovalCommand\(argsObj,\s*argsText\)/)

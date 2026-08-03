@@ -8,7 +8,10 @@ import {
   createRepeatedToolCallGuard
 } from '../src/utils/chatToolLoopGuard.js'
 
-const chatSource = fs.readFileSync(path.resolve('src/views/pages/chat/Chat.vue'), 'utf8')
+const chatSource = fs.readFileSync(
+  path.resolve('src/views/pages/chat/composables/useChatRequestRunner.js'),
+  'utf8'
+)
 
 function toolCall(argumentsText) {
   return {

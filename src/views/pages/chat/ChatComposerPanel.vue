@@ -192,50 +192,6 @@
             清空会话（并关闭会话绑定）
           </n-tooltip>
 
-          <n-tooltip v-if="showExpandedToolbar" class="chat-composer-advanced-control" trigger="hover">
-            <template #trigger>
-              <n-button size="small" tertiary circle :disabled="interactionLocked" @click="emit('open-agent-modal')">
-                <template #icon>
-                  <n-icon :component="Magento" size="12" />
-                </template>
-              </n-button>
-            </template>
-            选择智能体（@）
-          </n-tooltip>
-
-          <n-tooltip v-if="showExpandedToolbar" class="chat-composer-advanced-control" trigger="hover">
-            <template #trigger>
-              <n-button size="small" tertiary circle :disabled="interactionLocked" @click="emit('insert-inline-command-trigger', 'prompt')">
-                <template #icon>
-                  <n-icon :component="PromptIcon" size="12" />
-                </template>
-              </n-button>
-            </template>
-            选择提示词（/prompt）
-          </n-tooltip>
-
-          <n-tooltip v-if="showExpandedToolbar" class="chat-composer-advanced-control" trigger="hover">
-            <template #trigger>
-              <n-button size="small" tertiary circle :disabled="interactionLocked" @click="emit('insert-inline-command-trigger', 'skill')">
-                <template #icon>
-                  <n-icon :component="SkillLevelIntermediate" size="12" />
-                </template>
-              </n-button>
-            </template>
-            选择技能（/skill）
-          </n-tooltip>
-
-          <n-tooltip v-if="showExpandedToolbar" class="chat-composer-advanced-control" trigger="hover">
-            <template #trigger>
-              <n-button size="small" tertiary circle :disabled="interactionLocked" @click="emit('insert-inline-command-trigger', 'mcp')">
-                <template #icon>
-                  <n-icon :component="BareMetalServer02" size="12" />
-                </template>
-              </n-button>
-            </template>
-            选择 MCP（/mcp）
-          </n-tooltip>
-
           <n-tooltip trigger="hover">
             <template #trigger>
               <n-button size="small" tertiary circle :disabled="interactionLocked" @click="emit('open-file-picker')">
@@ -316,63 +272,6 @@
               </n-button>
           </n-dropdown>
 
-          <n-tooltip v-if="showExpandedToolbar" class="chat-composer-advanced-control" trigger="hover">
-            <template #trigger>
-              <n-button
-                size="small"
-                tertiary
-                circle
-                :type="autoActivateAgentSkills ? 'primary' : 'default'"
-                :disabled="interactionLocked"
-                @click="emit('toggle-auto-activate-agent-skills')"
-              >
-                <template #icon>
-                  <n-icon :component="SparklesOutline" size="12" />
-                </template>
-              </n-button>
-            </template>
-            自动启用智能体技能：{{ autoActivateAgentSkills ? '开' : '关' }}
-          </n-tooltip>
-
-          <n-tooltip v-if="showExpandedToolbar" class="chat-composer-advanced-control" trigger="hover">
-            <template #trigger>
-              <n-button size="small" tertiary circle :disabled="interactionLocked" @click="emit('cycle-tool-mode')">
-                <template #icon>
-                  <n-icon :component="HardwareChipOutline" size="12" />
-                </template>
-              </n-button>
-            </template>
-            工具模式：{{ toolModeDisplayText }}（点击切换）
-          </n-tooltip>
-
-          <n-tooltip v-if="showExpandedToolbar" class="chat-composer-advanced-control" trigger="hover">
-            <template #trigger>
-              <n-button size="small" tertiary circle :disabled="interactionLocked" @click="emit('open-context-window-modal')">
-                <template #icon>
-                  <n-icon :component="ChatbubbleEllipsesOutline" size="12" />
-                </template>
-              </n-button>
-            </template>
-            上下文窗口：{{ contextWindowPresetLabel }} / {{ contextWindowHistoryFocusLabel }}（点击设置）
-          </n-tooltip>
-
-          <n-tooltip v-if="showExpandedToolbar" class="chat-composer-advanced-control" trigger="hover">
-            <template #trigger>
-              <n-button
-                size="small"
-                tertiary
-                circle
-                :disabled="busy || refreshingMcpTools"
-                @click="emit('refresh-active-mcp-tools')"
-              >
-                <template #icon>
-                  <n-icon :component="RefreshOutline" size="12" />
-                </template>
-              </n-button>
-            </template>
-            刷新 MCP 工具列表
-          </n-tooltip>
-
           <n-dropdown
             trigger="click"
             placement="top-start"
@@ -394,58 +293,6 @@
               </n-button>
           </n-dropdown>
 
-          <n-popover
-            v-if="showExpandedToolbar && mediaGenerationPresetGroups.length"
-            class="chat-composer-advanced-control"
-            v-model:show="mediaPresetPopoverVisible"
-            trigger="click"
-            placement="top-start"
-            :disabled="interactionLocked"
-          >
-            <template #trigger>
-              <n-tooltip trigger="hover">
-                <template #trigger>
-                  <n-button size="small" tertiary circle :disabled="interactionLocked" title="生成参数预设">
-                    <template #icon>
-                      <n-icon :component="SparklesOutline" size="12" />
-                    </template>
-                  </n-button>
-                </template>
-                生成参数预设
-              </n-tooltip>
-            </template>
-
-            <div :class="['media-preset-popover', { 'is-dark': theme === 'dark' }]">
-              <section
-                v-for="group in mediaGenerationPresetGroups"
-                :key="group.key"
-                class="media-preset-group"
-              >
-                <div class="media-preset-group__header">
-                  <span>{{ group.label }}</span>
-                  <span>{{ group.children.length }} 个</span>
-                </div>
-
-                <div class="media-preset-grid">
-                  <button
-                    v-for="item in group.children"
-                    :key="item.key"
-                    type="button"
-                    class="media-preset-item"
-                    :title="item.label"
-                    @click="handleMediaPresetSelect(item.key)"
-                  >
-                    <n-icon
-                      :component="group.kind === 'video' ? VideocamOutline : ImageOutline"
-                      size="13"
-                    />
-                    <span>{{ item.label }}</span>
-                  </button>
-                </div>
-              </section>
-            </div>
-          </n-popover>
-
           <ChatMediaGenerationParamsPopover
             v-if="imageGenerationMode === 'on' || videoGenerationMode === 'on' || imageGenerationParamsEnabled || videoGenerationParamsEnabled"
             :theme="theme"
@@ -463,42 +310,6 @@
             @update-video-generation-params="emit('update-video-generation-params', $event)"
             @reset-video-generation-params="emit('reset-video-generation-params')"
           />
-
-          <n-tooltip v-if="showExpandedToolbar" class="chat-composer-advanced-control" trigger="hover">
-            <template #trigger>
-              <n-button
-                size="small"
-                tertiary
-                circle
-                :type="imageGenerationButtonType"
-                :disabled="interactionLocked"
-                @click="emit('cycle-image-generation-mode')"
-              >
-                <template #icon>
-                  <n-icon :component="ImageOutline" size="12" />
-                </template>
-              </n-button>
-            </template>
-            产图模式：{{ imageGenerationModeLabel }}（点击切换）
-          </n-tooltip>
-
-          <n-tooltip v-if="showExpandedToolbar" class="chat-composer-advanced-control" trigger="hover">
-            <template #trigger>
-              <n-button
-                size="small"
-                tertiary
-                circle
-                :type="videoGenerationButtonType"
-                :disabled="interactionLocked"
-                @click="emit('cycle-video-generation-mode')"
-              >
-                <template #icon>
-                  <n-icon :component="VideocamOutline" size="12" />
-                </template>
-              </n-button>
-            </template>
-            产视频模式：{{ videoGenerationModeLabel }}（点击切换）
-          </n-tooltip>
 
           <n-popover
             v-model:show="morePopoverVisible"
@@ -836,27 +647,11 @@ const props = defineProps({
     type: String,
     default: ''
   },
-  contextWindowPresetLabel: {
-    type: String,
-    default: ''
-  },
-  contextWindowHistoryFocusLabel: {
-    type: String,
-    default: ''
-  },
   refreshingMcpTools: {
     type: Boolean,
     default: false
   },
   thinkingEffortButtonType: {
-    type: String,
-    default: 'default'
-  },
-  imageGenerationButtonType: {
-    type: String,
-    default: 'default'
-  },
-  videoGenerationButtonType: {
     type: String,
     default: 'default'
   },
@@ -929,9 +724,7 @@ const fileInputRef = ref(null)
 const composerInputRef = ref(null)
 const inlineAgentListRef = ref(null)
 const inlineCommandListRef = ref(null)
-const mediaPresetPopoverVisible = ref(false)
 const morePopoverVisible = ref(false)
-const showExpandedToolbar = false
 
 const busy = computed(() => props.sending || props.preparingSend)
 const interactionLocked = computed(() => props.preparingSend)
@@ -990,11 +783,6 @@ const mediaGenerationPresetGroups = computed(() => {
     })
     .filter(Boolean)
 })
-
-function handleMediaPresetSelect(key) {
-  mediaPresetPopoverVisible.value = false
-  emit('apply-media-preset', key)
-}
 
 function scrollActiveInlinePickerItemIntoView(listEl, index) {
   if (!listEl || index < 0) return
@@ -1377,107 +1165,4 @@ defineExpose({
   padding: 0 2px;
 }
 
-.media-preset-popover {
-  width: min(420px, calc(100vw - 28px));
-  max-height: min(520px, calc(100vh - 160px));
-  overflow-y: auto;
-  padding: 2px;
-}
-
-.media-preset-group + .media-preset-group {
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid rgba(148, 163, 184, 0.18);
-}
-
-.media-preset-group__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 7px;
-  padding: 0 2px;
-  color: rgba(15, 23, 42, 0.72);
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.media-preset-group__header span:last-child {
-  color: rgba(100, 116, 139, 0.72);
-  font-size: 10px;
-  font-weight: 500;
-}
-
-.media-preset-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
-}
-
-.media-preset-item {
-  min-width: 0;
-  min-height: 30px;
-  padding: 5px 7px;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  border-radius: 8px;
-  background: rgba(248, 250, 252, 0.88);
-  color: rgba(15, 23, 42, 0.9);
-  appearance: none;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  cursor: pointer;
-  font: inherit;
-  text-align: left;
-  transition: border-color 120ms ease, background-color 120ms ease, transform 120ms ease;
-}
-
-.media-preset-item:hover {
-  border-color: rgba(32, 128, 240, 0.42);
-  background: rgba(239, 246, 255, 0.96);
-  transform: translateY(-1px);
-}
-
-.media-preset-item span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.media-preset-item :deep(.n-icon) {
-  flex: 0 0 auto;
-  color: rgba(32, 128, 240, 0.78);
-}
-
-.media-preset-popover.is-dark .media-preset-group + .media-preset-group {
-  border-top-color: rgba(148, 163, 184, 0.2);
-}
-
-.media-preset-popover.is-dark .media-preset-group__header {
-  color: rgba(226, 232, 240, 0.78);
-}
-
-.media-preset-popover.is-dark .media-preset-group__header span:last-child {
-  color: rgba(148, 163, 184, 0.82);
-}
-
-.media-preset-popover.is-dark .media-preset-item {
-  border-color: rgba(148, 163, 184, 0.18);
-  background: rgba(30, 41, 59, 0.58);
-  color: rgba(226, 232, 240, 0.94);
-}
-
-.media-preset-popover.is-dark .media-preset-item:hover {
-  border-color: rgba(64, 169, 255, 0.48);
-  background: rgba(30, 64, 115, 0.46);
-}
-
-@media (max-width: 520px) {
-  .media-preset-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
 </style>

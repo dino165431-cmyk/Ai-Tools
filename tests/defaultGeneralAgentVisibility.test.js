@@ -9,6 +9,7 @@ function readSource(filePath) {
 
 test('builtin Agent and Prompt presets stay hidden while the default Agent remains active at runtime', () => {
   const chatSource = readSource('src/views/pages/chat/Chat.vue')
+  const requestRunnerSource = readSource('src/views/pages/chat/composables/useChatRequestRunner.js')
   const agentViewSource = readSource('src/views/pages/setting/agent/Agent.vue')
   const promptViewSource = readSource('src/views/pages/setting/prompt/Prompt.vue')
   const providerViewSource = readSource('src/views/pages/setting/provider/Provider.vue')
@@ -23,7 +24,7 @@ test('builtin Agent and Prompt presets stay hidden while the default Agent remai
   assert.match(chatSource, /const runtimeAgentSkillIds = computed\(\(\) => normalizeStringList\(agentSkillIds\.value\)\)/)
   assert.doesNotMatch(chatSource, /runtimeSkillObjects[\s\S]{0,180}\(skills\.value \|\| \[\]\)\.filter/)
   assert.match(chatSource, /runtimeMcpServers/)
-  assert.match(chatSource, /isDefaultGeneralAgent\.value && servers\.length/)
+  assert.match(requestRunnerSource, /isDefaultGeneralAgent\.value && servers\.length/)
 })
 
 test('chat and child-agent timelines own their remaining-height scroll viewports', () => {

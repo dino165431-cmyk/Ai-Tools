@@ -7,37 +7,50 @@ const chatSource = fs.readFileSync(
   path.resolve('src/views/pages/chat/Chat.vue'),
   'utf8'
 )
+const sessionManagerSource = fs.readFileSync(
+  path.resolve('src/views/pages/chat/composables/useChatSessionManager.js'),
+  'utf8'
+)
+const requestRunnerSource = fs.readFileSync(
+  path.resolve('src/views/pages/chat/composables/useChatRequestRunner.js'),
+  'utf8'
+)
 
-function getFunctionSource(name, nextDeclaration) {
+function getFunctionSource(source, name, nextDeclaration) {
   const asyncDeclaration = `async function ${name}`
   const syncDeclaration = `function ${name}`
-  const start = chatSource.indexOf(asyncDeclaration) >= 0
-    ? chatSource.indexOf(asyncDeclaration)
-    : chatSource.indexOf(syncDeclaration)
-  const end = chatSource.indexOf(`\n${nextDeclaration}`, start + 1)
+  const start = source.indexOf(asyncDeclaration) >= 0
+    ? source.indexOf(asyncDeclaration)
+    : source.indexOf(syncDeclaration)
+  const end = source.indexOf(nextDeclaration, start + 1)
   assert.notEqual(start, -1, `missing function ${name}`)
   assert.notEqual(end, -1, `missing function boundary ${nextDeclaration}`)
-  return chatSource.slice(start, end)
+  return source.slice(start, end)
 }
 
 test('chat auxiliary model requests inherit the configured provider API mode', () => {
   const attachmentSummary = getFunctionSource(
+    chatSource,
     'buildAttachmentVisionRecallSummary',
     'async function enrichImageAttachmentsForMemoryRecall'
   )
   const sessionTitle = getFunctionSource(
+    sessionManagerSource,
     'requestSessionTitleFromModel',
     'async function moveAutoChatSessionAssetsForRename'
   )
   const contextSummary = getFunctionSource(
+    requestRunnerSource,
     'requestContextWindowSummary',
     'function resolveContextSummaryCoverage'
   )
   const titleDispatcher = getFunctionSource(
+    sessionManagerSource,
     'requestSessionTitleAsync',
     'async function autoPersistMemorySession'
   )
   const contextSummaryDispatcher = getFunctionSource(
+    requestRunnerSource,
     'ensureContextWindowSummary',
     'function syncContextSummaryCacheForRecord'
   )

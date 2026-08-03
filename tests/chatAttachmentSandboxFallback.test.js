@@ -10,13 +10,18 @@ import {
 } from '../src/utils/chatMediaPresentation.js'
 
 const chatSource = fs.readFileSync(path.resolve('src/views/pages/chat/Chat.vue'), 'utf8')
+const attachmentSource = fs.readFileSync(
+  path.resolve('src/views/pages/chat/composables/useChatAttachments.js'),
+  'utf8'
+)
 
 test('non-image attachments go straight to the chat sandbox without renderer parsing', () => {
   assert.match(
-    chatSource,
+    attachmentSource,
     /return \{ kind: 'file', name, ext, mime, text: '', sandboxOnly: true \}/
   )
-  assert.doesNotMatch(chatSource, /parseAttachmentTextWithFallback/)
+  assert.doesNotMatch(attachmentSource, /parseAttachmentTextWithFallback/)
+  assert.match(chatSource, /useChatAttachments\(\{ createId: newId, message \}\)/)
 })
 
 test('preview failures are non-blocking sandbox attachment states', () => {

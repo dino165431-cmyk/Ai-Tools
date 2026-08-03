@@ -42,454 +42,50 @@
       @close-active-session="closeActiveSession"
     />
 
-    <div class="chat-messages-shell">
-      <n-card class="chat-messages" :bordered="false" content-style="padding: 0; height: 100%;">
-        <div class="chat-scroll-wrapper">
-          <div
-            v-if="historySessionLoadState.visible"
-            class="chat-session-loading"
-            :class="{ 'is-blocking': historySessionLoadState.blocking }"
-            role="status"
-            aria-live="polite"
-          >
-            <span class="chat-session-loading__spinner" aria-hidden="true" />
-            <div class="chat-session-loading__content">
-              <strong>{{ historySessionLoadState.phase }}</strong>
-              <span v-if="historySessionLoadState.detail">{{ historySessionLoadState.detail }}</span>
-              <div class="chat-session-loading__progress" aria-hidden="true">
-                <span :style="{ width: `${historySessionLoadState.percent}%` }" />
-              </div>
-            </div>
-          </div>
+    <ChatConversationPanel
+      :theme="theme"
+      :history-session-load-state="historySessionLoadState"
+      :session-messages-length="session.messages.length"
+      :empty-state-description="chatEmptyStateDescription"
+      :setup-summary-items="chatSetupSummaryItems"
+      :session-sider-collapsed="sessionSiderCollapsed"
+      :composer-shortcut-hint="composerShortcutHint"
+      :rendered-messages="renderedChatMessages"
+      :chat-virtualized-enabled="chatVirtualizedEnabled"
+      :chat-virtual-list-style="chatVirtualListStyle"
+      :sending="sending"
+      :preparing-send="preparingSend"
+      :stream-render-throttle-ms="CHAT_STREAM_RENDER_THROTTLE_MS"
+      :code-auto-fold-threshold="CHAT_CODE_AUTO_FOLD_THRESHOLD"
+      :sticky-chat-bubble="stickyChatBubble"
+      :show-scroll-to-bottom-button="showScrollToBottomButton"
+      :show-anchor-rail="showAnchorRail"
+      :user-anchors="userAnchors"
+      :active-anchor-id="activeAnchorId"
+      :helpers="conversationPanelHelpers"
+      :actions="conversationPanelActions"
+      :assistant-media-helpers="assistantMediaHelpers"
+      :assistant-media-actions="assistantMediaActions"
+      :user-attachment-helpers="userAttachmentHelpers"
+      :user-attachment-actions="userAttachmentActions"
+      :tool-activity-group-helpers="toolActivityGroupHelpers"
+      :tool-activity-group-actions="toolActivityGroupActions"
+      :tool-message-helpers="toolMessageHelpers"
+      :tool-message-actions="toolMessageActions"
+      @scrollbar-ref="scrollbarRef = $event"
+      @chat-list-ref="chatListRef = $event"
+      @open-model-modal="showModelModal = true"
+      @open-system-prompt-modal="openSystemPromptModal"
+      @open-agent-modal="openAgentModal"
+      @open-file-picker="openFilePicker"
+      @toggle-session-sider="toggleSessionSider"
+    />
 
-          <n-scrollbar
-            ref="scrollbarRef"
-            class="chat-main-scrollbar"
-            @scroll="handleChatScroll"
-            @wheel.passive="handleChatWheel"
-            @pointerdown="handleChatPointerDown"
-            @touchstart.passive="handleChatPointerDown"
-          >
-            <div
-              ref="chatListRef"
-              class="chat-list"
-              :class="{ 'is-virtualized': chatVirtualizedEnabled }"
-              :style="chatVirtualListStyle"
-              @click="handleChatPreviewLinkClick"
-              @contextmenu="handleChatPreviewLinkContextMenu"
-            >
-            <div v-if="!session.messages.length" class="chat-empty-state">
-              <div class="chat-empty-state__panel">
-                <div class="chat-empty-state__hero">
-                  <div class="chat-empty-state__icon">
-                    <n-icon :component="ChatMultiple24Filled" size="26" />
-                  </div>
-                  <div class="chat-empty-state__title">开始一段新对话</div>
-                  <div class="chat-empty-state__description">{{ chatEmptyStateDescription }}</div>
-                </div>
-
-                <div class="chat-empty-state__summary">
-                  <div
-                    v-for="item in chatSetupSummaryItems"
-                    :key="item.key"
-                    class="chat-empty-state__summary-item"
-                  >
-                    <span class="chat-empty-state__summary-label">{{ item.label }}</span>
-                    <span class="chat-empty-state__summary-value" :title="item.value">{{ item.value }}</span>
-                  </div>
-                </div>
-
-                <div class="chat-empty-state__actions">
-                  <n-button size="small" secondary @click="showModelModal = true">模型设置</n-button>
-                  <n-button size="small" secondary @click="openSystemPromptModal">系统提示词</n-button>
-                  <n-button size="small" secondary @click="openAgentModal">选择智能体</n-button>
-                  <n-button size="small" secondary @click="openFilePicker">添加附件</n-button>
-                  <n-button size="small" tertiary :type="sessionSiderCollapsed ? 'default' : 'primary'" @click="toggleSessionSider">
-                    {{ sessionSiderCollapsed ? '打开会话列表' : '收起会话列表' }}
-                  </n-button>
-                </div>
-
-                <div class="chat-empty-state__hint">{{ composerShortcutHint }}</div>
-              </div>
-            </div>
-
-            <div
-              v-for="msg in renderedChatMessages"
-              :key="msg.id"
-              class="chat-item"
-              :class="[msg.role, chatItemStateClasses(msg), { 'is-virtualized': chatVirtualizedEnabled }]"
-              :style="getChatVirtualItemStyle(msg)"
-              :data-index="getChatVirtualItemIndex(msg)"
-              :id="msg.role === 'user' ? `q-${msg.id}` : undefined"
-              :ref="getChatVirtualItemRef(msg)"
-            >
-            <div class="chat-item__row">
-              <div class="chat-item__avatar" :class="chatAvatarStateClasses(msg)">
-                <n-icon :component="roleIcon(msg)" size="18" :class="['chat-item__avatar-icon', chatAvatarIconClasses(msg)]" />
-              </div>
-
-              <div class="chat-item__bubble">
-                <div class="chat-item__content">
-                  <template v-if="msg.role === 'assistant'">
-                    <div v-if="msg.thinking" class="assistant-thinking">
-                      <div class="assistant-thinking__toggle" @click="toggleThinking(msg)">
-                        <n-icon :component="msg.thinkingExpanded ? ChevronUpOutline : ChevronDownOutline" size="14" />
-                        <span class="assistant-thinking__label">{{ msg.streaming ? '思考中...' : '思考完成' }}</span>
-                        <span class="assistant-thinking__hint">{{ msg.thinkingExpanded ? '点击收起' : '点击展开' }}</span>
-                      </div>
-                      <pre v-show="msg.thinkingExpanded" class="assistant-thinking__text">{{ msg.thinking }}</pre>
-                    </div>
-
-                    <ChatAssistantMedia
-                      :msg="msg"
-                      :theme="theme"
-                      :helpers="assistantMediaHelpers"
-                      :actions="assistantMediaActions"
-                    />
-
-                    <pre v-if="msg.render === 'text' && msg.content" class="chat-plain">{{ msg.content }}</pre>
-                    <LazyMarkdownPreview
-                      v-else-if="msg.content && shouldRenderHeavyChatMessage(msg)"
-                      :editorId="`msg-${msg.id}`"
-                      :modelValue="msg.content"
-                      previewTheme="github"
-                      :theme="theme"
-                      :deferBlockLayout="shouldDeferHeavyChatBlockLayout(msg)"
-                      :streaming="msg.streaming"
-                      :stream-throttle-ms="CHAT_STREAM_RENDER_THROTTLE_MS"
-                      :code-foldable="true"
-                      :auto-fold-threshold="CHAT_CODE_AUTO_FOLD_THRESHOLD"
-                    />
-                    <pre v-else-if="msg.content" class="chat-plain chat-plain--deferred">{{ msg.content }}</pre>
-                  </template>
-
-                  <template v-else-if="msg.role === 'user'">
-                    <n-tag v-if="msg.guidance" size="tiny" type="info" class="chat-user-guidance-tag">
-                      引导
-                    </n-tag>
-                    <n-input
-                      v-if="msg.editing"
-                      v-model:value="msg.editDraft"
-                      type="textarea"
-                      :autosize="{ minRows: 3, maxRows: 12 }"
-                      placeholder="编辑后重发（回车发送，Shift+回车换行，Esc 取消）"
-                      :disabled="sending"
-                      @keydown="(e) => handleUserEditKeydown(e, msg)"
-                    />
-
-                    <div
-                      v-if="!msg.editing"
-                      class="chat-user-message"
-                      :class="{ 'is-collapsed': isUserMessageCollapsed(msg) }"
-                    >
-                      <pre
-                        v-if="isUserMessageCollapsed(msg)"
-                        class="chat-plain chat-user-message__preview"
-                      >{{ userMessagePreview(msg) }}</pre>
-                      <template v-else>
-                        <pre v-if="shouldRenderUserMessageAsPlainText(msg)" class="chat-plain">{{ msg.content }}</pre>
-                        <LazyMarkdownPreview
-                          v-else-if="shouldRenderHeavyChatMessage(msg)"
-                          :editorId="`msg-${msg.id}`"
-                          :modelValue="msg.content"
-                          previewTheme="github"
-                          :theme="theme"
-                          :deferBlockLayout="shouldDeferHeavyChatBlockLayout(msg)"
-                          :streaming="msg.streaming"
-                          :stream-throttle-ms="CHAT_STREAM_RENDER_THROTTLE_MS"
-                          :code-foldable="true"
-                          :auto-fold-threshold="CHAT_CODE_AUTO_FOLD_THRESHOLD"
-                        />
-                        <pre v-else class="chat-plain chat-plain--deferred">{{ msg.content }}</pre>
-                      </template>
-                      <button
-                        v-if="isUserMessageFoldable(msg)"
-                        type="button"
-                        class="chat-user-message__toggle"
-                        @click="toggleUserMessageExpanded(msg)"
-                      >
-                        <span>{{ msg.userMessageExpanded ? '收起内容' : '展开全部' }}</span>
-                        <span class="chat-user-message__stats">{{ userMessageFoldSummary(msg) }}</span>
-                        <n-icon
-                          :component="msg.userMessageExpanded ? ChevronUpOutline : ChevronDownOutline"
-                          size="13"
-                        />
-                      </button>
-                    </div>
-
-                    <ChatUserAttachments
-                      :msg="msg"
-                      :theme="theme"
-                      :helpers="userAttachmentHelpers"
-                      :actions="userAttachmentActions"
-                    />
-                  </template>
-
-                  <template v-else-if="msg.role === 'tool_group'">
-                    <ChatToolActivityGroup
-                      :group="msg"
-                      :theme="theme"
-                      :helpers="toolActivityGroupHelpers"
-                      :actions="toolActivityGroupActions"
-                      :tool-message-helpers="toolMessageHelpers"
-                      :tool-message-actions="toolMessageActions"
-                    />
-                  </template>
-
-                  <template v-else-if="msg.role === 'tool_call' || msg.role === 'tool'">
-                    <div
-                      v-if="shouldRenderCompactToolMessage(msg)"
-                      class="chat-tool-compact"
-                      :class="`is-${getToolMessageStatus(msg)}`"
-                      :title="formatTime(msg.time)"
-                      @click="toggleToolExpanded(msg)"
-                    >
-                      <n-icon
-                        :component="toolActivityIcon(msg)"
-                        size="14"
-                        :class="['chat-tool-compact__state-icon', { 'is-spinning': getToolMessageStatus(msg) === 'running' }]"
-                      />
-                      <span class="chat-tool-compact__label">{{ toolMessageLabel(msg) }}</span>
-                      <span v-if="toolActivityMeta(msg)" class="chat-tool-compact__meta">{{ toolActivityMeta(msg) }}</span>
-                      <span
-                        v-if="shouldShowToolActivityStatus(msg)"
-                        class="chat-tool-compact__status"
-                        :class="`is-${getToolMessageStatus(msg)}`"
-                      >
-                        {{ toolMessageStatusLabel(msg) }}
-                      </span>
-                      <n-icon :component="ChevronDownOutline" size="13" class="chat-tool-compact__chevron" />
-                    </div>
-                    <ChatToolMessage
-                      v-else
-                      :msg="msg"
-                      :theme="theme"
-                      :helpers="toolMessageHelpers"
-                      :actions="toolMessageActions"
-                    />
-                  </template>
-
-                  <template v-else>
-                    <pre v-if="msg.render === 'text'" class="chat-plain">{{ msg.content }}</pre>
-                    <LazyMarkdownPreview
-                      v-else-if="shouldRenderHeavyChatMessage(msg)"
-                      :editorId="`msg-${msg.id}`"
-                      :modelValue="msg.content"
-                      previewTheme="github"
-                      :theme="theme"
-                      :deferBlockLayout="shouldDeferHeavyChatBlockLayout(msg)"
-                      :streaming="msg.streaming"
-                      :stream-throttle-ms="CHAT_STREAM_RENDER_THROTTLE_MS"
-                      :code-foldable="true"
-                      :auto-fold-threshold="CHAT_CODE_AUTO_FOLD_THRESHOLD"
-                    />
-                    <pre v-else class="chat-plain chat-plain--deferred">{{ msg.content }}</pre>
-                  </template>
-                </div>
-
-                <div v-if="msg.role === 'assistant'" class="chat-item__actions">
-                  <n-tooltip trigger="hover">
-                    <template #trigger>
-                      <n-button size="tiny" tertiary circle @click="copyAssistantMessage(msg)" :disabled="!msg.content">
-                        <template #icon>
-                          <n-icon :component="CopyOutline" size="12" />
-                        </template>
-                      </n-button>
-                    </template>
-                    复制回复
-                  </n-tooltip>
-
-                  <n-tooltip trigger="hover">
-                    <template #trigger>
-                      <n-button size="tiny" tertiary circle @click="regenerateAssistant(msg)" :disabled="sending || preparingSend">
-                        <template #icon>
-                          <n-icon :component="RefreshOutline" size="12" />
-                        </template>
-                      </n-button>
-                    </template>
-                    重新生成（放弃本次回答）
-                  </n-tooltip>
-                </div>
-
-                <div v-else-if="msg.role === 'user'" class="chat-item__actions">
-                  <n-tooltip trigger="hover">
-                    <template #trigger>
-                      <n-button size="tiny" tertiary circle @click="copyUserMessage(msg)" :disabled="!msg.content">
-                        <template #icon>
-                          <n-icon :component="CopyOutline" size="12" />
-                        </template>
-                      </n-button>
-                    </template>
-                    复制提问
-                  </n-tooltip>
-
-                  <n-tooltip trigger="hover">
-                    <template #trigger>
-                      <n-button size="tiny" tertiary circle @click="toggleOrSubmitUserEdit(msg)" :disabled="sending || preparingSend">
-                        <template #icon>
-                          <n-icon :component="msg.editing ? CheckmarkOutline : PencilOutline" size="12" />
-                        </template>
-                      </n-button>
-                    </template>
-                    {{ msg.editing ? '重发（Enter）/ 取消（Esc）' : '编辑并重发' }}
-                  </n-tooltip>
-                </div>
-              </div>
-            </div>
-
-            <n-text v-if="!isChatActivityMessage(msg)" class="chat-item__time" depth="3">{{ formatTime(msg.time) }}</n-text>
-          </div>
-
-          </div>
-          </n-scrollbar>
-
-          <div
-            v-if="stickyChatBubble"
-            class="chat-sticky-bubble"
-            :class="[`is-${stickyChatBubble.type}`, { 'is-dark': theme === 'dark' }]"
-            @click="handleStickyChatBubbleAction"
-          >
-            <div class="chat-sticky-bubble__main">
-              <n-icon :component="ChevronUpOutline" size="14" />
-              <span class="chat-sticky-bubble__label">{{ stickyChatBubble.label }}</span>
-              <code v-if="stickyChatBubble.toolName" class="chat-sticky-bubble__tool-name">
-                {{ stickyChatBubble.toolName }}
-              </code>
-              <span v-if="stickyChatBubble.source" class="chat-sticky-bubble__source">
-                {{ stickyChatBubble.source }}
-              </span>
-              <span
-                v-if="stickyChatBubble.showStatus && stickyChatBubble.statusText"
-                class="chat-sticky-bubble__status"
-                :class="`is-${stickyChatBubble.status}`"
-              >
-                {{ stickyChatBubble.statusText }}
-              </span>
-              <span v-if="stickyChatBubble.meta" class="chat-sticky-bubble__meta">{{ stickyChatBubble.meta }}</span>
-            </div>
-            <n-button size="tiny" tertiary round @click.stop="handleStickyChatBubbleAction">
-              {{ stickyChatBubble.actionText }}
-            </n-button>
-          </div>
-
-          <n-tooltip v-if="showScrollToBottomButton" trigger="hover">
-            <template #trigger>
-              <n-button
-                class="chat-scroll-to-bottom"
-                size="small"
-                tertiary
-                circle
-                @click="activateAutoScroll"
-              >
-                <template #icon>
-                  <n-icon :component="ArrowDownOutline" size="18" />
-                </template>
-              </n-button>
-            </template>
-            回到底部
-          </n-tooltip>
-        </div>
-      </n-card>
-
-      <nav v-if="showAnchorRail" class="chat-anchor-rail" aria-label="消息问题导航">
-        <n-tooltip v-for="a in userAnchors" :key="a.id" trigger="hover">
-          <template #trigger>
-            <button
-              type="button"
-              class="chat-anchor-marker"
-              :class="{ active: a.id === activeAnchorId }"
-              :aria-label="`跳转到第 ${a.index} 问：${a.preview}`"
-              :aria-current="a.id === activeAnchorId ? 'location' : undefined"
-              @click="scrollToUserAnchor(a.id)"
-            >
-              <span aria-hidden="true" />
-            </button>
-          </template>
-          第{{ a.index }} 问：{{ a.preview }}
-        </n-tooltip>
-      </nav>
-    </div>
-
-    <transition name="tool-approval">
-      <section
-        v-if="activeToolApproval"
-        class="tool-approval-card"
-        role="alertdialog"
-        aria-live="assertive"
-        aria-label="工具调用审批"
-      >
-        <div class="tool-approval-card__header">
-          <div class="tool-approval-card__title-wrap">
-            <span class="tool-approval-card__icon">
-              <n-icon :component="ShieldOutline" size="18" />
-            </span>
-            <div class="tool-approval-card__title-copy">
-              <strong>{{ activeToolApproval.titleText }}</strong>
-              <span>
-                {{ activeToolApproval.serverName }} / {{ activeToolApproval.toolName }}
-              </span>
-            </div>
-          </div>
-          <n-flex align="center" :size="6">
-            <n-tag size="small" type="warning" :bordered="false">等待确认</n-tag>
-            <n-tag v-if="pendingToolApprovalCount > 1" size="small" :bordered="false">
-              队列 {{ pendingToolApprovalCount }}
-            </n-tag>
-          </n-flex>
-        </div>
-
-        <div class="tool-approval-card__meta">
-          <span v-if="activeToolApproval.sessionTitle">
-            会话：{{ activeToolApproval.sessionTitle }}
-          </span>
-          <span v-for="line in activeToolApproval.extraLines" :key="line">{{ line }}</span>
-        </div>
-
-        <div v-if="activeToolApproval.approvalKind === 'shell'" class="tool-approval-card__command">
-          <div class="tool-approval-card__command-label">
-            <span>Bash 命令</span>
-            <code>cwd: {{ activeToolApproval.cwdText }}</code>
-          </div>
-          <pre>{{ activeToolApproval.commandText || '（空命令）' }}</pre>
-        </div>
-
-        <details v-else class="tool-approval-card__details" open>
-          <summary>{{ activeToolApproval.approvalKind === 'execution' ? '查看待执行脚本与参数' : '查看调用参数' }}</summary>
-          <pre>{{ activeToolApproval.argsText }}</pre>
-        </details>
-
-        <details
-          v-if="activeToolApproval.approvalKind === 'shell' || activeToolApproval.reasoningText"
-          class="tool-approval-card__details"
-        >
-          <summary>{{ activeToolApproval.reasoningText ? '查看模型说明与完整参数' : '查看完整参数' }}</summary>
-          <div v-if="activeToolApproval.reasoningText" class="tool-approval-card__reasoning">
-            {{ activeToolApproval.reasoningText }}
-          </div>
-          <pre>{{ activeToolApproval.argsText }}</pre>
-        </details>
-
-        <div class="tool-approval-card__footer">
-          <n-text depth="3" class="tool-approval-card__scope">
-            {{ activeToolApproval.scopeHint }}
-          </n-text>
-          <n-flex justify="end" wrap :size="8">
-            <n-button size="small" @click="resolveActiveToolApproval('deny')">拒绝</n-button>
-            <n-button size="small" secondary type="primary" @click="resolveActiveToolApproval('once')">
-              允许一次
-            </n-button>
-            <n-button
-              v-if="activeToolApproval.canRemember"
-              size="small"
-              type="primary"
-              @click="resolveActiveToolApproval('session')"
-            >
-              {{ activeToolApproval.rememberText }}
-            </n-button>
-          </n-flex>
-        </div>
-      </section>
-    </transition>
+    <ChatToolApprovalCard
+      :approval="activeToolApproval"
+      :pending-count="pendingToolApprovalCount"
+      @resolve="resolveActiveToolApproval"
+    />
 
     <ChatComposerPanel
       ref="composerPanelRef"
@@ -538,12 +134,8 @@
       :tool-approval-mode-options="chatToolApprovalModeOptions"
       :auto-activate-agent-skills="autoActivateAgentSkills"
       :tool-mode-display-text="toolModeDisplayText"
-      :context-window-preset-label="contextWindowPresetLabel"
-      :context-window-history-focus-label="contextWindowHistoryFocusLabel"
       :refreshing-mcp-tools="refreshingMcpTools"
       :thinking-effort-button-type="thinkingEffortButtonType"
-      :image-generation-button-type="imageGenerationButtonType"
-      :video-generation-button-type="videoGenerationButtonType"
       :media-generation-preset-options="mediaGenerationPresetOptions"
       :can-send="canSend"
       :queued-inputs="activeQueuedInputs"
@@ -602,417 +194,107 @@
       @download-video="downloadChatVideo"
     />
 
-    <!-- 模型设置 -->
-    <n-modal
+    <ChatModelSettingsModal
       v-model:show="showModelModal"
-      :mask-closable="false"
-      preset="card"
-      title="模型设置"
-      style="width: 900px; max-width: 95%;"
-    >
-      <n-collapse accordion>
-        <n-collapse-item
-          v-for="p in providers"
-          :key="p._id"
-          :name="p._id"
-          :title="p.name || p._id"
-        >
-          <n-flex vertical :size="8">
-            <n-text depth="3" style="font-size: 12px; word-break: break-all;">
-              {{ isUtoolsBuiltinProvider(p) ? 'uTools 内置 AI 服务商。模型在 uTools 设置中管理。' : (p.baseurl || '未配置基础地址') }}
-            </n-text>
-            <n-flex v-if="isUtoolsBuiltinProvider(p)" align="center" wrap :size="8">
-              <n-button size="tiny" secondary :loading="utoolsAiModelsLoading" @click.stop="refreshBuiltinProviderModelsInChat(true)">
-                刷新模型
-              </n-button>
-              <n-button size="tiny" @click.stop="openBuiltinProviderSettingsFromChat">
-                打开 uTools AI 设置
-              </n-button>
-              <n-text v-if="utoolsAiModelsError" depth="3" style="font-size: 12px;">
-                {{ utoolsAiModelsError }}
-              </n-text>
-            </n-flex>
-            <n-flex align="center" wrap :size="8">
-              <n-flex v-for="m in (p.selectModels || [])" :key="m" align="center" :size="4">
-                <n-button
-                  size="tiny"
-                  :type="isCurrentModel(p._id, m) ? 'primary' : 'default'"
-                  @click="selectProviderModel(p._id, m)"
-                >
-                  {{ m }}
-                </n-button>
+      :providers="providers"
+      :default-model-text="defaultModelText"
+      :utools-ai-models-loading="utoolsAiModelsLoading"
+      :utools-ai-models-error="utoolsAiModelsError"
+      :is-builtin-provider="isUtoolsBuiltinProvider"
+      :is-current-model="isCurrentModel"
+      :is-default-model="isDefaultModel"
+      @refresh-builtin-models="refreshBuiltinProviderModelsInChat(true)"
+      @open-builtin-settings="openBuiltinProviderSettingsFromChat"
+      @select-model="selectProviderModel"
+      @toggle-default-model="toggleDefaultModel"
+    />
 
-                <n-tooltip trigger="hover">
-                  <template #trigger>
-                    <n-button size="tiny" tertiary circle @click.stop="toggleDefaultModel(p._id, m)">
-                      <template #icon>
-                        <n-icon :component="isDefaultModel(p._id, m) ? Star : StarOutline" size="12" />
-                      </template>
-                    </n-button>
-                  </template>
-                  {{ isDefaultModel(p._id, m) ? '默认模型（点击清除）' : '设为默认模型' }}
-                </n-tooltip>
-              </n-flex>
-              <n-text v-if="!p.selectModels || p.selectModels.length === 0" depth="3" style="font-size: 12px;">
-                {{ isUtoolsBuiltinProvider(p) ? '当前还没有启用任何 uTools AI 模型，请先打开 uTools AI 设置。' : '当前服务商还没有启用的模型，请到 设置 -> 服务商 中配置。' }}
-              </n-text>
-            </n-flex>
-          </n-flex>
-        </n-collapse-item>
-      </n-collapse>
-
-      <template #footer>
-        <n-flex justify="space-between" align="center" :size="12">
-          <n-text depth="3" style="font-size: 12px;">
-            默认模型：{{ defaultModelText || '无' }}
-          </n-text>
-          <n-button @click="showModelModal = false">关闭</n-button>
-        </n-flex>
-      </template>
-    </n-modal>
-
-    <!-- 临时系统提示词 -->
-    <n-modal
+    <ChatSystemPromptModal
       v-model:show="showSystemPromptModal"
-      :mask-closable="false"
-      preset="card"
-      title="临时系统提示词"
-      style="width: 900px; max-width: 95%;"
-    >
-      <n-flex
-        vertical
-        :size="12"
-      >
-        <n-text depth="3" style="font-size: 12px;">
-          当前来源：{{ basePromptSourceText }}
-        </n-text>
+      v-model:draft="systemPromptDraft"
+      :base-prompt-source-text="basePromptSourceText"
+      :has-selected-system-prompt="hasSelectedSystemPrompt"
+      @reset-to-selected-prompt="resetSystemPromptToSelectedPrompt"
+      @clear="clearCustomSystemPrompt"
+      @apply="applyCustomSystemPrompt"
+    />
 
-        <n-input
-          v-model:value="systemPromptDraft"
-          type="textarea"
-          :autosize="{ minRows: 6, maxRows: 18 }"
-          placeholder="输入仅对当前会话生效的临时系统提示词。"
-        />
-      </n-flex>
-
-      <template #footer>
-        <n-flex justify="space-between" align="center" :size="12">
-          <n-flex :size="8">
-            <n-button size="small" @click="resetSystemPromptToSelectedPrompt" :disabled="!hasSelectedSystemPrompt">
-              重置为提示词
-            </n-button>
-            <n-button size="small" @click="clearCustomSystemPrompt">
-              清空
-            </n-button>
-          </n-flex>
-          <n-flex justify="flex-end" :size="12">
-            <n-button @click="showSystemPromptModal = false">取消</n-button>
-            <n-button type="primary" @click="applyCustomSystemPrompt">
-              应用
-            </n-button>
-          </n-flex>
-        </n-flex>
-      </template>
-    </n-modal>
-
-    <n-modal
+    <ChatContextWindowModal
       v-model:show="showContextWindowModal"
-      :mask-closable="false"
-      :class="['chat-context-window-modal', { 'is-dark': theme === 'dark' }]"
-      preset="card"
-      title="上下文窗口"
-      style="width: 720px; max-width: 95%;"
-    >
-      <n-flex vertical :size="12" :class="['chat-context-window-panel', { 'is-dark': theme === 'dark' }]">
-        <n-text depth="3" style="font-size: 12px;">
-          这里只影响当前请求会向模型发送多少历史上下文，不会修改会话原始记录。
-        </n-text>
-        <n-form label-placement="left" label-width="110px">
-          <n-form-item label="预设策略">
-            <n-select
-              v-model:value="contextWindowDraft.preset"
-              :options="contextWindowPresetOptions"
-              placeholder="选择上下文策略"
-              @update:value="handleContextWindowPresetChange"
-            />
-          </n-form-item>
+      :theme="theme"
+      :draft="contextWindowDraft"
+      :preset-options="contextWindowPresetOptions"
+      :history-focus-options="contextWindowHistoryFocusOptions"
+      :draft-history-focus-hint="contextWindowDraftHistoryFocusHint"
+      :summary-text="contextWindowSummaryText"
+      :provider-hint="contextWindowProviderHint"
+      :budget-status="contextWindowBudgetStatus"
+      :preview-budget-summary-text="contextWindowPreviewBudgetSummaryText"
+      :preview-budget-items="contextWindowPreviewBudgetItems"
+      :compressed-summary-text="contextWindowCompressedSummaryText"
+      :compressed-summary-meta-text="contextWindowCompressedSummaryMetaText"
+      :compressed-summary-chain-text="contextWindowCompressedSummaryChainText"
+      :compressed-summary-source-text="contextWindowCompressedSummarySourceText"
+      :preview-summary-text="contextWindowPreviewSummaryText"
+      :preview-entries="contextWindowPreviewEntries"
+      :preview-omitted-entries="contextWindowPreviewOmittedEntries"
+      :preview-omitted-summary-text="contextWindowPreviewOmittedSummaryText"
+      :preview-omitted-filter-options="contextWindowPreviewOmittedFilterOptions"
+      :preview-resolved-omitted-filter="contextWindowPreviewResolvedOmittedFilter"
+      :preview-filtered-omitted-entries="contextWindowPreviewFilteredOmittedEntries"
+      :omitted-filter="contextWindowPreviewOmittedFilter"
+      :preview-helpers="contextWindowPreviewHelpers"
+      @update:omitted-filter="contextWindowPreviewOmittedFilter = $event"
+      @preset-change="handleContextWindowPresetChange"
+      @reset="resetContextWindowDraftToDefault"
+      @apply="applyContextWindowSettings"
+    />
 
-          <n-form-item label="历史侧重">
-            <n-select
-              v-model:value="contextWindowDraft.historyFocus"
-              :options="contextWindowHistoryFocusOptions"
-              placeholder="选择历史保留方式"
-            />
-          </n-form-item>
-          <n-text depth="3" style="font-size: 12px; margin-top: -8px;">
-            {{ contextWindowDraftHistoryFocusHint }}
-          </n-text>
-
-          <template v-if="contextWindowDraft.preset === 'custom'">
-            <n-form-item label="最大轮次">
-              <n-input-number v-model:value="contextWindowDraft.maxTurns" :min="2" :max="200" style="width: 180px;" />
-            </n-form-item>
-            <n-form-item label="完整保留轮次">
-              <n-input-number v-model:value="contextWindowDraft.keepRecentTurnsFull" :min="1" :max="64" style="width: 180px;" />
-            </n-form-item>
-            <n-form-item label="最大消息数">
-              <n-input-number v-model:value="contextWindowDraft.maxMessages" :min="8" :max="1000" style="width: 180px;" />
-            </n-form-item>
-            <n-form-item label="展开 Token">
-              <n-input-number v-model:value="contextWindowDraft.maxTokensExpanded" :min="1000" :max="4000000" :step="1000" style="width: 180px;" />
-            </n-form-item>
-            <n-form-item label="精简 Token">
-              <n-input-number v-model:value="contextWindowDraft.maxTokensCompact" :min="1000" :max="4000000" :step="1000" style="width: 180px;" />
-            </n-form-item>
-            <n-form-item label="展开模式字符">
-              <n-input-number v-model:value="contextWindowDraft.maxCharsExpanded" :min="4000" :max="4200000" :step="10000" style="width: 180px;" />
-            </n-form-item>
-            <n-form-item label="精简模式字符">
-              <n-input-number v-model:value="contextWindowDraft.maxCharsCompact" :min="6000" :max="4200000" :step="10000" style="width: 180px;" />
-            </n-form-item>
-            <n-form-item label="自动压缩阈值">
-              <n-input-number v-model:value="contextWindowDraft.autoCompactTriggerPercent" :min="55" :max="95" :step="1" style="width: 180px;" />
-            </n-form-item>
-            <n-text depth="3" style="font-size: 12px;">
-              有输入 Token 统计时使用 Token 预算；否则自动使用字符预算。
-            </n-text>
-          </template>
-        </n-form>
-
-        <n-text depth="3" style="font-size: 12px;">
-          当前会话：{{ contextWindowSummaryText }}
-        </n-text>
-        <n-text depth="3" style="font-size: 12px;">
-          {{ contextWindowProviderHint }}
-        </n-text>
-        <ChatContextWindowPreview
-          v-if="showContextWindowModal"
-          :theme="theme"
-          :budget-status="contextWindowBudgetStatus"
-          :budget-summary-text="contextWindowPreviewBudgetSummaryText"
-          :budget-items="contextWindowPreviewBudgetItems"
-          :summary-text="contextWindowCompressedSummaryText"
-          :summary-meta-text="contextWindowCompressedSummaryMetaText"
-          :summary-chain-text="contextWindowCompressedSummaryChainText"
-          :summary-source-text="contextWindowCompressedSummarySourceText"
-          :preview-summary-text="contextWindowPreviewSummaryText"
-          :entries="contextWindowPreviewEntries"
-          :omitted-entries="contextWindowPreviewOmittedEntries"
-          :omitted-summary-text="contextWindowPreviewOmittedSummaryText"
-          :omitted-filter-options="contextWindowPreviewOmittedFilterOptions"
-          :resolved-omitted-filter="contextWindowPreviewResolvedOmittedFilter"
-          :filtered-omitted-entries="contextWindowPreviewFilteredOmittedEntries"
-          :omitted-filter="contextWindowPreviewOmittedFilter"
-          :helpers="contextWindowPreviewHelpers"
-          @update:omitted-filter="contextWindowPreviewOmittedFilter = $event"
-        />
-      </n-flex>
-
-      <template #footer>
-        <n-flex justify="space-between" align="center" :size="12">
-          <n-button size="small" @click="resetContextWindowDraftToDefault">
-            恢复默认
-          </n-button>
-          <n-flex justify="flex-end" :size="12">
-            <n-button @click="showContextWindowModal = false">取消</n-button>
-            <n-button type="primary" @click="applyContextWindowSettings">
-              应用
-            </n-button>
-          </n-flex>
-        </n-flex>
-      </template>
-    </n-modal>
-
-    <!-- 智能体选择器 -->
-    <n-modal
+    <ChatAgentPickerModal
       v-model:show="showAgentModal"
-      :mask-closable="false"
-      preset="card"
-      title="选择智能体（@）"
-      style="width: 600px; max-width: 95%;"
-    >
-      <n-form label-placement="left" label-width="90px">
-        <n-form-item label="智能体">
-          <n-select
-            v-model:value="agentModalSelectedId"
-            :options="agentOptions"
-            placeholder="选择智能体"
-            filterable
-            clearable
-          />
-        </n-form-item>
-      </n-form>
+      v-model:selected-id="agentModalSelectedId"
+      :options="agentOptions"
+      :has-selected-agent="!!visibleSelectedAgent"
+      @clear="clearSelectedAgent"
+      @apply="applyAgentModal"
+    />
 
-      <template #footer>
-        <n-flex justify="space-between" align="center" :size="12">
-          <n-button size="small" @click="clearSelectedAgent" :disabled="!visibleSelectedAgent">
-            恢复默认
-          </n-button>
-          <n-flex justify="flex-end" :size="12">
-            <n-button @click="showAgentModal = false">取消</n-button>
-            <n-button type="primary" @click="applyAgentModal" :disabled="!agentModalSelectedId">
-              应用
-            </n-button>
-          </n-flex>
-        </n-flex>
-      </template>
-    </n-modal>
-    <!-- 提示词选择器 -->
-    <n-modal
+    <ChatPromptPickerModal
       v-model:show="showPromptModal"
-      :mask-closable="false"
-      preset="card"
-      title="选择提示词（/prompt）"
-      style="width: 700px; max-width: 95%;"
-    >
-      <n-form label-placement="left" label-width="90px">
-        <n-form-item label="提示词">
-          <n-select
-            v-model:value="promptModalSelectedId"
-            :options="promptOptions"
-            :loading="loadingMcpPrompts"
-            placeholder="选择本地提示词，或当前 MCP 提供的提示词"
-            filterable
-            clearable
-          />
-        </n-form-item>
-        <n-text depth="3" style="font-size: 12px; display: block; margin-left: 90px;">
-          本地系统提示词会切换当前系统提示词；本地用户提示词与 MCP 提示词会插入到当前输入框。
-        </n-text>
+      v-model:selected-id="promptModalSelectedId"
+      :options="promptOptions"
+      :loading="loadingMcpPrompts"
+      :selected-kind="selectedPromptModalKind"
+      :selected-local-prompt="selectedLocalPromptForModal"
+      :mcp-prompt-args="selectedMcpPromptArgs"
+      :local-prompt-variables="selectedLocalPromptVariables"
+      :mcp-args-form="promptMcpArgsForm"
+      :user-args-form="promptUserArgsForm"
+      :is-user-prompt="isUserPrompt"
+      @clear="clearSelectedPrompt"
+      @apply="applyPromptModal"
+    />
 
-        <template v-if="selectedPromptModalKind === 'mcp'">
-          <McpArgumentForm
-            v-if="showPromptModal && selectedMcpPromptArgs.length"
-            :params="selectedMcpPromptArgs"
-            :form-data="promptMcpArgsForm"
-            max-height="260px"
-            padding="0"
-            label-width="120px"
-          />
-          <n-text v-else depth="3" style="font-size: 12px; display: block; margin-left: 90px;">
-            该 MCP 提示词无参数，将直接插入输入框。
-          </n-text>
-        </template>
-        <template v-else-if="selectedLocalPromptForModal && selectedLocalPromptVariables.length">
-          <McpArgumentForm
-            v-if="showPromptModal"
-            :params="selectedLocalPromptVariables"
-            :form-data="promptUserArgsForm"
-            max-height="260px"
-            padding="0"
-            label-width="120px"
-          />
-        </template>
-        <n-text
-          v-else-if="selectedLocalPromptForModal && isUserPrompt(selectedLocalPromptForModal)"
-          depth="3"
-          style="font-size: 12px; display: block; margin-left: 90px;"
-        >
-          该用户提示词无变量，将直接插入输入框。
-        </n-text>
-      </n-form>
-
-      <template #footer>
-        <n-flex justify="space-between" align="center" :size="12">
-          <n-button size="small" @click="clearSelectedPrompt">清除提示词</n-button>
-          <n-flex justify="flex-end" :size="12">
-            <n-button @click="showPromptModal = false">取消</n-button>
-            <n-button type="primary" @click="applyPromptModal">
-              应用
-            </n-button>
-          </n-flex>
-        </n-flex>
-      </template>
-    </n-modal>
-
-    <!-- 技能选择器 -->
-    <n-modal
+    <ChatSkillPickerModal
       v-model:show="showSkillModal"
-      :mask-closable="false"
-      preset="card"
-      title="选择技能（/skill）"
-      style="width: 800px; max-width: 95%;"
-    >
-      <n-form label-placement="left" label-width="90px">
-        <n-form-item label="技能">
-          <n-select
-            v-model:value="skillModalSelectedIds"
-            multiple
-            :options="skillOptions"
-            placeholder="选择技能（可选）"
-            filterable
-            clearable
-          />
-        </n-form-item>
-      </n-form>
+      v-model:selected-ids="skillModalSelectedIds"
+      :options="skillOptions"
+      @apply="applySkillModal"
+    />
 
-      <template #footer>
-        <n-flex justify="flex-end" :size="12">
-          <n-button @click="showSkillModal = false">取消</n-button>
-          <n-button type="primary" @click="applySkillModal">
-            应用
-          </n-button>
-        </n-flex>
-      </template>
-    </n-modal>
-
-    <!-- MCP 选择器 -->
-    <n-modal
+    <ChatMcpPickerModal
       v-model:show="showMcpModal"
-      :mask-closable="false"
-      preset="card"
-      title="选择 MCP（/mcp）"
-      style="width: 720px; max-width: 92%;"
-    >
-      <n-flex vertical :size="12">
-        <n-form label-placement="left" label-width="90px">
-          <n-form-item label="MCP 服务">
-            <n-select
-              v-model:value="mcpModalSelectedIds"
-              multiple
-              size="small"
-              :options="mcpOptions"
-              placeholder="选择 MCP 服务（可选）"
-              filterable
-              clearable
-            />
-          </n-form-item>
-        </n-form>
-
-        <n-text depth="3" style="font-size: 12px;">
-          技能中配置的 MCP 会随技能选择自动加入（当前来自技能：{{ derivedMcpIds.length }}）
-        </n-text>
-      </n-flex>
-
-      <template #footer>
-        <n-flex justify="space-between" align="center" :size="12">
-          <n-dropdown
-            trigger="click"
-            placement="top-start"
-            :options="chatToolApprovalModeOptions"
-            @select="setToolApprovalMode"
-          >
-            <n-button
-              size="small"
-              tertiary
-              circle
-              :type="toolApprovalModeButtonType"
-              :title="`工具调用控制：${toolApprovalModeLabel}`"
-            >
-              <template #icon>
-                <n-icon :component="toolApprovalMode === TOOL_APPROVAL_MODE_MANUAL ? ShieldOutline : ShieldCheckmarkOutline" size="16" />
-              </template>
-            </n-button>
-          </n-dropdown>
-          <n-flex justify="flex-end" :size="12">
-            <n-button @click="showMcpModal = false">取消</n-button>
-            <n-button type="primary" @click="applyMcpModal">
-              应用
-            </n-button>
-          </n-flex>
-        </n-flex>
-      </template>
-    </n-modal>
+      v-model:selected-ids="mcpModalSelectedIds"
+      :options="mcpOptions"
+      :derived-mcp-count="derivedMcpIds.length"
+      :tool-approval-mode="toolApprovalMode"
+      :manual-approval-mode="TOOL_APPROVAL_MODE_MANUAL"
+      :tool-approval-mode-label="toolApprovalModeLabel"
+      :tool-approval-mode-button-type="toolApprovalModeButtonType"
+      :tool-approval-mode-options="chatToolApprovalModeOptions"
+      @set-tool-approval-mode="setToolApprovalMode"
+      @apply="applyMcpModal"
+    />
         </n-flex>
       </n-layout-content>
 
@@ -1052,66 +334,23 @@
 </template>
 
 <script setup>
-import { computed, defineAsyncComponent, ref, reactive, watch, nextTick, onMounted, onActivated, onDeactivated, onBeforeUnmount } from 'vue'
-import { useVirtualizer } from '@tanstack/vue-virtual'
+import { computed, defineAsyncComponent, ref, reactive, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import {
-  NCard,
   NFlex,
-  NIcon,
   NSpace,
   NLayout,
   NLayoutSider,
   NLayoutContent,
-  NSelect,
-  NInput,
-  NInputNumber,
-  NButton,
-  NText,
-  NTag,
-  NScrollbar,
-  NModal,
-  NForm,
-  NFormItem,
-  NCollapse,
-  NCollapseItem,
   NDropdown,
-  NTooltip,
   useDialog,
   useMessage
 } from 'naive-ui'
-import LazyMarkdownPreview from '@/components/LazyMarkdownPreview.vue'
 import { ensureMarkdownPreviewRuntime } from '@/utils/mdEditorRuntime'
 import {
-  analyzeUserMessageFolding,
   buildChatDisplayMessages,
-  buildUserMessagePreview,
-  ensureUniqueChatMessageIds,
-  shouldShowChatAnchorRail
+  ensureUniqueChatMessageIds
 } from '@/utils/chatDisplayFolding.js'
-import { ChatMultiple24Filled } from '@vicons/fluent'
-import {
-  ArrowDownOutline,
-  ShieldCheckmarkOutline,
-  ShieldOutline,
-  ImageOutline,
-  DocumentTextOutline,
-  StarOutline,
-  Star,
-  ChevronDownOutline,
-  ChevronUpOutline,
-  PersonCircleOutline,
-  SparklesOutline,
-  ChatbubbleEllipsesOutline,
-  HardwareChipOutline,
-  CopyOutline,
-  CloseOutline,
-  PauseCircleOutline,
-  RefreshOutline,
-  PencilOutline,
-  CheckmarkOutline
-} from '@vicons/ionicons5'
-
 import { useUtoolsEnterData } from '@/utils/utoolsListener.js'
 import { getOrCreateMCPClient, getMcpPrompt, releaseMCPClient, closePooledMCPClient, closeAllPooledMCPClients } from '@/utils/mcpClient'
 import { getTheme, getAgents, getProviders, getPrompts, getSkills, getMcpServers, getChatConfig, readSkillFile as readSkillRegistryFile, updateChatConfig } from '@/utils/configListener'
@@ -1217,7 +456,6 @@ import {
 } from '@/utils/chatImageGeneration.js'
 import {
   imageMetaLabel,
-  normalizeMediaDimension,
   videoMetaLabel
 } from '@/utils/chatMediaMetadata.js'
 import {
@@ -1225,21 +463,14 @@ import {
   applyMediaGenerationPresetToInput
 } from '@/utils/chatMediaPresets.js'
 import {
-  buildMediaGenerationManualRequestOptions,
   createDefaultImageGenerationParams,
-  createDefaultVideoGenerationParams,
-  normalizeImageGenerationParams,
-  normalizeMediaGenerationParamsEnabled,
-  normalizeVideoGenerationParams,
-  summarizeImageGenerationParams,
-  summarizeVideoGenerationParams
+  createDefaultVideoGenerationParams
 } from '@/utils/chatMediaGenerationParams.js'
 import {
   collectSessionMediaItems,
   countSessionMediaItems,
   filterSessionMediaItems
 } from '@/utils/chatMediaLibrary.js'
-import { canWriteClipboardMime, normalizeClipboardMediaMime } from '@/utils/chatClipboard.js'
 import {
   buildChatSessionAssetsDirectory,
   collectChatMediaAssetPathsFromPayload,
@@ -1248,7 +479,6 @@ import {
   hydrateChatSessionMediaAssets,
   persistChatMediaListAssets,
   persistChatSessionMediaAssets,
-  resolveChatMediaAssetPath,
   serializeChatMediaForSave
 } from '@/utils/chatMediaAssets.js'
 import { readSessionJsonFile } from '@/utils/sessionFileJson.js'
@@ -1276,8 +506,6 @@ import {
 import {
   extractInlineAgentContext,
   extractInlineCommandContext,
-  getInlinePickerMatchScore,
-  INLINE_COMMAND_DEFINITIONS,
   INLINE_COMMAND_KIND_LABELS
 } from '@/utils/chatInlinePicker'
 import {
@@ -1294,10 +522,6 @@ import {
   collectChatSessionOwnedSandboxWorkspaceIds,
   purgeExpiredChatSessionTrash
 } from '@/utils/chatSessionTrash.js'
-import { requestOpenNoteFile } from '@/utils/noteOpenBridge'
-import { buildNoteHrefFromPath, resolveNoteAbsPathFromHref, safeDecodeURIComponent } from '@/utils/notePathUtils'
-import { getSafeExternalUrl, safeOpenExternal } from '@/utils/safeOpenExternal'
-import { runChatWorkspaceFileAction } from '@/utils/chatWorkspaceFileOperations.js'
 import {
   contentHasUserAttachments,
   extractEditableUserTextFromContent,
@@ -1309,17 +533,8 @@ import {
   shouldAutoAttachToolImagesForVision,
   shouldFallbackVisionInputToText
 } from '@/utils/toolVisionContext'
-import {
-  inferStructuredToolResultStatus,
-  inferToolDisplayContentStatus,
-  isAgentRunToolResult
-} from '@/utils/chatToolDisplay'
-import { getAgentRunMessageStatus, isAgentRunToolName, mergeAgentRunTraceEntries } from '@/utils/chatAgentRun'
+import { isAgentRunToolName } from '@/utils/chatAgentRun'
 import { CHAT_CODE_AUTO_FOLD_THRESHOLD } from '@/utils/chatMarkdownPreview'
-import {
-  collectSandboxFileCatalog,
-  resolveSandboxFileLink
-} from '@/utils/chatSandboxFileLink'
 import {
   buildChatAttachmentReferenceBlock,
   buildChatSandboxWorkspaceId,
@@ -1328,14 +543,7 @@ import {
   withDefaultChatSandboxWorkspaceId
 } from '@/utils/chatSandboxWorkspace'
 import {
-  getToolActivityLabel,
-  getToolActivityMeta,
-  getToolActivitySource,
-  getToolActivityToolName
-} from '@/utils/chatToolActivity'
-import {
   estimateChatMarkdownContentHeight,
-  isExpectedChatProgrammaticScroll,
   resolveChatBottomScrollTarget,
   resolveChatAdaptiveVirtualRange,
   resolveChatHeavyRenderTuning,
@@ -1346,42 +554,22 @@ import {
 } from '@/utils/chatPerformance.js'
 import {
   ATTACH_ACCEPT,
-  MAX_ATTACHMENT_BATCH_BYTES,
-  MAX_ATTACHMENT_FILE_BYTES,
-  MAX_IMAGE_BYTES,
-  buildDisplayImagesFromReferenceAttachments as buildDisplayImagesFromReferences,
-  buildImageAttachmentSummary,
   buildImageGenerationRequestOptionsWithReferences,
   buildVideoGenerationRequestOptionsWithReferences,
   clearAttachmentFileReferences,
-  fileToDataUrl,
-  getFileExt,
-  guessExtensionFromMime,
-  isImageAttachmentLike,
-  isSupportedAttachmentFile,
-  normalizeAttachmentName,
-  normalizeMediaReferenceImagesForRequest,
   resolveChatLongTextAttachmentPlan,
   truncateInlineText,
   truncateText
 } from '@/utils/chatAttachmentUtils'
 import {
-  assistantImagePromptLabel,
-  assistantImageTaskMetaLabel,
-  assistantImageTaskNote,
   assistantImageTaskStatusLabel,
-  assistantImageTaskTagType,
-  assistantImageTaskTitle,
-  assistantImageTitle,
   attachmentCardTitle,
   attachmentMetaSummary,
   attachmentStatusText,
   countFileAttachments,
   countImageAttachments,
   imageInsightLabel,
-  isImageAttachment,
-  listDisplayAttachments,
-  mediaTaskProgressLabel
+  listDisplayAttachments
 } from '@/utils/chatMediaPresentation'
 import {
   buildContextSummaryPrelude,
@@ -1424,24 +612,100 @@ import {
   CHAT_RUN_INPUT_MODE_STEER,
   createChatRunInputQueue
 } from '@/utils/chatRunInputQueue'
-import ChatAssistantMedia from './ChatAssistantMedia.vue'
 import ChatComposerPanel from './ChatComposerPanel.vue'
+import ChatConversationPanel from './ChatConversationPanel.vue'
 import ChatHeaderCard from './ChatHeaderCard.vue'
-import ChatMediaLibraryModal from './ChatMediaLibraryModal.vue'
-import ChatToolMessage from './ChatToolMessage.vue'
-import ChatToolActivityGroup from './ChatToolActivityGroup.vue'
-import ChatUserAttachments from './ChatUserAttachments.vue'
+import ChatToolApprovalCard from './ChatToolApprovalCard.vue'
 import SessionTree from './SessionTree.vue'
+import {
+  normalizeChatMediaGenerationMode as normalizeImageGenerationMode,
+  useChatMediaControls
+} from './composables/useChatMediaControls.js'
+import {
+  makeLocalPromptOptionValue,
+  makeMcpPromptOptionValue,
+  useChatInlinePicker
+} from './composables/useChatInlinePicker.js'
+import { useChatAttachments } from './composables/useChatAttachments.js'
+import { useChatResponsiveLayout } from './composables/useChatResponsiveLayout.js'
+import {
+  contextWindowHistoryFocusOptions,
+  contextWindowPresetOptions,
+  useChatContextWindowPresentation
+} from './composables/useChatContextWindowPresentation.js'
+import { useChatLinkActions } from './composables/useChatLinkActions.js'
+import { useChatMediaActions } from './composables/useChatMediaActions.js'
+import { useChatAssistantMediaPresentation } from './composables/useChatAssistantMediaPresentation.js'
+import { useChatToolPresentation } from './composables/useChatToolPresentation.js'
+import { useChatToolExecutionMessageFactory } from './composables/useChatToolExecutionMessageFactory.js'
+import { useChatToolExecutionMerge } from './composables/useChatToolExecutionMerge.js'
+import { useChatAgentRunTraceEvents } from './composables/useChatAgentRunTraceEvents.js'
+import {
+  buildAutoSessionTitle,
+  buildDefaultSessionName,
+  buildSessionTitleGenerationPrompt,
+  getSessionTitleFromPath,
+  normalizeGeneratedSessionTitle,
+  sanitizeAutoSessionTitle
+} from './composables/useChatSessionTitles.js'
+import {
+  parseIsoTimeMs,
+  resolvePersistedSessionCreatedAtMs
+} from './composables/useChatSessionTimestamps.js'
+import { useChatStreamingTextBuffer } from './composables/useChatStreamingTextBuffer.js'
+import {
+  getUserMessageFoldInfo,
+  inferLoadedDisplayMessageRender,
+  inferUserDisplayMessageRender,
+  isLikelyMarkdownContent,
+  isUserMessageCollapsed,
+  isUserMessageFoldable,
+  shouldKeepLoadedAssistantTextRender,
+  shouldRenderUserMessageAsPlainText,
+  userMessageFoldSummary,
+  userMessagePreview
+} from './composables/useChatMessageRendering.js'
+import {
+  buildMcpToolHint,
+  buildProviderToolDefinition,
+  buildProviderToolDescription,
+  makeToolFunctionName
+} from './composables/useChatToolDefinitions.js'
+import {
+  formatLocalUserPromptForComposer,
+  formatMcpPromptResultForComposer,
+  normalizeMcpPromptList
+} from './composables/useChatPromptFormatting.js'
+import { useChatMemorySessionMetadata } from './composables/useChatMemorySessionMetadata.js'
+import { useChatUserMessageIndexing } from './composables/useChatUserMessageIndexing.js'
+import {
+  extractContextTokenMetrics,
+  extractModelUsage
+} from './composables/useChatUsageTelemetry.js'
+import {
+  attachMediaRequestSnapshot,
+  buildImageGenerationApiSummary,
+  buildImageGenerationPendingText,
+  buildImageGenerationResultText,
+  buildMediaRequestSnapshot
+} from './composables/useChatMediaRequestPresentation.js'
+import { useChatMediaGenerationDisplay } from './composables/useChatMediaGenerationDisplay.js'
+import { useChatMessageTracking } from './composables/useChatMessageTracking.js'
+import { useChatRunSessionTargeting } from './composables/useChatRunSessionTargeting.js'
+import { useChatMemorySessionRegistry } from './composables/useChatMemorySessionRegistry.js'
+import { useChatMemorySessionLifecycle } from './composables/useChatMemorySessionLifecycle.js'
+import { useChatSessionManager } from './composables/useChatSessionManager.js'
+import { useChatRequestRunner } from './composables/useChatRequestRunner.js'
+import { useChatPageRuntime } from './composables/useChatPageRuntime.js'
 
-const ChatContextWindowPreview = defineAsyncComponent({
-  loader: () => import('./ChatContextWindowPreview.vue'),
-  suspensible: false
-})
-
-const McpArgumentForm = defineAsyncComponent({
-  loader: () => import('@/components/McpArgumentForm.vue'),
-  suspensible: false
-})
+const ChatAgentPickerModal = defineAsyncComponent(() => import('./ChatAgentPickerModal.vue'))
+const ChatContextWindowModal = defineAsyncComponent(() => import('./ChatContextWindowModal.vue'))
+const ChatMcpPickerModal = defineAsyncComponent(() => import('./ChatMcpPickerModal.vue'))
+const ChatMediaLibraryModal = defineAsyncComponent(() => import('./ChatMediaLibraryModal.vue'))
+const ChatModelSettingsModal = defineAsyncComponent(() => import('./ChatModelSettingsModal.vue'))
+const ChatPromptPickerModal = defineAsyncComponent(() => import('./ChatPromptPickerModal.vue'))
+const ChatSkillPickerModal = defineAsyncComponent(() => import('./ChatSkillPickerModal.vue'))
+const ChatSystemPromptModal = defineAsyncComponent(() => import('./ChatSystemPromptModal.vue'))
 
 const dialog = useDialog()
 const message = useMessage()
@@ -1470,6 +734,61 @@ const skills = getSkills()
 const mcpServers = getMcpServers()
 const chatConfig = getChatConfig()
 const { loading: utoolsAiModelsLoading, loadError: utoolsAiModelsError } = getUtoolsAiModelsState()
+
+// These composables have a few intentional cross-layer callbacks. Keep stable
+// delegates available from the start of setup, then forward to the real APIs
+// after each owning composable has initialized.
+let chatPageRuntimeApi = null
+let chatSessionManagerApi = null
+let chatRequestRunnerApi = null
+
+async function scrollToBottom(...args) {
+  return chatPageRuntimeApi?.scrollToBottom?.(...args)
+}
+
+function maybeScheduleStreamingScroll(...args) {
+  return chatPageRuntimeApi?.maybeScheduleStreamingScroll?.(...args)
+}
+
+function scheduleSessionAutosave(...args) {
+  return chatSessionManagerApi?.scheduleSessionAutosave?.(...args)
+}
+
+function getCurrentToolsKey(...args) {
+  return chatRequestRunnerApi?.getCurrentToolsKey?.(...args) || ''
+}
+
+function buildRequestApiMessages(...args) {
+  return chatRequestRunnerApi?.buildRequestApiMessages?.(...args) || []
+}
+
+function isDisplayMessageInActiveSession(...args) {
+  return chatRequestRunnerApi?.isDisplayMessageInActiveSession?.(...args) === true
+}
+
+function recordModelUsage(...args) {
+  return chatRequestRunnerApi?.recordModelUsage?.(...args)
+}
+
+function clearMcpToolCatalog(...args) {
+  return chatRequestRunnerApi?.clearMcpToolCatalog?.(...args)
+}
+
+function clearPinnedMcpToolHints(...args) {
+  return chatRequestRunnerApi?.clearPinnedMcpToolHints?.(...args)
+}
+
+function clearAllUserEditingState(...args) {
+  return chatRequestRunnerApi?.clearAllUserEditingState?.(...args)
+}
+
+function resetChatSetupUiState(...args) {
+  return chatRequestRunnerApi?.resetChatSetupUiState?.(...args)
+}
+
+function syncContextWindowDraft(...args) {
+  return chatRequestRunnerApi?.syncContextWindowDraft?.(...args)
+}
 
 function newId() {
   try {
@@ -1508,6 +827,15 @@ const session = reactive({
 
 const sessionTreeRef = ref(null)
 const sessionSiderCollapsed = ref(true)
+const {
+  isCompactChatLayout,
+  isDenseChatLayout,
+  layoutContentStyle,
+  sessionSiderWidth,
+  sessionSiderCollapsedWidth,
+  sessionSiderContentStyle,
+  syncChatResponsiveState
+} = useChatResponsiveLayout(sessionSiderCollapsed)
 const activeSessionFilePath = ref('')
 const activeSessionTitle = ref('')
 const historySessionLoadState = reactive({
@@ -1520,8 +848,6 @@ const historySessionLoadState = reactive({
   token: 0
 })
 const sessionContextWindowOverride = ref(null)
-const isCompactChatLayout = ref(false)
-const isDenseChatLayout = ref(false)
 
 const selectedAgentId = ref(null)
 const selectedProviderId = ref(null)
@@ -1650,7 +976,6 @@ const mcpToolCatalogByServerId = new Map()
 const mcpToolCatalogRevision = ref(0)
 const MCP_CATALOG_MAX_TOOL_NAMES_PER_SERVER = 600
 const MCP_CATALOG_MAX_TOOL_HINTS_PER_SERVER = 120
-const MCP_CATALOG_MAX_OPTIONAL_KEYS_PER_TOOL = 12
 // 将模型“查找用过”的工具固定到系统提示词，避免因 tool_names 截断导致反复 discover
 const mcpPinnedToolHintsByServerId = new Map()
 const mcpPinnedToolHintsRevision = ref(0)
@@ -1686,7 +1011,6 @@ const promptMcpArgsForm = reactive({})
 const promptUserArgsForm = reactive({})
 const loadingMcpPrompts = ref(false)
 const mcpPromptCatalog = ref([])
-let mcpPromptCatalogLoadPromise = null
 
 const showSkillModal = ref(false)
 const skillModalSelectedIds = ref([])
@@ -1698,28 +1022,28 @@ const input = ref('')
 const sandboxHostWorkspacePath = ref('')
 const composerInputKey = ref(0)
 const composerPanelRef = ref(null)
-const inlineAgentQuery = ref('')
-const inlineAgentMatchStart = ref(-1)
-const inlineAgentMatchEnd = ref(-1)
-const inlineAgentActiveIndex = ref(0)
-const inlineCommandMode = ref('')
-const inlineCommandType = ref('')
-const inlineCommandQuery = ref('')
-const inlineCommandMatchStart = ref(-1)
-const inlineCommandMatchEnd = ref(-1)
-const inlineCommandActiveIndex = ref(0)
+const {
+  pendingAttachments,
+  pendingImageAttachments,
+  pendingFileAttachments,
+  collectAttachmentMediaReferenceImages,
+  removeAttachment,
+  attachmentIcon,
+  ensureAttachmentParsed,
+  createPendingLongTextAttachment,
+  appendPendingFiles,
+  handleComposerPaste,
+  handleFileInputChange
+} = useChatAttachments({ createId: newId, message })
 const sending = ref(false)
 const preparingSend = ref(false)
 const preparingSendStage = ref('')
 const abortController = ref(null)
 const runRecordByAbortState = new WeakMap()
-const pendingAttachments = ref([])
-
 const memorySessions = ref([])
 const activeMemorySessionId = ref('')
 const autoPersistMemorySessionInFlight = new Map()
 const sessionTitleRequestTokens = new Map()
-let sessionTrashCleanupTimer = null
 const lockedSessionPaths = computed(() => {
   const paths = new Set()
   const activePath = String(activeSessionFilePath.value || '').trim()
@@ -1731,20 +1055,6 @@ const lockedSessionPaths = computed(() => {
   })
   return [...paths]
 })
-function createEmptyContextSummaryState() {
-  return {
-    summaryText: '',
-    coveredMessageCount: 0,
-    coveredTurnCount: 0,
-    batchCount: 0,
-    summaryLevel: 0,
-    summaryChain: [],
-    summarySourceLabel: '',
-    sourceHash: '',
-    updatedAt: 0
-  }
-}
-
 const chatRunInputQueue = createChatRunInputQueue({ createId: newId })
 const chatRunInputQueueRevision = ref(0)
 
@@ -1752,140 +1062,77 @@ function touchChatRunInputQueue() {
   chatRunInputQueueRevision.value += 1
 }
 
-function createEmptyContextTokenTelemetry() {
-  return {
-    inputTokens: 0,
-    requestChars: 0,
-    cachedTokens: 0,
-    providerId: '',
-    model: '',
-    endpoint: '',
-    updatedAt: 0
-  }
-}
+const {
+  createEmptyContextSummaryState,
+  createEmptyContextTokenTelemetry,
+  normalizeContextTokenTelemetry,
+  createMemorySessionRecord,
+  resolveMemorySessionSandboxWorkspaceId,
+  getActiveMemorySession,
+  getMemorySessionById
+} = useChatMemorySessionRegistry({
+  createId: newId,
+  defaultMemorySessionTitle: DEFAULT_MEMORY_SESSION_TITLE,
+  isChatSandboxWorkspaceId,
+  buildChatSandboxWorkspaceId,
+  normalizeMemoryCandidateQueue,
+  deepCopyJson,
+  normalizeToolApprovalMode,
+  toolApprovalModeManual: TOOL_APPROVAL_MODE_MANUAL,
+  toolApprovalModeSafe: TOOL_APPROVAL_MODE_SAFE,
+  memorySessions,
+  activeMemorySessionId,
+  session,
+  autoApproveTools,
+  activeSessionFilePath,
+  activeSessionTitle
+})
 
-function normalizeContextTokenTelemetry(raw) {
-  const source = raw && typeof raw === 'object' ? raw : {}
-  return {
-    inputTokens: Math.max(0, Math.floor(Number(source.inputTokens) || 0)),
-    requestChars: Math.max(0, Math.floor(Number(source.requestChars) || 0)),
-    cachedTokens: Math.max(0, Math.floor(Number(source.cachedTokens) || 0)),
-    providerId: String(source.providerId || ''),
-    model: String(source.model || ''),
-    endpoint: String(source.endpoint || ''),
-    updatedAt: Math.max(0, Math.floor(Number(source.updatedAt) || 0))
-  }
-}
 
-function createMemorySessionRecord(options = {}) {
-  const now = Date.now()
-  const id = String(options.id || '').trim() || `mem-${newId()}`
-  const requestedSandboxWorkspaceId =
-    String(options.sandboxWorkspaceId || options?.sandbox?.workspaceId || '').trim()
-  const sandboxWorkspaceId = isChatSandboxWorkspaceId(requestedSandboxWorkspaceId)
-    ? requestedSandboxWorkspaceId
-    : buildChatSandboxWorkspaceId(id)
-  return {
-    id,
-    sandboxWorkspaceId,
-    title: String(options.title || '').trim() || DEFAULT_MEMORY_SESSION_TITLE,
-    titleSource: String(options.titleSource || '').trim(),
-    titleRetryCount: Number(options.titleRetryCount || 0) || 0,
-    titlePostReplyRetryDone: options.titlePostReplyRetryDone === true,
-    createdAt: Number(options.createdAt || 0) || now,
-    titleReadyAt: Number(options.titleReadyAt || 0) || 0,
-    updatedAt: Number(options.updatedAt || 0) || now,
-    messages: Array.isArray(options.messages) ? options.messages : [],
-    apiMessages: Array.isArray(options.apiMessages) ? options.apiMessages : [],
-    input: String(options.input || ''),
-    pendingAttachments: Array.isArray(options.pendingAttachments) ? options.pendingAttachments : [],
-    memoryCandidates: normalizeMemoryCandidateQueue(options.memoryCandidates),
-    memoryCandidateUpdatedAt: Number(options.memoryCandidateUpdatedAt || 0) || 0,
-    memoryCandidateFlushTimer: null,
-    memoryCandidateFlushInFlight: false,
-    contextSummary: options.contextSummary && typeof options.contextSummary === 'object'
-      ? deepCopyJson(options.contextSummary, {})
-      : createEmptyContextSummaryState(),
-    contextTokenTelemetry: normalizeContextTokenTelemetry(options.contextTokenTelemetry),
-    toolApprovalMode: normalizeToolApprovalMode(
-      options.toolApprovalMode,
-      options.autoApproveTools === false ? TOOL_APPROVAL_MODE_MANUAL : TOOL_APPROVAL_MODE_SAFE
-    ),
-    autoApproveTools: normalizeToolApprovalMode(
-      options.toolApprovalMode,
-      options.autoApproveTools === false ? TOOL_APPROVAL_MODE_MANUAL : TOOL_APPROVAL_MODE_SAFE
-    ) !== TOOL_APPROVAL_MODE_MANUAL,
-    activeSessionFilePath: String(options.activeSessionFilePath || '').trim(),
-    activeSessionTitle: String(options.activeSessionTitle || '').trim(),
-    state: options.state && typeof options.state === 'object' ? deepCopyJson(options.state, {}) : null,
-    runningTaskCount: Number(options.runningTaskCount || 0) || 0,
-    chatRunCount: Number(options.chatRunCount || 0) || 0,
-    activeRequestAbortState: options.activeRequestAbortState || null,
-    pendingApprovalRequests: [],
-    approvalPromptActive: false,
-    autoManaged: options.autoManaged === true
-  }
-}
+const {
+  getMemorySessionRunningCount,
+  getMemorySessionChatRunCount,
+  getMemorySessionPendingApprovalCount,
+  isMemorySessionRunning,
+  isMemorySessionChatRunning,
+  getMemorySessionAutoPersistKey,
+  hasResolvedMemorySessionTitle,
+  isFinalizedMemorySessionTitle,
+  canGenerateMemorySessionTitle,
+  canRetryMemorySessionTitle,
+  applyFallbackMemorySessionTitle,
+  shouldStampHistoryCreatedAtOnGeneratedTitle,
+  getPersistedMemorySessionTitle,
+  isGeneratedSessionTitle,
+  hasPersistableMemorySessionResponse,
+  canPersistMemorySessionToHistory,
+  resolveMemorySessionTitle,
+  markMemorySessionTitleReady
+} = useChatMemorySessionMetadata({
+  defaultMemorySessionTitle: DEFAULT_MEMORY_SESSION_TITLE,
+  autoChatSessionDirName: AUTO_CHAT_SESSION_DIR_NAME,
+  getSessionTitleFromPath
+})
 
-function resolveMemorySessionSandboxWorkspaceId(record = null) {
-  const target = record && typeof record === 'object' ? record : null
-  const existing = String(target?.sandboxWorkspaceId || '').trim()
-  if (isChatSandboxWorkspaceId(existing)) return existing
-  const workspaceId = buildChatSandboxWorkspaceId(
-    target?.id || activeMemorySessionId.value || 'default'
-  )
-  if (target) target.sandboxWorkspaceId = workspaceId
-  return workspaceId
-}
-
-function getActiveMemorySession() {
-  const id = String(activeMemorySessionId.value || '').trim()
-  let record = memorySessions.value.find((item) => String(item?.id || '') === id)
-  if (!record) {
-    record = createMemorySessionRecord({
-      messages: session.messages,
-      apiMessages: session.apiMessages,
-      autoApproveTools: autoApproveTools.value,
-      activeSessionFilePath: activeSessionFilePath.value,
-      activeSessionTitle: activeSessionTitle.value
-    })
-    memorySessions.value = [...memorySessions.value, record]
-    activeMemorySessionId.value = record.id
-  }
-  return record
-}
-
-function getMemorySessionById(id) {
-  const target = String(id || '').trim()
-  return memorySessions.value.find((item) => String(item?.id || '') === target) || null
-}
-
-function getMemorySessionRunningCount(record) {
-  return Math.max(0, Number(record?.runningTaskCount || 0) || 0)
-}
-
-function getMemorySessionChatRunCount(record) {
-  return Math.max(0, Number(record?.chatRunCount || 0) || 0)
-}
-
-function getMemorySessionPendingApprovalCount(record) {
-  return Math.max(0, Array.isArray(record?.pendingApprovalRequests) ? record.pendingApprovalRequests.length : 0)
-}
-
-function isMemorySessionRunning(record) {
-  return getMemorySessionRunningCount(record) > 0 || getMemorySessionChatRunCount(record) > 0
-}
-
-function isMemorySessionChatRunning(record) {
-  return getMemorySessionChatRunCount(record) > 0
-}
-
-function isMemorySessionEmptyDraft(record) {
-  if (!record) return false
-  if (isMemorySessionRunning(record)) return false
-  if (String(record.activeSessionFilePath || '').trim()) return false
-  return !(record.messages?.length || record.apiMessages?.length)
-}
+const {
+  isAutoChatSessionPath,
+  isTimedTaskSessionPath,
+  isMemorySessionActive,
+  isMemorySessionEmptyDraft,
+  clearMemoryCandidateFlushTimer,
+  clearPendingMemoryCandidates,
+  removeMemorySessionById,
+  pruneDormantMemorySessions
+} = useChatMemorySessionLifecycle({
+  autoChatSessionRoot: AUTO_CHAT_SESSION_ROOT,
+  timedTaskSessionRoot: TIMED_TASK_SESSION_ROOT,
+  memorySessions,
+  activeMemorySessionId,
+  isMemorySessionRunning,
+  clearSessionApprovedTools,
+  clearChatRunQueue: (id) => chatRunInputQueue.clear(id),
+  touchChatRunInputQueue
+})
 
 function syncActiveRequestUiState(record = getMemorySessionById(activeMemorySessionId.value)) {
   const activeRecord = record && isMemorySessionActive(record) ? record : getMemorySessionById(activeMemorySessionId.value)
@@ -1929,193 +1176,24 @@ function syncSessionTreeSelectionForRecord(record) {
   }
 }
 
-function removeMemorySessionById(id) {
-  const target = String(id || '').trim()
-  if (!target) return false
-  clearSessionApprovedTools(target)
-  chatRunInputQueue.clear(target)
-  touchChatRunInputQueue()
-  const existing = getMemorySessionById(target)
-  if (existing?.memoryCandidateFlushTimer) {
-    try {
-      window.clearTimeout(existing.memoryCandidateFlushTimer)
-    } catch {
-      // ignore
-    }
-    existing.memoryCandidateFlushTimer = null
-  }
-  const before = memorySessions.value.length
-  memorySessions.value = memorySessions.value.filter((item) => String(item?.id || '') !== target)
-  return memorySessions.value.length !== before
-}
-
-function getMemorySessionAutoPersistKey(record) {
-  const id = String(record?.id || '').trim()
-  if (id) return `id:${id}`
-  const filePath = String(record?.activeSessionFilePath || '').trim()
-  if (filePath) return `path:${filePath}`
-  return ''
-}
-
-function hasResolvedMemorySessionTitle(record) {
-  const title = String(record?.title || '').trim()
-  return !!title && title !== DEFAULT_MEMORY_SESSION_TITLE
-}
-
-function isFinalizedMemorySessionTitle(record) {
-  return hasResolvedMemorySessionTitle(record) && Number(record?.titleReadyAt || 0) > 0
-}
-
-function canGenerateMemorySessionTitle(record) {
-  if (!record || !Array.isArray(record.messages) || !record.messages.length) return false
-  const userMessages = record.messages.filter((msg) => msg?.role === 'user')
-  if (userMessages.length !== 1) return false
-  return String(record?.titleSource || '').trim() !== 'generated'
-}
-
-function canRetryMemorySessionTitle(record) {
-  if (!record || !Array.isArray(record.messages) || !record.messages.length) return false
-  const userMessages = record.messages.filter((msg) => msg?.role === 'user')
-  if (userMessages.length !== 1) return false
-  if (String(record?.titleSource || '').trim() === 'generated') return false
-  if (record?.titlePostReplyRetryDone === true) return false
-  return hasPersistableMemorySessionResponse(record)
-}
-
-function applyFallbackMemorySessionTitle(record, fallbackTitle, titleReadyAt = Date.now()) {
-  if (!record) return 0
-  const title = normalizeGeneratedSessionTitle(fallbackTitle, buildAutoSessionTitle(record))
-  if (!title) return 0
-  const readyAt = Number(titleReadyAt || 0) || Date.now()
-  record.title = title
-  record.activeSessionTitle = title
-  record.titleSource = 'fallback'
-  record.titleReadyAt = readyAt
-  return readyAt
-}
-
-function shouldStampHistoryCreatedAtOnGeneratedTitle(record) {
-  if (!record || !Array.isArray(record.messages) || !record.messages.length) return false
-  if (!hasResolvedMemorySessionTitle(record)) return false
-  if (String(record?.activeSessionFilePath || '').trim()) return false
-  if (isMemorySessionRunning(record)) return false
-  const userMessages = record.messages.filter((msg) => msg?.role === 'user')
-  return userMessages.length === 1
-}
-
-function getPersistedMemorySessionTitle(record, filePath = '') {
-  const currentTitle = String(record?.activeSessionTitle || record?.title || '').trim()
-  if (hasResolvedMemorySessionTitle(record)) return currentTitle
-  return ''
-}
-
-function isGeneratedSessionTitle(title) {
-  const value = String(title || '').trim()
-  if (!value) return false
-  return value !== DEFAULT_MEMORY_SESSION_TITLE && value.length <= 32
-}
-
-function hasPersistableMemorySessionResponse(record) {
-  if (!record || !Array.isArray(record.messages) || !record.messages.length) return false
-  return record.messages.some((msg) => {
-    if (!msg || msg.role !== 'assistant') return false
-    if (String(msg.content || '').trim()) return true
-    if (Array.isArray(msg.images) && msg.images.length) return true
-    if (Array.isArray(msg.videos) && msg.videos.length) return true
-    return false
-  })
-}
-
-function canPersistMemorySessionToHistory(record) {
-  return hasResolvedMemorySessionTitle(record) &&
-    hasPersistableMemorySessionResponse(record) &&
-    !isMemorySessionRunning(record)
-}
-
-function resolveMemorySessionTitle(record) {
-  const currentTitle = String(record?.title || '').trim()
-  if (hasResolvedMemorySessionTitle(record)) return currentTitle
-
-  const pathTitle = getSessionTitleFromPath(record?.activeSessionFilePath || '')
-  if (pathTitle) return pathTitle
-
-  return DEFAULT_MEMORY_SESSION_TITLE
-}
-
-function markMemorySessionTitleReady(record, titleReadyAt = Date.now()) {
-  if (!record) return 0
-  const title = resolveMemorySessionTitle(record)
-  if (!hasResolvedMemorySessionTitle({ title })) return 0
-  const readyAt = Number(titleReadyAt || 0) || Date.now()
-  record.title = title
-  record.titleReadyAt = Number(record.titleReadyAt || 0) || readyAt
-  return record.titleReadyAt
-}
-
-function pruneDormantMemorySessions(options = {}) {
-  const keepId = String(options.keepId || activeMemorySessionId.value || '').trim()
-  const kept = []
-  memorySessions.value.forEach((record) => {
-    const id = String(record?.id || '').trim()
-    if (!id) {
-      clearMemoryCandidateFlushTimer(record)
-      return
-    }
-    if (id === keepId || isMemorySessionRunning(record)) {
-      kept.push(record)
-      return
-    }
-    if (isMemorySessionEmptyDraft(record) || (record.autoManaged && isAutoChatSessionPath(record.activeSessionFilePath))) {
-      clearMemoryCandidateFlushTimer(record)
-      return
-    }
-    kept.push(record)
-  })
-  memorySessions.value = kept
-}
-
-function getRunRecord(abortState = null) {
-  if (!abortState || typeof abortState !== 'object') return null
-  return runRecordByAbortState.get(abortState) || null
-}
-
-function getRunSessionTarget(abortState = null) {
-  return getRunRecord(abortState) || session
-}
-
-function isRunRecordActive(abortState = null) {
-  const record = getRunRecord(abortState)
-  if (!record) return true
-  return isMemorySessionActive(record)
-}
-
-async function maybeScrollToBottomForRun(abortState = null, options = {}) {
-  if (isRunRecordActive(abortState)) await scrollToBottom(options)
-}
-
-function maybeScheduleScrollToBottomForRun(abortState = null) {
-  if (isRunRecordActive(abortState)) maybeScheduleStreamingScroll()
-}
-
-function getMemorySessionForMessage(msg) {
-  if (!msg || typeof msg !== 'object') return getActiveMemorySession()
-  const id = String(msg.id || '').trim()
-  return (
-    memorySessions.value.find((item) =>
-      (item?.messages || []).some((candidate) => candidate === msg || (id && String(candidate?.id || '').trim() === id))
-    ) || getActiveMemorySession()
-  )
-}
-
-function getMemorySessionForToolMessage(msg) {
-  if (!msg || typeof msg !== 'object') return getActiveMemorySession()
-  const toolSessionId = String(msg.toolSessionId || '').trim()
-  if (toolSessionId) {
-    const directHit = getMemorySessionById(toolSessionId)
-    if (directHit) return directHit
-  }
-  return getMemorySessionForMessage(msg)
-}
+const {
+  getRunRecord,
+  getRunSessionTarget,
+  isRunRecordActive,
+  maybeScrollToBottomForRun,
+  maybeScheduleScrollToBottomForRun,
+  getMemorySessionForMessage,
+  getMemorySessionForToolMessage
+} = useChatRunSessionTargeting({
+  runRecordByAbortState,
+  getFallbackSession: () => session,
+  isRecordActive: isMemorySessionActive,
+  scrollToBottom,
+  maybeScheduleStreamingScroll,
+  getActiveMemorySession,
+  getMemorySessionById,
+  getMemorySessions: () => memorySessions.value
+})
 
 function saveActiveMemorySessionDraft() {
   const record = getActiveMemorySession()
@@ -2172,40 +1250,6 @@ function restoreMemorySession(record, options = {}) {
   void flushMemorySessionApprovalQueue(record)
   scheduleQueuedInputDrain(record)
   if (!options.skipScroll) void nextTick(() => scrollToBottom({ force: true }))
-}
-
-function isAutoChatSessionPath(filePath) {
-  const p = String(filePath || '').trim().replace(/\\/g, '/')
-  return p === AUTO_CHAT_SESSION_ROOT || p.startsWith(`${AUTO_CHAT_SESSION_ROOT}/`)
-}
-
-function isTimedTaskSessionPath(filePath) {
-  const p = String(filePath || '').trim().replace(/\\/g, '/')
-  return p === TIMED_TASK_SESSION_ROOT || p.startsWith(`${TIMED_TASK_SESSION_ROOT}/`)
-}
-
-function isMemorySessionActive(record) {
-  return !!record && String(record.id || '') === String(activeMemorySessionId.value || '')
-}
-
-function clearMemoryCandidateFlushTimer(record) {
-  if (!record?.memoryCandidateFlushTimer) return
-  try {
-    window.clearTimeout(record.memoryCandidateFlushTimer)
-  } catch {
-    // ignore
-  }
-  record.memoryCandidateFlushTimer = null
-}
-
-function clearPendingMemoryCandidates(record) {
-  if (!record) return false
-  const hadCandidates = Array.isArray(record.memoryCandidates) && record.memoryCandidates.length > 0
-  const hadTimer = !!record.memoryCandidateFlushTimer
-  clearMemoryCandidateFlushTimer(record)
-  record.memoryCandidates = []
-  record.memoryCandidateUpdatedAt = 0
-  return hadCandidates || hadTimer
 }
 
 function buildMemoryRecallQueryFromRecord(record, currentUserText = '', options = {}) {
@@ -2485,18 +1529,38 @@ const initialMemorySession = createMemorySessionRecord({
 memorySessions.value = [initialMemorySession]
 activeMemorySessionId.value = initialMemorySession.id
 
-const thinkingEffort = ref('auto')
-const imageGenerationMode = ref('auto') // auto | on | off
-const videoGenerationMode = ref('auto') // auto | on | off
-const imageGenerationParamsEnabled = ref(false)
-const imageGenerationParams = reactive(createDefaultImageGenerationParams())
-const videoGenerationParamsEnabled = ref(false)
-const videoGenerationParams = reactive(createDefaultVideoGenerationParams())
+const {
+  thinkingEffort,
+  thinkingEffortLabel,
+  thinkingEffortButtonType,
+  imageGenerationMode,
+  imageGenerationModeLabel,
+  imageGenerationParamsEnabled,
+  imageGenerationParams,
+  imageGenerationParamsSummary,
+  videoGenerationMode,
+  videoGenerationModeLabel,
+  videoGenerationParamsEnabled,
+  videoGenerationParams,
+  videoGenerationParamsSummary,
+  mediaGenerationParamsAutosaveKey,
+  showInputModeTags,
+  setImageGenerationMode,
+  setVideoGenerationMode,
+  assignImageGenerationParams,
+  assignVideoGenerationParams,
+  setImageGenerationParamsEnabled,
+  setVideoGenerationParamsEnabled,
+  resetImageGenerationParams,
+  resetVideoGenerationParams,
+  getCurrentImageGenerationRequestOptions,
+  getCurrentVideoGenerationRequestOptions,
+  cycleImageGenerationMode,
+  cycleVideoGenerationMode
+} = useChatMediaControls()
 
 const hasAppliedDefaultModel = ref(false)
 
-const COMPACT_CHAT_BREAKPOINT = 980
-const DENSE_CHAT_BREAKPOINT = 720
 const CHAT_VIRTUALIZATION_MIN_MESSAGES = 72
 const CHAT_VIRTUALIZATION_MIN_ITEMS_FOR_HEIGHT = 16
 const CHAT_VIRTUALIZATION_MIN_ESTIMATED_HEIGHT_PX = 12_000
@@ -2525,26 +1589,6 @@ const CHAT_TOOL_COMPACT_ITEM_FIXED_HEIGHT = 26
 const CHAT_TOOL_ACTIVITY_GROUP_FIXED_HEIGHT = 32
 const CHAT_ASSISTANT_ACTIVITY_ITEM_HEIGHT = 28
 const CHAT_STREAM_RENDER_THROTTLE_MS = 72
-
-function syncChatResponsiveState() {
-  if (typeof window === 'undefined') return
-  const width = Number(window.innerWidth || 0)
-  isCompactChatLayout.value = width > 0 && width <= COMPACT_CHAT_BREAKPOINT
-  isDenseChatLayout.value = width > 0 && width <= DENSE_CHAT_BREAKPOINT
-}
-
-const layoutContentStyle = computed(() => {
-  const padding = isCompactChatLayout.value ? '8px' : isDenseChatLayout.value ? '8px 20px 8px 8px' : '8px 32px 8px 8px'
-  return `padding: ${padding}; height: calc(var(--app-viewport-height) - (var(--app-shell-padding) * 2)); box-sizing: border-box; overflow: hidden;`
-})
-
-const sessionSiderWidth = computed(() => (isCompactChatLayout.value ? 280 : 320))
-const sessionSiderCollapsedWidth = computed(() => (isCompactChatLayout.value ? 0 : 15))
-const sessionSiderContentStyle = computed(() => {
-  return isCompactChatLayout.value
-    ? 'padding: 16px 12px; height: 100%; box-sizing: border-box; overflow: hidden;'
-    : 'padding: 24px; height: 100%; box-sizing: border-box; overflow: hidden;'
-})
 
 watch(
   () => chatConfig.value?.contextWindow,
@@ -2598,302 +1642,12 @@ watch(
   { immediate: true }
 )
 
-watch(isCompactChatLayout, (next, prev) => {
-  if (next && !prev) sessionSiderCollapsed.value = true
-})
-
-const INLINE_AGENT_SUGGESTION_LIMIT = 8
-const INLINE_COMMAND_SUGGESTION_LIMIT = 8
-const attachmentParseQueue = new Map()
-
-async function collectAttachmentMediaReferenceImages(attachments = [], userDisplay = null) {
-  const list = Array.isArray(attachments) ? attachments : []
-  if (list.length) {
-    await Promise.all(list.map((a) => ensureAttachmentParsed(a)))
-  }
-
-  const refs = []
-  for (const a of list) {
-    if (a?.status === 'ready' && a.kind === 'image' && a.dataUrl) {
-      refs.push(a)
-    }
-  }
-
-  const normalized = normalizeMediaReferenceImagesForRequest(refs)
-  if (userDisplay && normalized.length && !(Array.isArray(userDisplay.images) && userDisplay.images.length)) {
-    userDisplay.images = buildDisplayImagesFromReferences(normalized, newId)
-  }
-  return normalized
-}
-
 function openFilePicker() {
   try {
     composerPanelRef.value?.triggerFilePicker?.()
   } catch {
     // ignore
   }
-}
-
-function removeAttachment(id) {
-  const list = Array.isArray(pendingAttachments.value) ? pendingAttachments.value : []
-  pendingAttachments.value = list.filter((a) => a?.id !== id)
-}
-
-function attachmentIcon(a) {
-  const mime = String(a?.mime || '')
-  const ext = String(a?.ext || '')
-  if (isImageAttachmentLike({ mime, ext, kind: a?.kind })) return ImageOutline
-  return DocumentTextOutline
-}
-
-async function parseAttachment(att) {
-  const file = att?.file
-  if (!file) throw new Error('附件文件为空')
-
-  if (file.size > MAX_ATTACHMENT_FILE_BYTES) {
-    throw new Error(`附件过大（${Math.ceil(file.size / 1024 / 1024)}MB），单文件上限为 ${Math.ceil(MAX_ATTACHMENT_FILE_BYTES / 1024 / 1024)}MB`)
-  }
-
-  const name = String(att.name || file.name || 'unnamed')
-  const ext = String(att.ext || getFileExt(name) || guessExtensionFromMime(att.mime || file.type || '')).trim().toLowerCase()
-  const mime = String(att.mime || file.type || '')
-
-  if (isImageAttachmentLike({ mime, ext })) {
-    if (file.size > MAX_IMAGE_BYTES) {
-      return {
-        kind: 'file',
-        name,
-        ext,
-        mime,
-        text: '',
-        sandboxOnly: true,
-        previewError: `图片超过 ${Math.ceil(MAX_IMAGE_BYTES / 1024 / 1024)}MB，本地预览已跳过`
-      }
-    }
-    const dataUrl = await fileToDataUrl(file)
-    const imageSummary = await buildImageAttachmentSummary({ file, name, ext, mime, dataUrl })
-    return {
-      kind: 'image',
-      name,
-      ext,
-      mime,
-      dataUrl,
-      text: imageSummary.text,
-      width: imageSummary.width,
-      height: imageSummary.height,
-      metaLine: imageSummary.metaLine,
-      svgTextPreview: imageSummary.svgTextPreview
-    }
-  }
-
-  // Non-image attachments are consumed from the per-chat sandbox. Extracting
-  // their full text in the renderer duplicates work and can fail or stall on
-  // uncommon/corrupt archives and office documents without adding request
-  // context (sandbox-backed attachments use their sandbox reference instead).
-  return { kind: 'file', name, ext, mime, text: '', sandboxOnly: true }
-}
-
-async function ensureAttachmentParsed(att) {
-  if (!att?.id) return
-  if (att.status === 'ready' || att.status === 'error') return
-
-  if (attachmentParseQueue.has(att.id)) return attachmentParseQueue.get(att.id)
-
-  const p = (async () => {
-    att.status = 'processing'
-    att.error = ''
-    att.previewError = ''
-    try {
-      const parsed = await parseAttachment(att)
-      att.kind = parsed.kind
-      att.text = parsed.text || ''
-      att.dataUrl = parsed.dataUrl || ''
-      att.width = Number(parsed.width || 0)
-      att.height = Number(parsed.height || 0)
-      att.metaLine = parsed.metaLine || ''
-      att.svgTextPreview = parsed.svgTextPreview || ''
-      att.sandboxOnly = parsed.sandboxOnly === true
-      att.previewError = parsed.previewError || ''
-      att.status = 'ready'
-    } catch (err) {
-      // Parsing is only a local preview optimization. A readable File can
-      // still be imported into the chat sandbox and should not become a
-      // blocking/red attachment failure when its preview parser rejects it.
-      if (
-        att.file &&
-        typeof att.file.arrayBuffer === 'function' &&
-        Number(att.file.size || 0) <= MAX_ATTACHMENT_FILE_BYTES
-      ) {
-        att.kind = 'file'
-        att.text = ''
-        att.dataUrl = ''
-        att.width = 0
-        att.height = 0
-        att.metaLine = ''
-        att.svgTextPreview = ''
-        att.sandboxOnly = true
-        att.previewError = err?.message || String(err)
-        att.status = 'ready'
-      } else {
-        att.status = 'error'
-        att.error = err?.message || String(err)
-      }
-    } finally {
-      attachmentParseQueue.delete(att.id)
-    }
-  })()
-
-  attachmentParseQueue.set(att.id, p)
-  return p
-}
-
-function createPendingAttachment(file, options = {}) {
-  const normalizedName = normalizeAttachmentName(file, options)
-  return reactive({
-    id: newId(),
-    name: normalizedName,
-    ext: getFileExt(normalizedName) || guessExtensionFromMime(file?.type),
-    mime: file?.type || '',
-    size: file?.size || 0,
-    file,
-    kind: '',
-    text: '',
-    dataUrl: '',
-    width: 0,
-    height: 0,
-    metaLine: '',
-    svgTextPreview: '',
-    sandboxOnly: false,
-    previewError: '',
-    status: 'pending', // pending | processing | ready | error
-    error: '',
-    autoWrappedLongText: options.autoWrappedLongText === true
-  })
-}
-
-function createLongTextAttachmentFile(plan) {
-  try {
-    return new File([plan.attachmentText], plan.attachmentName, {
-      type: plan.attachmentMime,
-      lastModified: Date.now()
-    })
-  } catch {
-    try {
-      const file = new Blob([plan.attachmentText], { type: plan.attachmentMime })
-      Object.defineProperty(file, 'name', {
-        configurable: true,
-        enumerable: true,
-        value: plan.attachmentName
-      })
-      return file
-    } catch {
-      return null
-    }
-  }
-}
-
-function createPendingLongTextAttachment(plan) {
-  const file = createLongTextAttachmentFile(plan)
-  if (!file) return null
-  const attachment = createPendingAttachment(file, {
-    name: plan.attachmentName,
-    autoWrappedLongText: true
-  })
-  void ensureAttachmentParsed(attachment)
-  return attachment
-}
-
-function appendPendingFiles(files, options = {}) {
-  const list = Array.isArray(files) ? files.filter(Boolean) : []
-  if (!list.length) return 0
-
-  const current = Array.isArray(pendingAttachments.value) ? pendingAttachments.value : []
-  const oversizedFile = list.find((file) => Number(file?.size || 0) > MAX_ATTACHMENT_FILE_BYTES)
-  if (oversizedFile) {
-    message.warning(`附件“${oversizedFile.name || '未命名文件'}”超过单文件上限（${Math.ceil(MAX_ATTACHMENT_FILE_BYTES / 1024 / 1024)}MB）`)
-    return 0
-  }
-
-  const totalBytes = current.reduce((sum, a) => sum + Number(a?.size || 0), 0) + list.reduce((sum, f) => sum + Number(f?.size || 0), 0)
-  if (totalBytes > MAX_ATTACHMENT_BATCH_BYTES) {
-    message.warning(`附件总大小超过单次上限（${Math.ceil(MAX_ATTACHMENT_BATCH_BYTES / 1024 / 1024)}MB），请减少文件数量或大小`)
-    return 0
-  }
-
-  const added = list.map((file) => createPendingAttachment(file, options))
-  pendingAttachments.value = [...current, ...added]
-
-  // 异步解析，避免阻塞 UI
-  added.forEach((a) => ensureAttachmentParsed(a))
-  return added.length
-}
-
-function getSupportedClipboardFiles(e) {
-  const out = []
-  const seen = new Set()
-  const addFile = (file) => {
-    if (!file || !isSupportedAttachmentFile(file)) return
-    const key = [
-      String(file.name || '').trim().toLowerCase(),
-      Number(file.size || 0),
-      String(file.type || '').trim().toLowerCase()
-    ].join('|')
-    if (seen.has(key)) return
-    seen.add(key)
-    out.push(file)
-  }
-
-  Array.from(e?.clipboardData?.items || []).forEach((item) => {
-    const file = item?.kind === 'file' ? item.getAsFile?.() : null
-    addFile(file)
-  })
-  Array.from(e?.clipboardData?.files || []).forEach(addFile)
-
-  return out
-}
-
-function handleComposerPaste(e) {
-  const files = getSupportedClipboardFiles(e)
-  if (files.length) {
-    e.preventDefault()
-    const addedCount = appendPendingFiles(files)
-    if (addedCount > 0) {
-      message.success(`Added ${addedCount} attachments`)
-    }
-    return
-  }
-
-  const pastedText = String(e?.clipboardData?.getData?.('text/plain') || '')
-  const current = Array.isArray(pendingAttachments.value) ? pendingAttachments.value : []
-  const plan = resolveChatLongTextAttachmentPlan(pastedText, current)
-  if (!plan.wrapped) {
-    if (plan.error) {
-      e.preventDefault()
-      message.warning(plan.error)
-    }
-    return
-  }
-
-  e.preventDefault()
-  const attachment = createPendingLongTextAttachment(plan)
-  if (!attachment) {
-    message.warning('当前环境无法创建长文本附件，请改为手动上传 Markdown 文件。')
-    return
-  }
-  pendingAttachments.value = [...current, attachment]
-  message.success('粘贴内容较长，已自动添加为 Markdown 附件')
-}
-
-async function handleFileInputChange(e) {
-  const files = Array.from(e?.target?.files || [])
-  try {
-    if (e?.target) e.target.value = ''
-  } catch {
-    // ignore
-  }
-  if (!files.length) return
-
-  appendPendingFiles(files)
 }
 
 const scrollbarRef = ref(null)
@@ -3011,244 +1765,6 @@ const visibleSelectedAgent = computed(() => (
 ))
 const isDefaultGeneralAgent = computed(() => selectedAgent.value?.builtin === true)
 
-const inlineAgentPickerHeaderText = computed(() => {
-  const query = String(inlineAgentQuery.value || '').trim()
-  return query ? `@${query}` : '@'
-})
-
-const inlineCommandPickerTitle = computed(() => {
-  if (inlineCommandMode.value === 'kind') return '选择命令类型'
-  return INLINE_COMMAND_KIND_LABELS[inlineCommandType.value] || '选择命令'
-})
-
-const inlineCommandPickerHeaderText = computed(() => {
-  if (inlineCommandMode.value === 'kind') {
-    const query = String(inlineCommandQuery.value || '').trim()
-    return query ? `/${query}` : '/'
-  }
-
-  const kind = String(inlineCommandType.value || '').trim()
-  if (!kind) return ''
-  const query = String(inlineCommandQuery.value || '').trim()
-  return query ? `/${kind} ${query}` : `/${kind}`
-})
-
-const inlineAgentSuggestions = computed(() => {
-  const list = (Array.isArray(agents.value) ? agents.value : []).filter((agent) => agent?.builtin !== true)
-  const query = String(inlineAgentQuery.value || '').trim()
-
-  return list
-    .map((agent) => {
-      const id = String(agent?._id || '').trim()
-      const name = String(agent?.name || '').trim()
-      if (!id) return null
-
-      const provider = (providers.value || []).find((p) => p?._id === agent?.provider)
-      const selected = selectedAgentId.value === id
-      const providerLabel = provider?.name || provider?._id || ''
-      const model = String(agent?.model || '').trim()
-      const score = query
-        ? getInlinePickerMatchScore([name, id, providerLabel, model], query)
-        : selected ? -1 : 10
-      if (!Number.isFinite(score)) return null
-
-      return {
-        value: id,
-        id,
-        name,
-        label: name || id,
-        model,
-        providerLabel,
-        selected,
-        score
-      }
-    })
-    .filter(Boolean)
-    .sort((a, b) => a.score - b.score || Number(b.selected) - Number(a.selected) || a.label.localeCompare(b.label))
-    .slice(0, INLINE_AGENT_SUGGESTION_LIMIT)
-})
-
-const inlineCommandSuggestions = computed(() => {
-  const mode = String(inlineCommandMode.value || '').trim()
-  const kind = String(inlineCommandType.value || '').trim()
-  const query = String(inlineCommandQuery.value || '').trim()
-  if (mode === 'kind') {
-    return INLINE_COMMAND_DEFINITIONS
-      .map((item) => {
-        const score = query
-          ? getInlinePickerMatchScore([item.kind, item.label, item.token, ...item.aliases.map((alias) => `/${alias}`)], query)
-          : 0
-        if (query && !Number.isFinite(score)) return null
-        return {
-          value: item.kind,
-          id: item.label,
-          label: item.token,
-          description: item.description,
-          meta: item.aliases.length ? item.aliases.map((alias) => `/${alias}`).join(' ') : '',
-          selected: false,
-          selectedTag: '',
-          score
-        }
-      })
-      .filter(Boolean)
-      .sort((a, b) => a.score - b.score || a.label.localeCompare(b.label))
-      .slice(0, INLINE_COMMAND_SUGGESTION_LIMIT)
-  }
-
-  if (!kind) return []
-
-  if (kind === 'prompt') {
-    const localItems = (prompts.value || [])
-      .filter((prompt) => prompt?.builtin !== true)
-      .map((prompt) => {
-        const id = String(prompt?._id || '').trim()
-        if (!id) return null
-        const label = String(prompt?.name || prompt?._id || '').trim()
-        const description = truncateInlineText(prompt?.content, 72)
-        const isSystem = isSystemPrompt(prompt)
-        const selected = isSystem && hasActiveBasePromptSelection({
-          basePromptMode: basePromptMode.value,
-          selectedPromptId: selectedPromptId.value
-        }) && selectedPromptId.value === id
-        const score = query
-          ? getInlinePickerMatchScore([label, id, description], query)
-          : selected ? -1 : 10
-        if (!Number.isFinite(score)) return null
-        return {
-          value: makeLocalPromptOptionValue(id),
-          id,
-          label: label || id,
-          description,
-          meta: isSystem ? '本地 · 系统' : '本地 · 用户',
-          selected,
-          selectedTag: isSystem ? '当前' : '',
-          score
-        }
-      })
-      .filter(Boolean)
-
-    const mcpItems = (mcpPromptCatalog.value || [])
-      .map((item) => {
-        const serverId = String(item?.serverId || '').trim()
-        const name = String(item?.name || '').trim()
-        if (!serverId || !name) return null
-        const label = String(item?.label || name).trim()
-        const description = truncateInlineText(item?.description, 72)
-        const meta = ['MCP', item?.serverName || serverId, item?.arguments?.length ? `参数 ${item.arguments.length}` : ''].filter(Boolean).join(' · ')
-        const score = query
-          ? getInlinePickerMatchScore([label, name, serverId, item?.serverName, description, meta], query)
-          : 12
-        if (!Number.isFinite(score)) return null
-        return {
-          value: makeMcpPromptOptionValue(item),
-          id: name,
-          label,
-          description,
-          meta,
-          selected: false,
-          selectedTag: '',
-          score,
-          disabled: !!item.disabled,
-          title: [item?.serverName && item.serverName !== serverId ? serverId : '', description, item.disabled ? '该 MCP 已禁用' : ''].filter(Boolean).join('\n')
-        }
-      })
-      .filter(Boolean)
-
-    return [...localItems, ...mcpItems]
-      .sort((a, b) => a.score - b.score || Number(b.selected) - Number(a.selected) || a.label.localeCompare(b.label, 'zh-Hans-CN'))
-      .slice(0, INLINE_COMMAND_SUGGESTION_LIMIT)
-  }
-
-  if (kind === 'skill') {
-    const agentSet = agentSkillIdSet.value
-    return (skills.value || [])
-      .map((skill) => {
-        const id = String(skill?._id || '').trim()
-        if (!id) return null
-        const label = String(skill?.name || skill?._id || '').trim()
-        const description = truncateInlineText(skill?.description || skill?.content, 72)
-        const selected = (selectedSkillIds.value || []).includes(id)
-        const meta = agentSet.has(id) ? '智能体' : ''
-        const score = query
-          ? getInlinePickerMatchScore([label, id, description, meta], query)
-          : selected ? -1 : 10
-        if (!Number.isFinite(score)) return null
-        return {
-          value: id,
-          id,
-          label: label || id,
-          description,
-          meta,
-          selected,
-          selectedTag: '已选中',
-          score
-        }
-      })
-      .filter(Boolean)
-      .sort((a, b) => a.score - b.score || Number(b.selected) - Number(a.selected) || a.label.localeCompare(b.label))
-      .slice(0, INLINE_COMMAND_SUGGESTION_LIMIT)
-  }
-
-  if (kind === 'mcp') {
-    const manualIdSet = new Set(Array.isArray(manualMcpIds.value) ? manualMcpIds.value : [])
-    const derivedIdSet = new Set(Array.isArray(derivedMcpIds.value) ? derivedMcpIds.value : [])
-
-    return orderedMcpServers.value
-      .map((server) => {
-        const id = String(server?._id || '').trim()
-        if (!id) return null
-        const label = String(server?.name || server?._id || '').trim()
-        const disabled = !!server?.disabled
-        const manualSelected = manualIdSet.has(id)
-        const derivedSelected = derivedIdSet.has(id)
-        const selected = manualSelected || derivedSelected
-        const metaParts = []
-        const transportType = String(server?.transportType || '').trim().toUpperCase()
-        if (transportType) metaParts.push(transportType)
-        if (derivedSelected && !manualSelected) metaParts.push('技能')
-        if (disabled) metaParts.push('已禁用')
-        const meta = metaParts.join(' · ')
-        const description = truncateInlineText(server?.description || server?.url || server?.baseUrl || server?.command, 72)
-        const score = query
-          ? getInlinePickerMatchScore([label, id, description, meta], query)
-          : manualSelected ? -2 : derivedSelected ? -1 : disabled ? 20 : 10
-        if (!Number.isFinite(score)) return null
-        return {
-          value: id,
-          id,
-          label: label || id,
-          description,
-          meta,
-          selected,
-          selectedTag: manualSelected ? '已选中' : derivedSelected ? '技能' : '',
-          disabled,
-          title: [label && label !== id ? id : '', description, disabled ? '该 MCP 已禁用，请先到设置页启用' : '']
-            .filter(Boolean)
-            .join('\n'),
-          score
-        }
-      })
-      .filter(Boolean)
-      .sort(
-        (a, b) =>
-          a.score - b.score ||
-          Number(!!a.disabled) - Number(!!b.disabled) ||
-          Number(b.selected) - Number(a.selected) ||
-          a.label.localeCompare(b.label, 'zh-Hans-CN')
-      )
-  }
-
-  return []
-})
-
-const showInlineAgentPicker = computed(() => {
-  return inlineAgentMatchStart.value >= 0 && inlineAgentSuggestions.value.length > 0
-})
-
-const showInlineCommandPicker = computed(() => {
-  return inlineCommandMatchStart.value >= 0 && inlineCommandSuggestions.value.length > 0
-})
-
 const selectedAgentModelParams = computed(() => normalizeAgentModelParams(selectedAgent.value?.modelParams))
 
 const selectedProvider = computed(() => {
@@ -3268,16 +1784,6 @@ const sessionMediaItems = computed(() => {
 const filteredSessionMediaItems = computed(() => {
   if (!showMediaLibraryModal.value) return []
   return filterSessionMediaItems(sessionMediaItems.value, mediaLibraryFilter.value)
-})
-
-const pendingImageAttachments = computed(() => {
-  const list = Array.isArray(pendingAttachments.value) ? pendingAttachments.value : []
-  return list.filter((item) => isImageAttachment(item))
-})
-
-const pendingFileAttachments = computed(() => {
-  const list = Array.isArray(pendingAttachments.value) ? pendingAttachments.value : []
-  return list.filter((item) => !isImageAttachment(item))
 })
 
 const selectedSkillObjects = computed(() => {
@@ -3407,26 +1913,6 @@ watch(
   { deep: true }
 )
 
-watch(inlineAgentSuggestions, (list) => {
-  if (!list.length) {
-    inlineAgentActiveIndex.value = 0
-    return
-  }
-  if (inlineAgentActiveIndex.value >= list.length) {
-    inlineAgentActiveIndex.value = 0
-  }
-})
-
-watch(inlineCommandSuggestions, (list) => {
-  if (!list.length) {
-    inlineCommandActiveIndex.value = 0
-    return
-  }
-  if (inlineCommandActiveIndex.value >= list.length || list[inlineCommandActiveIndex.value]?.disabled) {
-    inlineCommandActiveIndex.value = getFirstEnabledInlineCommandIndex(list)
-  }
-})
-
 function normalizeStringList(val) {
   if (!Array.isArray(val)) return []
   const out = []
@@ -3533,6 +2019,46 @@ const derivedMcpIds = computed(() => {
   })
 })
 
+const {
+  inlineAgentQuery,
+  inlineAgentMatchStart,
+  inlineAgentMatchEnd,
+  inlineAgentActiveIndex,
+  inlineCommandMode,
+  inlineCommandType,
+  inlineCommandQuery,
+  inlineCommandMatchStart,
+  inlineCommandMatchEnd,
+  inlineCommandActiveIndex,
+  inlineAgentPickerHeaderText,
+  inlineCommandPickerTitle,
+  inlineCommandPickerHeaderText,
+  inlineAgentSuggestions,
+  inlineCommandSuggestions,
+  showInlineAgentPicker,
+  showInlineCommandPicker,
+  clearInlineAgentPicker,
+  clearInlineCommandPicker,
+  clearInlinePickers,
+  moveInlineAgentActive,
+  moveInlineCommandActive,
+  getFirstEnabledInlineCommandIndex
+} = useChatInlinePicker({
+  agents,
+  providers,
+  selectedAgentId,
+  prompts,
+  mcpPromptCatalog,
+  basePromptMode,
+  selectedPromptId,
+  skills,
+  agentSkillIdSet,
+  selectedSkillIds,
+  manualMcpIds,
+  derivedMcpIds,
+  orderedMcpServers
+})
+
 const activeMcpIds = computed(() => {
   const ids = new Set()
   ;(manualMcpIds.value || []).forEach((id) => ids.add(id))
@@ -3569,16 +2095,6 @@ watch(
   },
   { flush: 'post' }
 )
-
-function makeLocalPromptOptionValue(promptId) {
-  return `local:${String(promptId || '').trim()}`
-}
-
-function makeMcpPromptOptionValue(item = {}) {
-  const serverId = encodeURIComponent(String(item.serverId || '').trim())
-  const promptName = encodeURIComponent(String(item.name || '').trim())
-  return `mcp:${serverId}:${promptName}`
-}
 
 function parsePromptOptionValue(value) {
   const raw = String(value || '').trim()
@@ -4441,452 +2957,47 @@ const contextWindowStats = computed(() =>
     : buildContextWindowStats({ includeRequestDetails: false })
 )
 
-const contextWindowSummaryTag = computed(() => {
-  const stats = contextWindowStats.value
-  if (stats.telemetryAvailable) {
-    return `上下文 ${formatApproxChars(stats.totalEstimatedTokens)} / ${formatApproxChars(stats.baseTokens)} Token`
-  }
-  return `上下文 ${formatApproxChars(stats.totalEstimatedChars)} / ${formatApproxChars(stats.baseChars)} 字符`
+const {
+  contextWindowSummaryTag,
+  contextWindowSummaryText,
+  contextWindowProviderHint,
+  contextWindowPreviewEntries,
+  contextWindowPreviewOmittedEntries,
+  contextWindowPreviewBudgetItems,
+  contextWindowPreviewBudgetSummaryText,
+  contextWindowBudgetStatus,
+  contextWindowSummaryTagType,
+  contextWindowSummaryTooltipText,
+  contextWindowCompressedSummaryText,
+  contextWindowCompressedSummaryMetaText,
+  contextWindowCompressedSummaryChainText,
+  contextWindowCompressedSummarySourceText,
+  contextWindowPreviewSummaryText,
+  contextWindowPreviewOmittedSummaryText,
+  contextWindowPreviewOmittedFilterOptions,
+  contextWindowPreviewResolvedOmittedFilter,
+  contextWindowPreviewFilteredOmittedEntries,
+  contextWindowPreviewHelpers
+} = useChatContextWindowPresentation({
+  contextWindowStats,
+  contextWindowBudgetPlan,
+  contextWindowPreviewState,
+  showContextWindowModal,
+  contextWindowPreviewConfig,
+  contextWindowPresetLabel,
+  contextWindowHistoryFocusLabel,
+  contextWindowHistoryFocusBehaviorText,
+  effectiveToolMode,
+  selectedProvider,
+  lastBuiltRequestToolsStats,
+  systemContent,
+  session,
+  getCurrentToolsKey,
+  getContextTokenTelemetry,
+  getMemorySessionById,
+  activeMemorySessionId,
+  contextWindowPreviewOmittedFilter
 })
-
-const contextWindowSummaryText = computed(() => {
-  const stats = contextWindowStats.value
-  const modeText = effectiveToolMode.value === 'compact' ? '精简工具模式' : '展开工具模式'
-  const budgetText = stats.telemetryAvailable
-    ? `上下文预算以最近一次真实输入 ${formatApproxChars(stats.reportedInputTokens)} Token 校准；当前预计 ${formatApproxChars(stats.totalEstimatedTokens)}/${formatApproxChars(stats.baseTokens)} Token。`
-    : `当前端点尚未返回可用的输入 Token，暂按 ${formatApproxChars(stats.totalEstimatedChars)}/${formatApproxChars(stats.baseChars)} 字符预算估算。`
-  const toolBudgetText = stats.toolEstimateFresh
-    ? `工具定义预留：约 ${formatApproxChars(stats.toolSchemaChars)}，共 ${stats.toolCount} 个工具。`
-    : '工具定义预留会在首次构建请求工具后显示。'
-  const attachmentText = stats.rawAttachmentCount
-    ? `附件轮次保留：${stats.requestAttachmentCount}/${stats.rawAttachmentCount}，其中摘要 ${stats.attachmentSummaryCount} 条。`
-    : '当前历史里没有附件轮次。'
-  return `${contextWindowPresetLabel.value} / ${contextWindowHistoryFocusLabel.value}；本次预计发送 ${stats.requestTurns}/${stats.rawTurns || 0} 轮、${stats.requestCount}/${stats.rawCount || 0} 条消息（${modeText}）。${budgetText} 系统提示词约占 ${formatApproxChars(stats.systemChars)} 字符。${attachmentText}${toolBudgetText}`
-})
-
-const contextWindowProviderHint = computed(() => {
-  const stats = contextWindowStats.value
-  const toolEstimateHint = stats.toolEstimateFresh
-    ? `最近一次工具定义大小约为 ${formatApproxChars(stats.toolSchemaChars)}。`
-    : '工具定义大小会在首次请求构建工具后显示。'
-  const attachmentHint = stats.rawAttachmentCount
-    ? stats.attachmentSummaryCount
-      ? `附件轮次保留 ${stats.requestAttachmentCount}/${stats.rawAttachmentCount}；其中 ${stats.attachmentSummaryCount} 条较早内容会压缩成摘要。`
-      : `附件轮次保留 ${stats.requestAttachmentCount}/${stats.rawAttachmentCount}；当前仍全部按完整轮次保留。`
-    : ''
-  if (isUtoolsBuiltinProvider(selectedProvider.value)) {
-    return `${contextWindowHistoryFocusBehaviorText.value}uTools AI 路径会自动去掉历史 tool/tool_calls，只保留纯文本的用户与助手记录。${attachmentHint}${toolEstimateHint}`
-  }
-  return `${contextWindowHistoryFocusBehaviorText.value}OpenAI 兼容路径会保留最近工具链，较老的工具轮次会自动压缩，避免无效上下文挤占窗口。${attachmentHint}${toolEstimateHint}`
-})
-
-const contextWindowPreviewInspection = computed(() =>
-  showContextWindowModal.value ? contextWindowPreviewState.value : createEmptyContextWindowInspection()
-)
-
-const contextWindowPreviewEntries = computed(() => {
-  return Array.isArray(contextWindowPreviewInspection.value?.inspection?.entries)
-    ? contextWindowPreviewInspection.value.inspection.entries
-    : []
-})
-
-const contextWindowPreviewOmittedEntries = computed(() => {
-  return Array.isArray(contextWindowPreviewInspection.value?.inspection?.omittedEntries)
-    ? contextWindowPreviewInspection.value.inspection.omittedEntries
-    : []
-})
-
-const contextWindowPreviewBudgetStats = computed(() => {
-  const inspection = contextWindowPreviewInspection.value?.inspection
-  const entries = contextWindowPreviewEntries.value
-  const previewConfig = contextWindowPreviewConfig.value
-  const providerKind = isUtoolsBuiltinProvider(selectedProvider.value) ? 'utools-ai' : 'openai-compatible'
-  const currentToolsKey = getCurrentToolsKey()
-  const toolEstimateFresh =
-    !!lastBuiltRequestToolsStats.updatedAt && String(lastBuiltRequestToolsStats.key || '') === currentToolsKey
-  const toolSchemaChars = toolEstimateFresh ? Number(lastBuiltRequestToolsStats.chars || 0) : 0
-  const toolCount = toolEstimateFresh ? Number(lastBuiltRequestToolsStats.count || 0) : 0
-  const systemChars = String(systemContent.value || '').length
-  const reservedChars = systemChars + toolSchemaChars
-  const rawMessages = Array.isArray(session.apiMessages) ? session.apiMessages : []
-  const tokenTelemetry = getContextTokenTelemetry()
-  const budgetPlan = resolveChatContextWindowBudgetPlan(previewConfig, {
-    reservedChars,
-    sourceChars: estimateMessagesSize(rawMessages),
-    reportedInputTokens: tokenTelemetry.inputTokens,
-    reportedRequestChars: tokenTelemetry.requestChars
-  })
-  const historyCharsUsed = entries.reduce((total, entry) => total + Number(entry?.chars || 0), 0)
-  const requestEstimatedTokens = budgetPlan.telemetryAvailable
-    ? Math.max(0, Math.ceil((historyCharsUsed + reservedChars) * budgetPlan.tokensPerChar))
-    : 0
-
-  return {
-    turnBudget: providerKind === 'utools-ai' ? Math.min(32, previewConfig.maxTurns + 2) : previewConfig.maxTurns,
-    turnUsed: entries.filter((entry) => entry?.kind === 'turn').length,
-    messageBudget: previewConfig.maxMessages,
-    messageUsed: Number(inspection?.messageCount || 0),
-    historyCharsBudget: budgetPlan.historyCharsBudget,
-    historyCharsUsed,
-    baseChars: budgetPlan.baseChars,
-    baseTokens: budgetPlan.baseTokens,
-    requestEstimatedTokens,
-    telemetryAvailable: budgetPlan.telemetryAvailable,
-    reservedChars,
-    systemChars,
-    toolSchemaChars,
-    toolCount,
-    toolEstimateFresh
-  }
-})
-
-const contextWindowPreviewBudgetItems = computed(() => {
-  const stats = contextWindowPreviewBudgetStats.value
-  const primaryBudgetItem = stats.telemetryAvailable
-    ? buildContextWindowBudgetItem({
-        key: 'input_tokens',
-        label: '上下文 Token',
-        used: stats.requestEstimatedTokens,
-        max: stats.baseTokens,
-        formatter: formatApproxChars,
-        hint: '依据最近一次接口返回的输入 Token 与请求体大小校准，展示本次预计输入。'
-      })
-    : buildContextWindowBudgetItem({
-        key: 'history_chars',
-        label: '历史字符',
-        used: stats.historyCharsUsed,
-        max: stats.historyCharsBudget,
-        formatter: formatApproxChars,
-        hint: '端点尚未返回输入 Token，当前使用字符预算兜底。'
-      })
-  return [
-    buildContextWindowBudgetItem({
-      key: 'turns',
-      label: '轮次预算',
-      used: stats.turnUsed,
-      max: stats.turnBudget,
-      hint: '这里只统计真实用户轮次；附件回补摘要不占用轮次预算。'
-    }),
-    buildContextWindowBudgetItem({
-      key: 'messages',
-      label: '消息预算',
-      used: stats.messageUsed,
-      max: stats.messageBudget,
-      hint: '消息数直接受 maxMessages 限制，压缩后通常会下降。'
-    }),
-    primaryBudgetItem,
-    buildContextWindowBudgetItem({
-      key: 'reserved_chars',
-      label: '预留开销',
-      used: stats.reservedChars,
-      max: stats.baseChars,
-      formatter: formatApproxChars,
-      hint: stats.toolEstimateFresh
-        ? `系统提示词约占 ${formatApproxChars(stats.systemChars)}；工具定义约占 ${formatApproxChars(stats.toolSchemaChars)}。`
-        : `系统提示词约占 ${formatApproxChars(stats.systemChars)}；工具定义大小会在构建后计入。`
-    })
-  ]
-})
-
-const contextWindowPreviewBudgetSummaryText = computed(() => {
-  const stats = contextWindowPreviewBudgetStats.value
-  if (stats.telemetryAvailable) {
-    const usageText = `${formatApproxChars(stats.requestEstimatedTokens)} / ${formatApproxChars(stats.baseTokens)} Token`
-    if (!stats.messageUsed) return `当前还没有可发送的历史；预计输入 ${usageText}。`
-    return `本次预计输入 ${usageText}；预算已按最近一次真实 usage 校准。`
-  }
-  const historyUsageText = `${formatApproxChars(stats.historyCharsUsed)} / ${formatApproxChars(stats.historyCharsBudget)}`
-  const reservedText = `${formatApproxChars(stats.reservedChars)} / ${formatApproxChars(stats.baseChars)}`
-  if (!stats.messageUsed) {
-    return `当前还没有可发送的历史；已预留预算 ${reservedText}。`
-  }
-  return `历史字符 ${historyUsageText}；已预留预算 ${reservedText}。`
-})
-
-const contextWindowBudgetStatus = computed(() => {
-  const items = contextWindowPreviewBudgetItems.value
-  const omittedEntries = contextWindowPreviewOmittedEntries.value
-  const hardBudgetTrim = omittedEntries.some((entry) => hasContextWindowHardBudgetReason(entry?.reasons))
-  const softBudgetTrim = omittedEntries.some((entry) => hasContextWindowSoftBudgetReason(entry?.reasons))
-  const pressureItems = items.filter((item) => item.ratio >= 0.8)
-  const strongestRatio = items.reduce((max, item) => Math.max(max, Number(item?.ratio || 0)), 0)
-  const driverText = pressureItems
-    .slice(0, 2)
-    .map((item) => `${item.label} ${item.usedLabel}/${item.maxLabel}`)
-    .join(', ')
-
-  if (hardBudgetTrim || strongestRatio >= 0.98) {
-    const lead = driverText ? `预算已满：${driverText}。` : '预算已满。'
-    return {
-      level: 'critical',
-      tagType: 'error',
-      tagSuffix: '预算已满',
-      text: `${lead}继续增加内容会直接裁掉更早的历史。`,
-      tooltip: hardBudgetTrim
-        ? `${lead}由于轮次、消息数或字符预算限制，已有部分历史被裁掉。`
-        : `${lead}当前上下文窗口几乎没有剩余空间。`
-    }
-  }
-
-  if (softBudgetTrim || strongestRatio >= 0.8) {
-    const lead = driverText ? `预算偏紧：${driverText}。` : '预算偏紧。'
-    return {
-      level: 'warning',
-      tagType: 'warning',
-      tagSuffix: '预算紧张',
-      text: `${lead}继续增加内容可能会压缩或裁掉更早的历史。`,
-      tooltip: softBudgetTrim
-        ? `${lead}由于预算压力，部分较早的前导消息或历史已经被排除。`
-        : `${lead}如果继续增加内容，最早的轮次会优先被压缩。`
-    }
-  }
-
-  return {
-    level: 'safe',
-    tagType: 'default',
-    tagSuffix: '',
-    text: '',
-    tooltip: '当前上下文窗口仍有可用预算。'
-  }
-})
-
-const contextWindowSummaryTagType = computed(() => {
-  const pressure = Number(contextWindowBudgetPlan.value?.effectivePressure || 0)
-  if (pressure >= 0.98) return 'error'
-  if (pressure >= 0.8) return 'warning'
-  return undefined
-})
-const contextWindowSummaryTooltipText = computed(() => {
-  const budgetTooltip = String(contextWindowBudgetStatus.value?.tooltip || '').trim()
-  if (!budgetTooltip) return contextWindowSummaryText.value
-  return `${contextWindowSummaryText.value} ${budgetTooltip}`.trim()
-})
-
-const activeMemorySessionContextSummary = computed(() => {
-  const activeRecord = getMemorySessionById(activeMemorySessionId.value)
-  return activeRecord && typeof activeRecord.contextSummary === 'object' ? activeRecord.contextSummary : null
-})
-
-const contextWindowCompressedSummaryText = computed(() => String(activeMemorySessionContextSummary.value?.summaryText || '').trim())
-const contextWindowCompressedSummaryMetaText = computed(() => {
-  const summary = activeMemorySessionContextSummary.value
-  const turnCount = Math.max(0, Math.floor(Number(summary?.coveredTurnCount || 0)))
-  const messageCount = Math.max(0, Math.floor(Number(summary?.coveredMessageCount || 0)))
-  const summaryLevel = Math.max(0, Math.floor(Number(summary?.summaryLevel || 0)))
-  const resolvedSummaryLevel = summaryLevel > 0 && Number.isFinite(summaryLevel)
-    ? summaryLevel
-    : (contextWindowCompressedSummaryText.value ? 1 : 0)
-  if (!contextWindowCompressedSummaryText.value) return ''
-  const parts = []
-  if (resolvedSummaryLevel > 0) parts.push(`第 ${resolvedSummaryLevel} 代摘要`)
-  if (turnCount > 0) parts.push(`${turnCount} 轮`)
-  if (messageCount > 0) parts.push(`${messageCount} 条消息`)
-  return parts.join(' · ')
-})
-
-const contextWindowCompressedSummaryChainText = computed(() => {
-  const summary = activeMemorySessionContextSummary.value
-  const summaryChain = Array.isArray(summary?.summaryChain) ? summary.summaryChain : []
-  const chainLevels = summaryChain
-    .map((value) => Math.max(0, Math.floor(Number(value) || 0)))
-    .filter((value) => value > 0)
-  if (chainLevels.length <= 1) return ''
-  return `摘要链：${chainLevels.map((level) => `第 ${level} 代`).join(' → ')}`
-})
-
-const contextWindowCompressedSummarySourceText = computed(() => {
-  const summary = activeMemorySessionContextSummary.value
-  const sourceLabel = String(summary?.summarySourceLabel || '').trim()
-  if (!contextWindowCompressedSummaryText.value) return ''
-  return sourceLabel ? `来源：${sourceLabel}` : ''
-})
-
-const contextWindowPreviewSummaryText = computed(() => {
-  const inspection = contextWindowPreviewInspection.value?.inspection
-  const entries = contextWindowPreviewEntries.value
-  const omittedCount = Array.isArray(inspection?.omittedEntries) ? inspection.omittedEntries.length : 0
-  if (!inspection?.messageCount) {
-    return omittedCount ? `当前没有可发送的历史；已有 ${omittedCount} 段历史被省略。` : '当前没有可发送的历史。'
-  }
-  return omittedCount
-    ? `当前展示 ${entries.length} 段已纳入上下文的片段，共 ${inspection.messageCount} 条消息；另有 ${omittedCount} 段被省略。`
-    : `当前展示 ${entries.length} 段已纳入上下文的片段，共 ${inspection.messageCount} 条消息。`
-})
-
-const contextWindowPreviewOmittedSummaryText = computed(() => {
-  const omittedEntries = contextWindowPreviewOmittedEntries.value
-  if (!omittedEntries.length) return ''
-  const filteredCount = contextWindowPreviewFilteredOmittedEntries.value.length
-  if (filteredCount === omittedEntries.length) {
-    return `当前展示 ${omittedEntries.length} 段被省略的历史及其主要原因。`
-  }
-  return `当前筛选下展示 ${filteredCount}/${omittedEntries.length} 段被省略的历史。`
-})
-
-const contextWindowPreviewOmittedFilterOptions = computed(() => {
-  const entries = contextWindowPreviewOmittedEntries.value
-  const options = [
-    { value: 'all', label: '全部', count: entries.length },
-    { value: 'budget', label: '预算', count: entries.filter((entry) => matchesContextWindowOmittedFilter(entry, 'budget')).length },
-    { value: 'attachments', label: '附件', count: entries.filter((entry) => matchesContextWindowOmittedFilter(entry, 'attachments')).length },
-    { value: 'prelude', label: '前导', count: entries.filter((entry) => matchesContextWindowOmittedFilter(entry, 'prelude')).length }
-  ]
-  return options.filter((option) => option.value === 'all' || option.count > 0)
-})
-
-const contextWindowPreviewResolvedOmittedFilter = computed(() => {
-  const active = String(contextWindowPreviewOmittedFilter.value || 'all')
-  return contextWindowPreviewOmittedFilterOptions.value.some((option) => option.value === active) ? active : 'all'
-})
-
-const contextWindowPreviewFilteredOmittedEntries = computed(() => {
-  const active = contextWindowPreviewResolvedOmittedFilter.value
-  return contextWindowPreviewOmittedEntries.value.filter((entry) => matchesContextWindowOmittedFilter(entry, active))
-})
-
-function buildContextWindowBudgetItem({ key, label, used, max, formatter = null, hint = '' } = {}) {
-  const normalize = (value) => {
-    const num = Number(value)
-    return Number.isFinite(num) ? Math.max(0, num) : 0
-  }
-  const formatValue = typeof formatter === 'function' ? formatter : (value) => String(Math.round(normalize(value)))
-  const safeUsed = normalize(used)
-  const safeMax = normalize(max)
-  const ratio = safeMax > 0 ? safeUsed / safeMax : 0
-  const percent = Math.max(0, Math.min(100, Math.round(ratio * 100)))
-  let tone = 'safe'
-  if (ratio >= 0.95) tone = 'critical'
-  else if (ratio >= 0.8) tone = 'warning'
-
-  return {
-    key,
-    label,
-    used: safeUsed,
-    max: safeMax,
-    usedLabel: formatValue(safeUsed),
-    maxLabel: formatValue(safeMax),
-    ratio,
-    percent,
-    tone,
-    hint
-  }
-}
-
-function hasContextWindowHardBudgetReason(reasons) {
-  const list = Array.isArray(reasons) ? reasons : []
-  return list.some((reason) => reason === 'turn_limit' || reason === 'message_limit' || reason === 'char_limit')
-}
-
-function hasContextWindowSoftBudgetReason(reasons) {
-  const list = Array.isArray(reasons) ? reasons : []
-  return list.some((reason) => reason === 'prelude_budget_exhausted') || hasContextWindowHardBudgetReason(list)
-}
-
-function matchesContextWindowOmittedFilter(entry, filterKey = 'all') {
-  const key = String(filterKey || 'all')
-  const reasons = Array.isArray(entry?.reasons) ? entry.reasons : []
-  if (key === 'budget') {
-    return hasContextWindowSoftBudgetReason(reasons)
-  }
-  if (key === 'attachments') {
-    return !!entry?.hasAttachment || reasons.some((reason) => reason === 'attachment_policy_disabled' || reason === 'attachment_displacement')
-  }
-  if (key === 'prelude') return entry?.kind === 'prelude'
-  return true
-}
-
-function contextWindowPreviewModeLabel(entry) {
-  const mode = String(entry?.mode || '')
-  const variant = String(entry?.variant || mode || '')
-  if (mode === 'prelude') return '前导'
-  if (mode === 'full') return '完整'
-  if (mode === 'compact') return '压缩'
-  if (mode === 'attachment_summary') return '附件摘要'
-  if (mode === 'pinned_attachment_summary') return '回补附件'
-  return '保留'
-}
-
-function contextWindowPreviewModeType(entry) {
-  const mode = String(entry?.mode || '')
-  if (mode === 'full') return 'success'
-  if (mode === 'compact') return 'warning'
-  if (mode === 'attachment_summary') return 'warning'
-  if (mode === 'pinned_attachment_summary') return 'info'
-  return 'default'
-}
-
-function contextWindowPreviewEntryLabel(entry, index) {
-  if (entry?.kind === 'prelude') return '系统前导消息'
-  if (entry?.kind === 'pinned_attachment_summary') {
-    const turnNumber = Number(entry?.index)
-    return Number.isFinite(turnNumber) ? `附件回补 | 第 ${turnNumber + 1} 轮` : `附件回补 | 第 ${index + 1} 项`
-  }
-  const turnNumber = Number(entry?.index)
-  return Number.isFinite(turnNumber) ? `第 ${turnNumber + 1} 轮` : `片段 ${index + 1}`
-}
-
-function contextWindowPreviewEntryNote(entry) {
-  if (entry?.omitted) {
-    const reasons = Array.isArray(entry?.reasons) ? entry.reasons : []
-    if (entry?.kind === 'prelude') return '前导消息只保留预算内还能放下的最新部分。'
-    if (reasons.includes('attachment_displacement')) {
-      return entry?.hasAttachment ? '这条附件轮次被更高优先级的上下文挤出。' : '为了保留附件历史，这条普通轮次被挤出。'
-    }
-    if (reasons.includes('attachment_policy_disabled')) {
-      return '这条历史里包含较早的附件，但当前策略不会回补它们。'
-    }
-    if (reasons.includes('turn_limit') || reasons.includes('message_limit') || reasons.includes('char_limit')) {
-      return '当前上下文预算已满，这段历史不会发送给模型。'
-    }
-    return '这段历史未被纳入当前请求上下文。'
-  }
-  if (entry?.kind === 'prelude') return '它会插入到历史消息之前，只保留预算允许的最新部分。'
-  if (entry?.kind === 'pinned_attachment_summary') return '这条附件来自更早历史，当前以摘要锚点的形式回补。'
-  if (entry?.mode === 'attachment_summary') return '原始轮次已压缩为附件摘要。'
-  if (entry?.mode === 'compact') return entry?.hasAttachment ? '该轮次已压缩，并优先保留了附件内容。' : '该轮次已压缩，较长文本或工具内容被裁剪。'
-  if (entry?.mustKeep) return '这是最新轮次，默认按最高优先级保留。'
-  if (entry?.hasAttachment) return '该轮次包含附件上下文，当前按完整轮次保留。'
-  return ''
-}
-
-function contextWindowPreviewOmittedReasonLabel(reason) {
-  const key = String(reason || '')
-  if (key === 'turn_limit') return '超过轮次预算'
-  if (key === 'message_limit') return '超过消息预算'
-  if (key === 'char_limit') return '超过字符预算'
-  if (key === 'attachment_policy_disabled') return '附件回补已关闭'
-  if (key === 'prelude_budget_exhausted') return '前导预算不足'
-  if (key === 'attachment_displacement') return '被附件优先级挤出'
-  return '未纳入'
-}
-
-function contextWindowPreviewOmittedReasonType(reason) {
-  const key = String(reason || '')
-  if (key === 'attachment_policy_disabled') return 'info'
-  if (key === 'prelude_budget_exhausted') return 'default'
-  return 'warning'
-}
-
-function contextWindowPreviewModeLabelV2(entry) {
-  const mode = String(entry?.mode || '')
-  const variant = String(entry?.variant || mode || '')
-  if (mode === 'compact') {
-    if (variant === 'compact_text') return '强压缩'
-    if (variant === 'compact_tight') return '极强压缩'
-    if (variant === 'compact_adaptive') return '自适应压缩'
-  }
-  return contextWindowPreviewModeLabel(entry)
-}
-
-function contextWindowPreviewEntryNoteV2(entry) {
-  if (entry?.mode === 'compact' && !entry?.omitted && !entry?.hasAttachment) {
-    const variant = String(entry?.variant || 'compact')
-    if (variant === 'compact_text') return '该轮次已进入强压缩，较长文本会截短，并尽量保留前后关键内容。'
-    if (variant === 'compact_tight') return '该轮次已进入更强压缩，为了保住更多历史，只保留了更精简的上下文。'
-    if (variant === 'compact_adaptive') return '该轮次已按剩余预算自适应压缩，尽量在不超预算的前提下保留更多历史。'
-  }
-  return contextWindowPreviewEntryNote(entry)
-}
 
 const activeQueuedInputs = computed(() => {
   void chatRunInputQueueRevision.value
@@ -5002,75 +3113,6 @@ const activeSessionDisplayTitle = computed(() => {
   return activeSessionTitle.value || getSessionTitleFromPath(activeSessionFilePath.value)
 })
 
-const thinkingEffortLabel = computed(() => {
-  const v = String(thinkingEffort.value || 'auto')
-  if (v === 'none') return '关闭'
-  if (v === 'minimal') return '极低'
-  if (v === 'low') return '低'
-  if (v === 'medium') return '中'
-  if (v === 'high') return '高'
-  if (v === 'xhigh') return '很高'
-  if (v === 'max') return '最高'
-  return '自动'
-})
-
-const imageGenerationModeLabel = computed(() => {
-  const v = String(imageGenerationMode.value || 'auto')
-  if (v === 'on') return '开启'
-  if (v === 'off') return '关闭'
-  return '自动'
-})
-
-const videoGenerationModeLabel = computed(() => {
-  const v = String(videoGenerationMode.value || 'auto')
-  if (v === 'on') return '开启'
-  if (v === 'off') return '关闭'
-  return '自动'
-})
-
-const imageGenerationParamsSummary = computed(() =>
-  summarizeImageGenerationParams(imageGenerationParamsEnabled.value, imageGenerationParams)
-)
-
-const videoGenerationParamsSummary = computed(() =>
-  summarizeVideoGenerationParams(videoGenerationParamsEnabled.value, videoGenerationParams)
-)
-
-const mediaGenerationParamsAutosaveKey = computed(() =>
-  JSON.stringify({
-    imageEnabled: imageGenerationParamsEnabled.value,
-    image: normalizeImageGenerationParams(imageGenerationParams),
-    videoEnabled: videoGenerationParamsEnabled.value,
-    video: normalizeVideoGenerationParams(videoGenerationParams)
-  })
-)
-
-const showInputModeTags = computed(() => {
-  return (
-    thinkingEffort.value !== 'auto' ||
-    normalizeImageGenerationMode(imageGenerationMode.value) !== 'auto' ||
-    normalizeImageGenerationMode(videoGenerationMode.value) !== 'auto' ||
-    imageGenerationParamsEnabled.value ||
-    videoGenerationParamsEnabled.value
-  )
-})
-
-const thinkingEffortButtonType = computed(() => (thinkingEffort.value !== 'auto' ? 'primary' : 'default'))
-
-const imageGenerationButtonType = computed(() => {
-  const mode = normalizeImageGenerationMode(imageGenerationMode.value)
-  if (mode === 'on') return 'primary'
-  if (mode === 'off') return 'warning'
-  return 'default'
-})
-
-const videoGenerationButtonType = computed(() => {
-  const mode = normalizeImageGenerationMode(videoGenerationMode.value)
-  if (mode === 'on') return 'primary'
-  if (mode === 'off') return 'warning'
-  return 'default'
-})
-
 const canSend = computed(() => {
   if (preparingSend.value) return false
   return !!String(input.value || '').trim() || (pendingAttachments.value || []).length > 0
@@ -5124,232 +3166,39 @@ function copyUserMessage(msg) {
   copyToClipboard(msg?.content || '')
 }
 
-const chatLinkContextMenu = ref({
-  show: false,
-  x: 0,
-  y: 0,
-  href: '',
-  text: '',
-  file: null
-})
-const sandboxFileCatalog = computed(() => collectSandboxFileCatalog(session.messages))
-const chatLinkContextMenuOptions = computed(() => {
-  const href = String(chatLinkContextMenu.value.href || '').trim()
-  const file = chatLinkContextMenu.value.file
-  if (file) {
-    return [
-      { label: '保存到指定目录…', key: 'save-file-as' },
-      { label: '打开文件', key: 'open-file' },
-      { label: '在文件夹中显示', key: 'show-file' },
-      { type: 'divider' },
-      { label: '复制文件名', key: 'copy-file-name' },
-      { label: '复制沙盒路径', key: 'copy-file-path' },
-      { label: '复制下载链接', key: 'copy-file-link' }
-    ]
-  }
-  const externalUrl = getSafeExternalUrl(href)
-  return [
-    {
-      label: externalUrl ? '在浏览器中打开链接' : '打开引用的笔记',
-      key: 'open'
-    },
-    { label: '复制链接', key: 'copy' }
-  ]
+const {
+  chatLinkContextMenu,
+  chatLinkContextMenuOptions,
+  cleanupChatPreviewLinkHandlers,
+  handleChatPreviewLinkClick,
+  handleChatPreviewLinkContextMenu,
+  closeChatLinkContextMenu,
+  handleChatLinkContextMenuSelect,
+  saveChatWorkspaceResultFile,
+  openChatWorkspaceResultFile,
+  showChatWorkspaceResultFile
+} = useChatLinkActions({
+  session,
+  getChatListElement: () => chatListRef.value,
+  router,
+  message,
+  copyToClipboard
 })
 
-function cleanupChatPreviewLinkHandlers() {
-  closeChatLinkContextMenu()
-}
-
-async function resolveChatNoteAbsPathFromHref(hrefRaw) {
-  return resolveNoteAbsPathFromHref({
-    hrefRaw,
-    currentDir: 'note',
-    existsFn: exists
-  })
-}
-
-async function openChatNoteFromHref(href) {
-  const noteAbsPath = await resolveChatNoteAbsPathFromHref(href)
-  if (!noteAbsPath) return false
-  await router.push({ name: 'note' }).catch(() => {})
-  requestOpenNoteFile(noteAbsPath)
-  return true
-}
-
-async function handleChatPreviewLinkClick(e) {
-  const link = e.target?.closest?.('a')
-  if (!link || !chatListRef.value?.contains(link)) return
-
-  const href = String(link.getAttribute('href') || '').trim()
-  if (!href || href.startsWith('#')) return
-
-  e.preventDefault()
-  e.stopPropagation()
-
-  const sandboxFile = resolveSandboxFileLink(href, sandboxFileCatalog.value)
-  if (sandboxFile) {
-    try {
-      const result = await saveChatWorkspaceResultFile(sandboxFile, {
-        suggestedName: sandboxFile.name || 'sandbox-output'
-      })
-      if (!result?.canceled) message.success('文件已保存')
-    } catch (error) {
-      message.error(`保存文件失败：${error?.message || String(error)}`)
-    }
-    return
-  }
-
-  if (getSafeExternalUrl(href)) {
-    safeOpenExternal(href)
-    return
-  }
-
-  if (await openChatNoteFromHref(href)) return
-  copyToClipboard(href)
-}
-
-async function runChatWorkspaceResultFileAction(file, action, actionOptions = {}) {
-  const outcome = await runChatWorkspaceFileAction(file, action, { actionOptions })
-  if (outcome.recovered) {
-    message.warning('原始结果文件已丢失，已根据历史写入内容恢复副本')
-  }
-  return outcome.result
-}
-
-function saveChatWorkspaceResultFile(file, options = {}) {
-  return runChatWorkspaceResultFileAction(file, 'save', options)
-}
-
-function openChatWorkspaceResultFile(file) {
-  return runChatWorkspaceResultFileAction(file, 'open')
-}
-
-function showChatWorkspaceResultFile(file) {
-  return runChatWorkspaceResultFileAction(file, 'show')
-}
-
-function handleChatPreviewLinkContextMenu(e) {
-  const link = e.target?.closest?.('a')
-  if (!link || !chatListRef.value?.contains(link)) return
-
-  const href = String(link.getAttribute('href') || '').trim()
-  if (!href) return
-
-  e.preventDefault()
-  e.stopPropagation()
-  chatLinkContextMenu.value = {
-    show: false,
-    x: e.clientX,
-    y: e.clientY,
-    href,
-    text: String(link.textContent || '').trim(),
-    file: resolveSandboxFileLink(href, sandboxFileCatalog.value)
-  }
-  window.setTimeout(() => {
-    chatLinkContextMenu.value.show = true
-  }, 0)
-}
-
-function closeChatLinkContextMenu() {
-  chatLinkContextMenu.value.show = false
-}
-
-async function copyChatContextLink(href) {
-  const externalUrl = getSafeExternalUrl(href)
-  if (externalUrl?.protocol === 'mailto:') {
-    copyToClipboard(safeDecodeURIComponent(externalUrl.pathname))
-    return
-  }
-  if (externalUrl) {
-    copyToClipboard(externalUrl.toString())
-    return
-  }
-
-  try {
-    const noteAbsPath = await resolveChatNoteAbsPathFromHref(href)
-    const noteHref = noteAbsPath ? buildNoteHrefFromPath(noteAbsPath) : ''
-    copyToClipboard(noteHref || href)
-  } catch {
-    copyToClipboard(href)
-  }
-}
-
-async function handleChatLinkContextMenuSelect(key) {
-  const href = String(chatLinkContextMenu.value.href || '').trim()
-  const file = chatLinkContextMenu.value.file
-  closeChatLinkContextMenu()
-  if (!href) return
-
-  if (file) {
-    try {
-      if (key === 'save-file-as') {
-        const result = await saveChatWorkspaceResultFile(file, {
-          suggestedName: file.name || 'sandbox-output'
-        })
-        if (!result?.canceled) message.success('文件已保存')
-        return
-      }
-      if (key === 'open-file') {
-        await openChatWorkspaceResultFile(file)
-        return
-      }
-      if (key === 'show-file') {
-        await showChatWorkspaceResultFile(file)
-        return
-      }
-      if (key === 'copy-file-name') {
-        copyToClipboard(file.name || file.path)
-        return
-      }
-      if (key === 'copy-file-path') {
-        copyToClipboard(file.path || file.dataPath)
-        return
-      }
-      if (key === 'copy-file-link') {
-        copyToClipboard(file.href || href)
-        return
-      }
-    } catch (error) {
-      message.error(`文件操作失败：${error?.message || String(error)}`)
-    }
-    return
-  }
-
-  if (key === 'copy') {
-    await copyChatContextLink(href)
-    return
-  }
-  if (key === 'open') {
-    if (getSafeExternalUrl(href)) {
-      safeOpenExternal(href)
-      return
-    }
-    if (!(await openChatNoteFromHref(href))) {
-      message.warning('无法打开该链接')
-    }
-  }
-}
-
-function ensureFilenameExt(nameRaw, mime) {
-  const name = String(nameRaw || '').trim()
-  const mt = String(mime || '').trim().toLowerCase()
-  const hasExt = /\.[a-z0-9]+$/i.test(name)
-  if (name && hasExt) return name
-
-  let ext = 'png'
-  if (mt.includes('jpeg') || mt.includes('jpg')) ext = 'jpg'
-  else if (mt.includes('gif')) ext = 'gif'
-  else if (mt.includes('webp')) ext = 'webp'
-  else if (mt.includes('bmp')) ext = 'bmp'
-  else if (mt.includes('mp4')) ext = 'mp4'
-  else if (mt.includes('webm')) ext = 'webm'
-  else if (mt.includes('quicktime') || mt.includes('mov')) ext = 'mov'
-  else if (mt.includes('x-m4v') || mt.includes('m4v')) ext = 'm4v'
-
-  if (!name) return `image_${Date.now()}.${ext}`
-  return `${name}.${ext}`
-}
+const {
+  copyChatImage,
+  copyChatVideo,
+  downloadChatImage,
+  downloadChatVideo,
+  updateChatImageMetadata,
+  updateChatVideoMetadata
+} = useChatMediaActions({
+  activeSessionFilePath,
+  message,
+  copyToClipboard,
+  scheduleSessionAutosave: () => scheduleSessionAutosave(),
+  scheduleRefreshUserAnchorMeta: () => scheduleRefreshUserAnchorMeta()
+})
 
 function extractChatImagesFromToolResult(result) {
   return extractImageOutputEntries(result).map((img, index) => ({
@@ -5383,99 +3232,37 @@ function extractChatVideosFromToolResult(result) {
   }))
 }
 
-function createAssistantImageBubblePlaceholder(note = '图片生成中，结果就绪后会展示在这里。', metaLine = '') {
-  return {
-    id: `assistant-image-placeholder-${newId()}`,
-    name: '图片生成中',
-    src: '',
-    mime: '',
-    note: String(note || '').trim() || '图片生成中，结果就绪后会展示在这里。',
-    metaLine: String(metaLine || '').trim()
-  }
-}
+const {
+  assistantMediaHelpers,
+  createAssistantImageBubblePlaceholder,
+  createAssistantVideoBubblePlaceholder,
+  clearAssistantMediaBubblePlaceholders,
+  applyAssistantRequestPlaceholderMode,
+  prepareAssistantDisplayForTextResponse
+} = useChatAssistantMediaPresentation({
+  createId: newId,
+  canRegenerateMedia: (...args) => canRegenerateMedia(...args),
+  canResumeMediaTask: (...args) => canResumeMediaTask(...args),
+  isMediaTaskResuming: (...args) => isMediaTaskResuming(...args)
+})
 
-function createAssistantVideoBubblePlaceholder(note = '视频生成中，结果就绪后会展示在这里。', metaLine = '') {
-  return {
-    id: `assistant-video-placeholder-${newId()}`,
-    name: '视频生成中',
-    src: '',
-    mime: '',
-    note: String(note || '').trim() || '视频生成中，结果就绪后会展示在这里。',
-    metaLine: String(metaLine || '').trim()
-  }
-}
-
-function assistantVisibleImages(msg) {
-  if (Array.isArray(msg?.images) && msg.images.length) return msg.images
-  if (msg?.imageBubblePlaceholder) {
-    return [msg.imageBubblePlaceholderImage || createAssistantImageBubblePlaceholder()]
-  }
-  return []
-}
-
-function assistantVisibleImageCount(msg) {
-  return Array.isArray(msg?.images) ? msg.images.filter((img) => String(img?.src || '').trim()).length : 0
-}
-
-function assistantImageBlockEyebrow(msg) {
-  return assistantVisibleImageCount(msg) ? '图片结果' : '图片占位'
-}
-
-function assistantImageDisplayTitle(msg) {
-  if (assistantVisibleImageCount(msg)) return assistantImageTitle(msg)
-  return assistantImageTaskTitle(msg) || '图片生成中'
-}
-
-function assistantImagePlaceholderText(msg, img) {
-  const note = String(img?.note || '').trim()
-  if (note) return note
-  return assistantImageTaskNote(msg) || '图片生成中，结果就绪后会展示在这里。'
-}
-
-function assistantImageInsightLabel(msg, img) {
-  return imageInsightLabel(img) || assistantImageTaskMetaLabel(msg) || ''
-}
-
-function assistantVisibleVideos(msg) {
-  if (Array.isArray(msg?.videos) && msg.videos.length) return msg.videos
-  if (msg?.videoBubblePlaceholder) {
-    return [msg.videoBubblePlaceholderItem || createAssistantVideoBubblePlaceholder()]
-  }
-  return []
-}
-
-function assistantVisibleVideoCount(msg) {
-  return Array.isArray(msg?.videos) ? msg.videos.filter((video) => String(video?.src || '').trim()).length : 0
-}
-
-function clearAssistantMediaBubblePlaceholders(msg) {
-  if (!msg || typeof msg !== 'object') return
-  msg.imageBubblePlaceholder = false
-  msg.imageBubblePlaceholderImage = null
-  msg.videoBubblePlaceholder = false
-  msg.videoBubblePlaceholderItem = null
-}
-
-function applyAssistantRequestPlaceholderMode(msg, placeholderMode = 'text') {
-  if (!msg || typeof msg !== 'object') return
-  clearAssistantMediaBubblePlaceholders(msg)
-  const mode = String(placeholderMode || 'text').trim().toLowerCase()
-  if (mode === 'image') {
-    msg.imageBubblePlaceholder = true
-    msg.imageBubblePlaceholderImage = createAssistantImageBubblePlaceholder()
-    return
-  }
-  if (mode === 'video') {
-    msg.videoBubblePlaceholder = true
-    msg.videoBubblePlaceholderItem = createAssistantVideoBubblePlaceholder()
-  }
-}
-
-function prepareAssistantDisplayForTextResponse(msg) {
-  if (!msg || typeof msg !== 'object') return
-  clearAssistantMediaBubblePlaceholders(msg)
-  msg.transientRequestPlaceholder = false
-}
+const {
+  createImageGenerationPlaceholderDisplay,
+  applyImageGenerationTaskToDisplay,
+  applyImageGenerationTextToDisplay,
+  applyImageGenerationImagesToDisplay,
+  buildVideoGenerationPendingText,
+  createVideoGenerationPlaceholderDisplay,
+  applyVideoGenerationTaskToDisplay,
+  applyVideoGenerationTextToDisplay,
+  applyVideoGenerationVideosToDisplay,
+  buildVideoGenerationApiSummary
+} = useChatMediaGenerationDisplay({
+  createDisplayMessage: (...args) => createDisplayMessage(...args),
+  createAssistantImageBubblePlaceholder,
+  createAssistantVideoBubblePlaceholder,
+  assistantVideoTaskStatusLabel: assistantMediaHelpers.assistantVideoTaskStatusLabel
+})
 
 function removeDisplayMessageById(messageId) {
   const id = String(messageId || '').trim()
@@ -5490,76 +3277,6 @@ function removeRunDisplayMessageById(abortState, messageId) {
   const targetSession = getRunSessionTarget(abortState)
   const index = targetSession.messages.findIndex((msg) => msg?.id === id)
   if (index !== -1) targetSession.messages.splice(index, 1)
-}
-
-function assistantVideoBlockEyebrow(msg) {
-  return assistantVisibleVideoCount(msg) ? '视频结果' : '视频占位'
-}
-
-function assistantVideoDisplayTitle(msg) {
-  if (assistantVisibleVideoCount(msg)) {
-    const count = assistantVisibleVideoCount(msg)
-    return count > 1 ? `已生成 ${count} 个视频` : '已生成 1 个视频'
-  }
-  return assistantVideoTaskTitle(msg) || '视频生成中'
-}
-
-function assistantVideoPlaceholderText(msg, video) {
-  const note = String(video?.note || '').trim()
-  if (note) return note
-  return assistantVideoTaskNote(msg) || '视频生成中，结果就绪后会展示在这里。'
-}
-
-function assistantVideoInsightLabel(msg, video) {
-  return videoInsightLabel(video) || assistantVideoTaskMetaLabel(msg) || ''
-}
-
-function assistantVideoPromptLabel(msg) {
-  const prompt = truncateInlineText(msg?.videoPrompt || '', 220)
-  if (!prompt) return ''
-  return `提示词：${prompt}`
-}
-
-function assistantVideoTaskStatusLabel(messageLike) {
-  const status = String(messageLike?.videoTask?.stage || messageLike?.videoTask?.status || '').trim().toLowerCase()
-  if (status === 'submitting') return '提交中'
-  if (['queued', 'submitted', 'pending', 'accepted'].includes(status)) return '排队中'
-  if (['processing', 'running', 'in_progress', 'polling'].includes(status)) return '生成中'
-  if (status === 'fetching_result') return '拉取结果中'
-  if (['completed', 'succeeded', 'success'].includes(status)) return '已完成'
-  if (['failed', 'error', 'cancelled', 'canceled'].includes(status)) return '失败'
-  return status ? status : '处理中'
-}
-
-function assistantVideoTaskTagType(messageLike) {
-  const status = String(messageLike?.videoTask?.stage || messageLike?.videoTask?.status || '').trim().toLowerCase()
-  if (['failed', 'error', 'cancelled', 'canceled'].includes(status)) return 'error'
-  if (['completed', 'succeeded', 'success'].includes(status)) return 'success'
-  if (['queued', 'submitted', 'pending', 'accepted'].includes(status)) return 'warning'
-  return 'info'
-}
-
-function assistantVideoTaskTitle(messageLike) {
-  return `视频任务${assistantVideoTaskStatusLabel(messageLike) === '处理中' ? '' : ` · ${assistantVideoTaskStatusLabel(messageLike)}`}`.trim()
-}
-
-function assistantVideoTaskMetaLabel(messageLike) {
-  const task = messageLike?.videoTask
-  if (!task) return ''
-  const parts = []
-  if (task.id) parts.push(`任务 ID：${task.id}`)
-  if (task.endpointKind) parts.push(`接口：${task.endpointKind}`)
-  const progress = mediaTaskProgressLabel(messageLike, 'video')
-  if (progress) parts.push(progress)
-  return parts.join(' · ')
-}
-
-function assistantVideoTaskNote(messageLike) {
-  return String(messageLike?.videoTask?.note || '').trim()
-}
-
-function videoInsightLabel(video) {
-  return String(video?.note || '').trim()
 }
 
 const BUILTIN_AGENTS_TRACE_EVENT = 'builtin-agents-trace'
@@ -5577,311 +3294,32 @@ const BUILTIN_AGENTS_TOOL_APPROVAL_REQUEST_EVENT = 'builtin-agents-tool-approval
 const BUILTIN_AGENTS_TOOL_APPROVAL_RESPONSE_EVENT = 'builtin-agents-tool-approval-response'
 const BUILTIN_AGENTS_TOOL_APPROVAL_MODE_CHANGE_EVENT = 'builtin-agents-tool-approval-mode-change'
 
-function copyChatImageLink(img) {
-  const src = String(img?.src || '').trim()
-  if (!src) return
-  copyToClipboard(src)
-}
 
-function copyChatVideoLink(video) {
-  const src = String(video?.src || '').trim()
-  if (!src) return
-  copyToClipboard(src)
-}
 
-async function loadChatImageBlob(img) {
-  const src = String(img?.src || '').trim()
-  if (!src) throw new Error('图片链接为空')
-
-  const response = await fetch(src)
-  if (!response.ok) {
-    throw new Error(`加载图片失败（HTTP ${response.status}）`)
-  }
-
-  const blob = await response.blob()
-  if (!blob || !blob.size) {
-    throw new Error('图片内容为空')
-  }
-  return blob
-}
-
-async function loadChatVideoBlob(video) {
-  const src = String(video?.src || '').trim()
-  if (!src) throw new Error('视频链接为空')
-
-  const response = await fetch(src)
-  if (!response.ok) {
-    throw new Error(`加载视频失败（HTTP ${response.status}）`)
-  }
-
-  const blob = await response.blob()
-  if (!blob || !blob.size) {
-    throw new Error('视频内容为空')
-  }
-  return blob
-}
-
-function withPreferredBlobMime(blob, mime) {
-  const preferred = String(mime || '').trim()
-  if (!preferred || String(blob?.type || '').trim().toLowerCase() === preferred.toLowerCase()) return blob
-  try {
-    return new Blob([blob], { type: preferred })
-  } catch {
-    return blob
-  }
-}
-
-async function copyChatImage(img) {
-  const src = String(img?.src || '').trim()
-  if (!src) return
-
-  try {
-    if (await copyChatImageFile(img)) {
-      message.success('图片已复制到剪贴板')
-      return
-    }
-    if (!await copyChatImageBlob(img)) {
-      throw new Error('clipboard image mime unsupported')
-    }
-    message.success('图片已复制到剪贴板')
-  } catch (err) {
-    copyChatImageLink(img)
-    message.warning(`当前环境不支持直接复制图片，已改为复制图片链接：${err?.message || String(err)}`)
-  }
-}
-
-function getActiveChatImageAssetPath(img) {
-  const sessionFilePath = String(activeSessionFilePath.value || '').trim()
-  return (
-    resolveChatMediaAssetPath(img, { sessionFilePath }) ||
-    String(img?.assetPath || img?.localPath || img?.fileRelPath || '').trim()
-  )
-}
-
-async function ensureChatImageAssetPath(img) {
-  let assetPath = getActiveChatImageAssetPath(img)
-  if (assetPath) return assetPath
-
-  const sessionFilePath = String(activeSessionFilePath.value || '').trim()
-  const src = String(img?.src || '').trim()
-  if (!sessionFilePath || !src) return ''
-
-  const persisted = await persistChatMediaListAssets([img], {
-    kind: 'image',
-    messageId: img?.messageId || img?.id || 'image',
-    sessionFilePath
-  })
-  const next = persisted?.[0]
-  assetPath = getActiveChatImageAssetPath(next)
-  if (assetPath && next && typeof img === 'object') {
-    Object.assign(img, next)
-    scheduleSessionAutosave()
-  }
-  return assetPath || ''
-}
-
-async function copyChatImageFile(img) {
-  const copyFile = globalThis?.utools?.copyFile
-  if (typeof copyFile !== 'function') return false
-
-  const assetPath = await ensureChatImageAssetPath(img)
-  if (!assetPath) return false
-
-  const absPath = String(await resolvePath(assetPath) || '').trim()
-  if (!absPath) return false
-  return !!copyFile(absPath)
-}
-
-async function copyChatImageBlob(img) {
-  const clipboardApi = navigator?.clipboard
-  if (!clipboardApi?.write || typeof ClipboardItem === 'undefined') return false
-
-  const blob = await loadChatImageBlob(img)
-  const mime = normalizeClipboardMediaMime(blob.type || img?.mime, 'image/png', 'image/') || 'image/png'
-  if (!canWriteClipboardMime(mime, ClipboardItem)) return false
-  const clipboardBlob = withPreferredBlobMime(blob, mime)
-  await clipboardApi.write([
-    new ClipboardItem({
-      [mime]: clipboardBlob
-    })
-  ])
-  return true
-}
-
-function getActiveChatVideoAssetPath(video) {
-  const sessionFilePath = String(activeSessionFilePath.value || '').trim()
-  return (
-    resolveChatMediaAssetPath(video, { sessionFilePath }) ||
-    String(video?.assetPath || video?.localPath || video?.fileRelPath || '').trim()
-  )
-}
-
-async function ensureChatVideoAssetPath(video) {
-  let assetPath = getActiveChatVideoAssetPath(video)
-  if (assetPath) return assetPath
-
-  const sessionFilePath = String(activeSessionFilePath.value || '').trim()
-  const src = String(video?.src || '').trim()
-  if (!sessionFilePath || !src) return ''
-
-  const persisted = await persistChatMediaListAssets([video], {
-    kind: 'video',
-    messageId: video?.messageId || video?.id || 'video',
-    sessionFilePath
-  })
-  const next = persisted?.[0]
-  assetPath = getActiveChatVideoAssetPath(next)
-  if (assetPath && next && typeof video === 'object') {
-    Object.assign(video, next)
-    scheduleSessionAutosave()
-  }
-  return assetPath || ''
-}
-
-async function copyChatVideoFile(video) {
-  const copyFile = globalThis?.utools?.copyFile
-  if (typeof copyFile !== 'function') return false
-
-  const assetPath = await ensureChatVideoAssetPath(video)
-  if (!assetPath) return false
-
-  const absPath = String(await resolvePath(assetPath) || '').trim()
-  if (!absPath) return false
-  return !!copyFile(absPath)
-}
-
-async function copyChatVideoBlob(video) {
-  const clipboardApi = navigator?.clipboard
-  if (!clipboardApi?.write || typeof ClipboardItem === 'undefined') return false
-
-  const blob = await loadChatVideoBlob(video)
-  const mime = normalizeClipboardMediaMime(blob.type || video?.mime, 'video/mp4', 'video/') || 'video/mp4'
-  if (!canWriteClipboardMime(mime, ClipboardItem)) return false
-  const clipboardBlob = withPreferredBlobMime(blob, mime)
-  await clipboardApi.write([
-    new ClipboardItem({
-      [mime]: clipboardBlob
-    })
-  ])
-  return true
-}
-
-async function copyChatVideo(video) {
-  const src = String(video?.src || '').trim()
-  if (!src) return
-
-  try {
-    if (await copyChatVideoFile(video)) {
-      message.success('视频文件已复制到剪贴板')
-      return
-    }
-  } catch {
-    // 继续尝试浏览器剪贴板写入。
-  }
-
-  try {
-    if (await copyChatVideoBlob(video)) {
-      message.success('视频已复制到剪贴板')
-      return
-    }
-  } catch {
-    // 继续降级为复制链接。
-  }
-
-  copyChatVideoLink(video)
-  message.warning('当前环境不支持直接复制视频文件，已改为复制视频链接')
-}
-
-function isToolMessage(msgOrRole) {
-  const role = typeof msgOrRole === 'string' ? msgOrRole : String(msgOrRole?.role || '').trim()
-  return role === 'tool' || role === 'tool_call'
-}
-
-const TOOL_MESSAGE_STATUS_LABELS = {
-  running: '运行中',
-  paused: '已暂停',
-  stopped: '已停止',
-  success: '已完成',
-  error: '失败',
-  rejected: '已拒绝'
-}
-
-function normalizeToolMessageStatus(raw) {
-  const status = String(raw || '').trim()
-  return Object.prototype.hasOwnProperty.call(TOOL_MESSAGE_STATUS_LABELS, status) ? status : ''
-}
-
-function isLiveToolMessageStatus(status) {
-  return status === 'running' || status === 'paused'
-}
-
-function toolMessageStatusText(status) {
-  const normalized = normalizeToolMessageStatus(status)
-  return TOOL_MESSAGE_STATUS_LABELS[normalized] || '已完成'
-}
-
-function toolMessageStatusDetailText(status) {
-  const normalized = normalizeToolMessageStatus(status)
-  if (normalized === 'running') return '等待工具结果...'
-  if (normalized === 'paused') return '执行已暂停，等待恢复...'
-  if (normalized === 'stopped') return '执行已停止，不会继续运行。'
-  return ''
-}
-
-function getToolMessageStatus(msg) {
-  if (!isToolMessage(msg)) return ''
-  const explicit = normalizeToolMessageStatus(msg?.toolStatus)
-  if (isAgentRunToolResult(msg?.toolResultPayload)) {
-    const payloadStatus = normalizeToolMessageStatus(getAgentRunMessageStatus(msg))
-    if (payloadStatus && payloadStatus !== 'running') return payloadStatus
-    if (explicit && explicit !== 'running') return explicit
-    if (payloadStatus === 'running') return 'running'
-  }
-  const structuredStatus = normalizeToolMessageStatus(
-    inferStructuredToolResultStatus(msg?.toolResultPayload)
-  )
-  if (structuredStatus) return structuredStatus
-  if (explicit) return explicit
-  const contentStatus = normalizeToolMessageStatus(inferToolDisplayContentStatus(msg?.content))
-  if (contentStatus) return contentStatus
-  return String(msg?.role || '').trim() === 'tool_call' ? 'running' : 'success'
-}
-
-function toolMessageStatusLabel(msg) {
-  return toolMessageStatusText(getToolMessageStatus(msg))
-}
-
-function toolMessageLabel(msg) {
-  return getToolActivityLabel(msg, getToolMessageStatus(msg))
-}
-
-function toolActivityMeta(msg) {
-  return getToolActivityMeta(msg)
-}
-
-function toolActivityToolName(msg) {
-  return getToolActivityToolName(msg)
-}
-
-function toolActivitySource(msg) {
-  return getToolActivitySource(msg)
-}
-
-function shouldShowToolActivityStatus(msg) {
-  return ['paused', 'stopped', 'error', 'rejected'].includes(getToolMessageStatus(msg))
-}
-
-function toolActivityIcon(msg) {
-  const status = getToolMessageStatus(msg)
-  if (status === 'running') return RefreshOutline
-  if (status === 'paused') return PauseCircleOutline
-  if (status === 'error' || status === 'rejected' || status === 'stopped') return CloseOutline
-  return CheckmarkOutline
-}
-
-function isToolActivityGroup(msg) {
-  return String(msg?.role || '').trim() === 'tool_group' && Array.isArray(msg?.toolGroupMessages)
-}
+const {
+  isToolMessage,
+  normalizeToolMessageStatus,
+  isLiveToolMessageStatus,
+  toolMessageStatusText,
+  toolMessageStatusDetailText,
+  getToolMessageStatus,
+  toolMessageStatusLabel,
+  toolMessageLabel,
+  toolActivityMeta,
+  toolActivityToolName,
+  toolActivitySource,
+  shouldShowToolActivityStatus,
+  toolActivityIcon,
+  isToolActivityGroup,
+  isAssistantActivityMessage,
+  isChatActivityMessage,
+  chatItemStateClasses,
+  chatAvatarStateClasses,
+  chatAvatarIconClasses,
+  roleIcon,
+  formatTime,
+  shouldRenderCompactToolMessage
+} = useChatToolPresentation()
 
 function toggleToolActivityGroup(group) {
   if (!isToolActivityGroup(group)) return
@@ -5897,1072 +3335,192 @@ function toggleToolActivityGroup(group) {
   scheduleStickyChatBubbleSync()
 }
 
-function isAssistantActivityMessage(msg) {
-  if (String(msg?.role || '').trim() !== 'assistant' || !String(msg?.thinking || '').trim()) return false
-  if (String(msg?.content || '').trim()) return false
-  return !(
-    (Array.isArray(msg?.images) && msg.images.length) ||
-    (Array.isArray(msg?.videos) && msg.videos.length)
-  )
-}
-
-function isChatActivityMessage(msg) {
-  return isToolMessage(msg) || isToolActivityGroup(msg) || isAssistantActivityMessage(msg)
-}
-
-function chatItemStateClasses(msg) {
-  const status = getToolMessageStatus(msg)
-  return {
-    'is-streaming': msg?.role === 'assistant' && !!msg?.streaming,
-    'is-tool-running': status === 'running',
-    'is-tool-paused': status === 'paused',
-    'is-tool-stopped': status === 'stopped',
-    'is-tool-success': status === 'success',
-    'is-tool-error': status === 'error',
-    'is-tool-rejected': status === 'rejected',
-    'is-agent-run': isToolMessage(msg) && String(msg?.toolName || '').trim() === 'agent_run',
-    'is-tool-group': isToolActivityGroup(msg),
-    'is-activity': isChatActivityMessage(msg),
-    'is-thinking-activity': isAssistantActivityMessage(msg)
-  }
-}
-
-function chatAvatarStateClasses(msg) {
-  const status = getToolMessageStatus(msg)
-  return {
-    'is-streaming': msg?.role === 'assistant' && !!msg?.streaming,
-    'is-running': status === 'running',
-    'is-paused': status === 'paused',
-    'is-stopped': status === 'stopped',
-    'is-success': status === 'success',
-    'is-error': status === 'error',
-    'is-rejected': status === 'rejected'
-  }
-}
-
-function chatAvatarIconClasses(msg) {
-  const status = getToolMessageStatus(msg)
-  return {
-    'is-streaming': msg?.role === 'assistant' && !!msg?.streaming,
-    'is-spinning': status === 'running'
-  }
-}
-
-function extractServerNameFromToolMeta(toolMeta = '') {
-  const raw = String(toolMeta || '').trim()
-  if (!raw) return ''
-  const idx = raw.indexOf(' / ')
-  return idx >= 0 ? raw.slice(0, idx).trim() : raw
-}
-
-function extractToolNameFromToolMeta(toolMeta = '') {
-  const raw = String(toolMeta || '').trim()
-  if (!raw) return ''
-  const idx = raw.indexOf(' / ')
-  return idx >= 0 ? raw.slice(idx + 3).trim() : ''
-}
-
-function extractFirstJsonFenceText(content = '') {
-  const match = String(content || '').match(/```(?:json)?\s*([\s\S]*?)```/i)
-  return match ? String(match[1] || '').trim() : ''
-}
-
-function inferToolResultStatus(messageLike) {
-  const explicit = normalizeToolMessageStatus(messageLike?.toolStatus)
-  if (isAgentRunToolResult(messageLike?.toolResultPayload)) {
-    const payloadStatus = normalizeToolMessageStatus(getAgentRunMessageStatus(messageLike))
-    if (payloadStatus && payloadStatus !== 'running') return payloadStatus
-    if (explicit && explicit !== 'running') return explicit
-    if (payloadStatus === 'running') return 'running'
-  }
-  const structuredStatus = normalizeToolMessageStatus(
-    inferStructuredToolResultStatus(messageLike?.toolResultPayload)
-  )
-  if (structuredStatus) return structuredStatus
-  if (explicit) return explicit
-  const role = String(messageLike?.role || '').trim()
-  if (role === 'tool_call') return 'running'
-  const contentStatus = normalizeToolMessageStatus(inferToolDisplayContentStatus(messageLike?.content))
-  if (contentStatus) return contentStatus
-  return 'success'
-}
-
-function buildToolExecutionMessageContent(options = {}) {
-  const serverName = String(options.serverName || '').trim() || '未知'
-  const toolName = String(options.toolName || '').trim() || ''
-  const argsText = String(options.argsText || '').trim() || '{}'
-  const resultContent = String(options.resultContent || '').trim()
-  const errorText = String(options.errorText || '').trim()
-  const status = options.status || 'running'
-  const statusText = toolMessageStatusText(status)
-  const statusDetailText = toolMessageStatusDetailText(status)
-  const autoApproved = options.autoApproved
-  const traceItems = Array.isArray(options.traceItems) ? options.traceItems : []
-  const lines = [
-    '### 工具调用',
-    `- 服务：**${serverName}**`,
-    `- 工具：\`${toolName}\``,
-    `- 状态：**${statusText}**`
-  ]
-
-  if (typeof autoApproved === 'boolean') lines.push(`- 自动批准：**${autoApproved ? '是' : '否'}**`)
-
-  lines.push('', '#### 参数', '', '```json', argsText, '```')
-
-  if (statusDetailText) lines.push('', `> ${statusDetailText}`)
-  if (traceItems.length && isLiveToolMessageStatus(status)) {
-    lines.push('', '#### 实时轨迹', '')
-    traceItems.slice(-40).forEach((item) => {
-      lines.push(formatAgentRunTraceEntry(item))
-    })
-  }
-  if (resultContent) lines.push('', resultContent)
-  else if (errorText && status !== 'running') lines.push('', '#### 错误', '', errorText)
-
-  return lines.join('\n').trim()
-}
-
-function createPendingToolExecutionMessage({
-  serverName = '',
-  toolName = '',
-  toolTitle = '',
-  toolDescription = '',
-  argsText = '{}',
-  autoApproved = false,
-  traceStreamId = '',
-  argsObj = null,
-  toolCallId = '',
-  toolExecutionId = '',
-  toolSessionId = ''
-} = {}) {
-  const targetAgentLabel = isAgentRunToolName(toolName)
-    ? String(argsObj?.agent_name || argsObj?.agent_id || argsObj?.name || argsObj?.id || '').trim()
-    : ''
-  const expandByDefault = isAgentRunToolName(toolName)
-  const normalizedToolExecutionId = String(toolExecutionId || '').trim()
-  const normalizedTraceStreamId = String(traceStreamId || '').trim() || (expandByDefault ? normalizedToolExecutionId : '')
-  return createDisplayMessage(
-    'tool_call',
-    buildToolExecutionMessageContent({
-      serverName,
-      toolName,
-      argsText,
-      autoApproved,
-      status: 'running'
-    }),
-    {
-      toolMeta: `${serverName || '未知'} / ${toolName || ''}`.trim(),
-      toolExpanded: expandByDefault,
-      toolStatus: 'running',
-      toolServerName: String(serverName || '').trim(),
-      toolName: String(toolName || '').trim(),
-      toolTitle: String(toolTitle || '').trim(),
-      toolDescription: String(toolDescription || '').trim(),
-      toolArgsText: String(argsText || '').trim() || '{}',
-      toolAutoApproved: !!autoApproved,
-      toolCallId: String(toolCallId || '').trim(),
-      toolExecutionId: normalizedToolExecutionId,
-      toolSessionId: String(toolSessionId || '').trim(),
-      toolSubMeta: targetAgentLabel ? `智能体：${targetAgentLabel}` : '',
-      toolTraceStreamId: normalizedTraceStreamId,
-      toolLiveTrace: [],
-      toolAbortState: null
-    }
-  )
-}
-
-function createToolExecutionResultMessage(content = '', extra = {}, toolCallId = '', toolExecutionId = '') {
-  const normalizedExtra = extra && typeof extra === 'object' ? { ...extra } : {}
-  if (!String(normalizedExtra.toolCallId || '').trim() && toolCallId) {
-    normalizedExtra.toolCallId = String(toolCallId || '').trim()
-  }
-  if (!String(normalizedExtra.toolExecutionId || '').trim() && toolExecutionId) {
-    normalizedExtra.toolExecutionId = String(toolExecutionId || '').trim()
-  }
-  return createDisplayMessage('tool', content, normalizedExtra)
-}
-
-function buildToolExecutionResultSubMeta(result) {
-  const resultKind = String(result?.kind || '').trim()
-  if (resultKind.startsWith('sandbox_')) {
-    if (result?.workspaceKind === 'multiple') {
-      const kinds = new Set(
-        (Array.isArray(result?.workspaces) ? result.workspaces : [])
-          .map((workspace) => String(workspace?.workspaceKind || '').trim())
-          .filter(Boolean)
-      )
-      if (kinds.has('sandbox') && kinds.has('host')) return '会话沙盒 + 本机工作区'
-      if (kinds.has('host')) return '本机工作区（无系统沙盒）'
-    }
-    const isolationLabel = result?.sandboxEnforced === true
-      ? '系统沙盒'
-      : result?.isolationLevel === 'host-workspace'
-        ? '本机工作区（无系统沙盒）'
-        : '隔离工作区（路径守卫）'
-    if (result?.workspaceKind === 'host') {
-      const workspacePath = String(result?.workspacePath || '').trim()
-      const relativeCwd = String(result?.cwd || '.').trim()
-      return [
-        workspacePath ? `${isolationLabel}：${workspacePath}` : isolationLabel,
-        relativeCwd && relativeCwd !== '.' ? `cwd：${relativeCwd}` : ''
-      ].filter(Boolean).join(' · ')
-    }
-    return `${isolationLabel}：${String(result?.workspaceId || 'default').trim() || 'default'}`
-  }
-  if (!isAgentRunToolResult(result)) return ''
-  const agentName = String(result?.agent?.name || result?.agent?.id || '').trim()
-  const traceCount = Array.isArray(result?.trace) ? result.trace.length : 0
-  const rounds = Number(result?.metrics?.rounds)
-  return [
-    agentName ? `智能体：${agentName}` : '',
-    traceCount > 0 ? `轨迹步骤：${traceCount}` : '',
-    Number.isFinite(rounds) && rounds > 0 ? `轮次：${rounds}` : ''
-  ].filter(Boolean).join(' · ')
-}
-
-function mergeToolExecutionDisplayMessage(toolDisplay, resultMessage, options = {}) {
-  if (!toolDisplay || !isToolMessage(toolDisplay) || !resultMessage) return resultMessage
-  const status = options.status || inferToolResultStatus(resultMessage)
-  const serverName =
-    String(options.toolServerName || resultMessage.toolServerName || toolDisplay.toolServerName || extractServerNameFromToolMeta(resultMessage.toolMeta) || '').trim() || '未知'
-  const toolName = String(options.toolName || resultMessage.toolName || toolDisplay.toolName || '').trim()
-  const autoApproved = typeof toolDisplay.toolAutoApproved === 'boolean' ? toolDisplay.toolAutoApproved : undefined
-  const resultContent = String(resultMessage.content || '').trim()
-  const nextPayload =
-    options.toolResultPayload ??
-    resultMessage.toolResultPayload ??
-    toolDisplay.toolResultPayload ??
-    null
-
-  toolDisplay.role = 'tool'
-  toolDisplay.toolStatus = status
-  toolDisplay.toolMeta = String(resultMessage.toolMeta || toolDisplay.toolMeta || '').trim()
-  toolDisplay.toolServerName = serverName
-  if (toolName) toolDisplay.toolName = toolName
-  toolDisplay.toolSubMeta = String(options.toolSubMeta ?? resultMessage.toolSubMeta ?? toolDisplay.toolSubMeta ?? '').trim()
-  if (Array.isArray(resultMessage.images)) toolDisplay.images = resultMessage.images
-  if (typeof options.toolExpanded === 'boolean') toolDisplay.toolExpanded = options.toolExpanded
-  if (isAgentRunToolResult(nextPayload)) {
-    const mergedTrace = mergeAgentRunTraceEntries(toolDisplay.toolLiveTrace, nextPayload.trace)
-    toolDisplay.toolLiveTrace = mergedTrace
-    toolDisplay.toolResultPayload = { ...nextPayload, trace: mergedTrace }
-    const payloadAgentName = String(nextPayload?.agent?.name || nextPayload?.agent?.id || '').trim()
-    if (payloadAgentName) toolDisplay.toolAgentName = payloadAgentName
-    const payloadFinalContent = String(nextPayload?.final?.content || nextPayload?.summary || '').trim()
-    const payloadFinalReasoning = String(nextPayload?.final?.reasoning || '').trim()
-    if (payloadFinalContent) toolDisplay.toolLiveFinalContent = payloadFinalContent
-    else toolDisplay.toolLiveFinalContent = String(toolDisplay.toolLiveFinalContent || '').trim()
-    if (payloadFinalReasoning) toolDisplay.toolLiveFinalReasoning = payloadFinalReasoning
-    else toolDisplay.toolLiveFinalReasoning = String(toolDisplay.toolLiveFinalReasoning || '').trim()
-    toolDisplay.toolLiveRound = Number(nextPayload?.metrics?.rounds) || toolDisplay.toolLiveRound || 0
-  } else {
-    toolDisplay.toolResultPayload = nextPayload && typeof nextPayload === 'object' ? nextPayload : null
-  }
-  toolDisplay.content = buildToolExecutionMessageContent({
-    serverName,
-    toolName: toolDisplay.toolName,
-    argsText: toolDisplay.toolArgsText || '{}',
-    autoApproved,
-    status,
-    resultContent,
-    traceItems: Array.isArray(toolDisplay.toolLiveTrace) ? toolDisplay.toolLiveTrace : [],
-    errorText: options.errorText || ''
-  })
-  if (!isLiveToolMessageStatus(status) && toolDisplay.toolTraceStreamId) {
-    activeAgentRunToolMessageByStreamId.delete(toolDisplay.toolTraceStreamId)
-  }
-  scheduleRefreshUserAnchorMeta()
-  return toolDisplay
-}
-
-function maybeCoalesceLatestToolMessages() {
-  const list = session?.messages
-  if (!Array.isArray(list) || list.length < 2) return
-  const latest = list[list.length - 1]
-  if (!latest || String(latest.role || '').trim() !== 'tool') return
-
-  for (let i = list.length - 2; i >= 0; i -= 1) {
-    const candidate = list[i]
-    if (!isToolMessage(candidate)) break
-    if (!canCoalesceToolResultIntoPending(candidate, latest)) continue
-
-    mergeToolExecutionDisplayMessage(candidate, latest)
-    list.splice(list.length - 1, 1)
-    return
-  }
-}
-
-function canCoalesceToolResultIntoPending(pending, result) {
-  if (!pending || !result) return false
-  if (!isToolMessage(pending) || String(result.role || '').trim() !== 'tool') return false
-  const pendingRole = String(pending.role || '').trim()
-  const pendingStatus = getToolMessageStatus(pending)
-  if (!isLiveToolMessageStatus(pendingStatus) && pendingRole !== 'tool_call') return false
-
-  const pendingExecutionId = String(pending.toolExecutionId || '').trim()
-  const resultExecutionId = String(result.toolExecutionId || '').trim()
-  if (pendingExecutionId || resultExecutionId) return !!pendingExecutionId && pendingExecutionId === resultExecutionId
-
-  const pendingTraceStreamId = String(pending.toolTraceStreamId || '').trim()
-  const resultTraceStreamId = String(result.toolTraceStreamId || '').trim()
-  if (pendingTraceStreamId || resultTraceStreamId) return !!pendingTraceStreamId && pendingTraceStreamId === resultTraceStreamId
-
-  const pendingCallId = String(pending.toolCallId || '').trim()
-  const resultCallId = String(result.toolCallId || '').trim()
-  if (pendingCallId || resultCallId) return pendingCallId && resultCallId && pendingCallId === resultCallId
-
-  return false
-}
-
-function coalesceToolExecutionDisplayMessages(messages = []) {
-  const out = []
-  for (const msg of Array.isArray(messages) ? messages : []) {
-    if (String(msg?.role || '').trim() === 'tool') {
-      let merged = false
-      for (let i = out.length - 1; i >= 0; i -= 1) {
-        const candidate = out[i]
-        if (!isToolMessage(candidate)) break
-        if (!canCoalesceToolResultIntoPending(candidate, msg)) continue
-
-        mergeToolExecutionDisplayMessage(candidate, msg)
-        merged = true
-        break
-      }
-      if (merged) continue
-    }
-    out.push(msg)
-  }
-  return out
-}
-
-const activeAgentRunToolMessageByStreamId = new Map()
-const pendingBuiltinAgentsEventsByStreamId = new Map()
-const BUILTIN_AGENTS_EVENT_FLUSH_INTERVAL_MS = 80
-const MAX_PENDING_BUILTIN_AGENTS_EVENT_RETRIES = 100
-let pendingBuiltinAgentsEventsFlushTimer = null
-
-function enqueueMemorySessionApprovalRequest(record, request) {
-  if (!record || !request || typeof request !== 'object') return null
-  if (!Array.isArray(record.pendingApprovalRequests)) record.pendingApprovalRequests = []
-  const requestId = String(request.requestId || '').trim()
-  if (!requestId) return null
-  const existing = record.pendingApprovalRequests.find((item) => String(item?.requestId || '').trim() === requestId)
-  if (existing) return existing
-  const next = {
-    requestId,
-    serverName: String(request.serverName || '').trim(),
-    serverId: String(request.serverId || '').trim(),
-    toolName: String(request.toolName || '').trim(),
-    argsText: String(request.argsText || '{}').trim() || '{}',
-    reasoningText: String(request.reasoningText || '').trim(),
-    approvalKind:
-      request.approvalKind === 'shell'
-        ? 'shell'
-        : request.approvalKind === 'execution'
-          ? 'execution'
-          : 'tool',
-    forceApproval: request.forceApproval === true,
-    hardApproval: request.hardApproval === true,
-    approvalKey: String(request.approvalKey || '').trim(),
-    streamId: String(request.streamId || '').trim(),
-    agentName: String(request.agentName || '').trim(),
-    extraLines: Array.isArray(request.extraLines) ? request.extraLines.map((line) => String(line || '').trim()).filter(Boolean) : [],
-    createdAt: Date.now()
-  }
-  record.pendingApprovalRequests = [...record.pendingApprovalRequests, next]
-  record.updatedAt = Date.now()
-  return next
-}
-
-function removeMemorySessionApprovalRequest(record, requestId) {
-  if (!record || !Array.isArray(record.pendingApprovalRequests)) return null
-  const id = String(requestId || '').trim()
-  if (!id) return null
-  const existing = record.pendingApprovalRequests.find((item) => String(item?.requestId || '').trim() === id) || null
-  if (!existing) return null
-  record.pendingApprovalRequests = record.pendingApprovalRequests.filter((item) => String(item?.requestId || '').trim() !== id)
-  record.updatedAt = Date.now()
-  return existing
-}
-
-async function flushMemorySessionApprovalQueue(record) {
-  if (!record || !isMemorySessionActive(record) || record.approvalPromptActive === true) return false
-  const queue = Array.isArray(record.pendingApprovalRequests) ? record.pendingApprovalRequests : []
-  const nextRequest = queue[0]
-  if (!nextRequest) return false
-
-  const approvalDecision = evaluateToolApproval({
-    mode: normalizeToolApprovalMode(
-      record.toolApprovalMode,
-      record.autoApproveTools === false ? TOOL_APPROVAL_MODE_MANUAL : TOOL_APPROVAL_MODE_SAFE
-    ),
-    forceApproval: nextRequest.forceApproval === true,
-    hardApproval: nextRequest.hardApproval === true,
-    interactive: true
-  })
-  if (
-    (
-      nextRequest.hardApproval !== true &&
-      nextRequest.approvalKey &&
-      sessionApprovedToolKeys.has(nextRequest.approvalKey)
-    ) ||
-    approvalDecision.action === 'allow'
-  ) {
-    removeMemorySessionApprovalRequest(record, nextRequest.requestId)
-    dispatchBuiltinAgentsToolApprovalResponse(nextRequest.requestId, true)
-    window.setTimeout(() => {
-      void flushMemorySessionApprovalQueue(record)
-    }, 0)
-    return true
-  }
-
-  record.approvalPromptActive = true
-  try {
-    const approved = await confirmToolCall({
-      serverName: nextRequest.serverName,
-      toolName: nextRequest.toolName,
-      argsText: nextRequest.argsText,
-      reasoningText: nextRequest.reasoningText,
-      abortState: createAbortAwareDialogStateFromController(getMemorySessionById(record.id)?.activeRequestAbortState || abortController.value || null),
-      titleText: '确认子 Agent 工具调用',
-      extraLines: nextRequest.extraLines,
-      sessionId: record.id,
-      sessionTitle: resolveMemorySessionTitle(record),
-      approvalKind: nextRequest.approvalKind,
-      hardApproval: nextRequest.hardApproval === true,
-      rememberText:
-        nextRequest.approvalKind === 'shell'
-          ? '本会话允许相同命令'
-          : nextRequest.approvalKind === 'execution'
-            ? '本会话允许相同脚本调用'
-            : '本会话允许此工具',
-      onRememberForSession:
-        nextRequest.hardApproval !== true && nextRequest.approvalKey
-          ? () => sessionApprovedToolKeys.add(nextRequest.approvalKey)
-          : null
-    })
-    removeMemorySessionApprovalRequest(record, nextRequest.requestId)
-    dispatchBuiltinAgentsToolApprovalResponse(nextRequest.requestId, approved)
-    if (approved === null) return true
-  } finally {
-    record.approvalPromptActive = false
-  }
-
-  if (getMemorySessionPendingApprovalCount(record) > 0) {
-    window.setTimeout(() => {
-      void flushMemorySessionApprovalQueue(record)
-    }, 0)
-  }
-  return true
-}
-
-function resolveActiveAgentRunToolMessage(streamId) {
-  const id = String(streamId || '').trim()
-  if (!id) return null
-  const direct = activeAgentRunToolMessageByStreamId.get(id)
-  if (direct) return direct
-  const activeHit = (session.messages || []).find((msg) => String(msg?.toolTraceStreamId || '').trim() === id)
-  if (activeHit) return activeHit
-  for (const record of Array.isArray(memorySessions.value) ? memorySessions.value : []) {
-    const recordHit = (record?.messages || []).find((msg) => String(msg?.toolTraceStreamId || '').trim() === id)
-    if (recordHit) return recordHit
-  }
-  return null
-}
-
-function updateAgentRunToolMessageTraceBatch(streamId, entries) {
-  const id = String(streamId || '').trim()
-  const nextEntries = (Array.isArray(entries) ? entries : [])
-    .filter((entry) => entry && typeof entry === 'object')
-  if (!id || !nextEntries.length) return
-
-  const messageRef = resolveActiveAgentRunToolMessage(id)
-  if (!messageRef || !isToolMessage(messageRef)) return
-
-  const current = Array.isArray(messageRef.toolLiveTrace) ? messageRef.toolLiveTrace : []
-  const mergedTrace = mergeAgentRunTraceEntries(current, nextEntries)
-  if (mergedTrace.length === current.length) {
-    const latest = nextEntries[nextEntries.length - 1]
-    const latestAgentName = String(latest?.agent_name || '').trim()
-    if (latestAgentName && !messageRef.toolAgentName) messageRef.toolAgentName = latestAgentName
-    return
-  }
-
-  messageRef.toolLiveTrace = mergedTrace
-  const latestEntry = nextEntries[nextEntries.length - 1]
-  const agentName = String(latestEntry?.agent_name || messageRef.toolAgentName || '').trim()
-  if (agentName) messageRef.toolAgentName = agentName
-  const isAgentRun = String(messageRef.toolName || '').trim() === 'agent_run'
-  const isExpanded = messageRef.toolExpanded === true
-  const subMeta = [
-    messageRef.toolAgentName ? `智能体：${messageRef.toolAgentName}` : '',
-    (!isAgentRun || isExpanded) && mergedTrace.length ? `${mergedTrace.length} 个轨迹步骤` : ''
-  ].filter(Boolean).join(' · ')
-  messageRef.toolSubMeta = subMeta
-  const traceItemsForDisplay = isAgentRun && !isExpanded ? [] : mergedTrace
-  const currentStatus = normalizeToolMessageStatus(getToolMessageStatus(messageRef)) || 'running'
-  messageRef.content = buildToolExecutionMessageContent({
-    serverName: messageRef.toolServerName || extractServerNameFromToolMeta(messageRef.toolMeta),
-    toolName: messageRef.toolName,
-    argsText: messageRef.toolArgsText || '{}',
-    autoApproved: messageRef.toolAutoApproved,
-    status: currentStatus,
-    traceItems: traceItemsForDisplay
-  })
-  if (isExpanded) scheduleRefreshUserAnchorMeta()
-  maybeScheduleStreamingScroll()
-}
-
-function updateAgentRunToolMessageLiveUpdate(streamId, live) {
-  const id = String(streamId || '').trim()
-  if (!id || !live || typeof live !== 'object') return
-
-  const messageRef = resolveActiveAgentRunToolMessage(id)
-  if (!messageRef || !isToolMessage(messageRef)) return
-
-  if (live.reset === true) {
-    messageRef.toolLiveFinalContent = ''
-    messageRef.toolLiveFinalReasoning = ''
-  }
-
-  if (Object.prototype.hasOwnProperty.call(live, 'content')) {
-    messageRef.toolLiveFinalContent = String(live.content || '')
-  }
-  if (Object.prototype.hasOwnProperty.call(live, 'reasoning')) {
-    messageRef.toolLiveFinalReasoning = String(live.reasoning || '')
-  }
-  if (Object.prototype.hasOwnProperty.call(live, 'round')) {
-    messageRef.toolLiveRound = Number(live.round) || 0
-  }
-
-  const nextPayload =
-    isAgentRunToolResult(messageRef.toolResultPayload)
-      ? { ...messageRef.toolResultPayload }
-      : { kind: 'agent_run_result', status: 'running', trace: [] }
-  const liveStatus = normalizeToolMessageStatus(live.status)
-  const payloadStatus = normalizeToolMessageStatus(nextPayload.status)
-  const nextStatus = liveStatus || (live.reset === true ? 'running' : payloadStatus || 'running')
-  nextPayload.status = nextStatus
-  nextPayload.final = {
-    content: String(messageRef.toolLiveFinalContent || ''),
-    reasoning: String(messageRef.toolLiveFinalReasoning || '')
-  }
-  nextPayload.summary = nextPayload.final.content
-  nextPayload.trace = Array.isArray(messageRef.toolLiveTrace) ? messageRef.toolLiveTrace : []
-  messageRef.toolResultPayload = nextPayload
-  messageRef.toolStatus = nextStatus
-
-  if (messageRef.toolExpanded === true) scheduleRefreshUserAnchorMeta()
-  maybeScheduleStreamingScroll()
-}
-
-function mergeAgentRunLivePayload(base, incoming) {
-  const merged = base && typeof base === 'object' ? { ...base } : {}
-  const next = incoming && typeof incoming === 'object' ? incoming : {}
-  if (next.reset === true) {
-    merged.reset = true
-    merged.status = Object.prototype.hasOwnProperty.call(next, 'status') ? next.status : 'running'
-  } else if (Object.prototype.hasOwnProperty.call(next, 'status')) {
-    merged.status = next.status
-  }
-  if (Object.prototype.hasOwnProperty.call(next, 'content')) merged.content = next.content
-  if (Object.prototype.hasOwnProperty.call(next, 'reasoning')) merged.reasoning = next.reasoning
-  if (Object.prototype.hasOwnProperty.call(next, 'round')) merged.round = next.round
-  return merged
-}
-
-function applyPendingBuiltinAgentsEventBucket(streamId, bucket) {
-  const id = String(streamId || '').trim()
-  if (!id || !bucket) return false
-
-  const messageRef = resolveActiveAgentRunToolMessage(id)
-  if (!messageRef || !isToolMessage(messageRef)) return false
-
-  if (Array.isArray(bucket.entries) && bucket.entries.length) {
-    updateAgentRunToolMessageTraceBatch(id, bucket.entries)
-  }
-  if (bucket.live && typeof bucket.live === 'object') {
-    updateAgentRunToolMessageLiveUpdate(id, bucket.live)
-  }
-  if (bucket.done === true) activeAgentRunToolMessageByStreamId.delete(id)
-  return true
-}
-
-function flushPendingBuiltinAgentsEvents() {
-  pendingBuiltinAgentsEventsFlushTimer = null
-  if (!pendingBuiltinAgentsEventsByStreamId.size) return
-
-  const pending = Array.from(pendingBuiltinAgentsEventsByStreamId.entries())
-  pendingBuiltinAgentsEventsByStreamId.clear()
-  pending.forEach(([streamId, bucket]) => {
-    if (!streamId || !bucket) return
-    if (!applyPendingBuiltinAgentsEventBucket(streamId, bucket)) {
-      const retries = Number(bucket?.retries) || 0
-      if (retries < MAX_PENDING_BUILTIN_AGENTS_EVENT_RETRIES) {
-        pendingBuiltinAgentsEventsByStreamId.set(streamId, {
-          entries: Array.isArray(bucket.entries) ? bucket.entries.slice() : [],
-          live: bucket.live && typeof bucket.live === 'object' ? { ...bucket.live } : null,
-          done: bucket.done === true,
-          retries: retries + 1
-        })
-      }
-    }
-  })
-  if (pendingBuiltinAgentsEventsByStreamId.size) {
-    schedulePendingBuiltinAgentsEventsFlush()
-  }
-}
-
-function schedulePendingBuiltinAgentsEventsFlush() {
-  if (pendingBuiltinAgentsEventsFlushTimer) return
-  pendingBuiltinAgentsEventsFlushTimer = window.setTimeout(
-    flushPendingBuiltinAgentsEvents,
-    BUILTIN_AGENTS_EVENT_FLUSH_INTERVAL_MS
-  )
-}
-
-function handleBuiltinAgentsTraceEvent(event) {
-  const detail = event?.detail && typeof event.detail === 'object' ? event.detail : {}
-  const streamId = String(detail.streamId || '').trim()
-  const entry = detail.entry && typeof detail.entry === 'object' ? detail.entry : null
-  const live = detail.live && typeof detail.live === 'object' ? detail.live : null
-  if (!streamId) return
-  const prev = pendingBuiltinAgentsEventsByStreamId.get(streamId) || { entries: [], live: null, done: false, retries: 0 }
-  const next = {
-    entries: Array.isArray(prev.entries) ? prev.entries.slice() : [],
-    live: prev.live && typeof prev.live === 'object' ? { ...prev.live } : null,
-    done: prev.done === true,
-    retries: Number(prev.retries) || 0
-  }
-  if (entry) next.entries.push(entry)
-  if (live) next.live = mergeAgentRunLivePayload(next.live, live)
-  if (detail.done === true) next.done = true
-  pendingBuiltinAgentsEventsByStreamId.set(streamId, next)
-  if (applyPendingBuiltinAgentsEventBucket(streamId, next)) {
-    pendingBuiltinAgentsEventsByStreamId.delete(streamId)
-    return
-  }
-  schedulePendingBuiltinAgentsEventsFlush()
-}
-
-function prepareBuiltinAgentToolCallArgs(skillId, toolName, argsObj, pendingMessage) {
-  const nextArgs = argsObj && typeof argsObj === 'object' && !Array.isArray(argsObj) ? { ...argsObj } : {}
-  delete nextArgs.__host_workspace_path
-
-  const normalizedSkillId = String(skillId || '').trim()
-  const normalizedToolName = String(toolName || '').trim()
-  if (
-    normalizedSkillId === BUILTIN_SHELL_SKILL_ID &&
-    [
-      'sandbox_status',
-      'sandbox_run',
-      'bash_run',
-      'sandbox_read_file',
-      'sandbox_write_file',
-      'sandbox_import',
-      'sandbox_export',
-      'sandbox_list',
-      'sandbox_reset'
-    ].includes(normalizedToolName)
-  ) {
-    const targetRecord = getRunRecord(
-      pendingMessage?.toolAbortState || abortController.value || null
-    ) || getActiveMemorySession()
-    const sessionId = targetRecord?.id || activeMemorySessionId.value || 'default'
-    const defaultWorkspaceId = resolveMemorySessionSandboxWorkspaceId(targetRecord)
-    const withSessionWorkspace = (args) => withDefaultChatSandboxWorkspaceId(
-      String(args?.workspace_id || '').trim()
-        ? args
-        : { ...(args || {}), workspace_id: defaultWorkspaceId },
-      sessionId
-    )
-    if (normalizedToolName === 'sandbox_import' || normalizedToolName === 'sandbox_reset') {
-      return withSessionWorkspace(nextArgs)
-    }
-    const workspacePath = resolveSessionHostWorkspacePath(targetRecord)
-    if (normalizedToolName === 'sandbox_export') {
-      const routedArgs = withSessionWorkspace(nextArgs)
-      if (workspacePath) routedArgs.__host_workspace_path = workspacePath
-      return routedArgs
-    }
-    const workspaceScope = resolveChatToolWorkspaceScope(
-      normalizedToolName,
-      nextArgs,
-      { hasHostWorkspace: !!workspacePath }
-    )
-    const routedArgs = withSessionWorkspace(
-      {
-        ...nextArgs,
-        workspace_scope: workspaceScope
-      }
-    )
-    if (workspacePath && (workspaceScope === 'host' || workspaceScope === 'all')) {
-      routedArgs.__host_workspace_path = workspacePath
-    }
-    return routedArgs
-  }
-
-  const isBuiltinAgentsSkill = normalizedSkillId === BUILTIN_AGENT_ORCHESTRATION_SKILL_ID
-  if (!isBuiltinAgentsSkill || !isAgentRunToolName(toolName)) return nextArgs
-
-  const streamId = String(pendingMessage?.toolTraceStreamId || pendingMessage?.id || '').trim()
-  const approvalMode = resolveCurrentToolApprovalMode(
-    pendingMessage?.toolAbortState || abortController.value || null
-  )
-  if (streamId) {
-    // Keep legacy/internal key and a plain key to avoid middleware stripping prefixed fields.
-    nextArgs.__trace_stream_id = streamId
-    nextArgs.trace_stream_id = streamId
-  }
-  // Keep legacy/internal key and a plain key for better cross-provider compatibility.
-  nextArgs.__tool_approval_mode = approvalMode
-  nextArgs.tool_approval_mode = approvalMode
-
-  if (pendingMessage) {
-    pendingMessage.toolTraceStreamId = streamId
-    pendingMessage.toolApprovalMode = approvalMode
-    if (streamId) activeAgentRunToolMessageByStreamId.set(streamId, pendingMessage)
-    if (streamId && pendingBuiltinAgentsEventsByStreamId.has(streamId)) {
-      flushPendingBuiltinAgentsEvents()
-    }
-  }
-
-  return nextArgs
-}
-
-function dispatchBuiltinAgentsToolApprovalResponse(requestId, approved) {
-  const id = String(requestId || '').trim()
-  if (!id || !window?.dispatchEvent || typeof window.CustomEvent !== 'function') return
-  try {
-    window.dispatchEvent(
-      new window.CustomEvent(BUILTIN_AGENTS_TOOL_APPROVAL_RESPONSE_EVENT, {
-        detail: {
-          requestId: id,
-          approved: approved === true ? true : approved === false ? false : null
-        }
-      })
-    )
-  } catch {
-    // ignore
-  }
-}
-
-function createAbortAwareDialogStateFromController(controller = null) {
-  if (controller?.onAbort) {
-    return {
-      onAbort(listener) {
-        if (typeof listener !== 'function') return null
-        return controller.onAbort(listener)
-      }
-    }
-  }
-  const signal = controller?.signal
-  if (!signal?.addEventListener) return null
-  return {
-    onAbort(listener) {
-      if (typeof listener !== 'function') return null
-      const handler = () => listener()
-      signal.addEventListener('abort', handler, { once: true })
-      return () => {
-        try {
-          signal.removeEventListener('abort', handler)
-        } catch {
-          // ignore
-        }
-      }
-    }
-  }
-}
-
-async function handleBuiltinAgentsToolApprovalRequest(event) {
-  const detail = event?.detail && typeof event.detail === 'object' ? event.detail : {}
-  const requestId = String(detail.requestId || '').trim()
-  if (!requestId) return
-
-  const serverId = String(detail.serverId || '').trim()
-  const serverName = String(detail.serverName || serverId || '').trim() || '未知'
-  const toolName = String(detail.toolName || '').trim() || 'unknown'
-  const argsText = String(detail.argsText || '{}').trim() || '{}'
-  const reasoningText = String(detail.reasoningText || '').trim()
-  const agentName = String(detail.agentName || '').trim()
-  const extraLines = agentName ? ['智能体：' + agentName] : []
-
-  const streamId = String(detail.streamId || detail.traceStreamId || detail.trace_stream_id || '').trim()
-  const relatedToolMessage = streamId ? resolveActiveAgentRunToolMessage(streamId) : null
-  const targetRecord = relatedToolMessage ? getMemorySessionForToolMessage(relatedToolMessage) : getActiveMemorySession()
-  const approvalKind =
-    detail.approvalKind === 'shell'
-      ? 'shell'
-      : detail.approvalKind === 'execution'
-        ? 'execution'
-        : 'tool'
-  const forceApproval =
-    detail.forceApproval === true ||
-    approvalKind === 'shell'
-  const hardApproval =
-    detail.hardApproval === true ||
-    approvalKind === 'shell' ||
-    approvalKind === 'execution'
-  const approvalKey = buildSessionToolApprovalKey({
-    sessionId: String(targetRecord?.id || 'chat'),
-    serverId,
-    serverName,
-    toolName,
-    approvalKind,
-    argsText
-  })
-  const inheritedMode = normalizeToolApprovalMode(
-    targetRecord?.toolApprovalMode,
-    targetRecord?.autoApproveTools === false ? TOOL_APPROVAL_MODE_MANUAL : toolApprovalMode.value
-  )
-  const autoApproved =
-    (hardApproval !== true && sessionApprovedToolKeys.has(approvalKey)) ||
-    evaluateToolApproval({
-      mode: inheritedMode,
-      forceApproval,
-      hardApproval,
-      interactive: true
-    }).action === 'allow'
-
-  let approved = null
-  if (autoApproved) {
-    approved = true
-  } else {
-    enqueueMemorySessionApprovalRequest(targetRecord, {
-      requestId,
-      serverId,
-      serverName,
-      toolName,
-      argsText,
-      reasoningText,
-      approvalKind,
-      forceApproval,
-      hardApproval,
-      approvalKey,
-      streamId,
-      agentName,
-      extraLines
-    })
-    if (isMemorySessionActive(targetRecord)) {
-      await flushMemorySessionApprovalQueue(targetRecord)
-    }
-    return
-  }
-
-  dispatchBuiltinAgentsToolApprovalResponse(requestId, approved)
-}
-
-function downloadChatImage(img) {
-  const src = String(img?.src || '').trim()
-  if (!src) return
-
-  const triggerDownload = (href, filename) => {
-    const a = document.createElement('a')
-    a.href = href
-    a.download = filename
-    a.rel = 'noopener'
-    a.style.display = 'none'
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-  }
-
-  const filename = ensureFilenameExt(img?.name, img?.mime)
-
-  if (src.startsWith('data:')) {
-    try {
-      triggerDownload(src, filename)
-      return
-    } catch (err) {
-      message.error('下载失败：' + (err?.message || String(err)))
-      return
-    }
-  }
-
-  if (/^blob:/i.test(src)) {
-    try {
-      triggerDownload(src, filename)
-      return
-    } catch (err) {
-      message.error('下载失败：' + (err?.message || String(err)))
-      return
-    }
-  }
-
-  if (/^https?:\/\//i.test(src)) {
-    loadChatImageBlob(img)
-      .then((blob) => {
-        const mime = normalizeClipboardMediaMime(blob.type || img?.mime, 'image/png', 'image/') || 'image/png'
-        const downloadableBlob = withPreferredBlobMime(blob, mime)
-        const objectUrl = URL.createObjectURL(downloadableBlob)
-        try {
-          triggerDownload(objectUrl, ensureFilenameExt(img?.name, mime))
-        } finally {
-          window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1200)
-        }
-      })
-      .catch((err) => {
-        copyChatImageLink(img)
-        safeOpenExternal(src)
-        message.info('已复制图片链接。如无法直接下载，请在浏览器中打开后再保存。' + ((err && err.message) ? `（${err.message}）` : ''))
-      })
-    return
-  }
-
-  message.warning('暂不支持下载该图片来源')
-}
-
-function downloadChatVideo(video) {
-  const src = String(video?.src || '').trim()
-  if (!src) return
-
-  const triggerDownload = (href, filename) => {
-    const a = document.createElement('a')
-    a.href = href
-    a.download = filename
-    a.rel = 'noopener'
-    a.style.display = 'none'
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-  }
-
-  const fallbackName = String(video?.name || '').trim() || `video_${Date.now()}`
-  const filename = ensureFilenameExt(fallbackName, video?.mime || 'video/mp4')
-
-  if (src.startsWith('data:')) {
-    try {
-      triggerDownload(src, filename)
-      return
-    } catch (err) {
-      message.error('下载失败：' + (err?.message || String(err)))
-      return
-    }
-  }
-
-  if (/^blob:/i.test(src)) {
-    try {
-      triggerDownload(src, filename)
-      return
-    } catch (err) {
-      message.error('下载失败：' + (err?.message || String(err)))
-      return
-    }
-  }
-
-  if (/^https?:\/\//i.test(src)) {
-    loadChatVideoBlob(video)
-      .then((blob) => {
-        const mime = normalizeClipboardMediaMime(blob.type || video?.mime, 'video/mp4', 'video/') || 'video/mp4'
-        const downloadableBlob = withPreferredBlobMime(blob, mime)
-        const objectUrl = URL.createObjectURL(downloadableBlob)
-        try {
-          triggerDownload(objectUrl, ensureFilenameExt(fallbackName, mime))
-        } finally {
-          window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1200)
-        }
-      })
-      .catch((err) => {
-        copyChatVideoLink(video)
-        safeOpenExternal(src)
-        message.info('已复制视频链接。如无法直接下载，请在浏览器中打开后再保存。' + ((err && err.message) ? `（${err.message}）` : ''))
-      })
-    return
-  }
-
-  message.warning('暂不支持下载该视频来源')
-}
-
-function updateChatImageMetadata(img, event) {
-  if (!img || typeof img !== 'object') return
-  const el = event?.target
-  if (!(el instanceof HTMLImageElement)) return
-  const width = normalizeMediaDimension(el.naturalWidth || el.width)
-  const height = normalizeMediaDimension(el.naturalHeight || el.height)
-  let changed = false
-  if (width > 0 && !normalizeMediaDimension(img.width)) {
-    img.width = width
-    changed = true
-  }
-  if (height > 0 && !normalizeMediaDimension(img.height)) {
-    img.height = height
-    changed = true
-  }
-  if (changed) {
-    img.resolution = `${normalizeMediaDimension(img.width)}x${normalizeMediaDimension(img.height)}`
-    img.metaLine = ''
-    scheduleRefreshUserAnchorMeta()
-  }
-}
-
-function updateChatVideoMetadata(video, event) {
-  if (!video || typeof video !== 'object') return
-  const el = event?.target
-  if (!(el instanceof HTMLVideoElement)) return
-  const width = normalizeMediaDimension(el.videoWidth)
-  const height = normalizeMediaDimension(el.videoHeight)
-  const duration = Number(el.duration)
-  let changed = false
-  if (width > 0 && !normalizeMediaDimension(video.width)) {
-    video.width = width
-    changed = true
-  }
-  if (height > 0 && !normalizeMediaDimension(video.height)) {
-    video.height = height
-    changed = true
-  }
-  if (Number.isFinite(duration) && duration > 0 && !(Number(video.durationSeconds) > 0)) {
-    video.durationSeconds = duration
-    changed = true
-  }
-  if (changed) {
-    if (normalizeMediaDimension(video.width) && normalizeMediaDimension(video.height)) {
-      video.resolution = `${normalizeMediaDimension(video.width)}x${normalizeMediaDimension(video.height)}`
-    }
-    video.metaLine = ''
-    scheduleRefreshUserAnchorMeta()
-  }
-}
-
-const assistantMediaHelpers = {
-  assistantImageTaskTitle,
-  assistantImageTaskTagType,
-  assistantImageTaskStatusLabel,
-  assistantImagePromptLabel,
-  assistantImageTaskMetaLabel,
-  assistantImageTaskNote,
-  assistantVisibleImages,
-  assistantVisibleImageCount,
-  assistantImageBlockEyebrow,
-  assistantImageDisplayTitle,
-  assistantImagePlaceholderText,
-  assistantImageInsightLabel,
-  assistantVisibleVideos,
-  assistantVisibleVideoCount,
-  assistantVideoBlockEyebrow,
-  assistantVideoDisplayTitle,
-  assistantVideoTaskTitle,
-  assistantVideoTaskTagType,
-  assistantVideoTaskStatusLabel,
-  assistantVideoTaskMetaLabel,
-  assistantVideoTaskNote,
-  assistantVideoPromptLabel,
-  assistantVideoPlaceholderText,
-  assistantVideoInsightLabel,
-  canRegenerateMedia,
-  canResumeMediaTask,
-  isMediaTaskResuming,
-  imageMetaLabel,
-  videoMetaLabel
-}
+const {
+  extractServerNameFromToolMeta,
+  extractToolNameFromToolMeta,
+  extractFirstJsonFenceText,
+  inferToolResultStatus,
+  buildToolExecutionMessageContent,
+  createPendingToolExecutionMessage,
+  createToolExecutionResultMessage,
+  buildToolExecutionResultSubMeta,
+  canCoalesceToolResultIntoPending
+} = useChatToolExecutionMessageFactory({
+  createDisplayMessage: (...args) => createDisplayMessage(...args),
+  isToolMessage,
+  normalizeToolMessageStatus,
+  getToolMessageStatus,
+  toolMessageStatusText,
+  toolMessageStatusDetailText,
+  isLiveToolMessageStatus
+})
+
+const {
+  mergeToolExecutionDisplayMessage,
+  maybeCoalesceLatestToolMessages,
+  coalesceToolExecutionDisplayMessages
+} = useChatToolExecutionMerge({
+  getSessionMessages: () => session?.messages,
+  isToolMessage,
+  inferToolResultStatus,
+  extractServerNameFromToolMeta,
+  buildToolExecutionMessageContent,
+  isLiveToolMessageStatus,
+  canCoalesceToolResultIntoPending,
+  deleteActiveAgentRunToolMessage: (streamId) => activeAgentRunToolMessageByStreamId.delete(streamId),
+  scheduleRefreshUserAnchorMeta: () => scheduleRefreshUserAnchorMeta()
+})
+
+const {
+  chatListRef,
+  autoScrollEnabled,
+  autoScrollSuspendedByUser,
+  isAtBottom,
+  showScrollToBottomButton,
+  expandedToolActivityGroupIds,
+  resolveCurrentHeavyRenderViewportBuffer,
+  chatMessageEstimatedHeightCache,
+  rememberHydratedHeavyChatMessage,
+  withChatSessionOpeningHeavyRender,
+  primeHydratedHeavyChatMessages,
+  maybeWarmMarkdownPreviewRuntimeForMessages,
+  chatVirtualizedEnabled,
+  scheduleChatVirtualItemRemeasure,
+  clearChatVirtualItemRemeasure,
+  renderedChatMessages,
+  chatVirtualListStyle,
+  getChatVirtualItemIndex,
+  getChatVirtualItemStyle,
+  activeAnchorId,
+  userAnchors,
+  showAnchorRail,
+  scheduleRefreshUserAnchorMeta,
+  resetUserAnchors,
+  stickyChatBubble,
+  setStickyChatBubbleState,
+  scheduleStickyChatBubbleSync,
+  clearStickyChatBubbleSync,
+  handleStickyChatBubbleAction,
+  disconnectChatMessageVisibilityObserver,
+  getChatVirtualItemRef,
+  shouldRenderHeavyChatMessage,
+  shouldDeferHeavyChatBlockLayout,
+  scrollToUserAnchor,
+  disconnectChatLayoutResizeObserver,
+  waitForLayoutFrame,
+  settleChatViewportAfterSessionOpen,
+  toggleSessionSider,
+  activateAutoScroll,
+  handleChatScroll,
+  handleChatWheel,
+  handleChatPointerDown,
+  scheduleScrollToBottom,
+  bindDefaultModelConfigListeners,
+  bindUtoolsEnterDataListener,
+  createChatInputKeydownHandler
+} = (chatPageRuntimeApi = useChatPageRuntime({
+  BUILTIN_AGENTS_TOOL_APPROVAL_REQUEST_EVENT,
+  BUILTIN_AGENTS_TRACE_EVENT,
+  CHAT_ACTIVITY_LIST_GAP_PX,
+  CHAT_ASSISTANT_ACTIVITY_ITEM_HEIGHT,
+  CHAT_ASSISTANT_MESSAGE_BASE_HEIGHT,
+  CHAT_CODE_AUTO_FOLD_THRESHOLD,
+  CHAT_DEFAULT_MESSAGE_HEIGHT,
+  CHAT_HEAVY_RENDER_SEED_COUNT,
+  CHAT_LIST_GAP_PX,
+  CHAT_RECENT_HEAVY_RENDER_COUNT,
+  CHAT_SCROLL_COMPENSATION_SUSPEND_MS,
+  CHAT_TEXT_MESSAGE_MIN_HEIGHT,
+  CHAT_TOOL_ACTIVITY_GROUP_FIXED_HEIGHT,
+  CHAT_TOOL_COMPACT_ITEM_FIXED_HEIGHT,
+  CHAT_USER_MESSAGE_BASE_HEIGHT,
+  CHAT_USER_SCROLL_INTENT_MS,
+  CHAT_VIRTUALIZATION_MAX_BUFFER_ITEMS,
+  CHAT_VIRTUALIZATION_MAX_BUFFER_PX,
+  CHAT_VIRTUALIZATION_MIN_BUFFER_PX,
+  CHAT_VIRTUALIZATION_MIN_ESTIMATED_HEIGHT_PX,
+  CHAT_VIRTUALIZATION_MIN_ITEMS_FOR_HEIGHT,
+  CHAT_VIRTUALIZATION_MIN_MESSAGES,
+  CHAT_VIRTUALIZATION_MIN_VIEWPORTS,
+  CHAT_VIRTUALIZATION_RETAIN_MIN_ESTIMATED_HEIGHT_PX,
+  CHAT_VIRTUALIZATION_RETAIN_MIN_ITEMS_FOR_HEIGHT,
+  CHAT_VIRTUALIZATION_RETAIN_MIN_MESSAGES,
+  CHAT_VIRTUALIZATION_RETAIN_MIN_VIEWPORTS,
+  SESSION_TRASH_CLEANUP_INTERVAL_MS,
+  activeMemorySessionId,
+  activeSessionFilePath,
+  buildChatDisplayMessages,
+  cleanupChatPreviewLinkHandlers,
+  cleanupExpiredSessionTrash: (...args) => cleanupExpiredSessionTrash(...args),
+  countFileAttachments,
+  countImageAttachments,
+  ensureMarkdownPreviewRuntime,
+  estimateChatMarkdownContentHeight,
+  getToolMessageStatus,
+  handleBuiltinAgentsToolApprovalRequest: (...args) => handleBuiltinAgentsToolApprovalRequest(...args),
+  handleBuiltinAgentsTraceEvent: (...args) => handleBuiltinAgentsTraceEvent(...args),
+  isAssistantActivityMessage,
+  isChatActivityMessage,
+  isCompactChatLayout,
+  isDenseChatLayout,
+  isLiveToolMessageStatus,
+  isToolActivityGroup,
+  isToolMessage,
+  isUserMessageCollapsed,
+  maybeCoalesceLatestToolMessages,
+  migrateLegacyAutoChatSessionCreatedAt: (...args) => migrateLegacyAutoChatSessionCreatedAt(...args),
+  preparingSend,
+  resolveChatAdaptiveVirtualRange,
+  resolveChatBottomScrollTarget,
+  resolveChatHeavyRenderTuning,
+  resolveChatVirtualItemGap,
+  scrollbarRef,
+  sending,
+  session,
+  sessionSiderCollapsed,
+  shouldDeferChatHeavyBlockLayout,
+  shouldEnableChatVirtualization,
+  shouldRenderCompactToolMessage,
+  shouldRenderUserMessageAsPlainText,
+  shouldRetainChatVirtualization,
+  shouldShowToolActivityStatus,
+  syncChatResponsiveState,
+  toggleAttachmentsExpanded,
+  toggleThinking,
+  toggleToolExpanded,
+  toolActivityMeta,
+  toolActivitySource,
+  toolActivityToolName,
+  toolMessageLabel,
+  toolMessageStatusLabel
+}))
+
+const {
+  activeAgentRunToolMessageByStreamId,
+  resolveActiveAgentRunToolMessage,
+  flushPendingBuiltinAgentsEvents,
+  handleBuiltinAgentsTraceEvent,
+  hasPendingBuiltinAgentsEvents,
+  cleanupPendingBuiltinAgentsEvents
+} = useChatAgentRunTraceEvents({
+  getActiveMessages: () => session.messages,
+  getMemorySessions: () => memorySessions.value,
+  isToolMessage,
+  normalizeToolMessageStatus,
+  getToolMessageStatus,
+  buildToolExecutionMessageContent,
+  extractServerNameFromToolMeta,
+  scheduleRefreshUserAnchorMeta: () => scheduleRefreshUserAnchorMeta(),
+  maybeScheduleStreamingScroll: () => maybeScheduleStreamingScroll()
+})
 
 const assistantMediaActions = {
   copyChatImage,
   downloadChatImage,
   copyChatVideo,
   downloadChatVideo,
-  regenerateMedia,
-  resumeMediaTask,
+  regenerateMedia: (...args) => regenerateMedia(...args),
+  resumeMediaTask: (...args) => resumeMediaTask(...args),
   updateChatImageMetadata,
   updateChatVideoMetadata
 }
@@ -6995,7 +3553,7 @@ const toolMessageHelpers = {
   shouldShowToolActivityStatus,
   imageMetaLabel,
   imageInsightLabel,
-  shouldRenderHeavyChatMessage,
+  shouldRenderHeavyChatMessage: (...args) => shouldRenderHeavyChatMessage(...args),
   truncateInlineText
 }
 
@@ -7005,7 +3563,7 @@ const toolMessageActions = {
   copyChatImage,
   openChatWorkspaceResultFile,
   saveChatWorkspaceResultFile,
-  scheduleScrollToBottom,
+  scheduleScrollToBottom: (...args) => scheduleScrollToBottom(...args),
   showChatWorkspaceResultFile
 }
 
@@ -7024,6 +3582,51 @@ const toolActivityGroupActions = {
   toggleToolExpanded
 }
 
+const conversationPanelHelpers = {
+  chatItemStateClasses,
+  getChatVirtualItemStyle: (...args) => getChatVirtualItemStyle(...args),
+  getChatVirtualItemIndex: (...args) => getChatVirtualItemIndex(...args),
+  getChatVirtualItemRef: (...args) => getChatVirtualItemRef(...args),
+  chatAvatarStateClasses,
+  roleIcon,
+  chatAvatarIconClasses,
+  shouldRenderHeavyChatMessage: (...args) => shouldRenderHeavyChatMessage(...args),
+  shouldDeferHeavyChatBlockLayout: (...args) => shouldDeferHeavyChatBlockLayout(...args),
+  isUserMessageCollapsed,
+  userMessagePreview,
+  shouldRenderUserMessageAsPlainText,
+  isUserMessageFoldable,
+  userMessageFoldSummary,
+  shouldRenderCompactToolMessage,
+  getToolMessageStatus,
+  formatTime,
+  toolActivityIcon,
+  toolMessageLabel,
+  toolActivityMeta,
+  shouldShowToolActivityStatus,
+  toolMessageStatusLabel,
+  isChatActivityMessage
+}
+
+const conversationPanelActions = {
+  handleChatScroll: (...args) => handleChatScroll(...args),
+  handleChatWheel: (...args) => handleChatWheel(...args),
+  handleChatPointerDown: (...args) => handleChatPointerDown(...args),
+  handleChatPreviewLinkClick,
+  handleChatPreviewLinkContextMenu,
+  toggleThinking,
+  handleUserEditKeydown: (...args) => handleUserEditKeydown(...args),
+  toggleUserMessageExpanded,
+  toggleToolExpanded,
+  copyAssistantMessage,
+  regenerateAssistant: (...args) => regenerateAssistant(...args),
+  copyUserMessage,
+  toggleOrSubmitUserEdit: (...args) => toggleOrSubmitUserEdit(...args),
+  handleStickyChatBubbleAction: (...args) => handleStickyChatBubbleAction(...args),
+  activateAutoScroll: (...args) => activateAutoScroll(...args),
+  scrollToUserAnchor: (...args) => scrollToUserAnchor(...args)
+}
+
 const pendingAttachmentHelpers = {
   attachmentStatusText,
   imageMetaLabel,
@@ -7035,43 +3638,6 @@ const pendingAttachmentHelpers = {
 
 const pendingAttachmentActions = {
   removeAttachment
-}
-
-const contextWindowPreviewHelpers = {
-  modeType: contextWindowPreviewModeType,
-  modeLabel: contextWindowPreviewModeLabelV2,
-  entryLabel: contextWindowPreviewEntryLabel,
-  entryNote: contextWindowPreviewEntryNoteV2,
-  omittedReasonType: contextWindowPreviewOmittedReasonType,
-  omittedReasonLabel: contextWindowPreviewOmittedReasonLabel,
-  formatApproxChars
-}
-
-function roleIcon(messageOrRole) {
-  const msg = messageOrRole && typeof messageOrRole === 'object' ? messageOrRole : null
-  const role = String(msg?.role || messageOrRole || '').trim()
-  if (role === 'user') return PersonCircleOutline
-  if (role === 'assistant') return SparklesOutline
-  if (role === 'thinking') return ChatbubbleEllipsesOutline
-  if (role === 'tool_call' || role === 'tool') {
-    const status = getToolMessageStatus(msg || { role })
-    if (status === 'running') return RefreshOutline
-    if (status === 'paused') return PauseCircleOutline
-    if (status === 'error') return CloseOutline
-    if (status === 'rejected') return ShieldOutline
-    return HardwareChipOutline
-  }
-  return ChatbubbleEllipsesOutline
-}
-
-function formatTime(ts) {
-  if (!ts) return ''
-  try {
-    const d = new Date(ts)
-    return d.toLocaleString()
-  } catch {
-    return ''
-  }
 }
 
 function toggleThinking(msg) {
@@ -7100,1899 +3666,20 @@ function toggleAttachmentsExpanded(msg) {
   scheduleStickyChatBubbleSync()
 }
 
-const autoScrollEnabled = ref(true)
-const autoScrollSuspendedByUser = ref(false)
-const isAtBottom = ref(true)
-const SCROLL_BOTTOM_THRESHOLD_PX = 12
-const SCROLL_AUTO_DISABLE_DISTANCE_PX = 160
 
-const chatScrollEl = ref(null)
-const chatListRef = ref(null)
-const chatScrollTop = ref(0)
-const chatViewportHeight = ref(0)
-const chatScrollDistanceFromBottom = ref(Number.POSITIVE_INFINITY)
-const isChatScrollable = ref(false)
-const expandedToolActivityGroupIds = ref(new Set())
-const visibleHeavyChatMessageIds = ref(new Set())
-const hydratedHeavyChatMessageIds = ref(new Set())
-const chatSessionOpeningHeavyRender = ref(false)
-const recentHeavyChatMessageIds = computed(() => {
-  const ids = new Set()
-  const tail = Array.isArray(session.messages) ? session.messages.slice(-CHAT_RECENT_HEAVY_RENDER_COUNT) : []
-  tail.forEach((msg) => {
-    const id = String(msg?.id || '').trim()
-    if (id) ids.add(id)
-  })
-  return ids
+const {
+  typewriterStates,
+  typewriterEnqueue,
+  typewriterWaitIdle,
+  deferredAppendMessageField,
+  deferredMessageFieldWaitIdle,
+  flushDeferredMessageFieldsForMessage,
+  typewriterFlushAll
+} = useChatStreamingTextBuffer({
+  isDisplayMessageInActiveSession,
+  scheduleScrollToBottom,
+  maybeScheduleScrollToBottomForRun
 })
-const chatHeavyRenderTuning = computed(() => resolveChatHeavyRenderTuning(session.messages?.length || 0))
-
-function resolveCurrentHeavyRenderViewportBuffer(extra = 0) {
-  return Math.max(0, Number(chatHeavyRenderTuning.value.viewportBuffer || 0) + Math.max(0, Number(extra) || 0))
-}
-
-let chatLayoutResizeObserver = null
-let chatMessageVisibilityObserver = null
-const chatMessageElMap = new Map()
-const chatMessageEstimatedHeightCache = new Map()
-const chatMessageByIdMap = new Map()
-const intersectingHeavyChatMessageIds = new Set()
-let lastProcessedChatScrollTop = 0
-let didProcessChatScroll = false
-let programmaticChatScrollUntil = 0
-let programmaticChatScrollTop = Number.NaN
-let userChatScrollIntentUntil = 0
-let sessionResetPromise = null
-
-function estimateChatMessageHeight(msg) {
-  const fixedHeight = getFixedCompactChatMessageHeight(msg)
-  if (fixedHeight) return fixedHeight
-  if (isAssistantActivityMessage(msg) && !msg?.thinkingExpanded) return CHAT_ASSISTANT_ACTIVITY_ITEM_HEIGHT
-  const role = String(msg?.role || '')
-  if (role === 'tool_group') {
-    const children = Array.isArray(msg?.toolGroupMessages) ? msg.toolGroupMessages : []
-    return 42 + children.reduce(
-      (height, child) => height + (child?.toolExpanded ? estimateChatMessageHeight(child) : CHAT_TOOL_COMPACT_ITEM_FIXED_HEIGHT),
-      0
-    )
-  }
-  const attachmentCount = Array.isArray(msg?.attachments) ? msg.attachments.length : 0
-  const thinkingLength = String(msg?.thinking || '').length
-  const isToolRole = role === 'tool_call' || role === 'tool'
-  const toolCollapsed = isToolRole && !msg?.toolExpanded
-  if (toolCollapsed) return estimateCollapsedToolMessageHeight(msg)
-  const content = isUserMessageCollapsed(msg) ? userMessagePreview(msg) : String(msg?.content || '')
-  const base = isToolRole
-    ? 168
-    : role === 'assistant'
-      ? CHAT_ASSISTANT_MESSAGE_BASE_HEIGHT
-      : CHAT_USER_MESSAGE_BASE_HEIGHT
-  const contentExtra = estimateChatMessageContentHeight(content)
-  const attachmentExtra = attachmentCount * 76
-  const thinkingExtra = msg?.thinkingExpanded ? Math.min(320, Math.ceil(thinkingLength / 10)) : 0
-  const guidanceExtra = msg?.guidance ? 22 : 0
-  const minHeight = isToolRole ? 112 : CHAT_TEXT_MESSAGE_MIN_HEIGHT
-  return Math.max(minHeight, base + contentExtra + attachmentExtra + thinkingExtra + guidanceExtra)
-}
-
-function getChatMessageGapBefore(previousMsg, currentMsg, index) {
-  return resolveChatVirtualItemGap({
-    hasPrevious: index > 0,
-    previousIsActivity: isChatActivityMessage(previousMsg),
-    currentIsActivity: isChatActivityMessage(currentMsg),
-    defaultGap: CHAT_LIST_GAP_PX,
-    consecutiveActivityGap: CHAT_ACTIVITY_LIST_GAP_PX
-  })
-}
-
-function getEstimatedChatMessageHeight(msg) {
-  const id = String(msg?.id || '').trim()
-  if (!id) return estimateChatMessageHeight(msg)
-  const role = String(msg?.role || '')
-  const contentLength = String(msg?.content || '').length
-  const thinkingLength = msg?.thinkingExpanded ? String(msg?.thinking || '').length : 0
-  const attachmentCount = Array.isArray(msg?.attachments) ? msg.attachments.length : 0
-  const layoutMode = isCompactChatLayout.value ? 'compact' : isDenseChatLayout.value ? 'dense' : 'wide'
-  const signature = [
-    role,
-    contentLength,
-    thinkingLength,
-    attachmentCount,
-    msg?.thinkingExpanded ? 1 : 0,
-    msg?.toolExpanded ? 1 : 0,
-    msg?.attachmentsExpanded ? 1 : 0,
-    msg?.userMessageExpanded ? 1 : 0,
-    msg?.toolGroupExpanded ? 1 : 0,
-    Array.isArray(msg?.toolGroupMessages)
-      ? msg.toolGroupMessages.map((child) => child?.toolExpanded ? '1' : '0').join('')
-      : '',
-    getToolMessageStatus(msg),
-    layoutMode
-  ].join('|')
-  const cached = chatMessageEstimatedHeightCache.get(id)
-  if (cached?.signature === signature) return cached.height
-
-  const height = estimateChatMessageHeight(msg)
-  chatMessageEstimatedHeightCache.set(id, { signature, height })
-  return height
-}
-
-function estimateChatMessageContentHeight(content) {
-  const charsPerLine = isCompactChatLayout.value ? 24 : isDenseChatLayout.value ? 30 : 44
-  return estimateChatMarkdownContentHeight(content, {
-    charsPerLine,
-    autoFoldThreshold: CHAT_CODE_AUTO_FOLD_THRESHOLD
-  })
-}
-
-function estimateCollapsedToolMessageHeight(msg) {
-  const summary = [
-    toolMessageLabel(msg),
-    toolMessageStatusLabel(msg),
-    String(msg?.toolSubMeta || '').trim(),
-    String(msg?.toolMeta || '').trim()
-  ].filter(Boolean).join(' · ')
-  const charsPerLine = isCompactChatLayout.value ? 26 : isDenseChatLayout.value ? 34 : 48
-  const lineCount = Math.max(1, Math.min(4, Math.ceil(summary.length / charsPerLine)))
-  const runningExtra = isLiveToolMessageStatus(getToolMessageStatus(msg)) ? 4 : 0
-  // 折叠态工具消息只展示一行摘要和时间，不应该按隐藏正文长度估高。
-  return 38 + ((lineCount - 1) * 16) + runningExtra
-}
-
-function resolveChatMessageById(messageId) {
-  const id = String(messageId || '').trim()
-  if (!id) return null
-  if (chatMessageByIdMap.has(id)) return chatMessageByIdMap.get(id)
-  const fallback = (session.messages || []).find((msg) => String(msg?.id || '').trim() === id) || null
-  if (fallback) {
-    chatMessageByIdMap.set(id, fallback)
-    return fallback
-  }
-  const displayMessage = chatDisplayMessages.value.find((msg) => String(msg?.id || '').trim() === id) || null
-  if (displayMessage) chatMessageByIdMap.set(id, displayMessage)
-  return displayMessage
-}
-
-function isMarkdownHeavyRenderCandidate(msg) {
-  if (!msg || typeof msg !== 'object') return false
-  if (isToolMessage(msg) || isToolActivityGroup(msg)) return false
-  if (String(msg?.role || '').trim() === 'user' && shouldRenderUserMessageAsPlainText(msg)) return false
-  if (String(msg.render || '').trim() === 'text') return false
-  return !!String(msg.content || '').trim()
-}
-
-function collectHeavyRenderSeedMessageIds(messages, options = {}) {
-  const list = Array.isArray(messages) ? messages : []
-  if (!list.length) return new Set()
-
-  const requestedLimit = Number(options.limit)
-  const limit = Number.isFinite(requestedLimit)
-    ? Math.max(0, Math.round(requestedLimit))
-    : CHAT_HEAVY_RENDER_SEED_COUNT
-  if (limit <= 0) return new Set()
-
-  const fromStart = options.fromStart === true
-  const ids = new Set()
-  if (fromStart) {
-    for (let i = 0; i < list.length && ids.size < limit; i += 1) {
-      const msg = list[i]
-      const id = String(msg?.id || '').trim()
-      if (!id || !isMarkdownHeavyRenderCandidate(msg)) continue
-      ids.add(id)
-    }
-    return ids
-  }
-
-  for (let i = list.length - 1; i >= 0 && ids.size < limit; i -= 1) {
-    const msg = list[i]
-    const id = String(msg?.id || '').trim()
-    if (!id || !isMarkdownHeavyRenderCandidate(msg)) continue
-    ids.add(id)
-  }
-  return ids
-}
-
-function areStringSetsEqual(a, b) {
-  if (a === b) return true
-  const left = a instanceof Set ? a : new Set()
-  const right = b instanceof Set ? b : new Set()
-  if (left.size !== right.size) return false
-  for (const value of left) {
-    if (!right.has(value)) return false
-  }
-  return true
-}
-
-function replaceHydratedHeavyChatMessageIds(ids) {
-  const next = ids instanceof Set ? ids : new Set()
-  if (areStringSetsEqual(hydratedHeavyChatMessageIds.value, next)) return false
-  hydratedHeavyChatMessageIds.value = next
-  return true
-}
-
-function mergeHydratedHeavyChatMessageIds(ids) {
-  const next = new Set(hydratedHeavyChatMessageIds.value)
-  let changed = false
-  const source = ids instanceof Set ? ids : new Set(Array.isArray(ids) ? ids : [])
-  source.forEach((value) => {
-    const id = String(value || '').trim()
-    if (!id || next.has(id)) return
-    next.add(id)
-    changed = true
-  })
-  if (!changed) return false
-  hydratedHeavyChatMessageIds.value = next
-  return true
-}
-
-function pruneHydratedHeavyChatMessageIds(options = {}) {
-  const current = hydratedHeavyChatMessageIds.value
-  if (!(current instanceof Set) || !current.size) return false
-
-  const requestedLimit = Number(options.limit)
-  const limit = Number.isFinite(requestedLimit)
-    ? Math.max(0, Math.round(requestedLimit))
-    : Math.max(0, Number(chatHeavyRenderTuning.value.maxHydrated) || 0)
-  if (current.size <= limit) return false
-
-  const keepIds = new Set()
-  const renderedIds = renderedChatMessageIdSet.value
-  renderedIds.forEach((id) => keepIds.add(id))
-  visibleHeavyChatMessageIds.value.forEach((id) => keepIds.add(id))
-  recentHeavyChatMessageIds.value.forEach((id) => keepIds.add(id))
-
-  const items = chatDisplayMessages.value
-  const buffer = resolveCurrentHeavyRenderViewportBuffer()
-  const start = Math.max(0, Number(renderedChatRange.value?.start || 0) - buffer)
-  const end = Math.min(items.length - 1, Number(renderedChatRange.value?.end || -1) + buffer)
-  for (let i = start; i <= end; i += 1) {
-    const id = String(items[i]?.id || '').trim()
-    if (id) keepIds.add(id)
-  }
-
-  for (let i = items.length - 1; i >= 0 && keepIds.size < limit; i -= 1) {
-    const msg = items[i]
-    const id = String(msg?.id || '').trim()
-    if (!id || !current.has(id) || !isMarkdownHeavyRenderCandidate(msg)) continue
-    keepIds.add(id)
-  }
-
-  if (keepIds.size >= current.size) return false
-
-  const next = new Set()
-  current.forEach((id) => {
-    if (keepIds.has(id)) next.add(id)
-  })
-  if (areStringSetsEqual(current, next)) return false
-  hydratedHeavyChatMessageIds.value = next
-  return true
-}
-
-function rememberHydratedHeavyChatMessage(messageId) {
-  const id = String(messageId || '').trim()
-  if (!id) return false
-  const changed = mergeHydratedHeavyChatMessageIds([id])
-  pruneHydratedHeavyChatMessageIds()
-  return changed
-}
-
-let chatSessionOpeningHeavyRenderToken = 0
-
-function beginChatSessionOpeningHeavyRender() {
-  chatSessionOpeningHeavyRenderToken += 1
-  chatSessionOpeningHeavyRender.value = true
-  return chatSessionOpeningHeavyRenderToken
-}
-
-function endChatSessionOpeningHeavyRender(token) {
-  if (!token || token !== chatSessionOpeningHeavyRenderToken) return
-  chatSessionOpeningHeavyRender.value = false
-}
-
-async function withChatSessionOpeningHeavyRender(task) {
-  const token = beginChatSessionOpeningHeavyRender()
-  try {
-    return await task()
-  } finally {
-    endChatSessionOpeningHeavyRender(token)
-  }
-}
-
-function primeHydratedHeavyChatMessages(messages, options = {}) {
-  const seedIds = collectHeavyRenderSeedMessageIds(messages, options)
-  if (options.replace !== false) return replaceHydratedHeavyChatMessageIds(seedIds)
-  return mergeHydratedHeavyChatMessageIds(seedIds)
-}
-
-async function maybeWarmMarkdownPreviewRuntimeForMessages(messages, options = {}) {
-  const seedIds = collectHeavyRenderSeedMessageIds(messages, options)
-  if (!seedIds.size) return false
-  await ensureMarkdownPreviewRuntime()
-  return true
-}
-
-function primeHydratedRenderedChatMessages(options = {}) {
-  const items = chatDisplayMessages.value
-  if (!items.length) return false
-
-  const range = renderedChatRange.value || { start: 0, end: -1 }
-  const requestedBuffer = Number(options.buffer)
-  const buffer = Number.isFinite(requestedBuffer)
-    ? Math.max(0, Math.round(requestedBuffer))
-    : resolveCurrentHeavyRenderViewportBuffer()
-  const start = Math.max(0, Number(range.start || 0) - buffer)
-  const end = Math.min(items.length - 1, Number(range.end || -1) + buffer)
-  if (end < start) return false
-
-  const ids = new Set()
-  for (let i = start; i <= end; i += 1) {
-    const msg = items[i]
-    const id = String(msg?.id || '').trim()
-    if (!id || !isMarkdownHeavyRenderCandidate(msg)) continue
-    ids.add(id)
-  }
-  if (!ids.size) return false
-  const changed = mergeHydratedHeavyChatMessageIds(ids)
-  pruneHydratedHeavyChatMessageIds()
-  return changed
-}
-
-function primeHydratedMountedHeavyChatMessages() {
-  const ids = new Set()
-  for (const [id, el] of chatMessageElMap.entries()) {
-    if (!(el instanceof HTMLElement) || !el.isConnected) continue
-    const msg = resolveChatMessageById(id)
-    if (!isMarkdownHeavyRenderCandidate(msg)) continue
-    ids.add(id)
-  }
-  if (!ids.size) return false
-  const changed = mergeHydratedHeavyChatMessageIds(ids)
-  pruneHydratedHeavyChatMessageIds()
-  return changed
-}
-
-function findLastItemTopLte(items, targetTop, startIndex = 0) {
-  const list = Array.isArray(items) ? items : []
-  let left = Math.max(0, Number.isInteger(startIndex) ? startIndex : 0)
-  let right = list.length - 1
-  let answer = left - 1
-  while (left <= right) {
-    const mid = (left + right) >> 1
-    if (Number(list[mid]?.top) <= targetTop) {
-      answer = mid
-      left = mid + 1
-    } else {
-      right = mid - 1
-    }
-  }
-  return answer
-}
-
-const chatDisplayMessages = computed(() =>
-  buildChatDisplayMessages(session.messages, {
-    resolveToolStatus: getToolMessageStatus,
-    expandedToolGroupIds: expandedToolActivityGroupIds.value
-  })
-)
-
-const chatEstimatedContentHeight = computed(() => {
-  const displayMessages = chatDisplayMessages.value
-  return displayMessages.reduce((total, msg, index) => {
-    const previousMsg = index > 0 ? displayMessages[index - 1] : null
-    return total + getChatMessageGapBefore(previousMsg, msg, index) + getEstimatedChatMessageHeight(msg)
-  }, 0)
-})
-
-const chatVirtualizedSessionKeys = ref(new Set())
-const currentChatVirtualizationSessionKey = computed(() => {
-  return String(activeMemorySessionId.value || activeSessionFilePath.value || '__current_chat__').trim()
-})
-
-const chatVirtualizationRequested = computed(() => {
-  const sessionKey = currentChatVirtualizationSessionKey.value
-  if (chatVirtualizedSessionKeys.value.has(sessionKey)) {
-    const hasActiveLayoutChanges =
-      sending.value ||
-      preparingSend.value ||
-      chatDisplayMessages.value.some((msg) => (
-        msg?.streaming ||
-        (isToolMessage(msg) && isLiveToolMessageStatus(getToolMessageStatus(msg)))
-      ))
-    return shouldRetainChatVirtualization({
-      active: hasActiveLayoutChanges,
-      itemCount: chatDisplayMessages.value.length,
-      estimatedHeight: chatEstimatedContentHeight.value,
-      viewportHeight: chatViewportHeight.value,
-      countThreshold: CHAT_VIRTUALIZATION_RETAIN_MIN_MESSAGES,
-      minItemsForHeight: CHAT_VIRTUALIZATION_RETAIN_MIN_ITEMS_FOR_HEIGHT,
-      minEstimatedHeight: CHAT_VIRTUALIZATION_RETAIN_MIN_ESTIMATED_HEIGHT_PX,
-      viewportMultiplier: CHAT_VIRTUALIZATION_RETAIN_MIN_VIEWPORTS
-    })
-  }
-  return shouldEnableChatVirtualization({
-    itemCount: chatDisplayMessages.value.length,
-    estimatedHeight: chatEstimatedContentHeight.value,
-    viewportHeight: chatViewportHeight.value,
-    countThreshold: CHAT_VIRTUALIZATION_MIN_MESSAGES,
-    minItemsForHeight: CHAT_VIRTUALIZATION_MIN_ITEMS_FOR_HEIGHT,
-    minEstimatedHeight: CHAT_VIRTUALIZATION_MIN_ESTIMATED_HEIGHT_PX,
-    viewportMultiplier: CHAT_VIRTUALIZATION_MIN_VIEWPORTS
-  })
-})
-
-watch(
-  [
-    currentChatVirtualizationSessionKey,
-    chatVirtualizationRequested,
-    () => chatDisplayMessages.value.length
-  ],
-  ([sessionKey, requested, itemCount]) => {
-    const key = String(sessionKey || '').trim()
-    if (!key) return
-    const next = new Set(chatVirtualizedSessionKeys.value)
-    if (!itemCount || !requested) {
-      if (!next.delete(key)) return
-    } else if (requested) {
-      if (next.has(key)) return
-      next.add(key)
-    } else {
-      return
-    }
-    chatVirtualizedSessionKeys.value = next
-  },
-  { immediate: true }
-)
-
-const chatVirtualizedEnabled = computed(() => {
-  if (!chatDisplayMessages.value.length) return false
-  return chatVirtualizationRequested.value
-})
-
-const chatDisplayMessageIndexById = computed(() => {
-  const indexById = new Map()
-  chatDisplayMessages.value.forEach((msg, index) => {
-    const id = String(msg?.id || '').trim()
-    if (id) indexById.set(id, index)
-  })
-  return indexById
-})
-
-function getChatVirtualItemKey(index) {
-  const msg = chatDisplayMessages.value[index]
-  return String(msg?.id || `chat-message-${index}`)
-}
-
-function estimateChatVirtualItemSize(index) {
-  const messages = chatDisplayMessages.value
-  const msg = messages[index]
-  if (!msg) return CHAT_DEFAULT_MESSAGE_HEIGHT
-  const previousMsg = index > 0 ? messages[index - 1] : null
-  return getChatMessageGapBefore(previousMsg, msg, index) + getEstimatedChatMessageHeight(msg)
-}
-
-function extractAdaptiveChatVirtualRange(range) {
-  return resolveChatAdaptiveVirtualRange(range, {
-    viewportHeight: chatViewportHeight.value,
-    minBufferPx: CHAT_VIRTUALIZATION_MIN_BUFFER_PX,
-    maxBufferPx: CHAT_VIRTUALIZATION_MAX_BUFFER_PX,
-    maxExtraItems: CHAT_VIRTUALIZATION_MAX_BUFFER_ITEMS,
-    estimateSize: estimateChatVirtualItemSize
-  })
-}
-
-const chatVirtualizer = useVirtualizer(computed(() => ({
-  count: chatDisplayMessages.value.length,
-  getScrollElement: () => chatScrollEl.value || resolveScrollbarContainerEl(),
-  estimateSize: estimateChatVirtualItemSize,
-  getItemKey: getChatVirtualItemKey,
-  overscan: 0,
-  rangeExtractor: extractAdaptiveChatVirtualRange,
-  paddingStart: isDenseChatLayout.value ? 8 : 14,
-  paddingEnd: isDenseChatLayout.value ? 8 : 14,
-  enabled: chatVirtualizedEnabled.value,
-  anchorTo: 'end',
-  followOnAppend: true,
-  scrollEndThreshold: SCROLL_BOTTOM_THRESHOLD_PX,
-  useAnimationFrameWithResizeObserver: true
-})))
-
-let chatVirtualMeasureFrame = 0
-let chatVirtualMeasureSettleFrame = 0
-let chatVirtualMeasureFollowTail = false
-let chatVirtualMeasureGeneration = 0
-const pendingChatVirtualMeasureIds = new Set()
-
-function resolveChatVirtualMeasurementOwnerId(messageOrId) {
-  const id = typeof messageOrId === 'string'
-    ? String(messageOrId || '').trim()
-    : String(messageOrId?.id || '').trim()
-  if (!id) return ''
-  if (chatDisplayMessageIndexById.value.has(id)) return id
-
-  const owner = chatDisplayMessages.value.find((message) => (
-    isToolActivityGroup(message) &&
-    message.toolGroupMessages.some((child) => String(child?.id || '').trim() === id)
-  ))
-  return String(owner?.id || '').trim()
-}
-
-function measurePendingChatVirtualItems(ids) {
-  if (!chatVirtualizedEnabled.value) return false
-  let measured = false
-  ids.forEach((id) => {
-    const el = chatMessageElMap.get(id)
-    if (!(el instanceof HTMLElement)) return
-    const index = chatDisplayMessageIndexById.value.get(id)
-    if (Number.isInteger(index)) el.dataset.index = String(index)
-    chatVirtualizer.value.measureElement(el)
-    measured = true
-  })
-  return measured
-}
-
-function scheduleChatVirtualItemRemeasure(messageOrId, options = {}) {
-  if (!chatVirtualizedEnabled.value) return
-  const ownerId = resolveChatVirtualMeasurementOwnerId(messageOrId)
-  if (ownerId) {
-    pendingChatVirtualMeasureIds.add(ownerId)
-    chatMessageEstimatedHeightCache.delete(ownerId)
-  }
-  if (options.followTail === true) chatVirtualMeasureFollowTail = true
-  if (chatVirtualMeasureFrame) return
-
-  chatVirtualMeasureFrame = -1
-  const generation = chatVirtualMeasureGeneration
-  void nextTick().then(() => {
-    if (generation !== chatVirtualMeasureGeneration) return
-    const raf = window?.requestAnimationFrame || ((callback) => window.setTimeout(callback, 16))
-    chatVirtualMeasureFrame = raf(() => {
-      if (generation !== chatVirtualMeasureGeneration) return
-      chatVirtualMeasureFrame = 0
-      const ids = Array.from(pendingChatVirtualMeasureIds)
-      pendingChatVirtualMeasureIds.clear()
-      const followTail = chatVirtualMeasureFollowTail
-      chatVirtualMeasureFollowTail = false
-      measurePendingChatVirtualItems(ids)
-      scheduleRefreshUserAnchorMeta()
-      scheduleStickyChatBubbleSync()
-
-      if (chatVirtualMeasureSettleFrame) {
-        if (typeof window?.cancelAnimationFrame === 'function') {
-          window.cancelAnimationFrame(chatVirtualMeasureSettleFrame)
-        } else {
-          clearTimeout(chatVirtualMeasureSettleFrame)
-        }
-      }
-      chatVirtualMeasureSettleFrame = raf(() => {
-        chatVirtualMeasureSettleFrame = 0
-        measurePendingChatVirtualItems(ids)
-        if (followTail) scheduleScrollToBottom({ force: true })
-      })
-    })
-  })
-}
-
-function clearChatVirtualItemRemeasure() {
-  chatVirtualMeasureGeneration += 1
-  if (chatVirtualMeasureFrame > 0) {
-    if (typeof window?.cancelAnimationFrame === 'function') {
-      window.cancelAnimationFrame(chatVirtualMeasureFrame)
-    } else {
-      clearTimeout(chatVirtualMeasureFrame)
-    }
-  }
-  if (chatVirtualMeasureSettleFrame > 0) {
-    if (typeof window?.cancelAnimationFrame === 'function') {
-      window.cancelAnimationFrame(chatVirtualMeasureSettleFrame)
-    } else {
-      clearTimeout(chatVirtualMeasureSettleFrame)
-    }
-  }
-  chatVirtualMeasureFrame = 0
-  chatVirtualMeasureSettleFrame = 0
-  chatVirtualMeasureFollowTail = false
-  pendingChatVirtualMeasureIds.clear()
-}
-
-const chatToolGroupLayoutRevision = computed(() => (
-  chatDisplayMessages.value
-    .filter((message) => isToolActivityGroup(message))
-    .map((group) => [
-      group.id,
-      group.toolGroupExpanded ? 1 : 0,
-      group.toolGroupMessages.length,
-      group.toolGroupMessages.map((child) => child?.toolExpanded ? 1 : 0).join('')
-    ].join(':'))
-    .join('|')
-))
-
-const chatDynamicLayoutRevision = computed(() => (
-  chatDisplayMessages.value
-    .map((message) => [
-      message?.id,
-      String(message?.content || '').length,
-      message?.thinkingExpanded ? String(message?.thinking || '').length : 0,
-      Array.isArray(message?.attachments) ? message.attachments.length : 0,
-      Array.isArray(message?.images) ? message.images.length : 0,
-      Array.isArray(message?.videos) ? message.videos.length : 0,
-      message?.streaming ? 1 : 0,
-      message?.editing ? 1 : 0,
-      message?.userMessageExpanded ? 1 : 0
-    ].join(':'))
-    .join('|')
-))
-
-watch(
-  chatToolGroupLayoutRevision,
-  () => {
-    if (!chatVirtualizedEnabled.value) return
-    chatDisplayMessages.value
-      .filter((message) => isToolActivityGroup(message))
-      .forEach((group) => scheduleChatVirtualItemRemeasure(group, { followTail: isAtBottom.value }))
-  },
-  { flush: 'post' }
-)
-
-watch(
-  chatDynamicLayoutRevision,
-  () => {
-    if (!chatVirtualizedEnabled.value) return
-    const shouldFollowTail = isAtBottom.value
-    chatVirtualItems.value.forEach((item) => {
-      const message = chatDisplayMessages.value[item.index]
-      if (message) scheduleChatVirtualItemRemeasure(message, { followTail: shouldFollowTail })
-    })
-  },
-  { flush: 'post' }
-)
-
-watch(
-  () => `${isCompactChatLayout.value ? 1 : 0}|${isDenseChatLayout.value ? 1 : 0}`,
-  async (next, previous) => {
-    if (!previous || next === previous || !chatVirtualizedEnabled.value) return
-    const shouldStayAtEnd = isAtBottom.value
-    await nextTick()
-    chatVirtualizer.value.measure()
-    scheduleRefreshUserAnchorMeta()
-    if (shouldStayAtEnd) scheduleScrollToBottom({ force: true })
-  }
-)
-
-watch(chatVirtualizedEnabled, async (enabled, wasEnabled) => {
-  if (!enabled || wasEnabled) return
-  const shouldStayAtEnd = isAtBottom.value || (autoScrollEnabled.value && !autoScrollSuspendedByUser.value)
-  await nextTick()
-  await waitForLayoutFrame()
-  scheduleRefreshUserAnchorMeta()
-  if (shouldStayAtEnd) scheduleScrollToBottom({ force: true })
-})
-
-const chatVirtualItems = computed(() => {
-  if (!chatVirtualizedEnabled.value) return []
-  return chatVirtualizer.value.getVirtualItems()
-})
-
-const chatVirtualItemByKey = computed(() => {
-  const itemByKey = new Map()
-  chatVirtualItems.value.forEach((item) => {
-    itemByKey.set(String(item.key), item)
-  })
-  return itemByKey
-})
-
-const renderedChatRange = computed(() => {
-  if (!chatDisplayMessages.value.length) return { start: 0, end: -1 }
-  if (!chatVirtualizedEnabled.value) {
-    return { start: 0, end: chatDisplayMessages.value.length - 1 }
-  }
-  const items = chatVirtualItems.value
-  if (!items.length) return { start: 0, end: -1 }
-  return {
-    start: Math.max(0, Number(items[0]?.index) || 0),
-    end: Math.max(0, Number(items[items.length - 1]?.index) || 0)
-  }
-})
-
-const renderedChatMessageIdSet = computed(() => {
-  const ids = new Set()
-  const { start, end } = renderedChatRange.value
-  if (end < start) return ids
-  for (let i = start; i <= end; i += 1) {
-    const id = String(chatDisplayMessages.value[i]?.id || '').trim()
-    if (id) ids.add(id)
-  }
-  return ids
-})
-
-const renderedChatMessages = computed(() => {
-  if (!chatVirtualizedEnabled.value) return chatDisplayMessages.value
-  return chatVirtualItems.value
-    .map((item) => chatDisplayMessages.value[item.index])
-    .filter(Boolean)
-})
-
-watch(
-  () => {
-    const range = renderedChatRange.value
-    return `${chatVirtualizedEnabled.value ? 1 : 0}|${range.start}|${range.end}`
-  },
-  () => {
-    primeHydratedRenderedChatMessages()
-  },
-  { flush: 'post' }
-)
-
-const chatVirtualListStyle = computed(() => {
-  if (!chatVirtualizedEnabled.value) return undefined
-  return {
-    height: `${Math.ceil(chatVirtualizer.value.getTotalSize())}px`
-  }
-})
-
-function getChatVirtualItemIndex(msg) {
-  if (!chatVirtualizedEnabled.value) return undefined
-  const index = chatDisplayMessageIndexById.value.get(String(msg?.id || '').trim())
-  return Number.isInteger(index) ? index : undefined
-}
-
-function getChatVirtualItemStyle(msg) {
-  if (!chatVirtualizedEnabled.value) return undefined
-  const id = String(msg?.id || '').trim()
-  const item = chatVirtualItemByKey.value.get(id)
-  if (!item) return undefined
-  const messages = chatDisplayMessages.value
-  const previousMsg = item.index > 0 ? messages[item.index - 1] : null
-  const gapBefore = getChatMessageGapBefore(previousMsg, msg, item.index)
-  return {
-    '--chat-virtual-item-top': `${Math.max(0, Number(item.start) || 0)}px`,
-    '--chat-virtual-item-gap': `${Math.max(0, gapBefore)}px`
-  }
-}
-
-function getDistanceFromBottom(elMaybe) {
-  const el = elMaybe || chatScrollEl.value || resolveScrollbarContainerEl()
-  if (!el) return Number.POSITIVE_INFINITY
-  return Math.max(0, el.scrollHeight - (el.scrollTop + el.clientHeight))
-}
-
-function shouldFollowStreamingScroll(options = {}) {
-  const allowNearBottom = options.allowNearBottom !== false
-  const el = chatScrollEl.value || resolveScrollbarContainerEl()
-  if (!el) return false
-  if (autoScrollSuspendedByUser.value || !autoScrollEnabled.value) return false
-  const distanceFromBottom = getDistanceFromBottom(el)
-  // Only keep following if the viewport is still close to the tail.
-  // This avoids yanking the scrollbar back to the bottom when far-history
-  // messages reflow or finish hydrating after the user has already moved away.
-  const followThreshold = allowNearBottom ? SCROLL_AUTO_DISABLE_DISTANCE_PX : SCROLL_BOTTOM_THRESHOLD_PX
-  return distanceFromBottom <= followThreshold
-}
-
-function markProgrammaticChatScroll(durationMs = CHAT_SCROLL_COMPENSATION_SUSPEND_MS, targetScrollTop = Number.NaN) {
-  const duration = Math.max(120, Number(durationMs) || 0)
-  programmaticChatScrollUntil = Date.now() + duration
-  programmaticChatScrollTop = Number.isFinite(Number(targetScrollTop))
-    ? Math.max(0, Number(targetScrollTop))
-    : Number.NaN
-}
-
-function isExpectedProgrammaticChatScroll(scrollTop) {
-  return isExpectedChatProgrammaticScroll({
-    now: Date.now(),
-    until: programmaticChatScrollUntil,
-    scrollTop,
-    targetScrollTop: programmaticChatScrollTop
-  })
-}
-
-function clearProgrammaticChatScrollMark() {
-  programmaticChatScrollUntil = 0
-  programmaticChatScrollTop = Number.NaN
-}
-
-function maybeScheduleStreamingScroll(options = {}) {
-  if (!shouldFollowStreamingScroll(options)) return false
-  scheduleScrollToBottom()
-  return true
-}
-
-function updateAtBottomState(elMaybe) {
-  const el = elMaybe || chatScrollEl.value || resolveScrollbarContainerEl()
-  if (!el) {
-    chatScrollDistanceFromBottom.value = Number.POSITIVE_INFINITY
-    isAtBottom.value = false
-    isChatScrollable.value = false
-    return { distanceFromBottom: Number.POSITIVE_INFINITY, atBottom: false }
-  }
-  const distanceFromBottom = getDistanceFromBottom(el)
-  chatScrollTop.value = Number(el?.scrollTop || 0)
-  chatViewportHeight.value = Number(el?.clientHeight || 0)
-  chatScrollDistanceFromBottom.value = distanceFromBottom
-  isChatScrollable.value = !!el && el.scrollHeight > el.clientHeight + 2
-  isAtBottom.value = distanceFromBottom <= SCROLL_BOTTOM_THRESHOLD_PX
-  return { distanceFromBottom, atBottom: isAtBottom.value }
-}
-
-const showScrollToBottomButton = computed(() => {
-  if (!isChatScrollable.value) return false
-  return chatScrollDistanceFromBottom.value > SCROLL_AUTO_DISABLE_DISTANCE_PX
-})
-
-const userAnchorMeta = ref([])
-const activeAnchorId = ref(null)
-const userAnchorElMap = new Map()
-
-function getUserAnchorPreview(msg) {
-  const text = String(msg?.content || '')
-    .replace(/\r\n/g, '\n')
-    .split('\n')
-    .map((s) => s.trim())
-    .filter(Boolean)[0] || ''
-  const flat = text.replace(/\s+/g, ' ').trim()
-  if (!flat) return '(empty)'
-  return flat.length > 40 ? `${flat.slice(0, 40)}...` : flat
-}
-
-const userAnchors = computed(() => {
-  const anchors = []
-  for (const msg of session.messages || []) {
-    if (!msg || msg.role !== 'user') continue
-    const index = anchors.length + 1
-    anchors.push({
-      id: msg.id,
-      domId: `q-${msg.id}`,
-      index,
-      preview: getUserAnchorPreview(msg)
-    })
-  }
-  return anchors
-})
-
-const showAnchorRail = computed(() =>
-  shouldShowChatAnchorRail(userAnchors.value.length, { dense: isDenseChatLayout.value })
-)
-const stickyChatBubble = ref(null)
-let stickyChatBubbleSyncFrame = 0
-
-function getStickyChatBubbleState(msg) {
-  if (!msg || typeof msg !== 'object') return null
-  const id = String(msg.id || '').trim()
-  if (!id) return null
-
-  if (msg.role === 'assistant' && msg.thinking && msg.thinkingExpanded) {
-    return {
-      id,
-      type: 'thinking',
-      label: msg.streaming ? '思考中...' : '思考完成',
-      meta: '',
-      toolName: '',
-      source: '',
-      status: '',
-      statusText: '',
-      showStatus: false,
-      actionText: '收起思考'
-    }
-  }
-
-  if (msg.role === 'user' && msg.attachmentsExpanded && ((msg.images && msg.images.length) || (msg.attachments && msg.attachments.length))) {
-    return {
-      id,
-      type: 'attachments',
-      label: '附件',
-      meta: `${countImageAttachments(msg)} 图 / ${countFileAttachments(msg)} 文件`,
-      toolName: '',
-      source: '',
-      status: '',
-      statusText: '',
-      showStatus: false,
-      actionText: '收起附件'
-    }
-  }
-
-  if (isToolMessage(msg) && msg.toolExpanded) {
-    const status = getToolMessageStatus(msg)
-    return {
-      id,
-      type: 'tool',
-      label: toolMessageLabel(msg),
-      meta: toolActivityMeta(msg),
-      toolName: toolActivityToolName(msg),
-      source: toolActivitySource(msg),
-      status,
-      statusText: toolMessageStatusLabel(msg),
-      showStatus: shouldShowToolActivityStatus(msg),
-      actionText: '收起'
-    }
-  }
-
-  return null
-}
-
-function setStickyChatBubbleState(next) {
-  const prev = stickyChatBubble.value
-  if (
-    prev?.id === next?.id &&
-    prev?.type === next?.type &&
-    prev?.label === next?.label &&
-    prev?.meta === next?.meta &&
-    prev?.toolName === next?.toolName &&
-    prev?.source === next?.source &&
-    prev?.status === next?.status &&
-    prev?.statusText === next?.statusText &&
-    prev?.showStatus === next?.showStatus &&
-    prev?.actionText === next?.actionText
-  ) {
-    return
-  }
-  stickyChatBubble.value = next
-}
-
-function getChatMeasuredLayoutItems() {
-  const messages = chatDisplayMessages.value
-  if (chatVirtualizedEnabled.value) {
-    return chatVirtualizer.value.getVirtualItems().map((measurement) => {
-      const index = Number(measurement?.index)
-      const msg = Number.isInteger(index) ? messages[index] : null
-      if (!msg) return null
-      return {
-        id: String(msg?.id || ''),
-        index,
-        top: Number(measurement.start || 0),
-        bottom: Number(measurement.end || 0),
-        msg
-      }
-    }).filter(Boolean)
-  }
-
-  return messages.map((msg, index) => {
-    const id = String(msg?.id || '')
-    const el = chatMessageElMap.get(id)
-    if (!(el instanceof HTMLElement)) return null
-    const top = Number(el.offsetTop || 0)
-    return {
-      id,
-      index,
-      top,
-      bottom: top + Number(el.offsetHeight || 0),
-      msg
-    }
-  }).filter(Boolean)
-}
-
-function syncStickyChatBubble() {
-  if (!chatScrollEl.value && !resolveScrollbarContainerEl()) {
-    setStickyChatBubbleState(null)
-    return
-  }
-
-  const items = getChatMeasuredLayoutItems()
-  if (!items.length) {
-    setStickyChatBubbleState(null)
-    return
-  }
-
-  const threshold = Math.max(0, Number(chatScrollTop.value) || 0) + 8
-  const minVisibleBottom = threshold + 64
-  let next = null
-  const rightMostVisibleIndex = findLastItemTopLte(items, threshold, 0)
-
-  for (let index = rightMostVisibleIndex; index >= 0; index -= 1) {
-    const item = items[index]
-    if (!item || item.bottom <= minVisibleBottom) break
-    const state = getStickyChatBubbleState(item.msg)
-    if (state) {
-      next = state
-      break
-    }
-  }
-
-  if (!next && stickyChatBubble.value?.id) {
-    const currentId = String(stickyChatBubble.value.id)
-    const current = items.find((item) => String(item?.id || '') === currentId)
-    const currentState = getStickyChatBubbleState(current?.msg)
-    if (currentState && current.top <= threshold + 96 && current.bottom > threshold + 24) {
-      next = currentState
-    }
-  }
-
-  setStickyChatBubbleState(next)
-}
-
-function scheduleStickyChatBubbleSync() {
-  if (stickyChatBubbleSyncFrame) return
-  const raf = window?.requestAnimationFrame || ((cb) => window.setTimeout(cb, 16))
-  stickyChatBubbleSyncFrame = raf(() => {
-    stickyChatBubbleSyncFrame = 0
-    syncStickyChatBubble()
-  })
-}
-
-function clearStickyChatBubbleSync() {
-  if (!stickyChatBubbleSyncFrame) return
-  if (typeof window?.cancelAnimationFrame === 'function') window.cancelAnimationFrame(stickyChatBubbleSyncFrame)
-  else clearTimeout(stickyChatBubbleSyncFrame)
-  stickyChatBubbleSyncFrame = 0
-}
-
-function handleStickyChatBubbleAction() {
-  const id = stickyChatBubble.value?.id
-  const msg = session.messages.find((item) => String(item?.id || '') === String(id || ''))
-  if (!msg) {
-    setStickyChatBubbleState(null)
-    return
-  }
-
-  if (stickyChatBubble.value?.type === 'thinking') toggleThinking(msg)
-  else if (stickyChatBubble.value?.type === 'attachments') toggleAttachmentsExpanded(msg)
-  else if (stickyChatBubble.value?.type === 'tool') toggleToolExpanded(msg)
-
-  setStickyChatBubbleState(null)
-  scheduleStickyChatBubbleSync()
-}
-
-function syncVisibleHeavyChatMessageIds() {
-  visibleHeavyChatMessageIds.value = new Set(intersectingHeavyChatMessageIds)
-}
-
-function disconnectChatMessageVisibilityObserver(options = {}) {
-  if (chatMessageVisibilityObserver) {
-    try {
-      chatMessageVisibilityObserver.disconnect()
-    } catch {
-      // ignore
-    }
-    chatMessageVisibilityObserver = null
-  }
-
-  intersectingHeavyChatMessageIds.clear()
-  if (options.clearVisible !== false) syncVisibleHeavyChatMessageIds()
-}
-
-function setupChatMessageVisibilityObserver() {
-  disconnectChatMessageVisibilityObserver()
-  if (typeof IntersectionObserver === 'undefined') {
-    syncVisibleHeavyChatMessageIds()
-    return
-  }
-
-  const root = chatScrollEl.value || resolveScrollbarContainerEl()
-  if (!root) {
-    syncVisibleHeavyChatMessageIds()
-    return
-  }
-
-  chatMessageVisibilityObserver = new IntersectionObserver(
-    (entries) => {
-      let changed = false
-      entries.forEach((entry) => {
-        const id = String(entry.target?.dataset?.messageId || '').trim()
-        if (!id) return
-        if (entry.isIntersecting) {
-          if (!intersectingHeavyChatMessageIds.has(id)) {
-            intersectingHeavyChatMessageIds.add(id)
-            changed = true
-          }
-          rememberHydratedHeavyChatMessage(id)
-        } else if (intersectingHeavyChatMessageIds.delete(id)) {
-          changed = true
-        }
-      })
-      if (changed) syncVisibleHeavyChatMessageIds()
-    },
-    {
-      root,
-      rootMargin: `${Math.max(0, Number(chatHeavyRenderTuning.value.rootMarginPx) || 0)}px 0px`
-    }
-  )
-
-  for (const [id, el] of chatMessageElMap.entries()) {
-    if (!el) continue
-    const msg = resolveChatMessageById(id)
-    if (isToolMessage(msg) || isToolActivityGroup(msg)) continue
-    el.dataset.messageId = id
-    chatMessageVisibilityObserver.observe(el)
-  }
-}
-
-function setChatItemEl(messageId, role, el) {
-  const k = String(messageId || '')
-  if (!k) return false
-
-  const prev = chatMessageElMap.get(k)
-  if (prev === el) return false
-
-  if (role === 'user') {
-    if (el) userAnchorElMap.set(k, el)
-    else userAnchorElMap.delete(k)
-  }
-
-  if (prev && prev !== el) {
-    try {
-      chatMessageVisibilityObserver?.unobserve(prev)
-    } catch {
-      // ignore
-    }
-  }
-
-  if (el) {
-    el.dataset.messageId = k
-    chatMessageElMap.set(k, el)
-    const msg = resolveChatMessageById(k)
-    if (!isToolMessage(msg) && !isToolActivityGroup(msg)) {
-      try {
-        chatMessageVisibilityObserver?.observe(el)
-      } catch {
-        // ignore
-      }
-    }
-  } else {
-    chatMessageElMap.delete(k)
-    if (intersectingHeavyChatMessageIds.delete(k)) syncVisibleHeavyChatMessageIds()
-  }
-  return true
-}
-
-const chatItemRefCallbackMap = new Map()
-
-function getChatVirtualItemRef(msg) {
-  const id = String(msg?.id || '').trim()
-  if (!id) return undefined
-  const role = String(msg?.role || '').trim()
-  const cached = chatItemRefCallbackMap.get(id)
-  if (cached?.role === role) return cached.callback
-
-  const callback = (el) => {
-    setChatVirtualItemEl(id, role, el)
-    if (!el && chatItemRefCallbackMap.get(id)?.callback === callback) {
-      chatItemRefCallbackMap.delete(id)
-    }
-  }
-  chatItemRefCallbackMap.set(id, { role, callback })
-  return callback
-}
-
-function setChatVirtualItemEl(id, role, el) {
-  const changed = setChatItemEl(id, role, el)
-  if (!changed) return
-  if (!chatVirtualizedEnabled.value || !(el instanceof HTMLElement)) return
-  const index = chatDisplayMessageIndexById.value.get(id)
-  if (!Number.isInteger(index)) return
-  el.dataset.index = String(index)
-  chatVirtualizer.value.measureElement(el)
-}
-
-function shouldRenderHeavyChatMessage(msg) {
-  if (!msg || typeof msg !== 'object') return true
-  const id = String(msg.id || '').trim()
-  if (!id) return true
-  if (msg.streaming || msg.editing || msg.thinkingExpanded || msg.toolExpanded || msg.attachmentsExpanded) return true
-  if (renderedChatMessageIdSet.value.has(id)) return true
-  if (chatSessionOpeningHeavyRender.value && String(msg.render || '').trim() !== 'text') return true
-  if (hydratedHeavyChatMessageIds.value.has(id)) return true
-  if (recentHeavyChatMessageIds.value.has(id)) return true
-  return visibleHeavyChatMessageIds.value.has(id)
-}
-
-function shouldDeferHeavyChatBlockLayout(msg) {
-  return shouldDeferChatHeavyBlockLayout(msg, {
-    virtualized: chatVirtualizedEnabled.value,
-    visibleMessageIds: visibleHeavyChatMessageIds.value
-  })
-}
-
-function shouldRenderCompactToolMessage(msg) {
-  if (!isToolMessage(msg)) return false
-  if (msg.toolExpanded || msg.streaming || msg.editing || msg.attachmentsExpanded || msg.thinkingExpanded) return false
-  return true
-}
-
-function isFixedCompactToolMessage(msg) {
-  return shouldRenderCompactToolMessage(msg)
-}
-
-function getFixedCompactChatMessageHeight(msg) {
-  if (isFixedCompactToolMessage(msg)) return CHAT_TOOL_COMPACT_ITEM_FIXED_HEIGHT
-  if (isToolActivityGroup(msg) && !msg.toolGroupExpanded) return CHAT_TOOL_ACTIVITY_GROUP_FIXED_HEIGHT
-  return 0
-}
-
-function getChatMessageTopById(messageId) {
-  const id = String(messageId || '').trim()
-  if (!id) return Number.NaN
-  if (chatVirtualizedEnabled.value) {
-    const index = chatDisplayMessageIndexById.value.get(id)
-    const measurement = Number.isInteger(index)
-      ? chatVirtualizer.value.measurementsCache[index]
-      : null
-    if (measurement && Number.isFinite(Number(measurement.start))) {
-      return Number(measurement.start)
-    }
-  }
-  const el = chatMessageElMap.get(id)
-  return el instanceof HTMLElement ? Number(el.offsetTop) : Number.NaN
-}
-
-function refreshUserAnchorMeta() {
-  const next = userAnchors.value
-    .map((a) => {
-      const top = getChatMessageTopById(a.id)
-      if (!Number.isFinite(top)) return null
-      return { ...a, top }
-    })
-    .filter(Boolean)
-
-  userAnchorMeta.value = next
-}
-
-function findLastAnchorTopLte(meta, targetTop) {
-  const list = Array.isArray(meta) ? meta : []
-  let left = 0
-  let right = list.length - 1
-  let answer = -1
-  while (left <= right) {
-    const mid = (left + right) >> 1
-    const top = Number(list[mid]?.top)
-    if (Number.isFinite(top) && top <= targetTop) {
-      answer = mid
-      left = mid + 1
-    } else {
-      right = mid - 1
-    }
-  }
-  return answer
-}
-
-function updateActiveAnchorFromScroll(container) {
-  const el = container || chatScrollEl.value
-  if (!el) return
-  if (userAnchorMeta.value.length !== userAnchors.value.length) refreshUserAnchorMeta()
-
-  const meta = userAnchorMeta.value
-  if (!meta.length) {
-    activeAnchorId.value = null
-    return
-  }
-
-  const scrollTop = el.scrollTop
-  const viewBottom = scrollTop + el.clientHeight
-  const margin = 8
-
-  let active = null
-  const currentTop = scrollTop + margin
-  const activeIndex = findLastAnchorTopLte(meta, currentTop)
-  if (activeIndex >= 0) active = meta[activeIndex]?.id || null
-
-  if (!active) {
-    const lowerBound = scrollTop - margin
-    const upperBound = viewBottom + margin
-    let firstInViewIndex = findLastAnchorTopLte(meta, lowerBound)
-    firstInViewIndex = Math.max(0, firstInViewIndex)
-    if (Number(meta[firstInViewIndex]?.top) < lowerBound) firstInViewIndex += 1
-
-    for (let i = firstInViewIndex; i < meta.length; i += 1) {
-      const top = Number(meta[i]?.top)
-      if (!Number.isFinite(top)) continue
-      if (top > upperBound) break
-      active = meta[i]?.id || null
-      break
-    }
-
-    if (!active) active = meta[0]?.id || null
-  }
-
-  activeAnchorId.value = active
-}
-
-let anchorMetaRefreshScheduled = false
-function scheduleRefreshUserAnchorMeta() {
-  if (anchorMetaRefreshScheduled) return
-  anchorMetaRefreshScheduled = true
-
-  const raf = window?.requestAnimationFrame || ((cb) => window.setTimeout(cb, 16))
-  raf(async () => {
-    anchorMetaRefreshScheduled = false
-    await nextTick()
-    if (!chatScrollEl.value) chatScrollEl.value = resolveScrollbarContainerEl()
-    if (!chatLayoutResizeObserver) setupChatLayoutResizeObserver()
-    refreshUserAnchorMeta()
-    updateActiveAnchorFromScroll()
-    updateAtBottomState(chatScrollEl.value)
-    syncStickyChatBubble()
-  })
-}
-
-async function scrollToUserAnchor(messageId) {
-  const k = String(messageId || '')
-  autoScrollEnabled.value = false
-  autoScrollSuspendedByUser.value = true
-  await nextTick()
-  const container = chatScrollEl.value || resolveScrollbarContainerEl()
-  if (!container) return
-
-  if (chatVirtualizedEnabled.value) {
-    const index = chatDisplayMessageIndexById.value.get(k)
-    if (!Number.isInteger(index)) return
-    const measurement = chatVirtualizer.value.measurementsCache[index]
-    const targetTop = Number(measurement?.start)
-    markProgrammaticChatScroll(
-      CHAT_SCROLL_COMPENSATION_SUSPEND_MS,
-      Number.isFinite(targetTop) ? Math.max(0, targetTop) : Number.NaN
-    )
-    chatVirtualizer.value.scrollToIndex(index, { align: 'start', behavior: 'auto' })
-    await waitForLayoutFrame()
-    queueProcessChatScroll(container)
-    return
-  }
-
-  const mountedEl = userAnchorElMap.get(k)
-  const mountedTop = mountedEl ? Number(mountedEl.offsetTop) : Number.NaN
-  if (!Number.isFinite(mountedTop)) return
-  const nextTop = Math.max(0, mountedTop - 8)
-  markProgrammaticChatScroll(CHAT_SCROLL_COMPENSATION_SUSPEND_MS, nextTop)
-  try {
-    // Native smooth scrolling traverses several virtual render windows; their
-    // measurements can otherwise compete with the animation.
-    container.scrollTo({ top: nextTop, behavior: 'auto' })
-  } catch {
-    container.scrollTop = nextTop
-  }
-  queueProcessChatScroll(container)
-}
-
-function resolveScrollbarContainerEl() {
-  const inst = scrollbarRef.value
-  const root = inst?.$el
-  if (root?.querySelector) return root.querySelector('.n-scrollbar-container')
-  return null
-}
-
-function disconnectChatLayoutResizeObserver() {
-  if (!chatLayoutResizeObserver) return
-  try {
-    chatLayoutResizeObserver.disconnect()
-  } catch {
-    // ignore
-  }
-  chatLayoutResizeObserver = null
-}
-
-function setupChatLayoutResizeObserver() {
-  disconnectChatLayoutResizeObserver()
-  if (typeof ResizeObserver === 'undefined') return
-  const container = chatScrollEl.value || resolveScrollbarContainerEl()
-  const list = chatListRef.value
-  if (!container || !list) return
-
-  chatScrollEl.value = container
-  chatLayoutResizeObserver = new ResizeObserver(() => {
-    scheduleRefreshUserAnchorMeta()
-    if (!chatVirtualizedEnabled.value) maybeScheduleStreamingScroll()
-  })
-  chatLayoutResizeObserver.observe(container)
-  chatLayoutResizeObserver.observe(list)
-}
-
-function waitForLayoutFrame() {
-  return new Promise((resolve) => {
-    const raf = window?.requestAnimationFrame || ((cb) => window.setTimeout(cb, 16))
-    raf(() => resolve())
-  })
-}
-
-async function refreshChatViewportState(options = {}) {
-  const reconnectObserver = !!options.reconnectObserver
-  await nextTick()
-  await waitForLayoutFrame()
-
-  const container = resolveScrollbarContainerEl()
-  const list = chatListRef.value
-  chatScrollEl.value = container || null
-  if (!container) return
-
-  if (reconnectObserver) {
-    setupChatLayoutResizeObserver()
-    setupChatMessageVisibilityObserver()
-  }
-  refreshUserAnchorMeta()
-  updateActiveAnchorFromScroll(container)
-  updateAtBottomState(container)
-  primeHydratedRenderedChatMessages()
-  primeHydratedMountedHeavyChatMessages()
-  syncStickyChatBubble()
-}
-
-async function settleChatViewportAfterSessionOpen(options = {}) {
-  await refreshChatViewportState({ reconnectObserver: options.reconnectObserver === true })
-  await nextTick()
-  await waitForLayoutFrame()
-
-  const container = chatScrollEl.value || resolveScrollbarContainerEl()
-  if (!container) return
-
-  updateAtBottomState(container)
-  const requestedBuffer = Number(options.buffer)
-  const buffer = Number.isFinite(requestedBuffer)
-    ? Math.max(0, Math.round(requestedBuffer))
-    : resolveCurrentHeavyRenderViewportBuffer(2)
-  primeHydratedRenderedChatMessages({ buffer })
-  primeHydratedMountedHeavyChatMessages()
-}
-
-watch(
-  () => userAnchors.value.length,
-  async () => {
-    await nextTick()
-    if (!chatScrollEl.value) chatScrollEl.value = resolveScrollbarContainerEl()
-    refreshUserAnchorMeta()
-    updateActiveAnchorFromScroll()
-    updateAtBottomState(chatScrollEl.value)
-  }
-)
-
-watch(
-  () => activeMemorySessionId.value,
-  () => {
-    expandedToolActivityGroupIds.value = new Set()
-  }
-)
-
-watch(
-  () => chatDisplayMessages.value.map((msg) => [
-    String(msg?.id || ''),
-    msg?.toolGroupExpanded ? 1 : 0,
-    Array.isArray(msg?.toolGroupMessages)
-      ? msg.toolGroupMessages.map((child) => child?.toolExpanded ? '1' : '0').join('')
-      : ''
-  ].join(':')).join('|'),
-  () => {
-    const validIds = new Set()
-    chatMessageByIdMap.clear()
-    chatDisplayMessages.value.forEach((msg) => {
-      const id = String(msg?.id || '').trim()
-      if (!id) return
-      validIds.add(id)
-      chatMessageByIdMap.set(id, msg)
-    })
-    Array.from(chatMessageEstimatedHeightCache.keys()).forEach((id) => {
-      if (!validIds.has(id)) chatMessageEstimatedHeightCache.delete(id)
-    })
-    if (hydratedHeavyChatMessageIds.value.size) {
-      const nextHydratedIds = new Set()
-      hydratedHeavyChatMessageIds.value.forEach((id) => {
-        if (validIds.has(id)) nextHydratedIds.add(id)
-      })
-      if (nextHydratedIds.size !== hydratedHeavyChatMessageIds.value.size) {
-        hydratedHeavyChatMessageIds.value = nextHydratedIds
-      }
-    }
-    Array.from(chatMessageElMap.keys()).forEach((id) => {
-      if (!validIds.has(id)) chatMessageElMap.delete(id)
-    })
-    Array.from(userAnchorElMap.keys()).forEach((id) => {
-      if (!validIds.has(id)) userAnchorElMap.delete(id)
-    })
-    if (activeAnchorId.value && !validIds.has(activeAnchorId.value)) activeAnchorId.value = null
-    scheduleRefreshUserAnchorMeta()
-    scheduleStickyChatBubbleSync()
-  }
-)
-
-watch(
-  () => session.messages.length,
-  () => {
-    maybeCoalesceLatestToolMessages()
-  }
-)
-
-watch(
-  () => `${chatHeavyRenderTuning.value.viewportBuffer}|${chatHeavyRenderTuning.value.rootMarginPx}|${chatHeavyRenderTuning.value.maxHydrated}`,
-  () => {
-    pruneHydratedHeavyChatMessageIds()
-    if (chatMessageVisibilityObserver) setupChatMessageVisibilityObserver()
-  }
-)
-
-onMounted(async () => {
-  syncChatResponsiveState()
-  window?.addEventListener?.('resize', syncChatResponsiveState)
-  window?.addEventListener?.(BUILTIN_AGENTS_TRACE_EVENT, handleBuiltinAgentsTraceEvent)
-  window?.addEventListener?.(BUILTIN_AGENTS_TOOL_APPROVAL_REQUEST_EVENT, handleBuiltinAgentsToolApprovalRequest)
-  void cleanupExpiredSessionTrash()
-  void migrateLegacyAutoChatSessionCreatedAt()
-  sessionTrashCleanupTimer = window.setInterval(() => {
-    void cleanupExpiredSessionTrash()
-  }, SESSION_TRASH_CLEANUP_INTERVAL_MS)
-  await refreshChatViewportState({ reconnectObserver: true })
-})
-
-onActivated(async () => {
-  await refreshChatViewportState({ reconnectObserver: true })
-  if (autoScrollEnabled.value) scheduleScrollToBottom()
-})
-
-onDeactivated(() => {
-  disconnectChatLayoutResizeObserver()
-  disconnectChatMessageVisibilityObserver()
-  clearQueuedChatScrollProcessing()
-  clearChatVirtualItemRemeasure()
-  clearStickyChatBubbleSync()
-  setStickyChatBubbleState(null)
-  cleanupChatPreviewLinkHandlers()
-  chatScrollEl.value = null
-})
-
-function toggleSessionSider() {
-  sessionSiderCollapsed.value = !sessionSiderCollapsed.value
-}
-
-function activateAutoScroll() {
-  autoScrollSuspendedByUser.value = false
-  autoScrollEnabled.value = true
-  scrollToBottom({ force: true })
-}
-
-function handleChatScroll(e) {
-  const targetEl = resolveScrollbarContainerEl() || e?.target
-  const currentTop = Number(targetEl?.scrollTop || 0)
-  const previousTop = didProcessChatScroll ? lastProcessedChatScrollTop : Number(chatScrollTop.value || 0)
-  const isProgrammaticScroll = isExpectedProgrammaticChatScroll(currentTop)
-  const hasUserScrollIntent = Date.now() <= userChatScrollIntentUntil
-  if (!isProgrammaticScroll && currentTop + 1 < previousTop && (!chatVirtualizedEnabled.value || hasUserScrollIntent)) {
-    autoScrollSuspendedByUser.value = true
-    autoScrollEnabled.value = false
-  }
-  queueProcessChatScroll(targetEl)
-}
-
-function handleChatWheel(e) {
-  const deltaY = Number(e?.deltaY || 0)
-  if (!deltaY) return
-  clearProgrammaticChatScrollMark()
-  userChatScrollIntentUntil = Date.now() + CHAT_USER_SCROLL_INTENT_MS
-  if (deltaY < 0) {
-    autoScrollSuspendedByUser.value = true
-    autoScrollEnabled.value = false
-  }
-}
-
-function handleChatPointerDown() {
-  clearProgrammaticChatScrollMark()
-  userChatScrollIntentUntil = Date.now() + CHAT_USER_SCROLL_INTENT_MS
-}
-
-let pendingChatScrollEl = null
-let chatScrollProcessScheduled = false
-let chatScrollProcessRafId = 0
-
-function processChatScroll(elMaybe) {
-  const el = elMaybe || chatScrollEl.value || resolveScrollbarContainerEl()
-  if (!el) return
-  chatScrollEl.value = el
-  if (!chatLayoutResizeObserver) setupChatLayoutResizeObserver()
-  if (!chatMessageVisibilityObserver) setupChatMessageVisibilityObserver()
-
-  const prevScrollTop = didProcessChatScroll ? lastProcessedChatScrollTop : Number(chatScrollTop.value || 0)
-  const { distanceFromBottom, atBottom } = updateAtBottomState(el)
-  const nextScrollTop = Number(chatScrollTop.value || 0)
-  const isProgrammaticScroll = isExpectedProgrammaticChatScroll(nextScrollTop)
-  const hasUserScrollIntent = Date.now() <= userChatScrollIntentUntil
-  const isUserScrollingUp =
-    didProcessChatScroll &&
-    (nextScrollTop + 1 < prevScrollTop) &&
-    (!chatVirtualizedEnabled.value || hasUserScrollIntent)
-  const isUserScrollingDown = didProcessChatScroll && (nextScrollTop > prevScrollTop + 1)
-  lastProcessedChatScrollTop = nextScrollTop
-  didProcessChatScroll = true
-
-  if (!isProgrammaticScroll && isUserScrollingUp) {
-    autoScrollSuspendedByUser.value = true
-    autoScrollEnabled.value = false
-  } else if (atBottom) {
-    autoScrollSuspendedByUser.value = false
-    autoScrollEnabled.value = true
-  } else if (!isProgrammaticScroll && autoScrollEnabled.value && distanceFromBottom > SCROLL_AUTO_DISABLE_DISTANCE_PX) {
-    autoScrollEnabled.value = false
-  }
-
-  updateActiveAnchorFromScroll(el)
-  scheduleStickyChatBubbleSync()
-}
-
-function queueProcessChatScroll(elMaybe) {
-  if (elMaybe) pendingChatScrollEl = elMaybe
-  if (chatScrollProcessScheduled) return
-  chatScrollProcessScheduled = true
-  const raf = window?.requestAnimationFrame || ((cb) => window.setTimeout(cb, 16))
-  chatScrollProcessRafId = raf(() => {
-    chatScrollProcessRafId = 0
-    chatScrollProcessScheduled = false
-    const targetEl = pendingChatScrollEl
-    pendingChatScrollEl = null
-    processChatScroll(targetEl)
-  })
-}
-
-function clearQueuedChatScrollProcessing() {
-  if (chatScrollProcessRafId) {
-    if (typeof window?.cancelAnimationFrame === 'function') window.cancelAnimationFrame(chatScrollProcessRafId)
-    else clearTimeout(chatScrollProcessRafId)
-  }
-  chatScrollProcessRafId = 0
-  chatScrollProcessScheduled = false
-  pendingChatScrollEl = null
-  lastProcessedChatScrollTop = 0
-  didProcessChatScroll = false
-  clearProgrammaticChatScrollMark()
-  userChatScrollIntentUntil = 0
-}
-
-let scrollScheduled = false
-let scrollToBottomPromise = null
-let scrollScheduledForce = false
-let scrollToBottomFollowUpRequested = false
-let scrollToBottomFollowUpForce = false
-
-async function scrollToBottom(options = {}) {
-  const force = options.force === true
-  if (scrollToBottomPromise) {
-    scrollToBottomFollowUpRequested = true
-    if (force) scrollToBottomFollowUpForce = true
-    return scrollToBottomPromise
-  }
-
-  scrollToBottomPromise = (async () => {
-    await nextTick()
-    await waitForLayoutFrame()
-
-    if (!force && (!autoScrollEnabled.value || autoScrollSuspendedByUser.value)) return
-
-    const el = chatScrollEl.value || resolveScrollbarContainerEl()
-    if (!el) return
-
-    if (chatVirtualizedEnabled.value) {
-      const targetScrollTop = Math.max(0, el.scrollHeight - el.clientHeight)
-      markProgrammaticChatScroll(CHAT_SCROLL_COMPENSATION_SUSPEND_MS, targetScrollTop)
-      chatVirtualizer.value.scrollToEnd({ behavior: 'auto' })
-      await waitForLayoutFrame()
-      updateAtBottomState(el)
-      primeHydratedRenderedChatMessages()
-      return
-    }
-
-    const target = resolveChatBottomScrollTarget({
-      scrollHeight: el.scrollHeight,
-      clientHeight: el.clientHeight,
-      scrollTop: el.scrollTop
-    })
-    if (target.shouldScroll) {
-      markProgrammaticChatScroll(CHAT_SCROLL_COMPENSATION_SUSPEND_MS, target.targetScrollTop)
-      try {
-        el.scrollTo({ top: target.targetScrollTop, behavior: 'auto' })
-      } catch {
-        el.scrollTop = target.targetScrollTop
-      }
-    }
-
-    updateAtBottomState(el)
-    primeHydratedRenderedChatMessages()
-  })().finally(() => {
-    scrollToBottomPromise = null
-    if (scrollToBottomFollowUpRequested) {
-      const followUpForce = scrollToBottomFollowUpForce
-      scrollToBottomFollowUpRequested = false
-      scrollToBottomFollowUpForce = false
-      scheduleScrollToBottom({ force: followUpForce })
-    }
-  })
-
-  return scrollToBottomPromise
-}
-
-function scheduleScrollToBottom(options = {}) {
-  if (options.force) scrollScheduledForce = true
-  if (scrollScheduled) return
-  scrollScheduled = true
-  const raf = window?.requestAnimationFrame || ((cb) => window.setTimeout(cb, 16))
-  raf(() => {
-    scrollScheduled = false
-    const force = scrollScheduledForce
-    scrollScheduledForce = false
-    void scrollToBottom({ force })
-  })
-}
-
-const TYPEWRITER_INTERVAL_MS = 16
-const DEFERRED_TEXT_APPEND_INTERVAL_MS = 32
-const typewriterStates = new Map()
-const deferredMessageFieldStates = new Map()
-
-function takeUnicodeChunk(text, count = 1) {
-  if (!text) return { chunk: '', rest: '' }
-  const safeCount = Number.isFinite(count) ? Math.max(1, Math.floor(count)) : 1
-  let end = 0
-  let taken = 0
-  while (taken < safeCount && end < text.length) {
-    const cp = text.codePointAt(end)
-    end += cp && cp > 0xffff ? 2 : 1
-    taken += 1
-  }
-  return { chunk: text.slice(0, end), rest: text.slice(end) }
-}
-
-function getTypewriterChunkSize(text) {
-  const length = String(text || '').length
-  if (length > 6000) return 96
-  if (length > 2400) return 56
-  if (length > 1200) return 32
-  if (length > 480) return 16
-  if (length > 180) return 8
-  if (length > 80) return 4
-  if (length > 24) return 2
-  return 1
-}
-
-function ensureTypewriterState(messageId) {
-  let state = typewriterStates.get(messageId)
-  if (state) return state
-  state = { buffer: '', running: false, timer: null, idleResolvers: [], message: null }
-  typewriterStates.set(messageId, state)
-  return state
-}
-
-function typewriterEnqueue(message, text) {
-  const chunk = String(text || '')
-  if (!chunk) return
-  if (!isDisplayMessageInActiveSession(message)) {
-    message.content += chunk
-    return
-  }
-  const state = ensureTypewriterState(message.id)
-  state.message = message
-  state.buffer += chunk
-
-  if (state.running) return
-  state.running = true
-
-  const tick = () => {
-    if (!state.buffer) {
-      state.running = false
-      state.timer = null
-      const resolvers = state.idleResolvers.splice(0, state.idleResolvers.length)
-      resolvers.forEach((r) => r())
-      return
-    }
-
-    if (!isDisplayMessageInActiveSession(message)) {
-      message.content += state.buffer
-      state.buffer = ''
-      state.running = false
-      state.timer = null
-      const resolvers = state.idleResolvers.splice(0, state.idleResolvers.length)
-      resolvers.forEach((r) => r())
-      return
-    }
-
-    const { chunk: nextChunk, rest } = takeUnicodeChunk(state.buffer, getTypewriterChunkSize(state.buffer))
-    state.buffer = rest
-    message.content += nextChunk
-    scheduleScrollToBottom()
-
-    state.timer = window.setTimeout(tick, TYPEWRITER_INTERVAL_MS)
-  }
-
-  tick()
-}
-
-function typewriterWaitIdle(messageId) {
-  const state = typewriterStates.get(messageId)
-  if (!state) return Promise.resolve()
-  if (!state.running && !state.buffer) return Promise.resolve()
-  return new Promise((resolve) => state.idleResolvers.push(resolve))
-}
-
-function deferredMessageFieldKey(messageId, field) {
-  return `${String(messageId || '').trim()}:${String(field || '').trim()}`
-}
-
-function ensureDeferredMessageFieldState(messageId, field) {
-  const key = deferredMessageFieldKey(messageId, field)
-  let state = deferredMessageFieldStates.get(key)
-  if (state) return state
-  state = { key, field, buffer: '', timer: null, idleResolvers: [], message: null }
-  deferredMessageFieldStates.set(key, state)
-  return state
-}
-
-function deferredAppendMessageField(message, field, text, options = {}) {
-  const chunk = String(text || '')
-  if (!chunk || !message || typeof message !== 'object') return
-  const targetField = String(field || '').trim()
-  if (!targetField) return
-  const intervalMs = Math.max(16, Number(options.intervalMs) || DEFERRED_TEXT_APPEND_INTERVAL_MS)
-  const scheduleScroll = options.scheduleScroll === true
-
-  if (!isDisplayMessageInActiveSession(message)) {
-    message[targetField] = String(message[targetField] || '') + chunk
-    return
-  }
-
-  const state = ensureDeferredMessageFieldState(message.id, targetField)
-  state.message = message
-  state.buffer += chunk
-
-  if (state.timer) return
-  state.timer = window.setTimeout(() => {
-    state.timer = null
-    if (state.message && state.buffer) {
-      state.message[targetField] = String(state.message[targetField] || '') + state.buffer
-      state.buffer = ''
-      if (scheduleScroll && isDisplayMessageInActiveSession(state.message)) {
-        maybeScheduleScrollToBottomForRun()
-      }
-    }
-    const resolvers = state.idleResolvers.splice(0, state.idleResolvers.length)
-    resolvers.forEach((resolve) => resolve())
-  }, intervalMs)
-}
-
-function deferredMessageFieldWaitIdle(messageId, field) {
-  const state = deferredMessageFieldStates.get(deferredMessageFieldKey(messageId, field))
-  if (!state) return Promise.resolve()
-  if (!state.timer && !state.buffer) return Promise.resolve()
-  return new Promise((resolve) => state.idleResolvers.push(resolve))
-}
-
-function flushDeferredMessageFieldsForMessage(messageId) {
-  const targetId = String(messageId || '').trim()
-  if (!targetId) return
-  for (const [key, state] of deferredMessageFieldStates.entries()) {
-    if (!key.startsWith(`${targetId}:`)) continue
-    if (state.timer) window.clearTimeout(state.timer)
-    state.timer = null
-    if (state.message && state.buffer) {
-      state.message[state.field] = String(state.message[state.field] || '') + state.buffer
-      state.buffer = ''
-    }
-    const resolvers = state.idleResolvers.splice(0, state.idleResolvers.length)
-    resolvers.forEach((resolve) => resolve())
-    deferredMessageFieldStates.delete(key)
-  }
-}
-
-function deferredMessageFieldFlushAll() {
-  for (const [key, state] of deferredMessageFieldStates.entries()) {
-    if (state.timer) window.clearTimeout(state.timer)
-    state.timer = null
-
-    if (state.message && state.buffer) {
-      state.message[state.field] = String(state.message[state.field] || '') + state.buffer
-      state.buffer = ''
-    }
-
-    const resolvers = state.idleResolvers.splice(0, state.idleResolvers.length)
-    resolvers.forEach((resolve) => resolve())
-    deferredMessageFieldStates.delete(key)
-  }
-}
-
-function typewriterFlushAll() {
-  for (const [id, state] of typewriterStates.entries()) {
-    if (state.timer) window.clearTimeout(state.timer)
-    state.timer = null
-    state.running = false
-
-    if (state.message && state.buffer) {
-      state.message.content += state.buffer
-      state.buffer = ''
-    }
-
-    const resolvers = state.idleResolvers.splice(0, state.idleResolvers.length)
-    resolvers.forEach((r) => r())
-
-    typewriterStates.delete(id)
-  }
-  deferredMessageFieldFlushAll()
-}
 
 function clearSessionData() {
   activeAgentRunToolMessageByStreamId.clear()
@@ -9017,1427 +3704,184 @@ function deepCopyJson(value, fallback) {
   }
 }
 
-function parseIsoTimeMs(value, fallback = 0) {
-  const ms = Date.parse(String(value || ''))
-  return Number.isFinite(ms) && ms > 0 ? ms : fallback
-}
-
-function resolvePersistedSessionCreatedAtMs({ record = null, payload = null, previousPayload = null } = {}) {
-  const candidates = []
-  const recordCreatedAtMs = Number(record?.createdAt || 0)
-  if (Number.isFinite(recordCreatedAtMs) && recordCreatedAtMs > 0) candidates.push(recordCreatedAtMs)
-
-  const payloadCreatedAtMs = parseIsoTimeMs(payload?.createdAt)
-  if (payloadCreatedAtMs > 0) candidates.push(payloadCreatedAtMs)
-
-  const previousCreatedAtMs = resolveChatSessionCreatedTimeMs(previousPayload)
-  if (previousCreatedAtMs > 0) candidates.push(previousCreatedAtMs)
-
-  const previousSavedAtMs = parseIsoTimeMs(previousPayload?.savedAt)
-  if (previousSavedAtMs > 0) candidates.push(previousSavedAtMs)
-
-  if (!candidates.length) return 0
-  return Math.min(...candidates)
-}
-
-function buildDefaultSessionName(sessionLike = session) {
-  const firstUser = (sessionLike?.messages || []).find((msg) => msg?.role === 'user')
-  const prompt = extractEditableUserTextFromContent(firstUser?.content ?? '')
-  return extractAutoSessionTitle(prompt) || '会话'
-}
-
-function sanitizeAutoSessionTitle(text, maxLength = 42) {
-  const compact = String(text || '')
-    .replace(/\s+/g, ' ')
-    .replace(/[\\/:*?"<>|#%{}~&]/g, ' ')
-    .replace(/\.+/g, '.')
-    .trim()
-  if (!compact) return ''
-  return compact.slice(0, maxLength).trim() || ''
-}
-
-function extractAutoSessionTitle(text, maxLength = 32) {
-  const raw = String(text || '')
-    .replace(/【附件内容】[\s\S]*$/g, ' ')
-    .replace(/https?:\/\/\S+/gi, ' ')
-    .replace(/[`*_>#\[\]{}()（）]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-  if (!raw) return ''
-
-  const cleaned = raw
-    .replace(/^(请|麻烦|帮我|请帮我|能不能|可以的话|我想要|我希望)\s*/u, '')
-    .trim()
-  const segments = cleaned
-    .split(/[。！？!?；;\n\r]+/)
-    .map((item) => sanitizeAutoSessionTitle(item, maxLength))
-    .filter(Boolean)
-  const picked = segments.find((item) => item.length >= 6) || segments[0] || sanitizeAutoSessionTitle(cleaned, maxLength)
-  return sanitizeAutoSessionTitle(picked, maxLength)
-}
-
-function buildAutoSessionTitle(record) {
-  const firstUser = (record?.messages || []).find((msg) => msg?.role === 'user')
-  const prompt = extractEditableUserTextFromContent(firstUser?.content ?? '')
-  const title = extractAutoSessionTitle(prompt)
-  return title || AUTO_CHAT_SESSION_DIR_NAME
-}
-
-function normalizeGeneratedSessionTitle(text, fallback = '') {
-  const raw = String(text || '')
-    .replace(/^\s*(?:标题|会话标题|title)\s*[:：-]\s*/i, '')
-    .replace(/^[`"'“”‘’《》〈〉「」『』【】（）()]+|[`"'“”‘’《》〈〉「」『』【】（）()]+$/g, '')
-    .split(/\r?\n/)[0]
-    .trim()
-  const normalized = sanitizeAutoSessionTitle(raw, 32)
-  if (normalized) return normalized
-  return sanitizeAutoSessionTitle(fallback, 32)
-}
-
-function summarizeAttachmentNamesForSessionTitle(attachments = []) {
-  const names = (Array.isArray(attachments) ? attachments : [])
-    .map((item) => String(item?.name || item?.filename || item?.fileName || '').trim())
-    .filter(Boolean)
-    .slice(0, 4)
-  if (!names.length) return ''
-  return names.join('、')
-}
-
-function buildSessionTitleGenerationPrompt({ text = '', attachments = [] } = {}) {
-  const cleanText = String(text || '').trim()
-  const attachmentSummary = summarizeAttachmentNamesForSessionTitle(attachments)
-  return [
-    '请根据这条用户消息生成一个简短的会话标题。',
-    '要求：',
-    '1. 只输出标题本身，不要解释，不要引号，不要序号。',
-    '2. 优先使用中文，控制在 4 到 18 个字以内。',
-    '3. 避免使用“请帮我”“帮我”“如何”“能不能”等口语开头。',
-    '4. 不要包含路径、扩展名、时间戳或多余符号。',
-    cleanText ? `用户消息：${cleanText}` : '用户消息：用户发送了附件，请结合附件信息概括主题。',
-    attachmentSummary ? `附件信息：${attachmentSummary}` : ''
-  ].filter(Boolean).join('\n')
-}
-
-async function requestSessionTitleFromModel({
-  providerKind = 'openai-compatible',
-  providerId = '',
-  baseUrl = '',
-  apiKey = '',
-  apiMode = 'auto',
-  model = '',
-  prompt = ''
-} = {}) {
-  const userPrompt = String(prompt || '').trim()
-  if (!userPrompt) return ''
-
-  const systemPrompt = '你是会话标题生成器，只输出一个忠实、简短的标题。'
-
-  if (providerKind === 'utools-ai') {
-    if (!canUseUtoolsAi()) return ''
-    const result = await window.utools.ai({
-      model,
-      messages: buildUtoolsAiMessages({
-        systemContent: systemPrompt,
-        apiMessages: [{ role: 'user', content: userPrompt }]
-      })
-    })
-    recordModelUsage(extractModelUsage(result), {
-      providerId,
-      model,
-      endpoint: 'utools-ai',
-      purpose: 'session-title'
-    })
-    return String(result?.content || '').trim()
-  }
-
-  if (!baseUrl || !apiKey || !model) return ''
-  const result = await streamChatCompletion({
-    baseUrl,
-    apiKey,
-    apiMode,
-    body: {
-      model,
-      stream: true,
-      temperature: 0.2,
-      max_tokens: 64,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt }
-      ]
-    }
-  })
-  recordModelUsage(result?.usage, {
-    providerId,
-    model,
-    endpoint: result?.endpoint || 'auto',
-    purpose: 'session-title'
-  })
-  return String(result?.content || '').trim()
-}
-
-async function moveAutoChatSessionAssetsForRename(oldPath, newPath) {
-  const from = buildChatSessionAssetsDirectory(oldPath)
-  const to = buildChatSessionAssetsDirectory(newPath)
-  if (!from || !to || from === to) return
-  try {
-    if (!(await exists(from))) return
-    await moveItem(from, to, { overwrite: true })
-  } catch (err) {
-    console.warn('[chat session title] move assets failed:', err)
-  }
-}
-
-async function ensureAutoChatSessionRoot() {
-  const rootExists = await exists(CHAT_SESSION_ROOT)
-  if (!rootExists) await createDirectory(CHAT_SESSION_ROOT)
-  const autoExists = await exists(AUTO_CHAT_SESSION_ROOT)
-  if (!autoExists) await createDirectory(AUTO_CHAT_SESSION_ROOT)
-}
-
-async function allocateAutoChatSessionPathByTitle(title, options = {}) {
-  await ensureAutoChatSessionRoot()
-  const sanitizedTitle = sanitizeAutoSessionTitle(title, 96) || AUTO_CHAT_SESSION_DIR_NAME
-  const excludePath = String(options.excludePath || '').trim()
-  let candidate = `${AUTO_CHAT_SESSION_ROOT}/${sanitizedTitle}.json`
-  let index = 2
-  while (await exists(candidate)) {
-    if (candidate === excludePath) break
-    candidate = `${AUTO_CHAT_SESSION_ROOT}/${sanitizedTitle}-${index}.json`
-    index += 1
-  }
-  return {
-    filePath: candidate,
-    title: sanitizeAutoSessionTitle(title, 32) || AUTO_CHAT_SESSION_DIR_NAME
-  }
-}
-
-async function allocateAutoChatSessionPath(record) {
-  const title = getPersistedMemorySessionTitle(record) || DEFAULT_MEMORY_SESSION_TITLE
-  return allocateAutoChatSessionPathByTitle(title)
-}
-
-async function applyGeneratedSessionTitle(record, nextTitle, options = {}) {
-  if (!record) return ''
-
-  const fallbackTitle = normalizeGeneratedSessionTitle(options.fallbackTitle, buildAutoSessionTitle(record))
-  const generatedTitle = normalizeGeneratedSessionTitle(nextTitle, fallbackTitle)
-  if (!generatedTitle) return ''
-
-  const currentPath = String(record.activeSessionFilePath || '').trim()
-  if (!currentPath || !isAutoChatSessionPath(currentPath)) return currentPath
-
-  const currentVisibleTitle = String(record.activeSessionTitle || '').trim()
-  if (
-    currentVisibleTitle &&
-    currentVisibleTitle !== fallbackTitle &&
-    currentVisibleTitle !== generatedTitle
-  ) {
-    return currentPath
-  }
-
-  const allocated = await allocateAutoChatSessionPathByTitle(generatedTitle, { excludePath: currentPath })
-  let nextPath = currentPath
-
-  if (allocated.filePath !== currentPath) {
-    await moveItem(currentPath, allocated.filePath)
-    await moveAutoChatSessionAssetsForRename(currentPath, allocated.filePath)
-    handleSessionPathRenamed(currentPath, allocated.filePath)
-    nextPath = allocated.filePath
-  }
-
-  record.activeSessionFilePath = nextPath
-  record.activeSessionTitle = generatedTitle
-  record.title = generatedTitle
-  record.titleSource = 'generated'
-  record.titlePostReplyRetryDone = false
-  record.titleReadyAt = Number(record.titleReadyAt || 0) || Date.now()
-  record.updatedAt = Date.now()
-
-  if (isMemorySessionActive(record)) {
-    activeSessionFilePath.value = nextPath
-    activeSessionTitle.value = generatedTitle
-  }
-
-  await autoPersistMemorySession(record, { notify: false, syncActiveUi: true })
-  await sessionTreeRef.value?.refreshTree?.({ silent: true })
-  await sessionTreeRef.value?.selectPath?.(nextPath)
-  return nextPath
-}
-
-function requestSessionTitleAsync({
-  record,
-  cfg,
-  text,
-  attachments = [],
-  initialPersistPromise = Promise.resolve(''),
-  reason = 'initial'
-} = {}) {
-  const triggerReason = String(reason || 'initial').trim() || 'initial'
-  const canRequest = triggerReason === 'post_reply'
-    ? canRetryMemorySessionTitle(record)
-    : canGenerateMemorySessionTitle(record)
-  if (!canRequest) return
-
-  const recordId = String(record.id || '').trim()
-  if (!recordId) return
-  if (sessionTitleRequestTokens.has(recordId)) return
-
-  const fallbackTitle = buildAutoSessionTitle(record)
-  const prompt = buildSessionTitleGenerationPrompt({ text, attachments })
-  if (!prompt) return
-
-  const titleToken = `${recordId}-${Date.now()}-${Math.random().toString(16).slice(2)}`
-  sessionTitleRequestTokens.set(recordId, titleToken)
-  if (triggerReason === 'post_reply') {
-    record.titlePostReplyRetryDone = true
-  }
-  let retryAfterFailure = false
-
-  void (async () => {
-    try {
-      const persistedPath = String(await Promise.resolve(initialPersistPromise).catch(() => '') || '').trim()
-      const generated = await requestSessionTitleFromModel({
-        providerKind: cfg?.providerKind || 'openai-compatible',
-        providerId: String(cfg?.providerId || '').trim(),
-        baseUrl: String(cfg?.baseUrl || '').trim(),
-        apiKey: String(cfg?.apiKey || '').trim(),
-        apiMode: normalizeProviderApiMode(cfg?.apiMode),
-        model: String(cfg?.model || '').trim(),
-        prompt
-      })
-
-      if (sessionTitleRequestTokens.get(recordId) !== titleToken) return
-
-      const latestRecord = getMemorySessionById(recordId)
-      if (!latestRecord) return
-
-      const normalizedTitle = normalizeGeneratedSessionTitle(generated, '')
-      if (!isGeneratedSessionTitle(normalizedTitle)) return
-
-      const titleReadyAt = Date.now()
-      latestRecord.title = normalizedTitle
-      latestRecord.activeSessionTitle = normalizedTitle
-      latestRecord.titleSource = 'generated'
-      latestRecord.titlePostReplyRetryDone = false
-      latestRecord.titleReadyAt = titleReadyAt
-      if (shouldStampHistoryCreatedAtOnGeneratedTitle(latestRecord)) {
-        latestRecord.createdAt = titleReadyAt
-      }
-      if (isMemorySessionActive(latestRecord)) {
-        activeSessionTitle.value = normalizedTitle
-      }
-
-      const currentPath = String(latestRecord.activeSessionFilePath || persistedPath || '').trim()
-      if (!currentPath) {
-        await autoPersistMemorySession(latestRecord, { notify: false, syncActiveUi: true })
-      } else if (isAutoChatSessionPath(currentPath)) {
-        await applyGeneratedSessionTitle(latestRecord, normalizedTitle, { fallbackTitle })
-      }
-    } catch (err) {
-      console.warn('[chat session title] generation failed:', err)
-      const latestRecord = getMemorySessionById(recordId)
-      if (!latestRecord) return
-
-      const titleReadyAt = applyFallbackMemorySessionTitle(latestRecord, fallbackTitle)
-      if (!titleReadyAt) return
-
-      if (isMemorySessionActive(latestRecord)) {
-        activeSessionTitle.value = String(latestRecord.title || '').trim()
-      }
-
-      if (isMemorySessionRunning(latestRecord)) return
-
-      const currentPath = String(latestRecord.activeSessionFilePath || '').trim()
-      if (!currentPath) {
-        await autoPersistMemorySession(latestRecord, { notify: false, syncActiveUi: true })
-      } else if (isAutoChatSessionPath(currentPath)) {
-        await applyGeneratedSessionTitle(latestRecord, latestRecord.title, { fallbackTitle: latestRecord.title })
-      }
-
-      if (hasPersistableMemorySessionResponse(latestRecord) && !latestRecord.titlePostReplyRetryDone) {
-        retryAfterFailure = true
-      }
-    } finally {
-      if (sessionTitleRequestTokens.get(recordId) === titleToken) {
-        sessionTitleRequestTokens.delete(recordId)
-      }
-      if (retryAfterFailure) {
-        retryAfterFailure = false
-        void requestSessionTitleAsync({
-          record: getMemorySessionById(recordId),
-          cfg,
-          text,
-          attachments,
-          reason: 'post_reply'
-        })
-      }
-    }
-  })()
-}
-
-async function autoPersistMemorySession(record, options = {}) {
-  if (!record || !Array.isArray(record.messages) || !record.messages.length) return ''
-  const titleReadyAt = markMemorySessionTitleReady(record)
-  if (!titleReadyAt) return ''
-  const currentPath = String(record.activeSessionFilePath || '').trim()
-  if (currentPath && !isAutoChatSessionPath(currentPath)) return currentPath
-  const previousPath = currentPath
-
-  const persistKey = getMemorySessionAutoPersistKey(record)
-  const shouldSyncActiveUi = options.syncActiveUi !== false
-  const existingPersist = persistKey ? autoPersistMemorySessionInFlight.get(persistKey) : null
-  if (existingPersist) return existingPersist
-
-  const persistTask = (async () => {
-    try {
-      const allocated = currentPath
-        ? { filePath: currentPath, title: getPersistedMemorySessionTitle(record) || DEFAULT_MEMORY_SESSION_TITLE }
-        : await allocateAutoChatSessionPath(record)
-      await prepareSessionMediaAssetsForSave(record, { notify: options.notify, sessionFilePath: allocated.filePath })
-      const payload = buildSessionSavePayload({
-        sessionLike: record,
-        state: record.state && typeof record.state === 'object' ? record.state : buildCurrentChatState()
-      })
-      let previousPayload = null
-      if (currentPath) {
-        try {
-          const previousSnapshot = await readSessionJsonFile(currentPath)
-          previousPayload = previousSnapshot.ok ? previousSnapshot.value : null
-        } catch {
-          previousPayload = null
-        }
-      }
-
-      const resolvedCreatedAtMs = resolvePersistedSessionCreatedAtMs({
-        record,
-        payload,
-        previousPayload
-      })
-      const createdAtIso = resolvedCreatedAtMs > 0 ? new Date(resolvedCreatedAtMs).toISOString() : new Date().toISOString()
-      const previousSavedAt = String(previousPayload?.savedAt || previousPayload?.createdAt || '').trim()
-      payload.title = allocated.title
-      payload.createdAt = createdAtIso
-      if (previousSavedAt) payload.savedAt = previousSavedAt
-      payload.updatedAt = new Date().toISOString()
-      payload.source = {
-        type: AUTO_CHAT_SESSION_SOURCE_TYPE,
-        sessionId: String(record.id || '').trim(),
-        sandboxWorkspaceId: resolveMemorySessionSandboxWorkspaceId(record),
-        retentionPolicy: 'manual',
-        managed: true,
-        createdAt: payload.createdAt,
-        titleReadyAt: new Date(titleReadyAt).toISOString(),
-        titleSource: String(record.titleSource || '').trim() || 'generated',
-        titleRetryCount: Number(record.titleRetryCount || 0) || 0
-      }
-      await writeFile(allocated.filePath, JSON.stringify(payload, null, 2))
-
-      record.activeSessionFilePath = allocated.filePath
-      record.activeSessionTitle = allocated.title
-      record.autoManaged = true
-      if (resolvedCreatedAtMs > 0) record.createdAt = resolvedCreatedAtMs
-      record.updatedAt = Date.now()
-
-      if (isMemorySessionActive(record) && shouldSyncActiveUi && previousPath !== allocated.filePath) {
-        activeSessionFilePath.value = allocated.filePath
-        activeSessionTitle.value = allocated.title
-        void sessionTreeRef.value?.selectPath?.(allocated.filePath)
-      }
-      sessionTreeRef.value?.touchPath?.(allocated.filePath, {
-        label: allocated.title,
-        createdTimeMs: Number(record.createdAt || 0) || Date.now()
-      })
-      pruneDormantMemorySessions()
-      return allocated.filePath
-    } catch (err) {
-      if (options.notify !== false) message.error('自动归档会话失败：' + (err?.message || String(err)))
-      return ''
-    }
-  })()
-
-  if (!persistKey) return persistTask
-  autoPersistMemorySessionInFlight.set(persistKey, persistTask)
-  try {
-    return await persistTask
-  } finally {
-    if (autoPersistMemorySessionInFlight.get(persistKey) === persistTask) {
-      autoPersistMemorySessionInFlight.delete(persistKey)
-    }
-  }
-}
-
-function autoPersistMemorySessionWhenIdle(record, options = {}) {
-  if (isMemorySessionRunning(record)) return ''
-  if (!canPersistMemorySessionToHistory(record)) return ''
-  const currentPath = String(record?.activeSessionFilePath || '').trim()
-  if (!hasResolvedMemorySessionTitle(record)) return ''
-  if (currentPath && !isAutoChatSessionPath(currentPath)) {
-    return persistMemorySessionToBoundPath(record, options)
-  }
-  return autoPersistMemorySession(record, options)
-}
-
-async function cleanupExpiredSessionTrash() {
-  try {
-    const purgedSessions = await purgeExpiredChatSessionTrash()
-    const sandboxTrashEntries = purgedSessions.flatMap((item) =>
-      Array.isArray(item?.sandboxTrashEntries) ? item.sandboxTrashEntries : []
-    )
-    if (sandboxTrashEntries.length) {
-      await purgeSandboxTrashEntries(sandboxTrashEntries, { force: true })
-    }
-  } catch (err) {
-    console.warn('[chat session trash] cleanup failed:', err)
-  }
-}
-
-async function migrateLegacyAutoChatSessionCreatedAt(options = {}) {
-  const notify = options.notify === true
-  let migrated = 0
-
-  try {
-    await ensureAutoChatSessionRoot()
-    const entries = await listDirectory(AUTO_CHAT_SESSION_ROOT)
-    for (const entry of entries) {
-      const entryPath = String(entry || '').trim().replace(/\\/g, '/')
-      if (!entryPath || !entryPath.toLowerCase().endsWith('.json')) continue
-
-      let parsed = null
-      try {
-        parsed = await readSessionJsonFile(entryPath, { repairIfRecovered: true })
-      } catch {
-        parsed = null
-      }
-      if (!parsed?.ok || !parsed.value || typeof parsed.value !== 'object') continue
-
-      const payload = parsed.value
-      const currentCreatedAt = String(payload?.createdAt || '').trim()
-      const sourceCreatedAt = String(payload?.source?.createdAt || '').trim()
-      const sourceStartedAt = String(payload?.source?.startedAt || '').trim()
-      const existingCreatedAtMs =
-        parseIsoTimeMs(currentCreatedAt) ||
-        parseIsoTimeMs(sourceCreatedAt) ||
-        parseIsoTimeMs(sourceStartedAt)
-      const inferredCreatedAtMs = resolveChatSessionCreatedTimeMs(payload)
-      if (!Number.isFinite(inferredCreatedAtMs) || inferredCreatedAtMs <= 0) continue
-      if (existingCreatedAtMs > 0 && inferredCreatedAtMs >= existingCreatedAtMs) continue
-
-      const inferredCreatedAt = new Date(inferredCreatedAtMs).toISOString()
-      payload.createdAt = inferredCreatedAt
-      payload.source = payload.source && typeof payload.source === 'object'
-        ? { ...payload.source, createdAt: inferredCreatedAt }
-        : { createdAt: inferredCreatedAt }
-      if (!String(payload.savedAt || '').trim()) payload.savedAt = inferredCreatedAt
-
-      await writeFile(entryPath, JSON.stringify(payload, null, 2))
-      migrated += 1
-    }
-
-    if (migrated) {
-      void sessionTreeRef.value?.refreshTree?.({ silent: true })
-      if (notify) message.success(`已补齐 ${migrated} 个历史会话的创建时间`)
-    } else if (notify) {
-      message.info('没有需要补齐创建时间的历史会话')
-    }
-  } catch (err) {
-    if (notify) message.error('补齐历史会话创建时间失败：' + (err?.message || String(err)))
-  }
-}
-
-async function persistActiveMemorySessionBeforeLeaving(options = {}) {
-  const targetPath = String(options.targetPath || '').trim()
-  const previous = saveActiveMemorySessionDraft()
-
-  if (isMemorySessionRunning(previous)) return previous
-  if (isMemorySessionEmptyDraft(previous)) {
-    removeMemorySessionById(previous.id)
-    return null
-  }
-
-  const previousPath = String(previous.activeSessionFilePath || '').trim()
-  if (previousPath && previousPath === targetPath) return previous
-
-  await flushMemoryCandidatesForRecord(previous, { force: false })
-
-  if (previousPath && !isAutoChatSessionPath(previousPath)) {
-    await runSessionAutosave()
-  } else {
-    await autoPersistMemorySession(previous, {
-      notify: false,
-      syncActiveUi: !targetPath
-    })
-  }
-  return previous
-}
-
-async function detachRunningSessionToHistory({ nextRecord = null, notify = true, restoreTarget = true } = {}) {
-  const activeRecord = getActiveMemorySession()
-  if (!isMemorySessionRunning(activeRecord)) return false
-
-  const previous = saveActiveMemorySessionDraft()
-  const previousPath = String(previous.activeSessionFilePath || '').trim()
-  const preserveBoundPath = !!previousPath
-  previous.autoManaged = preserveBoundPath ? isAutoChatSessionPath(previousPath) : true
-  previous.state = previous.state && typeof previous.state === 'object' ? previous.state : buildCurrentChatState()
-  if (!preserveBoundPath) {
-    previous.activeSessionFilePath = ''
-    previous.activeSessionTitle = ''
-  }
-
-  activeSessionFilePath.value = ''
-  activeSessionTitle.value = ''
-  sending.value = false
-  abortController.value = null
-
-  if (!restoreTarget) {
-    if (notify) message.info('当前生成已转入后台，完成后会自动保存')
-    return true
-  }
-
-  let target = nextRecord
-  if (!target) {
-    target = createMemorySessionRecord({ title: DEFAULT_MEMORY_SESSION_TITLE, state: buildDefaultChatState() })
-    memorySessions.value = [...memorySessions.value, target]
-  }
-
-  restoreMemorySession(target, { skipScroll: !nextRecord, skipSaveCurrent: true })
-  if (!nextRecord) {
-    try {
-      sessionTreeRef.value?.clearSelection?.()
-    } catch {
-      // ignore
-    }
-  }
-  pruneDormantMemorySessions({ keepId: target.id })
-  if (notify) message.info('当前生成已转入后台，完成后会自动保存')
-  return true
-}
-
-async function startNewMemorySession(options = {}) {
-  const activeRecord = getActiveMemorySession()
-  if (isMemorySessionEmptyDraft(activeRecord)) {
-    restoreMemorySession(activeRecord, { skipScroll: true, skipSaveCurrent: true })
-    activeRecord.title = DEFAULT_MEMORY_SESSION_TITLE
-    activeRecord.state = applyDefaultChatState()
-    activeRecord.updatedAt = Date.now()
-    try {
-      sessionTreeRef.value?.clearSelection?.()
-    } catch {
-      // ignore
-    }
-    return
-  }
-
-  if (isMemorySessionRunning(activeRecord)) {
-    await detachRunningSessionToHistory({ notify: options.notify !== false })
-    return
-  }
-
-  await persistActiveMemorySessionBeforeLeaving()
-  const record = createMemorySessionRecord({ title: DEFAULT_MEMORY_SESSION_TITLE, state: buildDefaultChatState() })
-  memorySessions.value = [...memorySessions.value.filter((item) => !isMemorySessionEmptyDraft(item)), record]
-  restoreMemorySession(record, { skipScroll: true, skipSaveCurrent: true })
-  try {
-    sessionTreeRef.value?.clearSelection?.()
-  } catch {
-    // ignore
-  }
-  if (options.notify !== false) message.info('已新建会话')
-}
-
-async function switchMemorySession(id) {
-  const record = getMemorySessionById(id)
-  if (!record || String(record.id || '') === String(activeMemorySessionId.value || '')) return
-
-  const activeRecord = getActiveMemorySession()
-  if (isMemorySessionRunning(activeRecord)) {
-    await detachRunningSessionToHistory({ nextRecord: record, notify: false })
-    message.info('当前生成已转入后台，已切换会话')
-    return
-  }
-
-  await persistActiveMemorySessionBeforeLeaving()
-  await withChatSessionOpeningHeavyRender(async () => {
-    void maybeWarmMarkdownPreviewRuntimeForMessages(record.messages).catch(() => {})
-    restoreMemorySession(record, { skipSaveCurrent: true, skipScroll: true })
-    await scrollToBottom({ force: true })
-    await settleChatViewportAfterSessionOpen({
-      reconnectObserver: true,
-      buffer: resolveCurrentHeavyRenderViewportBuffer(CHAT_HEAVY_RENDER_WARM_BUFFER_EXTRA)
-    })
-  })
-  pruneDormantMemorySessions({ keepId: record.id })
-}
-
-function handleMemorySessionSelect(key) {
-  const id = String(key || '').trim()
-  if (id === '__new__') {
-    void startNewMemorySession()
-    return
-  }
-  void switchMemorySession(id)
-}
-
-async function prepareSessionMediaAssetsForSave(sessionLike, options = {}) {
-  try {
-    const sessionFilePath = String(options.sessionFilePath || sessionLike?.activeSessionFilePath || '').trim()
-    await persistChatSessionMediaAssets(sessionLike, { sessionFilePath })
-  } catch (err) {
-    if (options.notify !== false) {
-      message.warning('媒体文件持久化失败，部分图片/视频可能只能在当前页面临时预览：' + (err?.message || String(err)))
-    }
-  }
-}
-
-function serializeDisplayMessageForSave(msg) {
-  if (!msg || typeof msg !== 'object') return null
-  const out = { ...msg }
-
-  if (out.role === 'user') {
-    out.editing = false
-    out.editDraft = ''
-    out.attachmentsExpanded = false
-  }
-
-  if (out.role === 'assistant') {
-    out.streaming = false
-    out.thinkingExpanded = false
-  }
-
-  if (out.role === 'tool' || out.role === 'tool_call') {
-    out.toolExpanded = false
-    out.agentRunExpandedStepIds = []
-  }
-
-  if (Array.isArray(out.attachments)) {
-    out.attachments = out.attachments
-      .map((a) => {
-        if (!a || typeof a !== 'object') return null
-        return {
-          id: a.id,
-          name: a.name,
-          ext: a.ext,
-          mime: a.mime,
-          size: a.size,
-          kind: a.kind,
-          status: a.status,
-          error: a.error,
-          sandboxOnly: a.sandboxOnly,
-          previewError: a.previewError,
-          sandboxWorkspaceId: a.sandboxWorkspaceId,
-          sandboxPath: a.sandboxPath,
-          sandboxDataPath: a.sandboxDataPath
-        }
-      })
-      .filter(Boolean)
-  }
-
-  if (Array.isArray(out.images)) {
-    out.images = out.images.map((media) => serializeChatMediaForSave(media, 'image')).filter(Boolean)
-  }
-
-  if (Array.isArray(out.videos)) {
-    out.videos = out.videos.map((media) => serializeChatMediaForSave(media, 'video')).filter(Boolean)
-  }
-
-  return out
-}
-
-function buildCurrentChatState() {
-  const activeRecord = getActiveMemorySession()
-  const normalizedBasePromptState = basePromptMode.value === 'prompt'
-    ? {
-        basePromptMode: 'prompt',
-        selectedPromptId: selectedPromptId.value,
-        customSystemPrompt: '',
-        customSystemPromptExplicit: false
-      }
-    : buildCustomSystemPromptState(customSystemPrompt.value, customSystemPromptExplicit.value)
-  return {
-    selectedAgentId: selectedAgentId.value,
-    selectedProviderId: selectedProviderId.value,
-    selectedModel: selectedModel.value,
-    basePromptMode: normalizedBasePromptState.basePromptMode,
-    selectedPromptId: normalizedBasePromptState.selectedPromptId,
-    customSystemPrompt: normalizedBasePromptState.customSystemPrompt,
-    customSystemPromptExplicit: normalizedBasePromptState.customSystemPromptExplicit,
-    selectedSkillIds: deepCopyJson(
-      normalizeStringList(selectedSkillIds.value)
-        .filter((id) => !routerAddedSelectedSkillIds.has(id)),
-      []
-    ),
-    agentSkillIds: deepCopyJson(
-      normalizeStringList(agentSkillIds.value)
-        .filter((id) => !routerAddedAgentSkillIds.has(id)),
-      []
-    ),
-    activatedAgentSkillIds: deepCopyJson(
-      normalizeStringList(activatedAgentSkillIds.value)
-        .filter((id) => !routerActivatedAgentSkillIds.has(id)),
-      []
-    ),
-    manualMcpIds: deepCopyJson(manualMcpIds.value, []),
-    sandboxHostWorkspacePath: normalizeSelectedHostWorkspacePath(sandboxHostWorkspacePath.value),
-    webSearchEnabled: webSearchEnabled.value,
-    toolApprovalMode: toolApprovalMode.value,
-    autoApproveTools: autoApproveTools.value,
-    autoActivateAgentSkills: autoActivateAgentSkills.value,
-    toolMode: toolMode.value,
-    effectiveToolMode: effectiveToolMode.value,
-    thinkingEffort: thinkingEffort.value,
-    imageGenerationMode: imageGenerationMode.value,
-    videoGenerationMode: videoGenerationMode.value,
-    imageGenerationParamsEnabled: imageGenerationParamsEnabled.value,
-    imageGenerationParams: deepCopyJson(imageGenerationParams, createDefaultImageGenerationParams()),
-    videoGenerationParamsEnabled: videoGenerationParamsEnabled.value,
-    videoGenerationParams: deepCopyJson(videoGenerationParams, createDefaultVideoGenerationParams()),
-    contextWindow: sessionContextWindowOverride.value
-      ? deepCopyJson(normalizeChatContextWindowConfig(sessionContextWindowOverride.value), null)
-      : null,
-    contextSummary: deepCopyJson(activeRecord?.contextSummary || {}, {}),
-    contextTokenTelemetry: normalizeContextTokenTelemetry(activeRecord?.contextTokenTelemetry)
-  }
-}
-
-function buildDefaultChatState() {
-  const rawDefaultSystemPrompt = String(chatConfig.value?.defaultSystemPrompt || '')
-  const defaultModel = resolveDefaultModelSelectionFromConfig()
-  const defaultPromptState = buildCustomSystemPromptState(rawDefaultSystemPrompt, false)
-  const builtinAgent = (agents.value || []).find((agent) => String(agent?._id || '').trim() === BUILTIN_AGENT_ID)
-  const builtinSkillIds = normalizeStringList(builtinAgent?.skills)
-  return {
-    selectedAgentId: builtinAgent?._id || null,
-    selectedProviderId: defaultModel.providerId || null,
-    selectedModel: defaultModel.model || '',
-    basePromptMode: defaultPromptState.basePromptMode,
-    selectedPromptId: defaultPromptState.selectedPromptId,
-    customSystemPrompt: defaultPromptState.customSystemPrompt,
-    customSystemPromptExplicit: defaultPromptState.customSystemPromptExplicit,
-    selectedSkillIds: builtinSkillIds,
-    agentSkillIds: builtinSkillIds,
-    activatedAgentSkillIds: [],
-    manualMcpIds: [],
-    sandboxHostWorkspacePath: '',
-    webSearchEnabled: false,
-    toolApprovalMode: normalizeToolApprovalMode(chatConfig.value?.toolApprovalMode),
-    autoApproveTools: normalizeToolApprovalMode(chatConfig.value?.toolApprovalMode) !== TOOL_APPROVAL_MODE_MANUAL,
-    autoActivateAgentSkills: true,
-    toolMode: 'auto',
-    effectiveToolMode: 'expanded',
-    thinkingEffort: 'auto',
-    imageGenerationMode: normalizeImageGenerationMode(chatConfig.value?.imageGenerationMode),
-    videoGenerationMode: normalizeImageGenerationMode(chatConfig.value?.videoGenerationMode),
-    imageGenerationParamsEnabled: false,
-    imageGenerationParams: createDefaultImageGenerationParams(),
-    videoGenerationParamsEnabled: false,
-    videoGenerationParams: createDefaultVideoGenerationParams(),
-    contextWindow: null,
-    contextTokenTelemetry: createEmptyContextTokenTelemetry()
-  }
-}
-
-function buildHydratedChatState(state) {
-  const merged = buildMergedChatState(buildDefaultChatState(), state)
-  merged.toolApprovalMode = normalizeToolApprovalMode(
-    state?.toolApprovalMode,
-    state?.autoApproveTools === false ? TOOL_APPROVAL_MODE_MANUAL : TOOL_APPROVAL_MODE_SAFE
-  )
-  merged.autoApproveTools = merged.toolApprovalMode !== TOOL_APPROVAL_MODE_MANUAL
-  return merged
-}
-
-function applyDefaultChatState() {
-  const state = buildDefaultChatState()
-  sessionContextWindowOverride.value = null
-  applyLoadedChatState(state)
-
-  const rawDefaultSystemPrompt = String(state.customSystemPrompt || '')
-  lastLoadedDefaultSystemPrompt.value = normalizePromptText(rawDefaultSystemPrompt)
-  customSystemPromptExplicit.value = false
-  hasInitializedDefaultSystemPrompt.value = true
-  systemPromptDraft.value = ''
-  agentModalSelectedId.value = null
-  promptModalSelectedId.value = null
-  skillModalSelectedIds.value = []
-  mcpModalSelectedIds.value = []
-  hasAppliedDefaultModel.value = !!(state.selectedProviderId && state.selectedModel)
-
-  try {
-    mcpListToolsCache.clear()
-    mcpListToolsInFlight.clear()
-    mcpToolsRevision.value += 1
-    clearMcpToolCatalog()
-    clearPinnedMcpToolHints()
-  } catch {
-    // ignore
-  }
-
-  return state
-}
-
-function buildSessionSavePayload(options = {}) {
-  const sessionLike = options.sessionLike || options.session || session
-  const activeRecord = getActiveMemorySession()
-  const memorySource =
-    sessionLike && Object.prototype.hasOwnProperty.call(sessionLike, 'memoryCandidates') ? sessionLike : activeRecord
-  const state = options.state && typeof options.state === 'object' ? options.state : buildCurrentChatState()
-  return {
-    version: 1,
-    type: 'chat_session',
-    savedAt: new Date().toISOString(),
-    state,
-    session: {
-      id: String(memorySource?.id || '').trim(),
-      sandboxWorkspaceId: resolveMemorySessionSandboxWorkspaceId(memorySource),
-      messages: (sessionLike.messages || []).map(serializeDisplayMessageForSave).filter(Boolean),
-      apiMessages: deepCopyJson(sessionLike.apiMessages || [], [])
-    },
-    memory: {
-      candidates: normalizeMemoryCandidateQueue(memorySource?.memoryCandidates),
-      candidateUpdatedAt: Number(memorySource?.memoryCandidateUpdatedAt || 0) || 0,
-      contextSummary: deepCopyJson(memorySource?.contextSummary || {}, {}),
-      contextTokenTelemetry: normalizeContextTokenTelemetry(memorySource?.contextTokenTelemetry)
-    }
-  }
-}
-
-function replacePathPrefix(targetPath, oldBase, newBase) {
-  const t = String(targetPath || '')
-  if (t === oldBase) return newBase
-  if (t.startsWith(oldBase + '/')) return newBase + t.slice(oldBase.length)
-  return t
-}
-
-function isPathEqualOrInside(targetPath, basePath) {
-  const target = String(targetPath || '').trim()
-  const base = String(basePath || '').trim()
-  if (!target || !base) return false
-  return target === base || target.startsWith(base + '/')
-}
-
-function getSessionTitleFromPath(filePath) {
-  const p = String(filePath || '').trim()
-  const name = p.split('/').filter(Boolean).pop() || ''
-  if (!name) return ''
-  return name.toLowerCase().endsWith('.json') ? name.slice(0, -5) : name
-}
-
-async function persistMemorySessionToBoundPath(record, options = {}) {
-  if (!record || !Array.isArray(record.messages) || !record.messages.length) return ''
-  const filePath = String(record.activeSessionFilePath || '').trim()
-  if (!filePath || isAutoChatSessionPath(filePath)) return ''
-
-  try {
-    const stateSnapshot =
-      options.state && typeof options.state === 'object'
-        ? deepCopyJson(options.state, {})
-        : record.state && typeof record.state === 'object'
-          ? deepCopyJson(record.state, {})
-          : buildCurrentChatState()
-    await prepareSessionMediaAssetsForSave(record, { notify: options.notify, sessionFilePath: filePath })
-    const payload = buildSessionSavePayload({
-      sessionLike: record,
-      state: stateSnapshot
-    })
-    let previousPayload = null
-    try {
-      const previousSnapshot = await readSessionJsonFile(filePath)
-      previousPayload = previousSnapshot.ok ? previousSnapshot.value : null
-    } catch {
-      previousPayload = null
-    }
-
-    const resolvedCreatedAtMs = resolvePersistedSessionCreatedAtMs({
-      record,
-      payload,
-      previousPayload
-    })
-    const createdAtIso = resolvedCreatedAtMs > 0 ? new Date(resolvedCreatedAtMs).toISOString() : ''
-    const previousSavedAt = String(previousPayload?.savedAt || previousPayload?.createdAt || '').trim()
-    if (createdAtIso) payload.createdAt = createdAtIso
-    if (previousSavedAt) payload.savedAt = previousSavedAt
-    const title = getPersistedMemorySessionTitle(record, filePath)
-    if (title) payload.title = title
-    payload.updatedAt = new Date().toISOString()
-    payload.source = {
-      ...(previousPayload?.source && typeof previousPayload.source === 'object' ? previousPayload.source : {}),
-      ...(payload?.source && typeof payload.source === 'object' ? payload.source : {}),
-      sessionId: String(record.id || '').trim(),
-      sandboxWorkspaceId: resolveMemorySessionSandboxWorkspaceId(record),
-      retentionPolicy: 'manual'
-    }
-
-    await writeFile(filePath, JSON.stringify(payload, null, 2))
-    if (resolvedCreatedAtMs > 0) record.createdAt = resolvedCreatedAtMs
-    record.updatedAt = Date.now()
-    void sessionTreeRef.value?.touchPath?.(filePath, {
-      label: title,
-      createdTimeMs: Number(record.createdAt || 0) || Date.now()
-    })
-    return filePath
-  } catch (err) {
-    if (options.notify !== false) message.error('自动保存失败：' + (err?.message || String(err)))
-    return ''
-  }
-}
-
-let sessionAutosaveTimer = null
-let lastSessionAutosaveAt = 0
-let sessionAutosaveInFlight = false
-let lastSessionAutosaveErrorAt = 0
-let lastSessionAutosaveErrorMsg = ''
-
-function unbindSessionAutosave(options = {}) {
-  const silent = !!options.silent
-
-  activeSessionFilePath.value = ''
-  activeSessionTitle.value = ''
-
-  if (sessionAutosaveTimer) {
-    window.clearTimeout(sessionAutosaveTimer)
-    sessionAutosaveTimer = null
-  }
-
-  if (!silent) message.info('已解除当前会话文件的自动保存绑定')
-}
-
-async function runSessionAutosave() {
-  const filePath = String(activeSessionFilePath.value || '').trim()
-  if (!filePath) return
-  if (sessionAutosaveInFlight) return
-  const activeRecord = getMemorySessionById(activeMemorySessionId.value)
-  if (isMemorySessionChatRunning(activeRecord)) return
-  if (isAutoChatSessionPath(filePath) && isMemorySessionRunning(activeRecord)) return
-
-  sessionAutosaveInFlight = true
-  try {
-    await prepareSessionMediaAssetsForSave(session, { notify: false, sessionFilePath: filePath })
-    const payload = buildSessionSavePayload()
-    let previousPayload = null
-    try {
-      const previousSnapshot = await readSessionJsonFile(filePath)
-      previousPayload = previousSnapshot.ok ? previousSnapshot.value : null
-    } catch {
-      previousPayload = null
-    }
-    const resolvedCreatedAtMs = resolvePersistedSessionCreatedAtMs({
-      record: activeRecord,
-      payload,
-      previousPayload
-    })
-    const createdAtIso = resolvedCreatedAtMs > 0 ? new Date(resolvedCreatedAtMs).toISOString() : ''
-    const previousSavedAt = String(previousPayload?.savedAt || previousPayload?.createdAt || '').trim()
-    if (createdAtIso) payload.createdAt = createdAtIso
-    if (previousSavedAt) payload.savedAt = previousSavedAt
-    const title = getPersistedMemorySessionTitle(activeRecord, filePath)
-    if (title) payload.title = title
-    payload.updatedAt = new Date().toISOString()
-    const json = JSON.stringify(payload, null, 2)
-    await writeFile(filePath, json)
-    if (activeRecord && resolvedCreatedAtMs > 0) activeRecord.createdAt = resolvedCreatedAtMs
-    lastSessionAutosaveAt = Date.now()
-  } catch (err) {
-    const msg = err?.message || String(err)
-    const now = Date.now()
-    const shouldNotify = now - lastSessionAutosaveErrorAt > 5000 || msg !== lastSessionAutosaveErrorMsg
-    if (shouldNotify) {
-      message.error('自动保存失败：' + msg)
-      lastSessionAutosaveErrorAt = now
-      lastSessionAutosaveErrorMsg = msg
-    }
-
-    if (err?.code === 'ENOENT') {
-      unbindSessionAutosave({ silent: true })
-      message.warning('会话文件已不存在，已解除自动保存绑定')
-    }
-  } finally {
-    sessionAutosaveInFlight = false
-  }
-}
-
-function scheduleSessionAutosave(options = {}) {
-  const filePath = String(activeSessionFilePath.value || '').trim()
-  if (!filePath) return
-
-  const force = !!options.force
-  const activeRecord = getMemorySessionById(activeMemorySessionId.value)
-  if (!force && isMemorySessionChatRunning(activeRecord)) return
-  if (!force && isAutoChatSessionPath(filePath) && isMemorySessionRunning(activeRecord)) return
-  const debounceMs = 900
-  const maxWaitMs = 12000
-  const now = Date.now()
-
-  if (force) {
-    if (sessionAutosaveTimer) {
-      window.clearTimeout(sessionAutosaveTimer)
-      sessionAutosaveTimer = null
-    }
-    void runSessionAutosave()
-    return
-  }
-
-  if (sessionAutosaveTimer) window.clearTimeout(sessionAutosaveTimer)
-  sessionAutosaveTimer = window.setTimeout(() => {
-    sessionAutosaveTimer = null
-    runSessionAutosave()
-  }, debounceMs)
-
-  if (!sessionAutosaveInFlight && now - lastSessionAutosaveAt >= maxWaitMs) {
-    window.clearTimeout(sessionAutosaveTimer)
-    sessionAutosaveTimer = null
-    void runSessionAutosave()
-  }
-}
-
-function resetChatRuntimeState() {
-  typewriterFlushAll()
-  clearAllUserEditingState()
-  expandedToolActivityGroupIds.value = new Set()
-  clearSessionData()
-  userAnchorElMap.clear()
-  userAnchorMeta.value = []
-  activeAnchorId.value = null
-  autoScrollEnabled.value = true
-  autoScrollSuspendedByUser.value = false
-  input.value = ''
-  pendingAttachments.value = []
-  abortController.value = null
-  const record = getActiveMemorySession()
-  clearSessionApprovedTools(record?.id)
-  chatRunInputQueue.clear(record?.id)
-  touchChatRunInputQueue()
-  const now = Date.now()
-  clearMemoryCandidateFlushTimer(record)
-  record.messages = session.messages
-  record.apiMessages = session.apiMessages
-  record.input = ''
-  record.pendingAttachments = []
-  record.memoryCandidates = []
-  record.memoryCandidateUpdatedAt = 0
-  record.contextSummary = createEmptyContextSummaryState()
-  record.contextTokenTelemetry = createEmptyContextTokenTelemetry()
-  record.activeSessionFilePath = ''
-  record.activeSessionTitle = ''
-  record.title = DEFAULT_MEMORY_SESSION_TITLE
-  record.titleSource = ''
-  record.titleRetryCount = 0
-  record.titlePostReplyRetryDone = false
-  record.titleReadyAt = 0
-  record.createdAt = now
-  record.runningTaskCount = 0
-  record.chatRunCount = 0
-  record.activeRequestAbortState = null
-  record.pendingApprovalRequests = []
-  record.approvalPromptActive = false
-  record.autoManaged = false
-  record.state = applyDefaultChatState()
-  record.updatedAt = now
-  syncActiveRequestUiState(record)
-}
-
-async function waitForMemorySessionChatIdle(record, options = {}) {
-  const target = record || getActiveMemorySession()
-  const timeoutMs = Math.max(0, Number(options.timeoutMs) || 1200)
-  const startedAt = Date.now()
-  while (target && isMemorySessionChatRunning(target)) {
-    if ((Date.now() - startedAt) >= timeoutMs) return false
-    await nextTick()
-    await waitForLayoutFrame()
-    await new Promise((resolve) => window.setTimeout(resolve, 24))
-  }
-  return !target || !isMemorySessionChatRunning(target)
-}
-
-async function runExclusiveSessionReset(task) {
-  if (sessionResetPromise) return sessionResetPromise
-  sessionResetPromise = Promise.resolve()
-    .then(() => task())
-    .finally(() => {
-      sessionResetPromise = null
-    })
-  return sessionResetPromise
-}
-
-async function clearSessionImpl() {
-  const record = getActiveMemorySession()
-  const chatIdle = await waitForMemorySessionChatIdle(record)
-  if (!chatIdle) {
-    message.warning('刚结束生成，正在整理最后内容，请稍后再试')
-    return
-  }
-
-  const hasContent = (session.messages && session.messages.length) || (session.apiMessages && session.apiMessages.length)
-  saveActiveMemorySessionDraft()
-  if (Number(record?.runningTaskCount || 0) > 0) {
-    await detachRunningSessionToHistory({ notify: false })
-    message.info('当前会话仍有后台任务，已转入后台并新建会话')
-    return
-  }
-
-  const boundPath = String(activeSessionFilePath.value || '').trim()
-  if (boundPath) {
-    await closeActiveSessionImpl({ skipIdleCheck: true })
-    return
-  }
-
-  if (!hasContent) {
-    resetChatSetupUiState()
-    message.success('已重置为初始状态')
-    return
-  }
-
-  flushMemoryCandidatesInBackground(record, {
-    force: true,
-    systemPrompt: buildCombinedSystemContent('', { sessionRecord: record })
-  })
-  resetChatSetupUiState()
-  resetChatRuntimeState()
-  await nextTick()
-  scheduleRefreshUserAnchorMeta()
-  message.success('已清空当前会话')
-}
-
-async function clearSession() {
-  return runExclusiveSessionReset(clearSessionImpl)
-}
-
-async function openSaveSessionModal() {
-  if (!session.messages.length) {
-    message.warning('当前会话为空')
-    return
-  }
-
-  const payload = buildSessionSavePayload()
-  const options = {
-    defaultName: buildDefaultSessionName(),
-    preparePayload: async (filePath) => {
-      await prepareSessionMediaAssetsForSave(session, { sessionFilePath: filePath })
-      return buildSessionSavePayload()
-    }
-  }
-
-  if (sessionTreeRef.value?.openSaveSessionModal) {
-    await sessionTreeRef.value.openSaveSessionModal(payload, options)
-    return
-  }
-
-  // 兜底：如果侧边栏内容尚未挂载，先展开再尝试打开保存弹窗
-  sessionSiderCollapsed.value = false
-  await nextTick()
-  if (!sessionTreeRef.value?.openSaveSessionModal) {
-    message.warning('会话保存功能尚未就绪')
-    return
-  }
-  await sessionTreeRef.value.openSaveSessionModal(payload, options)
-}
-
-function handleSessionSaved(filePath) {
-  const rel = String(filePath || '').trim()
-  if (!rel) return
-  activeSessionFilePath.value = rel
-  activeSessionTitle.value = getSessionTitleFromPath(rel)
-  const record = getActiveMemorySession()
-  record.activeSessionFilePath = rel
-  record.activeSessionTitle = activeSessionTitle.value
-  record.autoManaged = isAutoChatSessionPath(rel)
-  void sessionTreeRef.value?.selectPath?.(rel)
-}
-
-function handleSessionPathRenamed(oldPath, newPath) {
-  const cur = String(activeSessionFilePath.value || '').trim()
-  const from = String(oldPath || '').trim()
-  const to = String(newPath || '').trim()
-  if (!from || !to) return
-
-  const next = cur ? replacePathPrefix(cur, from, to) : cur
-  const activeChanged = !!cur && next !== cur
-  if (activeChanged) {
-    activeSessionFilePath.value = next
-    activeSessionTitle.value = getSessionTitleFromPath(next)
-  }
-
-  memorySessions.value.forEach((record) => {
-    const recordPath = String(record?.activeSessionFilePath || '').trim()
-    const recordNext = replacePathPrefix(recordPath, from, to)
-    if (recordPath && recordNext !== recordPath) {
-      record.activeSessionFilePath = recordNext
-      record.activeSessionTitle = getSessionTitleFromPath(recordNext)
-      record.autoManaged = isAutoChatSessionPath(recordNext)
-      record.updatedAt = Date.now()
-    }
-  })
-  if (activeChanged) void sessionTreeRef.value?.selectPath?.(next)
-}
-
-async function handleSessionPathDeleted(deletedPath, deletedSessionPayloads = [], deleteInfo = {}) {
-  const cur = String(activeSessionFilePath.value || '').trim()
-  const p = String(deletedPath || '').trim()
-  if (!p) return
-
-  if (deleteInfo?.softDeleted !== true && Array.isArray(deletedSessionPayloads) && deletedSessionPayloads.length) {
-    const mediaAssetPaths = new Set()
-    deletedSessionPayloads.forEach((item) => {
-      const payload = item?.payload && typeof item.payload === 'object' ? item.payload : item
-      const sessionFilePath = String(item?.path || item?.filePath || '').trim()
-      collectChatMediaAssetPathsFromPayload(payload, { sessionFilePath }).forEach((assetPath) => mediaAssetPaths.add(assetPath))
-    })
-    if (mediaAssetPaths.size) {
-      await deleteChatMediaAssetPaths(Array.from(mediaAssetPaths))
-    }
-    await Promise.all(
-      deletedSessionPayloads
-        .map((item) => String(item?.path || item?.filePath || '').trim())
-        .filter(Boolean)
-        .map((filePath) => deleteChatSessionAssetDirectory(filePath))
-    )
-  }
-
-  memorySessions.value.forEach((record) => {
-    const recordPath = String(record?.activeSessionFilePath || '').trim()
-    if (!isPathEqualOrInside(recordPath, p)) return
-    record.activeSessionFilePath = ''
-    record.activeSessionTitle = ''
-    record.autoManaged = isMemorySessionRunning(record)
-    record.updatedAt = Date.now()
-  })
-
-  if (isPathEqualOrInside(cur, p)) {
-    unbindSessionAutosave({ silent: true })
-    const record = getActiveMemorySession()
-    record.activeSessionFilePath = ''
-    record.activeSessionTitle = ''
-    record.autoManaged = isMemorySessionRunning(record)
-    try {
-      sessionTreeRef.value?.clearSelection?.()
-    } catch {
-      // ignore
-    }
-    message.warning('当前会话文件已被删除，自动保存绑定已解除')
-  }
-}
-
-async function closeActiveSessionImpl(options = {}) {
-  const record = getActiveMemorySession()
-  if (!options.skipIdleCheck) {
-    const chatIdle = await waitForMemorySessionChatIdle(record)
-    if (!chatIdle) {
-      message.warning('刚结束生成，正在整理最后内容，请稍后再试')
-      return
-    }
-  }
-  if (Number(record?.runningTaskCount || 0) > 0) {
-    await detachRunningSessionToHistory({ notify: false })
-    message.info('当前会话仍有后台任务，已转入后台并新建会话')
-    return
-  }
-
-  const boundPath = String(activeSessionFilePath.value || '').trim()
-  if (!boundPath) return
-
-  const snapshot = {
-    ...record,
-    messages: Array.isArray(record.messages) ? [...record.messages] : [],
-    apiMessages: Array.isArray(record.apiMessages) ? deepCopyJson(record.apiMessages, []) : [],
-    pendingAttachments: Array.isArray(record.pendingAttachments) ? [...record.pendingAttachments] : [],
-    memoryCandidates: normalizeMemoryCandidateQueue(record.memoryCandidates),
-    contextSummary: deepCopyJson(record.contextSummary || {}, {}),
-    state: buildCurrentChatState()
-  }
-
-  unbindSessionAutosave({ silent: true })
-  try {
-    sessionTreeRef.value?.clearSelection?.()
-  } catch {
-    // ignore
-  }
-
-  resetChatRuntimeState()
-  await nextTick()
-  scheduleRefreshUserAnchorMeta()
-
-  void (async () => {
-    await flushMemoryCandidatesForRecord(snapshot, { force: true })
-    try {
-      await persistMemorySessionToBoundPath(snapshot, { notify: false, state: snapshot.state })
-    } catch {
-      // ignore
-    }
-  })()
-
-  message.info('已关闭会话绑定并清空当前会话')
-}
-
-async function closeActiveSession(options = {}) {
-  return runExclusiveSessionReset(() => closeActiveSessionImpl(options))
-}
-
-function isLikelyMarkdownContent(content) {
-  const text = String(content || '').replace(/\r\n/g, '\n').trim()
-  if (!text) return false
-  if (/^#{1,6}\s+\S/m.test(text)) return true
-  if (/^>\s+\S/m.test(text)) return true
-  if (/^```[\w-]*\s*$/m.test(text) || /^~~~[\w-]*\s*$/m.test(text)) return true
-  if (/(^|\n)\s*(?:[-*+]\s+\S|\d+\.\s+\S)/.test(text)) return true
-  if (/!\[[^\]]*]\([^)]+\)|\[[^\]]+\]\([^)]+\)/.test(text)) return true
-  if (/`[^`\n]+`/.test(text)) return true
-  if (/\*\*[^*]+\*\*|__[^_]+__/.test(text)) return true
-  if (/^\|.+\|\s*$/m.test(text) && /^\|?[\s:-]+\|[\s|:-]*$/m.test(text)) return true
-  return false
-}
-
-function hasHtmlLikeTagLine(content) {
-  const text = String(content || '').replace(/\r\n/g, '\n')
-  if (!text.trim()) return false
-  return text
-    .split('\n')
-    .some((line) => /^\s*<\/?[A-Za-z][\w:-]*(?:\s+[^<>]*)?\/?>\s*$/.test(String(line || '').trim()))
-}
-
-function inferUserDisplayMessageRender(content) {
-  return hasHtmlLikeTagLine(content) ? 'text' : 'md'
-}
-
-function shouldRenderUserMessageAsPlainText(msg) {
-  if (!msg || typeof msg !== 'object') return false
-  if (String(msg.render || '').trim().toLowerCase() === 'text') return true
-  return inferUserDisplayMessageRender(msg.content) === 'text'
-}
-
-const userMessageFoldInfoCache = new WeakMap()
-
-function getUserMessageFoldInfo(msg) {
-  if (!msg || typeof msg !== 'object') {
-    return { charCount: 0, lineCount: 0, foldable: false, preview: '' }
-  }
-  const content = String(msg.content || '')
-  const cached = userMessageFoldInfoCache.get(msg)
-  if (cached?.content === content) return cached.value
-  const analysis = analyzeUserMessageFolding(content)
-  const value = {
-    ...analysis,
-    preview: analysis.foldable ? buildUserMessagePreview(content) : content
-  }
-  userMessageFoldInfoCache.set(msg, { content, value })
-  return value
-}
-
-function isUserMessageFoldable(msg) {
-  return String(msg?.role || '').trim() === 'user' && getUserMessageFoldInfo(msg).foldable
-}
-
-function isUserMessageCollapsed(msg) {
-  if (msg?.editing) return false
-  return isUserMessageFoldable(msg) && msg?.userMessageExpanded !== true
-}
-
-function userMessagePreview(msg) {
-  return getUserMessageFoldInfo(msg).preview
-}
-
-function userMessageFoldSummary(msg) {
-  const info = getUserMessageFoldInfo(msg)
-  return `${info.charCount.toLocaleString()} 字${info.lineCount > 1 ? ` · ${info.lineCount.toLocaleString()} 行` : ''}`
-}
+const {
+  requestSessionTitleAsync,
+  autoPersistMemorySessionWhenIdle,
+  cleanupExpiredSessionTrash,
+  migrateLegacyAutoChatSessionCreatedAt,
+  persistActiveMemorySessionBeforeLeaving,
+  detachRunningSessionToHistory,
+  handleMemorySessionSelect,
+  buildCurrentChatState,
+  buildDefaultChatState,
+  buildHydratedChatState,
+  applyDefaultChatState,
+  unbindSessionAutosave,
+  runExclusiveSessionReset,
+  clearSession,
+  openSaveSessionModal,
+  handleSessionSaved,
+  handleSessionPathRenamed,
+  handleSessionPathDeleted,
+  closeActiveSession
+} = (chatSessionManagerApi = useChatSessionManager({
+  canUseUtoolsAi,
+  buildUtoolsAiMessages,
+  recordModelUsage,
+  extractModelUsage,
+  streamChatCompletion,
+  buildChatSessionAssetsDirectory,
+  exists,
+  moveItem,
+  CHAT_SESSION_ROOT,
+  createDirectory,
+  AUTO_CHAT_SESSION_ROOT,
+  sanitizeAutoSessionTitle,
+  AUTO_CHAT_SESSION_DIR_NAME,
+  getPersistedMemorySessionTitle,
+  DEFAULT_MEMORY_SESSION_TITLE,
+  normalizeGeneratedSessionTitle,
+  buildAutoSessionTitle,
+  isAutoChatSessionPath,
+  isMemorySessionActive,
+  activeSessionFilePath,
+  activeSessionTitle,
+  sessionTreeRef,
+  canRetryMemorySessionTitle,
+  canGenerateMemorySessionTitle,
+  sessionTitleRequestTokens,
+  buildSessionTitleGenerationPrompt,
+  normalizeProviderApiMode,
+  getMemorySessionById,
+  isGeneratedSessionTitle,
+  shouldStampHistoryCreatedAtOnGeneratedTitle,
+  applyFallbackMemorySessionTitle,
+  isMemorySessionRunning,
+  hasPersistableMemorySessionResponse,
+  autoPersistMemorySessionInFlight,
+  readSessionJsonFile,
+  resolvePersistedSessionCreatedAtMs,
+  AUTO_CHAT_SESSION_SOURCE_TYPE,
+  resolveMemorySessionSandboxWorkspaceId,
+  writeFile,
+  pruneDormantMemorySessions,
+  message,
+  canPersistMemorySessionToHistory,
+  purgeExpiredChatSessionTrash,
+  purgeSandboxTrashEntries,
+  listDirectory,
+  parseIsoTimeMs,
+  resolveChatSessionCreatedTimeMs,
+  saveActiveMemorySessionDraft,
+  isMemorySessionEmptyDraft,
+  removeMemorySessionById,
+  flushMemoryCandidatesForRecord,
+  getActiveMemorySession,
+  sending,
+  abortController,
+  createMemorySessionRecord,
+  memorySessions,
+  restoreMemorySession,
+  withChatSessionOpeningHeavyRender,
+  maybeWarmMarkdownPreviewRuntimeForMessages,
+  scrollToBottom,
+  settleChatViewportAfterSessionOpen,
+  resolveCurrentHeavyRenderViewportBuffer,
+  CHAT_HEAVY_RENDER_WARM_BUFFER_EXTRA,
+  persistChatSessionMediaAssets,
+  serializeChatMediaForSave,
+  session,
+  basePromptMode,
+  selectedPromptId,
+  buildCustomSystemPromptState,
+  customSystemPrompt,
+  customSystemPromptExplicit,
+  selectedAgentId,
+  selectedProviderId,
+  selectedModel,
+  deepCopyJson,
+  normalizeStringList,
+  selectedSkillIds,
+  routerAddedSelectedSkillIds,
+  agentSkillIds,
+  routerAddedAgentSkillIds,
+  activatedAgentSkillIds,
+  routerActivatedAgentSkillIds,
+  manualMcpIds,
+  sandboxHostWorkspacePath,
+  normalizeSelectedHostWorkspacePath,
+  webSearchEnabled,
+  toolApprovalMode,
+  autoApproveTools,
+  autoActivateAgentSkills,
+  toolMode,
+  effectiveToolMode,
+  thinkingEffort,
+  imageGenerationMode,
+  videoGenerationMode,
+  imageGenerationParamsEnabled,
+  imageGenerationParams,
+  createDefaultImageGenerationParams,
+  videoGenerationParamsEnabled,
+  videoGenerationParams,
+  createDefaultVideoGenerationParams,
+  sessionContextWindowOverride,
+  normalizeChatContextWindowConfig,
+  normalizeContextTokenTelemetry,
+  chatConfig,
+  resolveDefaultModelSelectionFromConfig,
+  agents,
+  BUILTIN_AGENT_ID,
+  normalizeToolApprovalMode,
+  TOOL_APPROVAL_MODE_MANUAL,
+  TOOL_APPROVAL_MODE_SAFE,
+  normalizeImageGenerationMode,
+  createEmptyContextTokenTelemetry,
+  buildMergedChatState,
+  applyLoadedChatState,
+  lastLoadedDefaultSystemPrompt,
+  normalizePromptText,
+  hasInitializedDefaultSystemPrompt,
+  systemPromptDraft,
+  agentModalSelectedId,
+  promptModalSelectedId,
+  skillModalSelectedIds,
+  mcpModalSelectedIds,
+  hasAppliedDefaultModel,
+  mcpListToolsCache,
+  mcpListToolsInFlight,
+  mcpToolsRevision,
+  clearMcpToolCatalog,
+  clearPinnedMcpToolHints,
+  normalizeMemoryCandidateQueue,
+  clearSessionData,
+  typewriterFlushAll,
+  clearAllUserEditingState,
+  expandedToolActivityGroupIds,
+  resetUserAnchors,
+  autoScrollEnabled,
+  autoScrollSuspendedByUser,
+  input,
+  pendingAttachments,
+  clearSessionApprovedTools,
+  chatRunInputQueue,
+  touchChatRunInputQueue,
+  clearMemoryCandidateFlushTimer,
+  createEmptyContextSummaryState,
+  syncActiveRequestUiState,
+  isMemorySessionChatRunning,
+  nextTick,
+  waitForLayoutFrame,
+  resetChatSetupUiState,
+  flushMemoryCandidatesInBackground,
+  buildCombinedSystemContent,
+  scheduleRefreshUserAnchorMeta,
+  buildDefaultSessionName,
+  sessionSiderCollapsed,
+  collectChatMediaAssetPathsFromPayload,
+  deleteChatMediaAssetPaths,
+  deleteChatSessionAssetDirectory
+}))
 
 function toggleUserMessageExpanded(msg) {
   if (!isUserMessageFoldable(msg)) return
@@ -10450,26 +3894,6 @@ function toggleUserMessageExpanded(msg) {
   scheduleChatVirtualItemRemeasure(msg, { followTail: isAtBottom.value })
   scheduleRefreshUserAnchorMeta()
   scheduleStickyChatBubbleSync()
-}
-
-function shouldKeepLoadedAssistantTextRender(raw, content) {
-  const text = String(content || '').trim()
-  if (!text) return false
-  if (raw?.transientRequestPlaceholder === true) return true
-  if (raw?.imageTask || raw?.videoTask) return true
-  if (raw?.imageBubblePlaceholder || raw?.videoBubblePlaceholder) return true
-  if (/^(图片|视频)生成(?:生成中|处理中|排队中|等待中|进行中|失败|已取消|已受理|已完成)/.test(text)) return true
-  if (!isLikelyMarkdownContent(text) && text.includes('\n') && (/\t/.test(text) || / {2,}/.test(text))) return true
-  return false
-}
-
-function inferLoadedDisplayMessageRender(raw, content) {
-  const role = String(raw?.role || '').trim()
-  if (role === 'assistant' || role === 'thinking') {
-    return shouldKeepLoadedAssistantTextRender(raw, content) ? 'text' : 'md'
-  }
-  if (role === 'user') return inferUserDisplayMessageRender(content)
-  return 'md'
 }
 
 function normalizeLoadedDisplayMessage(msg) {
@@ -10697,7 +4121,6 @@ function applyLoadedChatState(state) {
   }
 }
 
-let historySessionLoadHideTimer = null
 let historySessionLoadInFlight = false
 let pendingHistorySessionLoadPath = ''
 
@@ -11285,6518 +4708,622 @@ function tryApplyDefaultModelFromConfig(options = {}) {
 }
 
 // 默认不自动选择智能体；由用户手动选择
-watch([providers, chatConfig], () => tryApplyDefaultModelFromConfig(), { immediate: true })
-
-watch(
+bindDefaultModelConfigListeners({
+  providers,
+  chatConfig,
+  tryApplyDefaultModelFromConfig,
   selectedProvider,
-  (provider) => {
-    if (!provider) return
-    const models = provider.selectModels || []
-    if (!Array.isArray(models) || models.length === 0) return
-    if (!selectedModel.value) selectedModel.value = models[0]
-    if (selectedModel.value && !models.includes(selectedModel.value)) selectedModel.value = models[0]
-  },
-  { immediate: true }
-)
-
-function stop() {
-  abortController.value?.abort()
-  typewriterFlushAll()
-}
-
-onBeforeUnmount(() => {
-  if (historySessionLoadHideTimer) {
-    window.clearTimeout(historySessionLoadHideTimer)
-    historySessionLoadHideTimer = null
-  }
-  historySessionLoadInFlight = false
-  pendingHistorySessionLoadPath = ''
-  chatMessageEstimatedHeightCache.clear()
-  cancelPendingToolApprovals()
-  sessionApprovedToolKeys.clear()
-  chatRunInputQueue.clearAll()
-  touchChatRunInputQueue()
-  queuedInputDrainTimers.forEach((timer) => window.clearTimeout(timer))
-  queuedInputDrainTimers.clear()
-  queuedInputDrainInFlight.clear()
-  try {
-    if (pendingBuiltinAgentsEventsFlushTimer) {
-      window.clearTimeout(pendingBuiltinAgentsEventsFlushTimer)
-      pendingBuiltinAgentsEventsFlushTimer = null
-    }
-  } catch {
-    // ignore
-  }
-  pendingBuiltinAgentsEventsByStreamId.clear()
-  try {
-    window?.removeEventListener?.(BUILTIN_AGENTS_TRACE_EVENT, handleBuiltinAgentsTraceEvent)
-  } catch {
-    // ignore
-  }
-  try {
-    window?.removeEventListener?.(BUILTIN_AGENTS_TOOL_APPROVAL_REQUEST_EVENT, handleBuiltinAgentsToolApprovalRequest)
-  } catch {
-    // ignore
-  }
-  try {
-    window?.removeEventListener?.('resize', syncChatResponsiveState)
-  } catch {
-    // ignore
-  }
-  try {
-    if (sessionTrashCleanupTimer) {
-      window.clearInterval(sessionTrashCleanupTimer)
-      sessionTrashCleanupTimer = null
-    }
-  } catch {
-    // ignore
-  }
-  disconnectChatLayoutResizeObserver()
-  disconnectChatMessageVisibilityObserver()
-  clearChatVirtualItemRemeasure()
-  clearStickyChatBubbleSync()
-  setStickyChatBubbleState(null)
-  cleanupChatPreviewLinkHandlers()
-  try {
-    abortController.value?.abort()
-  } catch {
-    // ignore
-  }
-  detachedMediaAbortStates.forEach((state) => {
-    try {
-      state?.abort?.()
-    } catch {
-      // ignore
-    }
-  })
-  detachedMediaAbortStates.clear()
-  try {
-    typewriterFlushAll()
-  } catch {
-    // ignore
-  }
-  try {
-    closeAllPooledMCPClients()
-  } catch {
-    // ignore
-  }
+  selectedModel
 })
 
-function handleUserEditKeydown(e, msg) {
-  if (!msg || !msg.editing) return
-  if (sending.value) return
-  if (isComposerCompositionKeydownEvent(e)) return
-
-  if (e.key === 'Escape') {
-    e.preventDefault()
-    msg.editing = false
-    msg.editDraft = ''
-    return
-  }
-
-  if (shouldSubmitComposerKeydownEvent(e)) {
-    e.preventDefault()
-    toggleOrSubmitUserEdit(msg)
-  }
-}
-
-function clearAllUserEditingState() {
-  ;(session.messages || []).forEach((m) => {
-    if (m?.role !== 'user') return
-    if (m.editing) {
-      m.editing = false
-      m.editDraft = ''
-    }
-  })
-  scheduleRefreshUserAnchorMeta()
-}
-
-function isFiniteNumber(n) {
-  return typeof n === 'number' && Number.isFinite(n)
-}
-
-function resolveUserApiIndexForDisplayMessage(msg) {
-  if (isFiniteNumber(msg?.apiIndex)) return msg.apiIndex
-  for (let i = (session.apiMessages || []).length - 1; i >= 0; i--) {
-    if (session.apiMessages[i]?.role === 'user') return i
-  }
-  return -1
-}
-
-function getUserApiMessageContentByIndex(apiIndex) {
-  if (!isFiniteNumber(apiIndex) || apiIndex < 0) return null
-  const apiMessage = session.apiMessages?.[apiIndex]
-  if (!apiMessage || apiMessage.role !== 'user') return null
-  return apiMessage.content
-}
-
-function messageHasDisplayAttachments(msg, apiIndex = resolveUserApiIndexForDisplayMessage(msg)) {
-  if (Array.isArray(msg?.attachments) && msg.attachments.length) return true
-  if (Array.isArray(msg?.images) && msg.images.length) return true
-  return contentHasUserAttachments(getUserApiMessageContentByIndex(apiIndex))
-}
-
-function findNearestUserApiIndexBefore(apiIndex) {
-  if (!isFiniteNumber(apiIndex)) return -1
-  for (let i = apiIndex - 1; i >= 0; i--) {
-    if (session.apiMessages?.[i]?.role === 'user' && session.apiMessages?.[i]?.synthetic_tool_vision !== true) return i
-  }
-  return -1
-}
-
-function findDisplayIndexByApiIndex(role, apiIndex) {
-  return (session.messages || []).findIndex((m) => m?.role === role && m?.apiIndex === apiIndex)
-}
-
-function truncateConversationAfterUser(userApiIndex, userDisplayIndex) {
-  if (isFiniteNumber(userDisplayIndex) && userDisplayIndex >= 0) {
-    session.messages.splice(userDisplayIndex + 1, session.messages.length)
-  }
-  if (isFiniteNumber(userApiIndex) && userApiIndex >= 0) {
-    session.apiMessages.splice(userApiIndex + 1, session.apiMessages.length)
-  }
-}
-
-function resetComposerInput() {
-  composerInputKey.value += 1
-}
-
-function getRequestConfigOrHint() {
-  const provider = selectedProvider.value
-  if (!provider) {
-    message.warning('请先选择服务商 / 模型')
-    showModelModal.value = true
-    return null
-  }
-
-  if (isUtoolsBuiltinProvider(provider)) {
-    if (!canUseUtoolsAi()) {
-      message.warning('当前环境不支持内置 uTools AI 服务商，请在 uTools 插件环境中使用。')
-      return null
-    }
-
-    const model = String(selectedModel.value || '').trim()
-    if (!model) {
-      message.warning('请先选择模型')
-      showModelModal.value = true
-      return null
-    }
-
-    const imageMode = normalizeImageGenerationMode(imageGenerationMode.value)
-    const videoMode = normalizeImageGenerationMode(videoGenerationMode.value)
-    if (
-      imageMode === 'on' ||
-      (imageMode === 'auto' && isLikelyImageGenerationModel(model)) ||
-      videoMode === 'on' ||
-      (videoMode === 'auto' && isLikelyVideoGenerationModel(model))
-    ) {
-      message.warning('当前页面会将 uTools 内置 AI 按文本聊天处理，不支持直接图片/视频生成，请改用兼容 OpenAI 的服务商。')
-      return null
-    }
-
-    return {
-      providerKind: 'utools-ai',
-      providerId: String(provider._id || '').trim(),
-      model,
-      requestMode: 'chat',
-      imageGenerationPlaceholderMode: 'text',
-      supportsVision: false
-    }
-  }
-
-  const baseUrl = provider.baseurl
-  const apiKey = provider.apikey
-  if (!baseUrl || !apiKey) {
-    message.warning('请先配置服务商接口地址 / API 密钥')
-    return null
-  }
-
-  const model = String(selectedModel.value || '').trim()
-  if (!model) {
-    message.warning('请先选择模型')
-    showModelModal.value = true
-    return null
-  }
-
-  const imageMode = normalizeImageGenerationMode(imageGenerationMode.value)
-  const videoMode = normalizeImageGenerationMode(videoGenerationMode.value)
-  const apiMode = normalizeProviderApiMode(provider.apiMode)
-  const modelType = getProviderModelType(provider, model)
-  if (modelType === 'embedding') {
-    message.warning('当前模型被标记为向量模型，不能用于聊天。请切换模型或在服务商设置中调整模型用途。')
-    showModelModal.value = true
-    return null
-  }
-  const useManualImageGeneration = imageMode === 'on'
-  const useAutoImageGeneration =
-    imageMode === 'auto' &&
-    (modelType === 'image-generation' || (modelType === 'auto' && isLikelyImageGenerationModel(model)))
-  const useManualVideoGeneration = videoMode === 'on'
-  const useAutoVideoGeneration =
-    videoMode === 'auto' &&
-    (modelType === 'video-generation' || (modelType === 'auto' && isLikelyVideoGenerationModel(model)))
-  const requestMode =
-    useManualVideoGeneration
-      ? 'video-generation'
-      : useManualImageGeneration
-      ? 'image-generation'
-      : videoMode === 'off' && imageMode === 'off'
-        ? 'chat'
-        : useAutoVideoGeneration
-          ? 'video-generation'
-        : useAutoImageGeneration
-          ? 'image-generation'
-          : 'chat'
-  const imageGenerationRequestOptions = (useManualImageGeneration || useAutoImageGeneration)
-    ? getCurrentImageGenerationRequestOptions()
-    : {}
-  const videoGenerationRequestOptions = (useManualVideoGeneration || useAutoVideoGeneration)
-    ? getCurrentVideoGenerationRequestOptions()
-    : {}
-
-  return {
-    providerKind: 'openai-compatible',
-    providerId: String(provider._id || '').trim(),
-    baseUrl,
-    apiKey,
-    apiMode,
-    model,
-    modelType,
-    requestMode,
-    imageGenerationPlaceholderMode: useManualImageGeneration ? 'image' : 'text',
-    videoGenerationPlaceholderMode: useManualVideoGeneration ? 'video' : 'text',
-    imageGenerationRequestOptionsOverride: imageGenerationRequestOptions,
-    videoGenerationRequestOptionsOverride: videoGenerationRequestOptions,
-    supportsVision: requestMode === 'chat'
-  }
-}
-
-function getCurrentToolsKey() {
-  const mcpKey = (activeMcpIds.value || [])
-    .map((x) => String(x || '').trim())
-    .filter(Boolean)
-    .sort()
-    .join(',')
-
-  const skillKey = (selectedSkillObjects.value || [])
-    .map((skill) => {
-      const id = String(skill?._id || '').trim()
-      const actionCount = Array.isArray(skill?.nativeActions) ? skill.nativeActions.length : 0
-      return `${id}:${String(skill?.sourceType || '')}:${actionCount}`
-    })
-    .filter(Boolean)
-    .sort()
-    .join(',')
-
-  const mcpConfigKey = (activeMcpServers.value || [])
-    .map((s) => {
-      if (!s || !s._id) return ''
-      const id = String(s._id || '').trim()
-      const disabled = s.disabled ? 1 : 0
-      const allow = Array.isArray(s.allowTools)
-        ? s.allowTools.map((x) => String(x || '').trim()).filter(Boolean).sort().join('|')
-        : ''
-      const transport = String(s.transportType || '')
-      const url = String(s.url || '')
-      const command = String(s.command || '')
-      return `${id}:${disabled}:${transport}:${url}:${command}:${allow}`
-    })
-    .filter(Boolean)
-    .sort()
-    .join(';')
-
-  return `${toolMode.value}|${mcpToolsRevision.value}|${skillKey}|${mcpConfigKey}|${mcpKey}`
-}
-
-function syncLastBuiltRequestToolsStats(tools) {
-  const list = Array.isArray(tools) ? tools : []
-  lastBuiltRequestToolsStats.key = getCurrentToolsKey()
-  lastBuiltRequestToolsStats.count = list.length
-  lastBuiltRequestToolsStats.chars = estimateToolDefinitionsChars(list)
-  lastBuiltRequestToolsStats.updatedAt = Date.now()
-  lastBuiltRequestToolsStats.mode = String(effectiveToolMode.value || 'expanded')
-}
-
-function formatApproxChars(value) {
-  const num = Math.max(0, Math.floor(Number(value) || 0))
-  if (num >= 1000) return `${(num / 1000).toFixed(num >= 10000 ? 0 : 1)}k`
-  return String(num)
-}
-
-function extractModelUsage(payload) {
-  if (!payload || typeof payload !== 'object') return null
-  const direct =
-    payload.usage ||
-    payload.response?.usage ||
-    payload.usageMetadata ||
-    payload.usage_metadata ||
-    payload.response?.usageMetadata ||
-    payload.response?.usage_metadata
-  if (direct && typeof direct === 'object') return direct
-
-  const payloads = Array.isArray(payload.payloads)
-    ? payload.payloads
-    : Array.isArray(payload)
-      ? payload
-      : []
-  for (let index = payloads.length - 1; index >= 0; index -= 1) {
-    const nested =
-      payloads[index]?.usage ||
-      payloads[index]?.response?.usage ||
-      payloads[index]?.usageMetadata ||
-      payloads[index]?.usage_metadata
-    if (nested && typeof nested === 'object') return nested
-  }
-  return null
-}
-
-function readUsageNumber(usage, paths = []) {
-  for (const path of paths) {
-    let current = usage
-    for (const key of path) {
-      current = current && typeof current === 'object' ? current[key] : undefined
-    }
-    const value = Number(current)
-    if (Number.isFinite(value) && value >= 0) return Math.floor(value)
-  }
-  return 0
-}
-
-function extractContextTokenMetrics(usage) {
-  if (!usage || typeof usage !== 'object') return { inputTokens: 0, cachedTokens: 0 }
-
-  let inputTokens = readUsageNumber(usage, [
-    ['prompt_tokens'],
-    ['promptTokens'],
-    ['promptTokenCount'],
-    ['inputTokenCount'],
-    ['input_tokens'],
-    ['inputTokens']
-  ])
-  const cacheReadTokens = readUsageNumber(usage, [
-    ['prompt_tokens_details', 'cached_tokens'],
-    ['input_tokens_details', 'cached_tokens'],
-    ['cached_tokens'],
-    ['cachedTokens'],
-    ['prompt_cache_hit_tokens'],
-    ['cache_read_input_tokens'],
-    ['cacheReadInputTokens']
-  ])
-  const cacheWriteTokens = readUsageNumber(usage, [
-    ['prompt_tokens_details', 'cache_write_tokens'],
-    ['input_tokens_details', 'cache_write_tokens'],
-    ['cache_creation_input_tokens'],
-    ['cacheCreationInputTokens']
-  ])
-
-  // Anthropic 的 input_tokens 不包含缓存读取/写入部分；OpenAI/DeepSeek 的
-  // prompt_tokens 已经是完整输入，因此只在 Anthropic 字段出现时补加。
-  const hasAnthropicCacheFields =
-    Object.prototype.hasOwnProperty.call(usage, 'cache_read_input_tokens') ||
-    Object.prototype.hasOwnProperty.call(usage, 'cache_creation_input_tokens') ||
-    Object.prototype.hasOwnProperty.call(usage, 'cacheReadInputTokens') ||
-    Object.prototype.hasOwnProperty.call(usage, 'cacheCreationInputTokens')
-  const hasPromptTotal =
-    Object.prototype.hasOwnProperty.call(usage, 'prompt_tokens') ||
-    Object.prototype.hasOwnProperty.call(usage, 'promptTokens') ||
-    Object.prototype.hasOwnProperty.call(usage, 'promptTokenCount')
-  if (hasAnthropicCacheFields && !hasPromptTotal) {
-    inputTokens += cacheReadTokens + cacheWriteTokens
-  }
-
-  return {
-    inputTokens,
-    cachedTokens: cacheReadTokens
-  }
-}
-
-function dispatchBuiltinAgentsToolApprovalModeChange(record, mode) {
-  const sessionId = String(record?.id || '').trim()
-  if (!sessionId) return false
-  const streamIds = []
-  for (const [streamId, toolMessage] of activeAgentRunToolMessageByStreamId) {
-    const owner = getMemorySessionForToolMessage(toolMessage)
-    if (String(owner?.id || '').trim() !== sessionId) continue
-    const normalizedStreamId = String(streamId || '').trim()
-    if (normalizedStreamId) streamIds.push(normalizedStreamId)
-    if (toolMessage && typeof toolMessage === 'object') {
-      toolMessage.toolApprovalMode = mode
-    }
-  }
-  if (!streamIds.length) return false
-  try {
-    window.dispatchEvent(
-      new window.CustomEvent(BUILTIN_AGENTS_TOOL_APPROVAL_MODE_CHANGE_EVENT, {
-        detail: {
-          sessionId,
-          streamIds,
-          toolApprovalMode: mode
-        }
-      })
-    )
-    return true
-  } catch {
-    return false
-  }
-}
-
-function updateContextTokenTelemetry(record, usage, {
-  requestChars = 0,
-  providerId = '',
-  model = '',
-  endpoint = ''
-} = {}) {
-  if (!record || typeof record !== 'object') return
-  const metrics = extractContextTokenMetrics(usage)
-  const normalizedRequestChars = Math.max(0, Math.floor(Number(requestChars) || 0))
-  if (!metrics.inputTokens || !normalizedRequestChars) return
-
-  record.contextTokenTelemetry = {
-    inputTokens: metrics.inputTokens,
-    requestChars: normalizedRequestChars,
-    cachedTokens: metrics.cachedTokens,
-    providerId: String(providerId || ''),
-    model: String(model || ''),
-    endpoint: String(endpoint || ''),
-    updatedAt: Date.now()
-  }
-}
-
-function recordModelUsage(usage, {
-  providerId = selectedProviderId.value,
-  model = '',
-  endpoint = '',
-  purpose = 'chat'
-} = {}) {
-  if (!usage || typeof usage !== 'object') return
-  const recorder = window?.aiToolsApi?.usage?.recordUsage
-  if (typeof recorder !== 'function') return
-  void recorder({
-    usage,
-    providerId: String(providerId || ''),
-    model: String(model || ''),
-    endpoint: String(endpoint || ''),
-    purpose: String(purpose || '')
-  }).catch((error) => {
-    console.warn('记录模型用量失败：', error)
-  })
-}
-
-function recordModelUsageFromPayload(payload, options = {}) {
-  recordModelUsage(extractModelUsage(payload), options)
-}
-
-async function injectPendingGuidanceMessages(abortState, { preferVision = false } = {}) {
-  const runRecord = runRecordByAbortState.get(abortState)
-  if (!runRecord) return false
-
-  const entries = chatRunInputQueue.takeSteering(runRecord.id)
-  if (!entries.length) return false
-  touchChatRunInputQueue()
-
-  let completedCount = 0
-  try {
-    for (const entry of entries) {
-      throwIfAborted(abortState)
-      const text = String(entry?.text || '').trim()
-      const attachments = Array.isArray(entry?.attachments) ? entry.attachments : []
-      const userDisplay = createDisplayMessage('user', text || (attachments.length ? '(sent attachments)' : ''), {
-        guidance: true
-      })
-      if (attachments.length) {
-        userDisplay.attachmentsExpanded = false
-        userDisplay.attachments = attachments
-      }
-      runRecord.messages.push(userDisplay)
-      try {
-        await prepareUserApiMessage({
-          text,
-          attachments,
-          userDisplay,
-          preferVision,
-          providerKind: 'openai-compatible',
-          sessionTarget: runRecord
-        })
-      } catch (error) {
-        const displayIndex = runRecord.messages.findIndex((item) => item?.id === userDisplay.id)
-        if (displayIndex >= 0) runRecord.messages.splice(displayIndex, 1)
-        throw error
-      }
-      completedCount += 1
-    }
-  } catch (error) {
-    chatRunInputQueue.restore(runRecord.id, entries.slice(completedCount))
-    touchChatRunInputQueue()
-    throw error
-  }
-
-  runRecord.updatedAt = Date.now()
-  await maybeScrollToBottomForRun(abortState)
-  return true
-}
-
-async function runChatRounds({
-  providerId = '',
-  baseUrl,
-  apiKey,
-  apiMode = 'auto',
-  model,
-  signal,
-  setCurrentAssistantDisplay,
-  abortState = null,
-  assistantPlaceholderMode = 'text',
-  supportsVision = false,
-  memorySystemContent = ''
-}) {
-  const targetSession = getRunSessionTarget(abortState)
-  let tools = []
-  let toolMap = new Map()
-  let lastToolsKey = ''
-
-  const refreshToolsBundleIfNeeded = async () => {
-    if (lastToolsKey) return
-    const key = getCurrentToolsKey()
-    const bundle = await buildToolsBundle({ abortState })
-    tools = Array.isArray(bundle?.tools) ? bundle.tools : []
-    toolMap = bundle?.map instanceof Map ? bundle.map : new Map()
-    lastToolsKey = key
-  }
-
-  throwIfAborted(abortState)
-  await refreshToolsBundleIfNeeded()
-  // Do not impose a fixed round limit: long searches can legitimately need many
-  // distinct tool calls. Identical consecutive batches are still stopped by the
-  // repeated-call guard below, and the user can abort the run at any time.
-  let omitReasoningEffort = false
-  let forceReasoningContent = false
-  let imagesFallbackToText = false
-  let compatFcToolCallId = isFcToolCallIdCompatEnabled(baseUrl)
-  let plainTextToolFallback = false
-  let parallelToolCallsMode = 'enabled'
-  let repeatedToolCallRecoveryPending = false
-  const repeatedToolCallGuard = createRepeatedToolCallGuard({ maxConsecutive: 3 })
-
-  for (let round = 0; ; round += 1) {
-    throwIfAborted(abortState)
-    await refreshToolsBundleIfNeeded()
-    if (round > 0) await injectPendingGuidanceMessages(abortState, { preferVision: supportsVision })
-    const assistantDisplay = createDisplayMessage('assistant', '', {
-      thinking: '',
-      thinkingExpanded: false,
-      streaming: true,
-      render: 'md',
-      transientRequestPlaceholder: String(assistantPlaceholderMode || 'text').trim().toLowerCase() !== 'text'
-    })
-    applyAssistantRequestPlaceholderMode(assistantDisplay, assistantPlaceholderMode)
-    targetSession.messages.push(assistantDisplay)
-    setCurrentAssistantDisplay(assistantDisplay)
-
-    let lastReasoningText = ''
-
-    const onDelta = (evt) => {
-      if (abortState?.aborted || signal?.aborted) return
-      if (evt?.type === 'content' && evt.delta) {
-        prepareAssistantDisplayForTextResponse(assistantDisplay)
-        typewriterEnqueue(assistantDisplay, String(evt.delta))
-      }
-
-      if (evt?.type === 'reasoning' && evt.delta) {
-        deferredAppendMessageField(assistantDisplay, 'thinking', String(evt.delta), { scheduleScroll: true })
-        lastReasoningText = String(evt.reasoning || '')
-      }
-    }
-
-    let result = null
-    let successfulRequestChars = 0
-    const isRepeatedToolCallRecoveryRound = repeatedToolCallRecoveryPending
-    for (let attempt = 0; attempt < 3; attempt++) {
-        // A loop recovery round is deliberately tool-free so the model can
-        // explain the current result instead of immediately entering the same
-        // call sequence again.
-        const activeTools = plainTextToolFallback || isRepeatedToolCallRecoveryRound ? [] : tools
-        const attemptBody = {
-          model,
-          stream: true,
-          messages: buildRequestMessages({
-            baseUrl,
-            model,
-            memorySystemContent,
-            sessionRecord: targetSession,
-            forceReasoningContent,
-            compatToolCallIdAsFc: compatFcToolCallId,
-            fallbackAllVisionMessages: imagesFallbackToText,
-            tools: activeTools,
-            apiMessages: buildRequestApiMessages('openai-compatible', {
-              tools: activeTools,
-              apiMessages: targetSession.apiMessages,
-              contextSummary: targetSession?.contextSummary || null,
-              sessionRecord: targetSession
-            }),
-            plainTextToolFallback
-          }),
-          ...(activeTools.length
-            ? {
-                tools: activeTools,
-                tool_choice: 'auto',
-                ...(parallelToolCallsMode === 'enabled' ? { parallel_tool_calls: true } : {})
-              }
-            : {}),
-          ...buildActiveRequestOverrides({ omitReasoningEffort })
-        }
-        const attemptRequestChars =
-          estimateMessagesSize(attemptBody.messages) +
-          estimateToolDefinitionsChars(attemptBody.tools)
-
-      try {
-        result = await streamChatCompletion({
-          baseUrl,
-          apiKey,
-          apiMode,
-          body: attemptBody,
-          signal,
-          onDelta,
-          abortState
-        })
-        throwIfAborted(abortState)
-        successfulRequestChars = attemptRequestChars
-        break
-      } catch (err) {
-        const errText = String(err?.message || err || '')
-        if (isAbortError(err) || abortState?.aborted || signal?.aborted) throw createAbortError()
-
-        if (!compatFcToolCallId && errText.includes("Expected an ID that begins with 'fc'") && errText.includes('input[') && errText.includes('.id')) {
-          compatFcToolCallId = true
-          enableFcToolCallIdCompat(baseUrl)
-          message.warning("检测到当前端点要求工具调用 ID 以 fc_ 开头，已启用兼容模式（tool_calls.id: call_ -> fc_）。")
-          continue
-        }
-
-        const hasVision = (targetSession.apiMessages || []).some((msg) => messageContentHasImageUrl(msg?.content))
-        if (!imagesFallbackToText && hasVision && shouldFallbackVisionInputToText(errText)) {
-          imagesFallbackToText = true
-          message.warning('当前端点不支持 image_url 输入。本次请求已自动改为纯文本发送，模型将无法直接理解图片。')
-          continue
-        }
-
-        if (!omitReasoningEffort && thinkingEffort.value !== 'auto' && errText.includes('reasoning_effort')) {
-          // 部分接口不支持 reasoning_effort，自动回退为不传该字段
-          omitReasoningEffort = true
-          continue
-        }
-
-        if (parallelToolCallsMode === 'enabled' && shouldRetryWithoutParallelToolCalls(errText)) {
-          parallelToolCallsMode = 'disabled'
-          continue
-        }
-
-        if (!plainTextToolFallback && hasToolStateMessages(targetSession.apiMessages) && shouldRetryToolContinuationAsPlainText(errText)) {
-          plainTextToolFallback = true
-          message.warning('当前端点的工具续跑接口临时不可用，已改为用纯文本工具结果继续回答。')
-          continue
-        }
-
-        if (!forceReasoningContent) {
-          if (shouldRetryWithReasoningContent(errText)) {
-            // DeepSeek thinking_mode 下，后续请求里的 assistant 消息需要带上 reasoning_content
-            forceReasoningContent = true
-            continue
-          }
-        }
-
-        throw err
-      }
-    }
-
-    if (!result) {
-      throw new Error('请求失败：已达到重试次数上限')
-    }
-    throwIfAborted(abortState)
-    recordModelUsage(result?.usage, {
-      providerId,
-      model,
-      endpoint: result?.endpoint || apiMode || 'auto',
-      purpose: round > 0 ? 'chat-tool-round' : 'chat'
-    })
-    updateContextTokenTelemetry(targetSession, result?.usage, {
-      requestChars: successfulRequestChars,
-      providerId,
-      model,
-      endpoint: result?.endpoint || apiMode || 'auto'
-    })
-
-    if (result?.content && !assistantDisplay.content && !typewriterStates.has(assistantDisplay.id)) {
-      prepareAssistantDisplayForTextResponse(assistantDisplay)
-      typewriterEnqueue(assistantDisplay, String(result.content || ''))
-    }
-
-    await Promise.all([
-      typewriterWaitIdle(assistantDisplay.id),
-      deferredMessageFieldWaitIdle(assistantDisplay.id, 'thinking')
-    ])
-    assistantDisplay.streaming = false
-    assistantDisplay.render = 'md'
-    typewriterStates.delete(assistantDisplay.id)
-    const assistantImages = await persistChatMediaListAssets(
-      extractChatImagesFromToolResult(result?.payloads?.length ? result.payloads : result),
-      { kind: 'image', messageId: assistantDisplay.id }
-    )
-    const assistantVideos = await persistChatMediaListAssets(
-      extractChatVideosFromToolResult(result?.payloads?.length ? result.payloads : result),
-      { kind: 'video', messageId: assistantDisplay.id }
-    )
-    if (assistantImages.length) {
-      assistantDisplay.images = assistantImages
-      assistantDisplay.transientRequestPlaceholder = false
-      clearAssistantMediaBubblePlaceholders(assistantDisplay)
-    }
-    if (assistantVideos.length) {
-      assistantDisplay.videos = assistantVideos
-      assistantDisplay.transientRequestPlaceholder = false
-      clearAssistantMediaBubblePlaceholders(assistantDisplay)
-    }
-    maybeScheduleScrollToBottomForRun(abortState)
-
-    const normalizedToolCalls = normalizeAssistantToolCalls(result?.toolCalls, {
-      createFallbackId: () => `call_${newId()}`
-    })
-
-    targetSession.apiMessages.push({
-      role: 'assistant',
-      content: String(result.content || ''),
-      ...(normalizedToolCalls.length ? { tool_calls: normalizedToolCalls } : {}),
-      reasoning_content: String(result.reasoning ?? '')
-    })
-    assistantDisplay.apiIndex = targetSession.apiMessages.length - 1
-
-    if (!assistantDisplay.content.trim() && normalizedToolCalls.length && !String(assistantDisplay.thinking || '').trim()) {
-      const idx = targetSession.messages.findIndex((m) => m.id === assistantDisplay.id)
-      if (idx !== -1) targetSession.messages.splice(idx, 1)
-    }
-    if (
-      !assistantDisplay.content.trim() &&
-      !normalizedToolCalls.length &&
-      !(Array.isArray(assistantDisplay.images) && assistantDisplay.images.length) &&
-      !(Array.isArray(assistantDisplay.videos) && assistantDisplay.videos.length)
-    ) {
-      assistantDisplay.content = buildEmptyAssistantResponseText(targetSession.apiMessages)
-    }
-
-    setCurrentAssistantDisplay(null)
-    await maybeScrollToBottomForRun(abortState)
-
-    if (!normalizedToolCalls.length) {
-      const guidanceInjected =
-        !isRepeatedToolCallRecoveryRound
-          ? await injectPendingGuidanceMessages(abortState, { preferVision: supportsVision })
-          : false
-      if (guidanceInjected) continue
-      break
-    }
-
-    if (isRepeatedToolCallRecoveryRound) {
-      // A provider should not return tool calls when no tools were supplied.
-      // If it does, do not execute hallucinated calls or leave an unmatched
-      // tool_calls message in the persisted API history.
-      const fallbackText = '任务已暂停：工具连续返回了相同调用，系统为避免循环已停止。请补充更明确的目标后重试。'
-      const recoveryApiMessage = targetSession.apiMessages[assistantDisplay.apiIndex]
-      if (recoveryApiMessage && typeof recoveryApiMessage === 'object') {
-        recoveryApiMessage.content = fallbackText
-        delete recoveryApiMessage.tool_calls
-      }
-      prepareAssistantDisplayForTextResponse(assistantDisplay)
-      assistantDisplay.content = fallbackText
-      assistantDisplay.thinking = ''
-      if (!targetSession.messages.some((msg) => msg?.id === assistantDisplay.id)) {
-        targetSession.messages.push(assistantDisplay)
-      }
-      await maybeScrollToBottomForRun(abortState)
-      break
-    }
-
-    const repeatedToolCallState = repeatedToolCallGuard.observe(normalizedToolCalls)
-    if (repeatedToolCallState.blocked) {
-      const stopText = [
-        '系统已阻止本批工具执行：检测到相同工具和参数连续调用 3 次。',
-        '不要再次调用任何工具。请根据已经获得的结果，直接向用户说明当前进展、阻塞原因和可行的下一步；不要复述这条内部提示。'
-      ].join('\n')
-      normalizedToolCalls.forEach((toolCall) => {
-        targetSession.apiMessages.push(createToolResultApiMessage(toolCall, stopText, {
-          ok: false,
-          status: 'stopped'
-        }))
-      })
-      repeatedToolCallRecoveryPending = true
-      repeatedToolCallGuard.reset()
-      await maybeScrollToBottomForRun(abortState)
-      continue
-    }
-
-    const toolExecResults = await executeToolCallsParallel(
-      normalizedToolCalls,
-      toolMap,
-      lastReasoningText || String(result.reasoning || ''),
-      abortState
-    )
-
-    for (let index = 0; index < normalizedToolCalls.length; index += 1) {
-      const toolCall = normalizedToolCalls[index]
-      const exec = toolExecResults[index]
-      throwIfAborted(abortState)
-      targetSession.apiMessages.push(createToolResultApiMessage(toolCall, exec?.content, {
-        ok: exec?.ok
-      }))
-      const latestUserPrompt = getLatestRealUserPromptText(targetSession.apiMessages)
-      const shouldAttachToolImages =
-        String(exec?.toolName || '').trim() === 'notes_read' ||
-        shouldAutoAttachToolImagesForVision(latestUserPrompt)
-      if (supportsVision && shouldAttachToolImages && Array.isArray(exec?.images) && exec.images.length) {
-        const syntheticVisionMessage = buildToolVisionUserMessage({
-          images: exec.images,
-          serverName: exec.serverName || toolCall?.function?.name || '',
-          toolName: exec.toolName || toolCall?.function?.name || '',
-          userPrompt: latestUserPrompt
-        })
-        if (syntheticVisionMessage) {
-          targetSession.apiMessages.push(syntheticVisionMessage)
-        }
-      }
-    }
-  }
-}
-
-function mergeUtoolsAiStreamText(previous, incoming) {
-  const next = String(incoming || '')
-  if (!next) {
-    return {
-      delta: '',
-      total: String(previous || '')
-    }
-  }
-
-  const current = String(previous || '')
-  if (current && next.startsWith(current)) {
-    return {
-      delta: next.slice(current.length),
-      total: next
-    }
-  }
-
-  return {
-    delta: next,
-    total: current + next
-  }
-}
-
-async function runUtoolsAiChatRound({
-  providerId = '',
-  model,
-  setCurrentAssistantDisplay,
-  setAbortHandle,
-  isAborted,
-  abortState = null
-}) {
-  if (!canUseUtoolsAi()) {
-    throw new Error('当前环境不支持 uTools 官方 AI')
-  }
-
-  const targetSession = getRunSessionTarget(abortState)
-  throwIfAborted(abortState)
-  const bundle = await buildToolsBundle({ abortState })
-  const tools = Array.isArray(bundle?.tools) ? bundle.tools : []
-  const toolMap = bundle?.map instanceof Map ? bundle.map : new Map()
-  const assistantSegments = []
-  let assistantDisplay = null
-
-  const createStreamingAssistantDisplay = () => {
-    const msg = createDisplayMessage('assistant', '', {
-      thinking: '',
-      thinkingExpanded: false,
-      streaming: true,
-      render: 'md'
-    })
-    assistantSegments.push(msg)
-    assistantDisplay = msg
-    targetSession.messages.push(msg)
-    setCurrentAssistantDisplay(msg)
-    return msg
-  }
-
-  const hasVisibleAssistantContent = (msg) => {
-    return !!String(msg?.content || '').trim() || !!String(msg?.thinking || '').trim()
-  }
-
-  const finalizeStreamingAssistantDisplay = async (options = {}) => {
-    const removeIfEmpty = !!options.removeIfEmpty
-    const current = assistantDisplay
-    if (!current) return null
-
-    await Promise.all([
-      typewriterWaitIdle(current.id),
-      deferredMessageFieldWaitIdle(current.id, 'thinking')
-    ])
-    current.streaming = false
-    current.render = 'md'
-    typewriterStates.delete(current.id)
-
-    if (removeIfEmpty && !hasVisibleAssistantContent(current)) {
-      const idx = targetSession.messages.findIndex((m) => m.id === current.id)
-      if (idx !== -1) targetSession.messages.splice(idx, 1)
-    }
-
-    assistantDisplay = null
-    setCurrentAssistantDisplay(null)
-    maybeScheduleScrollToBottomForRun(abortState)
-    return current
-  }
-
-  const ensureStreamingAssistantDisplay = () => assistantDisplay || createStreamingAssistantDisplay()
-
-  createStreamingAssistantDisplay()
-
-  let streamedContent = ''
-  let streamedReasoning = ''
-  let toolInvokeCount = 0
-  const utoolsToolFallbackRecords = []
-
-  const buildUtoolsToolFallbackPrompt = () => {
-    const records = utoolsToolFallbackRecords
-      .map((record, index) => {
-        const serverName = String(record.serverName || '').trim()
-        const toolName = String(record.toolName || record.name || '').trim()
-        const args = truncateText(record.argsText || '{}', 1200, '（工具参数已截断）')
-        const content = truncateText(record.content || '', 24000, '（工具结果已截断）')
-        return [
-          `### 工具结果 ${index + 1}`,
-          serverName || toolName ? `工具：${[serverName, toolName].filter(Boolean).join(' / ')}` : '',
-          `参数：${args}`,
-          '结果：',
-          content || '（空结果）'
-        ].filter(Boolean).join('\n')
-      })
-      .filter(Boolean)
-      .join('\n\n')
-
-    return [
-      '系统补充：刚才已经完成了工具调用，但当前 uTools AI 工具续跑接口临时不可用。',
-      '请直接基于下面的工具结果回答用户刚才的问题；如果资料不足，请说明不足之处。',
-      records
-    ].filter(Boolean).join('\n\n')
-  }
-
-  const memorySystemContent = String(abortState?.memorySystemContent || '').trim()
-  let lastUtoolsRequestChars = 0
-  const requestUtoolsAi = (requestApiMessages, requestTools = tools) => {
-    const requestMessages = buildUtoolsAiMessages({
-      systemContent: buildCombinedSystemContent(memorySystemContent, { sessionRecord: targetSession }),
-      apiMessages: requestApiMessages
-    })
-    lastUtoolsRequestChars =
-      estimateMessagesSize(requestMessages) +
-      estimateToolDefinitionsChars(requestTools)
-    return window.utools.ai(
-      {
-        model,
-        messages: requestMessages,
-        ...(requestTools.length ? { tools: requestTools } : {})
-      },
-      (chunk) => {
-        if (abortState?.aborted || isAborted?.()) return
-        const contentState = mergeUtoolsAiStreamText(streamedContent, chunk?.content)
-        streamedContent = contentState.total
-        if (contentState.delta) {
-          ensureStreamingAssistantDisplay()
-          typewriterEnqueue(assistantDisplay, contentState.delta)
-        }
-
-        const reasoningState = mergeUtoolsAiStreamText(streamedReasoning, extractUtoolsAiReasoningText(chunk))
-        streamedReasoning = reasoningState.total
-        if (reasoningState.delta) {
-          ensureStreamingAssistantDisplay()
-          deferredAppendMessageField(assistantDisplay, 'thinking', reasoningState.delta, { scheduleScroll: true })
-        }
-      }
-    )
-  }
-
-  const unregisterToolFns = registerUtoolsAiToolFunctions({
-    tools,
-    invokeTool: async (name, argsObj) => {
-      throwIfAborted(abortState)
-      toolInvokeCount += 1
-      await finalizeStreamingAssistantDisplay({ removeIfEmpty: true })
-
-      const argsText = stableStringify(argsObj || {})
-      const exec = await executeToolCall(
-        {
-          id: `utools_call_${newId()}`,
-          type: 'function',
-          function: {
-            name,
-            arguments: argsText || '{}'
-          }
-        },
-        toolMap,
-        streamedReasoning,
-        abortState
-      )
-
-      const raw = formatToolResultContentForModel(exec?.content, {
-        ok: exec?.ok
-      })
-      utoolsToolFallbackRecords.push({
-        name,
-        argsText,
-        content: raw,
-        serverName: exec?.serverName || '',
-        toolName: exec?.toolName || name
-      })
-      const parsed = safeJsonParse(raw)
-      if (exec?.serverName === '内置联网' || exec?.toolName === 'web_search' || exec?.toolName === 'web_read') {
-        return raw
-      }
-      return parsed.ok ? parsed.value : raw
-    }
-  })
-
-  try {
-    const requestApiMessages = buildRequestApiMessages('utools-ai', {
-      tools,
-      apiMessages: targetSession.apiMessages,
-      contextSummary: targetSession?.contextSummary || null,
-      sessionRecord: targetSession
-    })
-    let request = requestUtoolsAi(requestApiMessages, tools)
-    setAbortHandle(request)
-    let result = null
-    try {
-      result = await request
-    } catch (err) {
-      const errText = err?.message || String(err)
-      if (!toolInvokeCount || !shouldRetryToolContinuationAsPlainText(errText) || abortState?.aborted || isAborted?.()) throw err
-      await finalizeStreamingAssistantDisplay({ removeIfEmpty: true })
-      message.warning('当前 uTools AI 工具续跑接口临时不可用，已改为用纯文本工具结果继续回答。')
-      request = requestUtoolsAi(
-        [
-          ...requestApiMessages,
-          {
-            role: 'user',
-            content: buildUtoolsToolFallbackPrompt()
-          }
-        ],
-        []
-      )
-      setAbortHandle(request)
-      result = await request
-    }
-
-    if (isAborted?.() || abortState?.aborted) throw createAbortError()
-    recordModelUsage(extractModelUsage(result), {
-      providerId,
-      model,
-      endpoint: 'utools-ai',
-      purpose: 'chat'
-    })
-    updateContextTokenTelemetry(targetSession, extractModelUsage(result), {
-      requestChars: lastUtoolsRequestChars,
-      providerId,
-      model,
-      endpoint: 'utools-ai'
-    })
-
-    const finalContentState = mergeUtoolsAiStreamText(streamedContent, result?.content)
-    streamedContent = finalContentState.total
-    if (finalContentState.delta) {
-      ensureStreamingAssistantDisplay()
-      typewriterEnqueue(assistantDisplay, finalContentState.delta)
-    }
-
-    const finalReasoningState = mergeUtoolsAiStreamText(streamedReasoning, extractUtoolsAiReasoningText(result))
-    streamedReasoning = finalReasoningState.total
-    if (finalReasoningState.delta) {
-      ensureStreamingAssistantDisplay()
-      deferredAppendMessageField(assistantDisplay, 'thinking', finalReasoningState.delta, { scheduleScroll: true })
-    }
-
-    await finalizeStreamingAssistantDisplay({ removeIfEmpty: true })
-
-    targetSession.apiMessages.push({
-      role: 'assistant',
-      content: String(streamedContent || ''),
-      reasoning_content: String(streamedReasoning || '')
-    })
-    const assistantApiIndex = targetSession.apiMessages.length - 1
-    const visibleSegments = assistantSegments.filter((segment) => targetSession.messages.some((m) => m.id === segment.id))
-    visibleSegments.forEach((segment) => {
-      segment.apiIndex = assistantApiIndex
-    })
-
-    if (!visibleSegments.some((segment) => hasVisibleAssistantContent(segment)) && toolInvokeCount === 0) {
-      const emptyMsg = createDisplayMessage('assistant', buildEmptyAssistantResponseText(targetSession.apiMessages))
-      emptyMsg.apiIndex = assistantApiIndex
-      targetSession.messages.push(emptyMsg)
-    }
-
-    setCurrentAssistantDisplay(null)
-    await maybeScrollToBottomForRun(abortState)
-  } finally {
-    unregisterToolFns()
-    setAbortHandle(null)
-  }
-}
-
-function buildImageGenerationResultText({ imageCount, revisedPrompts }) {
-  const count = Math.max(0, Number(imageCount) || 0)
-  if (!revisedPrompts.length) return ''
-  const title = count > 1 ? `已生成 ${count} 张图片` : '已生成 1 张图片'
-  return `### ${title}\n\n#### 修订提示词\n\n${revisedPrompts.join('\n\n')}`
-}
-
-function buildImageGenerationApiSummary({ imageCount, revisedPrompts }) {
-  const count = Math.max(0, Number(imageCount) || 0)
-  const lines = [`（已生成 ${count || 1} 张图片）`]
-  const firstRevisedPrompt = truncateInlineText(revisedPrompts?.[0] || '', 260)
-  if (firstRevisedPrompt) lines.push(`修订提示词：${firstRevisedPrompt}`)
-  return lines.join('\n')
-}
-
-function buildImageGenerationPendingText(imageTask = null) {
-  const statusLabel = imageTask ? assistantImageTaskStatusLabel({ imageTask }) : '生成中'
-  const taskId = String(imageTask?.id || '').trim()
-  return `图片生成${statusLabel}${taskId ? `（任务 ID：${taskId}）` : '……'}`
-}
-
-function buildMediaRequestSnapshot(kind, {
-  baseUrl = '',
-  model = '',
-  prompt = '',
-  requestOptions = null,
-  requestMeta = null,
-  placeholderMode = 'text',
-  startedAt = Date.now()
-} = {}) {
-  return {
-    kind,
-    baseUrl: String(baseUrl || '').trim(),
-    model: String(model || '').trim(),
-    prompt: String(prompt || '').trim(),
-    requestOptions: requestOptions && typeof requestOptions === 'object' ? deepCopyJson(requestOptions, {}) : {},
-    requestMeta: requestMeta && typeof requestMeta === 'object' ? deepCopyJson(requestMeta, {}) : null,
-    placeholderMode: String(placeholderMode || 'text').trim() || 'text',
-    startedAt: Number(startedAt) || Date.now()
-  }
-}
-
-function attachMediaRequestSnapshot(assistantDisplay, kind, patch = {}) {
-  if (!assistantDisplay || typeof assistantDisplay !== 'object') return
-  const previous = assistantDisplay.mediaRequest && typeof assistantDisplay.mediaRequest === 'object'
-    ? assistantDisplay.mediaRequest
-    : {}
-  assistantDisplay.mediaRequest = {
-    ...previous,
-    ...patch,
-    kind
-  }
-}
-
-function createImageGenerationPlaceholderDisplay(userPrompt, placeholderMode = 'text', options = {}) {
-  const requestInfo = String(options?.requestInfo || '').trim()
-  const assistantDisplay = createDisplayMessage('assistant', placeholderMode === 'image' ? '' : buildImageGenerationPendingText(), {
-    streaming: false,
-    render: 'text',
-    imagePrompt: userPrompt,
-    imageRequestInfo: requestInfo,
-    transientRequestPlaceholder: true
-  })
-
-  if (placeholderMode === 'image') {
-    assistantDisplay.imageBubblePlaceholder = true
-    assistantDisplay.imageBubblePlaceholderImage = createAssistantImageBubblePlaceholder(
-      '图片生成中，结果就绪后会展示在这里。',
-      requestInfo
-    )
-  }
-
-  return assistantDisplay
-}
-
-function applyImageGenerationTaskToDisplay(assistantDisplay, imageTask, placeholderMode = 'text') {
-  if (!assistantDisplay) return
-  assistantDisplay.streaming = false
-  assistantDisplay.render = 'text'
-  assistantDisplay.transientRequestPlaceholder = false
-
-  if (placeholderMode === 'image') {
-    const requestInfo = String(assistantDisplay.imageRequestInfo || '').trim()
-    assistantDisplay.content = ''
-    assistantDisplay.imageTask = imageTask
-    assistantDisplay.imageBubblePlaceholder = true
-    assistantDisplay.imageBubblePlaceholderImage = createAssistantImageBubblePlaceholder(
-      imageTask?.note || '图片生成中，结果就绪后会展示在这里。',
-      requestInfo
-    )
-    return
-  }
-
-  assistantDisplay.imageTask = null
-  assistantDisplay.imageBubblePlaceholder = false
-  assistantDisplay.imageBubblePlaceholderImage = null
-  assistantDisplay.content = buildImageGenerationPendingText(imageTask)
-}
-
-function applyImageGenerationTextToDisplay(assistantDisplay, textResult) {
-  if (!assistantDisplay) return
-  assistantDisplay.streaming = false
-  assistantDisplay.render = 'md'
-  assistantDisplay.content = String(textResult || '').trim()
-  assistantDisplay.imageTask = null
-  assistantDisplay.images = []
-  assistantDisplay.imageBubblePlaceholder = false
-  assistantDisplay.imageBubblePlaceholderImage = null
-  assistantDisplay.transientRequestPlaceholder = false
-}
-
-function applyImageGenerationImagesToDisplay(assistantDisplay, { images, userPrompt, revisedPrompts }) {
-  if (!assistantDisplay) return
-  assistantDisplay.streaming = false
-  assistantDisplay.render = revisedPrompts.length ? 'md' : 'text'
-  assistantDisplay.content = ''
-  assistantDisplay.imageTask = null
-  assistantDisplay.images = images
-  assistantDisplay.imagePrompt = userPrompt
-  assistantDisplay.imageBubblePlaceholder = false
-  assistantDisplay.imageBubblePlaceholderImage = null
-  assistantDisplay.transientRequestPlaceholder = false
-  assistantDisplay.content = buildImageGenerationResultText({
-    imageCount: images.length,
-    revisedPrompts
-  })
-}
-
-async function runImageGenerationRound({
-  providerId = '',
-  baseUrl,
-  apiKey,
-  model,
-  signal,
-  setCurrentAssistantDisplay,
-  abortState = null,
-  placeholderMode = 'text',
-  requestOptionsOverride = null
-}) {
-  const targetSession = getRunSessionTarget(abortState)
-  throwIfAborted(abortState)
-  const lastUserApiMsg = (() => {
-    for (let i = (targetSession.apiMessages || []).length - 1; i >= 0; i--) {
-      if (targetSession.apiMessages[i]?.role === 'user') return targetSession.apiMessages[i]
-    }
-    return null
-  })()
-
-  const userPrompt = extractEditableUserTextFromContent(
-    extractImageGenerationPromptFromContent(lastUserApiMsg?.content)
-  ).trim()
-  if (!userPrompt) {
-    throw new Error('图片生成提示词为空')
-  }
-
-  const requestOptions =
-    requestOptionsOverride && typeof requestOptionsOverride === 'object'
-      ? buildImageGenerationRequestOptionsWithReferences(requestOptionsOverride)
-      : {}
-  const requestInfo = placeholderMode === 'image' ? buildManualImageGenerationRequestInfo(requestOptions) : ''
-  const startedAt = Date.now()
-  const assistantDisplay = createImageGenerationPlaceholderDisplay(userPrompt, placeholderMode, { requestInfo })
-  attachMediaRequestSnapshot(assistantDisplay, 'image', buildMediaRequestSnapshot('image', {
-    baseUrl,
-    model,
-    prompt: userPrompt,
-    requestOptions,
-    placeholderMode,
-    startedAt
-  }))
-  targetSession.messages.push(assistantDisplay)
-  setCurrentAssistantDisplay(assistantDisplay)
-  await maybeScrollToBottomForRun(abortState)
-
-  const prompt = buildImageGenerationPromptFromHistory(userPrompt, { apiMessages: targetSession.apiMessages })
-  const { payload, requestMeta } = await requestImageGeneration({
-    baseUrl,
-    apiKey,
-    model,
-    prompt,
-    requestOptions,
-    signal
-  })
-  attachMediaRequestSnapshot(assistantDisplay, 'image', { requestMeta })
-  recordModelUsageFromPayload(payload, {
-    providerId,
-    model,
-    endpoint: requestMeta?.kind || 'image-generation',
-    purpose: 'image-generation'
-  })
-  throwIfAborted(abortState)
-
-  const imageTask = extractImageGenerationTaskState(payload, requestMeta)
-  if (imageTask) {
-    applyImageGenerationTaskToDisplay(assistantDisplay, { ...imageTask, startedAt }, placeholderMode)
-    targetSession.apiMessages.push({
-      role: 'assistant',
-      content:
-        placeholderMode === 'image'
-          ? `图片任务已受理：${assistantImageTaskStatusLabel(assistantDisplay)}${imageTask.id ? `（任务 ID：${imageTask.id}）` : ''}`
-          : buildImageGenerationPendingText(imageTask)
-    })
-    assistantDisplay.apiIndex = targetSession.apiMessages.length - 1
-    await maybeScrollToBottomForRun(abortState)
-    return
-  }
-
-  const generationTimeMs = Math.max(0, Date.now() - startedAt)
-  const images = await persistChatMediaListAssets(
-    extractChatImagesFromToolResult(payload).map((image) => ({
-      ...image,
-      requestSize: image.requestSize || requestOptions.size || '',
-      generationTimeMs: Number(image.generationTimeMs || 0) || generationTimeMs
-    })),
-    { kind: 'image', messageId: assistantDisplay.id }
-  )
-  const textResult = extractImageGenerationTextResult(payload)
-  if (!images.length) {
-    if (textResult) {
-      applyImageGenerationTextToDisplay(assistantDisplay, textResult)
-      targetSession.apiMessages.push({
-        role: 'assistant',
-        content: textResult
-      })
-      assistantDisplay.apiIndex = targetSession.apiMessages.length - 1
-      setCurrentAssistantDisplay(null)
-      await maybeScrollToBottomForRun(abortState)
-      return
-    }
-    throw new Error(buildImageGenerationCompatibilityError(payload, requestMeta))
-  }
-
-  const revisedPrompts = collectImageGenerationRevisedPrompts(payload)
-  applyImageGenerationImagesToDisplay(assistantDisplay, { images, userPrompt, revisedPrompts })
-
-  targetSession.apiMessages.push({
-    role: 'assistant',
-    content: buildImageGenerationApiSummary({
-      imageCount: images.length,
-      revisedPrompts
-    })
-  })
-  assistantDisplay.apiIndex = targetSession.apiMessages.length - 1
-  setCurrentAssistantDisplay(null)
-  await maybeScrollToBottomForRun(abortState)
-}
-
-function buildVideoGenerationPendingText(videoTask = null) {
-  const statusLabel = videoTask ? assistantVideoTaskStatusLabel({ videoTask }) : '生成中'
-  const taskId = String(videoTask?.id || '').trim()
-  return `视频生成${statusLabel}${taskId ? `（任务 ID：${taskId}）` : '……'}`
-}
-
-function createVideoGenerationPlaceholderDisplay(userPrompt, placeholderMode = 'text', options = {}) {
-  const requestInfo = String(options?.requestInfo || '').trim()
-  const assistantDisplay = createDisplayMessage('assistant', placeholderMode === 'video' ? '' : buildVideoGenerationPendingText(), {
-    streaming: false,
-    render: 'text',
-    videoPrompt: userPrompt,
-    videoRequestInfo: requestInfo,
-    transientRequestPlaceholder: true
-  })
-
-  if (placeholderMode === 'video') {
-    assistantDisplay.videoBubblePlaceholder = true
-    assistantDisplay.videoBubblePlaceholderItem = createAssistantVideoBubblePlaceholder(
-      '视频生成中，结果就绪后会展示在这里。',
-      requestInfo
-    )
-  }
-
-  return assistantDisplay
-}
-
-function applyVideoGenerationTaskToDisplay(assistantDisplay, videoTask, placeholderMode = 'text') {
-  if (!assistantDisplay) return
-  assistantDisplay.streaming = false
-  assistantDisplay.render = 'text'
-  assistantDisplay.transientRequestPlaceholder = false
-
-  if (placeholderMode === 'video') {
-    const requestInfo = String(assistantDisplay.videoRequestInfo || '').trim()
-    assistantDisplay.content = ''
-    assistantDisplay.videoTask = videoTask
-    assistantDisplay.videoBubblePlaceholder = true
-    assistantDisplay.videoBubblePlaceholderItem = createAssistantVideoBubblePlaceholder(
-      videoTask?.note || '视频生成中，结果就绪后会展示在这里。',
-      requestInfo
-    )
-    return
-  }
-
-  assistantDisplay.videoTask = videoTask
-  assistantDisplay.videoBubblePlaceholder = false
-  assistantDisplay.videoBubblePlaceholderItem = null
-  assistantDisplay.content = ''
-}
-
-function applyVideoGenerationTextToDisplay(assistantDisplay, textResult) {
-  if (!assistantDisplay) return
-  assistantDisplay.streaming = false
-  assistantDisplay.render = 'md'
-  assistantDisplay.content = String(textResult || '').trim()
-  assistantDisplay.videoTask = null
-  assistantDisplay.videos = []
-  assistantDisplay.videoBubblePlaceholder = false
-  assistantDisplay.videoBubblePlaceholderItem = null
-  assistantDisplay.transientRequestPlaceholder = false
-}
-
-function buildVideoGenerationResultText({ videoCount }) {
-  const count = Math.max(0, Number(videoCount) || 0)
-  if (!count) return ''
-  return count > 1 ? `已生成 ${count} 个视频` : '已生成 1 个视频'
-}
-
-function applyVideoGenerationVideosToDisplay(assistantDisplay, { videos, userPrompt }) {
-  if (!assistantDisplay) return
-  assistantDisplay.streaming = false
-  assistantDisplay.render = 'text'
-  assistantDisplay.content = ''
-  assistantDisplay.videoTask = null
-  assistantDisplay.videos = videos
-  assistantDisplay.videoPrompt = userPrompt
-  assistantDisplay.videoBubblePlaceholder = false
-  assistantDisplay.videoBubblePlaceholderItem = null
-  assistantDisplay.transientRequestPlaceholder = false
-  assistantDisplay.content = buildVideoGenerationResultText({ videoCount: videos.length })
-}
-
-function buildVideoGenerationApiSummary({ videoCount }) {
-  const count = Math.max(0, Number(videoCount) || 0)
-  return `（已生成 ${count || 1} 个视频）`
-}
-
-function buildMessageIdSet(messages = []) {
-  const ids = new Set()
-  ;(Array.isArray(messages) ? messages : []).forEach((msg) => {
-    const id = String(msg?.id || '').trim()
-    if (id) ids.add(id)
-  })
-  return ids
-}
-
-const activeSessionMessageIdSet = computed(() => buildMessageIdSet(session.messages))
-const trackedMessageIdSet = computed(() => {
-  const ids = new Set(activeSessionMessageIdSet.value)
-  ;(Array.isArray(memorySessions.value) ? memorySessions.value : []).forEach((record) => {
-    ;(Array.isArray(record?.messages) ? record.messages : []).forEach((msg) => {
-      const id = String(msg?.id || '').trim()
-      if (id) ids.add(id)
-    })
-  })
-  return ids
-})
-const sessionToolMessageCount = computed(() =>
-  (Array.isArray(session.messages) ? session.messages : []).reduce(
-    (count, msg) => count + (isToolMessage(msg) ? 1 : 0),
-    0
-  )
-)
-const compactToolMessageMode = computed(
-  () =>
-    (session.messages?.length || 0) >= CHAT_TOOL_COMPACT_MIN_MESSAGES &&
-    sessionToolMessageCount.value >= CHAT_TOOL_COMPACT_MIN_TOOL_MESSAGES
-)
-
-function isDisplayMessageInActiveSession(msg) {
-  if (!msg || typeof msg !== 'object') return false
-  const id = String(msg.id || '').trim()
-  return !!id && activeSessionMessageIdSet.value.has(id)
-}
-
-function isDisplayMessageTracked(msg) {
-  if (!msg || typeof msg !== 'object') return false
-  const id = String(msg.id || '').trim()
-  return !!id && trackedMessageIdSet.value.has(id)
-}
-
-function startDetachedVideoTaskPolling({
-  assistantDisplay,
-  initialPayload,
-  requestMeta,
-  apiKey,
-  startedAt,
-  placeholderMode,
-  userPrompt,
-  initialTask,
-  sessionRecord = null,
-  stateSnapshot = null
-}) {
-  if (!assistantDisplay || !requestMeta || !apiKey) return
-  const taskId = String(initialTask?.id || initialPayload?.id || initialPayload?.task_id || '').trim()
-  if (!taskId) return
-
-  const record = sessionRecord || getMemorySessionForMessage(assistantDisplay)
-  const requestHandle = new AbortController()
-  const abortState = createRequestAbortStateForMediaResume(requestHandle)
-  detachedMediaAbortStates.add(abortState)
-  setMediaTaskResuming(assistantDisplay, 'video', true)
-  record.runningTaskCount = Math.max(0, Number(record.runningTaskCount || 0)) + 1
-  if (stateSnapshot && typeof stateSnapshot === 'object') record.state = deepCopyJson(stateSnapshot, {})
-
-  void (async () => {
-    try {
-      const resolvedPayload = await waitForVideoGenerationResult({
-        initialPayload,
-        requestMeta,
-        apiKey,
-        signal: requestHandle.signal,
-        abortState,
-        timeoutMs: VIDEO_GENERATION_RESULT_TIMEOUT_MS,
-        onStatus: (_payload, taskState) => {
-          if (!isDisplayMessageTracked(assistantDisplay)) {
-            abortState.abort()
-            return
-          }
-          if (!taskState) return
-          const nextTask = {
-            ...(assistantDisplay.videoTask || {}),
-            ...taskState,
-            id: taskState.id || assistantDisplay.videoTask?.id || taskId,
-            startedAt,
-            lastPolledAt: Date.now()
-          }
-          applyVideoGenerationTaskToDisplay(assistantDisplay, nextTask, placeholderMode)
-        }
-      })
-
-      if (!isDisplayMessageTracked(assistantDisplay)) return
-
-      if (!resolvedPayload) {
-        assistantDisplay.videoTask = {
-          ...(assistantDisplay.videoTask || {}),
-          id: taskId,
-          status: 'processing',
-          stage: 'polling',
-          startedAt,
-          note: '视频任务仍在生成中，稍后可继续轮询。'
-        }
-        applyVideoGenerationTaskToDisplay(assistantDisplay, assistantDisplay.videoTask, placeholderMode)
-        setAssistantApiContentForDisplay(assistantDisplay, buildVideoGenerationPendingText(assistantDisplay.videoTask))
-        return
-      }
-
-      const generationTimeMs = Math.max(0, Date.now() - startedAt)
-      const videos = await persistChatMediaListAssets(
-        extractChatVideosFromToolResult(resolvedPayload).map((video) => ({
-          ...video,
-          generationTimeMs: Number(video.generationTimeMs || 0) || generationTimeMs
-        })),
-        { kind: 'video', messageId: assistantDisplay.id }
-      )
-      if (!videos.length) {
-        const textResult = extractImageGenerationTextResult(resolvedPayload)
-        if (textResult) {
-          applyVideoGenerationTextToDisplay(assistantDisplay, textResult)
-          setAssistantApiContentForDisplay(assistantDisplay, textResult)
-          return
-        }
-        throw new Error(buildVideoGenerationCompatibilityError(resolvedPayload, requestMeta))
-      }
-
-      applyVideoGenerationVideosToDisplay(assistantDisplay, { videos, userPrompt })
-      setAssistantApiContentForDisplay(assistantDisplay, buildVideoGenerationApiSummary({ videoCount: videos.length }))
-      message.success('视频生成完成')
-    } catch (err) {
-      if (!isDisplayMessageTracked(assistantDisplay)) return
-      if (abortState.aborted || isAbortError(err)) {
-        assistantDisplay.videoTask = {
-          ...(assistantDisplay.videoTask || {}),
-          id: taskId,
-          status: 'processing',
-          stage: 'polling',
-          startedAt,
-          note: '已停止自动轮询，稍后可继续轮询。'
-        }
-        applyVideoGenerationTaskToDisplay(assistantDisplay, assistantDisplay.videoTask, placeholderMode)
-        setAssistantApiContentForDisplay(assistantDisplay, buildVideoGenerationPendingText(assistantDisplay.videoTask))
-      } else {
-        const errorText = err?.message || String(err)
-        applyMediaGenerationFailureToDisplay(assistantDisplay, errorText)
-        message.error(assistantDisplay.mediaFailure?.summary || mediaFailureSummary(errorText, 'video') || '视频轮询失败')
-      }
-    } finally {
-      detachedMediaAbortStates.delete(abortState)
-      record.runningTaskCount = Math.max(0, Number(record.runningTaskCount || 0) - 1)
-      if (isDisplayMessageTracked(assistantDisplay)) {
-        setMediaTaskResuming(assistantDisplay, 'video', false)
-        void autoPersistMemorySessionWhenIdle(record)
-        if (isDisplayMessageInActiveSession(assistantDisplay)) await scrollToBottom()
-      }
-    }
-  })()
-}
-
-async function resolveVideoGenerationContentIfReady({
-  payload,
-  requestMeta,
-  apiKey,
-  signal,
-  abortState = null,
-  assistantDisplay = null,
-  startedAt = Date.now(),
-  placeholderMode = 'text'
-}) {
-  if (!shouldFetchVideoGenerationContent(payload, requestMeta)) return payload
-
-  const resolvedPayload = await waitForVideoGenerationResult({
-    initialPayload: payload,
-    requestMeta,
-    apiKey,
-    signal,
-    abortState,
-    timeoutMs: VIDEO_GENERATION_RESULT_TIMEOUT_MS,
-    initialPollDelayMs: 0,
-    onStatus: (_payload, taskState) => {
-      if (!taskState || !assistantDisplay) return
-      const nextTask = {
-        ...(assistantDisplay.videoTask || {}),
-        ...taskState,
-        startedAt,
-        lastPolledAt: Date.now(),
-        note: taskState.stage === 'fetching_result'
-          ? '视频已生成，正在获取视频文件。'
-          : taskState.note || '视频正在生成中，结果就绪后会展示在这里。'
-      }
-      applyVideoGenerationTaskToDisplay(assistantDisplay, nextTask, placeholderMode)
-    }
-  })
-
-  return resolvedPayload || payload
-}
-
-async function runVideoGenerationRound({
-  providerId = '',
-  baseUrl,
-  apiKey,
-  model,
-  signal,
-  setCurrentAssistantDisplay,
-  abortState = null,
-  placeholderMode = 'text',
-  requestOptionsOverride = null
-}) {
-  const targetSession = getRunSessionTarget(abortState)
-  throwIfAborted(abortState)
-  const lastUserApiMsg = (() => {
-    for (let i = (targetSession.apiMessages || []).length - 1; i >= 0; i--) {
-      if (targetSession.apiMessages[i]?.role === 'user') return targetSession.apiMessages[i]
-    }
-    return null
-  })()
-
-  const userPrompt = extractImageGenerationPromptFromContent(lastUserApiMsg?.content).trim()
-  if (!userPrompt) {
-    throw new Error('视频生成提示词为空')
-  }
-
-  const requestOptions =
-    requestOptionsOverride && typeof requestOptionsOverride === 'object'
-      ? buildVideoGenerationRequestOptionsWithReferences(requestOptionsOverride)
-      : {}
-  const requestInfo = placeholderMode === 'video' ? buildManualVideoGenerationRequestInfo(requestOptions) : ''
-  const startedAt = Date.now()
-  const assistantDisplay = createVideoGenerationPlaceholderDisplay(userPrompt, placeholderMode, { requestInfo })
-  attachMediaRequestSnapshot(assistantDisplay, 'video', buildMediaRequestSnapshot('video', {
-    baseUrl,
-    model,
-    prompt: userPrompt,
-    requestOptions,
-    placeholderMode,
-    startedAt
-  }))
-  targetSession.messages.push(assistantDisplay)
-  setCurrentAssistantDisplay(assistantDisplay)
-  await maybeScrollToBottomForRun(abortState)
-
-  const prompt = buildVideoGenerationPromptFromHistory(userPrompt, { apiMessages: targetSession.apiMessages })
-  const { payload, requestMeta } = await requestVideoGeneration({
-    baseUrl,
-    apiKey,
-    model,
-    prompt,
-    requestOptions,
-    signal
-  })
-  attachMediaRequestSnapshot(assistantDisplay, 'video', { requestMeta })
-  recordModelUsageFromPayload(payload, {
-    providerId,
-    model,
-    endpoint: requestMeta?.kind || 'video-generation',
-    purpose: 'video-generation'
-  })
-  throwIfAborted(abortState)
-
-  let finalPayload = payload
-  const videoTask = extractVideoGenerationTaskState(payload, requestMeta)
-  if (videoTask) {
-    applyVideoGenerationTaskToDisplay(assistantDisplay, { ...videoTask, startedAt }, placeholderMode)
-    targetSession.apiMessages.push({
-      role: 'assistant',
-      content:
-        placeholderMode === 'video'
-          ? `视频任务已受理：${assistantVideoTaskStatusLabel(assistantDisplay)}${videoTask.id ? `（任务 ID：${videoTask.id}）` : ''}`
-          : buildVideoGenerationPendingText(videoTask)
-    })
-    assistantDisplay.apiIndex = targetSession.apiMessages.length - 1
-    setCurrentAssistantDisplay(null)
-    await maybeScrollToBottomForRun(abortState)
-    startDetachedVideoTaskPolling({
-      assistantDisplay,
-      initialPayload: payload,
-      requestMeta,
-      apiKey,
-      startedAt,
-      placeholderMode,
-      userPrompt,
-      initialTask: videoTask,
-      sessionRecord: targetSession,
-      stateSnapshot: targetSession?.state || null
-    })
-    return
-  }
-
-  finalPayload = await resolveVideoGenerationContentIfReady({
-    payload: finalPayload,
-    requestMeta,
-    apiKey,
-    signal,
-    abortState,
-    assistantDisplay,
-    startedAt,
-    placeholderMode
-  })
-  throwIfAborted(abortState)
-
-  const generationTimeMs = Math.max(0, Date.now() - startedAt)
-  const videos = await persistChatMediaListAssets(
-    extractChatVideosFromToolResult(finalPayload).map((video) => ({
-      ...video,
-      generationTimeMs: Number(video.generationTimeMs || 0) || generationTimeMs
-    })),
-    { kind: 'video', messageId: assistantDisplay.id }
-  )
-  const textResult = extractImageGenerationTextResult(finalPayload)
-  if (!videos.length) {
-    if (textResult) {
-      applyVideoGenerationTextToDisplay(assistantDisplay, textResult)
-      targetSession.apiMessages.push({
-        role: 'assistant',
-        content: textResult
-      })
-      assistantDisplay.apiIndex = targetSession.apiMessages.length - 1
-      setCurrentAssistantDisplay(null)
-      await maybeScrollToBottomForRun(abortState)
-      return
-    }
-    throw new Error(buildVideoGenerationCompatibilityError(finalPayload, requestMeta))
-  }
-
-  applyVideoGenerationVideosToDisplay(assistantDisplay, { videos, userPrompt })
-  targetSession.apiMessages.push({
-    role: 'assistant',
-    content: buildVideoGenerationApiSummary({
-      videoCount: videos.length
-    })
-  })
-  assistantDisplay.apiIndex = targetSession.apiMessages.length - 1
-  setCurrentAssistantDisplay(null)
-  await maybeScrollToBottomForRun(abortState)
-}
-
-async function runDetachedVideoGenerationRequest({
-  record,
-  assistantDisplay,
-  baseUrl,
-  apiKey,
-  model,
-  userPrompt,
-  requestOptions,
-  placeholderMode,
-  startedAt,
-  stateSnapshot
-}) {
-  if (!record || !assistantDisplay) return
-  const requestHandle = new AbortController()
-  const abortState = createRequestAbortStateForMediaResume(requestHandle)
-  detachedMediaAbortStates.add(abortState)
-  record.runningTaskCount = Math.max(0, Number(record.runningTaskCount || 0)) + 1
-  record.state = stateSnapshot && typeof stateSnapshot === 'object' ? deepCopyJson(stateSnapshot, {}) : record.state
-
-  try {
-    const { payload, requestMeta } = await requestVideoGeneration({
-      baseUrl,
-      apiKey,
-      model,
-      prompt: userPrompt,
-      requestOptions,
-      signal: requestHandle.signal
-    })
-    attachMediaRequestSnapshot(assistantDisplay, 'video', { requestMeta })
-    if (abortState.aborted) throw createAbortError()
-
-    const videoTask = extractVideoGenerationTaskState(payload, requestMeta)
-    if (videoTask) {
-      applyVideoGenerationTaskToDisplay(assistantDisplay, { ...videoTask, startedAt }, placeholderMode)
-      setAssistantApiContentForDisplay(
-        assistantDisplay,
-        placeholderMode === 'video'
-          ? `视频任务已受理：${assistantVideoTaskStatusLabel(assistantDisplay)}${videoTask.id ? `（任务 ID：${videoTask.id}）` : ''}`
-          : buildVideoGenerationPendingText(videoTask),
-        record
-      )
-      startDetachedVideoTaskPolling({
-        assistantDisplay,
-        initialPayload: payload,
-        requestMeta,
-        apiKey,
-        startedAt,
-        placeholderMode,
-        userPrompt,
-        initialTask: videoTask,
-        sessionRecord: record,
-        stateSnapshot
-      })
-      return
-    }
-
-    const finalPayload = await resolveVideoGenerationContentIfReady({
-      payload,
-      requestMeta,
-      apiKey,
-      signal: requestHandle.signal,
-      abortState,
-      assistantDisplay,
-      startedAt,
-      placeholderMode
-    })
-    if (abortState.aborted) throw createAbortError()
-
-    const generationTimeMs = Math.max(0, Date.now() - startedAt)
-    const videos = await persistChatMediaListAssets(
-      extractChatVideosFromToolResult(finalPayload).map((video) => ({
-        ...video,
-        generationTimeMs: Number(video.generationTimeMs || 0) || generationTimeMs
-      })),
-      { kind: 'video', messageId: assistantDisplay.id }
-    )
-    if (!videos.length) {
-      const textResult = extractImageGenerationTextResult(finalPayload)
-      if (textResult) {
-        applyVideoGenerationTextToDisplay(assistantDisplay, textResult)
-        setAssistantApiContentForDisplay(assistantDisplay, textResult, record)
-        return
-      }
-      throw new Error(buildVideoGenerationCompatibilityError(finalPayload, assistantDisplay?.mediaRequest?.requestMeta))
-    }
-
-    applyVideoGenerationVideosToDisplay(assistantDisplay, { videos, userPrompt })
-    setAssistantApiContentForDisplay(assistantDisplay, buildVideoGenerationApiSummary({ videoCount: videos.length }), record)
-    message.success('视频生成完成')
-  } catch (err) {
-    if (abortState.aborted || isAbortError(err)) {
-      assistantDisplay.videoTask = {
-        ...(assistantDisplay.videoTask || {}),
-        status: 'processing',
-        stage: 'polling',
-        startedAt,
-        note: '已停止自动轮询，稍后可继续轮询。'
-      }
-      applyVideoGenerationTaskToDisplay(assistantDisplay, assistantDisplay.videoTask, placeholderMode)
-      setAssistantApiContentForDisplay(assistantDisplay, buildVideoGenerationPendingText(assistantDisplay.videoTask), record)
-    } else {
-      const errorText = err?.message || String(err)
-      applyMediaGenerationFailureToDisplay(assistantDisplay, errorText)
-      message.error(assistantDisplay.mediaFailure?.summary || mediaFailureSummary(errorText, 'video') || '视频生成失败')
-    }
-  } finally {
-    detachedMediaAbortStates.delete(abortState)
-    record.runningTaskCount = Math.max(0, Number(record.runningTaskCount || 0) - 1)
-    record.updatedAt = Date.now()
-    void autoPersistMemorySessionWhenIdle(record)
-    if (isDisplayMessageInActiveSession(assistantDisplay)) await scrollToBottom()
-  }
-}
-
-async function startDetachedVideoGeneration({ cfg, text, attachments = [], userDisplay, sourceMessage = null }) {
-  const record = getActiveMemorySession()
-  const stateSnapshot = buildCurrentChatState()
-  record.state = deepCopyJson(stateSnapshot, {})
-  const referenceImages = await collectAttachmentMediaReferenceImages(attachments, userDisplay)
-  clearAttachmentFileReferences(attachments)
-
-  const promptText = String(text || '').trim()
-  const userPrompt = extractImageGenerationPromptFromContent(promptText).trim()
-  if (!userPrompt) {
-    message.warning('视频生成提示词为空')
-    return false
-  }
-
-  const apiContent = promptText || userPrompt
-  record.apiMessages.push({ role: 'user', content: apiContent })
-  userDisplay.apiIndex = record.apiMessages.length - 1
-
-  const placeholderMode = String(cfg.videoGenerationPlaceholderMode || getMediaRequestPlaceholderMode(sourceMessage, 'video') || 'video')
-  const rawVideoRequestOptions = mergeReferenceImagesIntoRequestOptions(
-    cfg.videoGenerationRequestOptionsOverride && typeof cfg.videoGenerationRequestOptionsOverride === 'object'
-      ? cfg.videoGenerationRequestOptionsOverride
-      : {},
-    referenceImages,
-    'video'
-  )
-  const requestOptions = buildVideoGenerationRequestOptionsWithReferences(rawVideoRequestOptions)
-  const requestInfo = placeholderMode === 'video' ? buildManualVideoGenerationRequestInfo(requestOptions) : ''
-  const startedAt = Date.now()
-  const assistantDisplay = createVideoGenerationPlaceholderDisplay(userPrompt, placeholderMode, { requestInfo })
-  attachMediaRequestSnapshot(assistantDisplay, 'video', buildMediaRequestSnapshot('video', {
-    baseUrl: cfg.baseUrl,
-    model: cfg.model,
-    prompt: userPrompt,
-    requestOptions,
-    placeholderMode,
-    startedAt
-  }))
-  record.messages.push(assistantDisplay)
-  record.updatedAt = Date.now()
-  if (!isFinalizedMemorySessionTitle(record)) record.title = resolveMemorySessionTitle(record)
-  scheduleRefreshUserAnchorMeta()
-  if (isMemorySessionActive(record)) await scrollToBottom({ force: true })
-  void runDetachedVideoGenerationRequest({
-    record,
-    assistantDisplay,
-    baseUrl: cfg.baseUrl,
-    apiKey: cfg.apiKey,
-    model: cfg.model,
-    userPrompt,
-    requestOptions,
-    placeholderMode,
-    startedAt,
-    stateSnapshot
-  })
-  return true
-}
-
-function getMediaRequestPrompt(msg, kind = 'image') {
-  const direct = kind === 'video' ? msg?.videoPrompt : msg?.imagePrompt
-  return String(direct || msg?.mediaRequest?.prompt || '').trim()
-}
-
-function getMediaRequestPlaceholderMode(msg, kind = 'image') {
-  const mode = String(msg?.mediaRequest?.placeholderMode || '').trim()
-  if (mode) return mode
-  return kind === 'video' ? 'video' : 'image'
-}
-
-function getImageRequestOptionsFromMessage(msg) {
-  if (msg?.mediaRequest?.requestOptions && typeof msg.mediaRequest.requestOptions === 'object') {
-    return buildImageGenerationRequestOptionsWithReferences(deepCopyJson(msg.mediaRequest.requestOptions, {}))
-  }
-  const firstImage = Array.isArray(msg?.images) ? msg.images.find((img) => img && typeof img === 'object') : null
-  const requestSize = String(firstImage?.requestSize || '').trim()
-  return requestSize ? { size: requestSize } : {}
-}
-
-function getVideoRequestOptionsFromMessage(msg) {
-  if (msg?.mediaRequest?.requestOptions && typeof msg.mediaRequest.requestOptions === 'object') {
-    return buildVideoGenerationRequestOptionsWithReferences(deepCopyJson(msg.mediaRequest.requestOptions, {}))
-  }
-  const firstVideo = Array.isArray(msg?.videos) ? msg.videos.find((video) => video && typeof video === 'object') : null
-  const requestSize = String(firstVideo?.requestSize || firstVideo?.resolution || '').trim()
-  return requestSize ? { size: requestSize } : {}
-}
-
-function canRegenerateMedia(msg, kind = 'image') {
-  if (sending.value || preparingSend.value) return false
-  return !!getMediaRequestPrompt(msg, kind)
-}
-
-function mediaTaskResumeKey(msg, kind = 'video') {
-  const task = kind === 'video' ? msg?.videoTask : msg?.imageTask
-  return `${kind}:${String(msg?.id || '').trim()}:${String(task?.id || '').trim()}`
-}
-
-function isMediaTaskResuming(msg, kind = 'video') {
-  const key = mediaTaskResumeKey(msg, kind)
-  return !!key && resumingMediaTaskKeys.value.includes(key)
-}
-
-function setMediaTaskResuming(msg, kind = 'video', next = false) {
-  const key = mediaTaskResumeKey(msg, kind)
-  if (!key) return
-  const current = new Set(resumingMediaTaskKeys.value)
-  if (next) current.add(key)
-  else current.delete(key)
-  resumingMediaTaskKeys.value = Array.from(current)
-}
-
-function getVideoResumeRequestMeta(msg) {
-  const meta = msg?.mediaRequest?.requestMeta
-  if (meta && typeof meta === 'object' && String(meta.baseEndpoint || '').trim()) return meta
-  return null
-}
-
-function canResumeMediaTask(msg, kind = 'video') {
-  if (kind !== 'video' || preparingSend.value || isMediaTaskResuming(msg, kind)) return false
-  if (assistantVisibleVideoCount(msg)) return false
-  const task = msg?.videoTask
-  const taskId = String(task?.id || '').trim()
-  if (!taskId) return false
-  const status = String(task?.status || task?.stage || '').trim().toLowerCase()
-  if (['failed', 'error', 'cancelled', 'canceled'].includes(status)) return false
-  return !!getVideoResumeRequestMeta(msg)
-}
-
-function countResumableMediaTasks() {
-  return (session.messages || []).filter((msg) => canResumeMediaTask(msg, 'video')).length
-}
-
-function findOpenaiCompatibleProviderByBaseUrl(baseUrl) {
-  const target = getCompatKey(baseUrl)
-  if (!target) return null
-  return (providers.value || []).find((provider) => {
-    if (!provider || isUtoolsBuiltinProvider(provider)) return false
-    return getCompatKey(provider.baseurl) === target
-  }) || null
-}
-
-function getOpenaiCompatibleMediaConfigOrHint(kind = 'image', sourceMessage = null, options = {}) {
-  const savedBaseUrl = String(sourceMessage?.mediaRequest?.baseUrl || '').trim()
-  const savedProvider = savedBaseUrl ? findOpenaiCompatibleProviderByBaseUrl(savedBaseUrl) : null
-  if (savedBaseUrl && !savedProvider && options.requireSavedProvider) {
-    message.warning('当前配置中找不到该任务的原服务商，请切回或重新配置相同接口地址后再继续轮询。')
-    return null
-  }
-  if (savedBaseUrl && !savedProvider && !options.silentFallback) {
-    message.warning('未找到原服务商配置，已改用当前服务商再次生成。')
-  }
-
-  const provider = savedProvider || selectedProvider.value
-  if (!provider) {
-    message.warning('请先选择服务商 / 模型')
-    showModelModal.value = true
-    return null
-  }
-
-  if (isUtoolsBuiltinProvider(provider)) {
-    message.warning('当前页面不支持用 uTools 内置 AI 直接恢复或再次生成媒体，请改用兼容 OpenAI 的服务商。')
-    return null
-  }
-
-  const baseUrl = String(provider.baseurl || '').trim()
-  const apiKey = String(provider.apikey || '').trim()
-  const providerDefaultModel = Array.isArray(provider.selectModels) ? String(provider.selectModels[0] || '').trim() : ''
-  const selectedModelForProvider = String(provider._id || '').trim() === String(selectedProviderId.value || '').trim()
-    ? String(selectedModel.value || '').trim()
-    : ''
-  const model = String(
-    savedProvider
-      ? sourceMessage?.mediaRequest?.model || selectedModelForProvider || providerDefaultModel
-      : selectedModel.value
-  ).trim()
-  if (!baseUrl || !apiKey) {
-    message.warning('请先配置服务商接口地址 / API 密钥')
-    return null
-  }
-  if (!model) {
-    message.warning('请先选择模型')
-    showModelModal.value = true
-    return null
-  }
-
-  return {
-    providerKind: 'openai-compatible',
-    providerId: String(provider._id || '').trim(),
-    baseUrl,
-    apiKey,
-    model,
-    requestMode: kind === 'video' ? 'video-generation' : 'image-generation',
-    imageGenerationPlaceholderMode: kind === 'image' ? 'image' : 'text',
-    videoGenerationPlaceholderMode: kind === 'video' ? 'video' : 'text',
-    supportsVision: false
-  }
-}
-
-async function submitMediaGenerationPrompt(kind, prompt, sourceMessage = null) {
-  if (sending.value || preparingSend.value) return
-  const text = String(prompt || '').trim()
-  if (!text) {
-    message.warning(kind === 'video' ? '视频生成提示词为空' : '图片生成提示词为空')
-    return
-  }
-
-  const cfg = getOpenaiCompatibleMediaConfigOrHint(kind, sourceMessage)
-  if (!cfg) return
-
-  clearAllUserEditingState()
-  const placeholderMode = getMediaRequestPlaceholderMode(sourceMessage, kind)
-  if (kind === 'video') {
-    cfg.videoGenerationPlaceholderMode = placeholderMode
-    cfg.videoGenerationRequestOptionsOverride = getVideoRequestOptionsFromMessage(sourceMessage)
-  } else {
-    cfg.imageGenerationPlaceholderMode = placeholderMode
-    cfg.imageGenerationRequestOptionsOverride = getImageRequestOptionsFromMessage(sourceMessage)
-  }
-
-  const userDisplay = createDisplayMessage('user', text)
-  session.messages.push(userDisplay)
-  const requestRecord = getActiveMemorySession()
-  autoScrollEnabled.value = true
-  scheduleRefreshUserAnchorMeta()
-  await scrollToBottom({ force: true })
-  if (kind === 'video') {
-    await startDetachedVideoGeneration({ cfg, text, attachments: [], userDisplay, sourceMessage })
-    return
-  }
-  await runChatSession({
-    ...cfg,
-    sessionRecord: requestRecord,
-    prepare: async () => {
-      if (isMemorySessionActive(requestRecord)) await scrollToBottom({ force: true })
-      await prepareUserApiMessage({
-        text,
-        attachments: [],
-        userDisplay,
-        preferVision: false,
-        providerKind: 'openai-compatible',
-        sessionTarget: requestRecord
-      })
-    }
-  })
-}
-
-function regenerateMedia(msg, kind = 'image') {
-  const prompt = getMediaRequestPrompt(msg, kind)
-  if (!prompt) {
-    message.warning(kind === 'video' ? '没有可复用的视频提示词' : '没有可复用的图片提示词')
-    return
-  }
-  showMediaLibraryModal.value = false
-  void submitMediaGenerationPrompt(kind, prompt, msg)
-}
-
-function setAssistantApiContentForDisplay(msg, content, sessionLike = null) {
-  if (!msg) return
-  const targetSession = sessionLike || getMemorySessionForMessage(msg) || session
-  const text = String(content || '').trim()
-  const apiIndex = Number(msg.apiIndex)
-  if (Number.isFinite(apiIndex) && apiIndex >= 0 && targetSession.apiMessages?.[apiIndex]?.role === 'assistant') {
-    targetSession.apiMessages[apiIndex].content = text
-    return
-  }
-  targetSession.apiMessages.push({ role: 'assistant', content: text })
-  msg.apiIndex = targetSession.apiMessages.length - 1
-}
-
-function extractMediaFailureReasonLine(errorText) {
-  const raw = String(errorText || '').trim()
-  if (!raw) return ''
-  const lines = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
-  const reasonLine = lines.find((line) => /^原因[：:]/.test(line))
-  if (reasonLine) return reasonLine
-
-  const messageLine = lines.find((line) => /^(错误信息|错误消息|Error message|Message)[：:]/i.test(line))
-  const codeLine = lines.find((line) => /^(错误码|错误代码|Error code|Code)[：:]/i.test(line))
-  if (messageLine && codeLine) return `${codeLine}，${messageLine}`
-  if (messageLine) return messageLine
-  if (codeLine) return codeLine
-
-  const diagnosticLine = lines.find((line) =>
-    /moderation_blocked|moderation system|content safety|blocked by|rate limit|insufficient_quota|quota|unauthorized|forbidden|invalid|unsupported|not found|timeout|审核|拦截|限流|额度|余额|权限|不支持|不存在|超时/i.test(line)
-  )
-  return diagnosticLine || lines[0] || raw
-}
-
-function mediaFailureSummary(errorText, kind = 'image') {
-  const reason = extractMediaFailureReasonLine(errorText) || '未知错误'
-  const label = kind === 'video' ? '视频生成失败' : '图片生成失败'
-  return `${label}：${truncateInlineText(reason, 260)}`
-}
-
-function mediaFailureSuggestion(errorText, kind = 'image') {
-  const raw = String(errorText || '').trim()
-  const lower = raw.toLowerCase()
-  if (lower.includes('moderation_blocked') || lower.includes('moderation system') || lower.includes('content safety') || raw.includes('内容安全审核') || raw.includes('审核系统') || raw.includes('拦截')) {
-    return kind === 'video'
-      ? '请求被内容安全审核拦截，服务端不会返回可展示的视频文件。可以调整提示词或参考图后重试。'
-      : '请求被内容安全审核拦截，服务端不会返回可展示的图片文件。可以调整提示词或参考图后重试。'
-  }
-  if (lower.includes('timeout') || raw.includes('超时')) return '请求已超时，没有自动回退。可以稍后重试，或检查服务商任务是否仍在后台生成。'
-  if (lower.includes('429') || lower.includes('rate limit') || raw.includes('限流') || raw.includes('请求过多')) return '请求被服务商限流。可以稍后重试，或降低并发生成数量。'
-  if (lower.includes('insufficient_quota') || lower.includes('quota') || raw.includes('额度') || raw.includes('余额')) return '请检查当前服务商账户额度、计费状态和模型权限。'
-  if (lower.includes('401') || lower.includes('403') || raw.includes('密钥')) return '请检查当前服务商 API Key、模型权限和账户额度。'
-  if (kind === 'image' && lower.includes('tool choice') && lower.includes('image_generation') && lower.includes('tools')) {
-    return '当前服务商不兼容 Responses API 的图片生成工具调用，通常是中转站没有透传 tools 或不支持内置 image_generation 工具。建议切换到官方接口，或确认该服务商支持 /v1/images 与 /v1/responses 图片生成。'
-  }
-  if (lower.includes('404') || lower.includes('405') || raw.includes('接口不存在')) return kind === 'video'
-    ? '当前服务商的视频接口可能不兼容，可以切换模型/服务商或改用普通聊天。'
-    : '当前服务商的图片接口可能不兼容，可以切换模型/服务商或改用普通聊天。'
-  return '可以直接重试；如果连续失败，建议切换模型/服务商或复制错误信息排查。'
-}
-
-function applyMediaGenerationFailureToDisplay(assistantDisplay, errorText) {
-  if (!assistantDisplay || typeof assistantDisplay !== 'object') return false
-  const kind = String(assistantDisplay.mediaRequest?.kind || (assistantDisplay.videoPrompt ? 'video' : assistantDisplay.imagePrompt ? 'image' : '')).trim()
-  if (kind !== 'image' && kind !== 'video') return false
-
-  const summary = mediaFailureSummary(errorText, kind)
-  const suggestion = mediaFailureSuggestion(errorText, kind)
-  const note = `${summary}\n${suggestion}`
-  assistantDisplay.streaming = false
-  assistantDisplay.render = 'text'
-  assistantDisplay.transientRequestPlaceholder = false
-  assistantDisplay.mediaFailure = {
-    kind,
-    summary,
-    errorText: String(errorText || '').trim(),
-    suggestion
-  }
-
-  const startedAt = Number(assistantDisplay.mediaRequest?.startedAt || 0) || Date.now()
-  if (kind === 'video') {
-    assistantDisplay.videoTask = {
-      ...(assistantDisplay.videoTask || {}),
-      status: 'failed',
-      stage: 'failed',
-      note,
-      startedAt
-    }
-    if (getMediaRequestPlaceholderMode(assistantDisplay, kind) === 'video') {
-      assistantDisplay.content = ''
-      assistantDisplay.videoBubblePlaceholder = true
-      assistantDisplay.videoBubblePlaceholderItem = createAssistantVideoBubblePlaceholder(note, assistantDisplay.videoRequestInfo || '')
-    } else {
-      assistantDisplay.videoBubblePlaceholder = false
-      assistantDisplay.videoBubblePlaceholderItem = null
-      assistantDisplay.content = ''
-    }
-  } else {
-    assistantDisplay.imageTask = {
-      ...(assistantDisplay.imageTask || {}),
-      status: 'failed',
-      stage: 'failed',
-      note,
-      startedAt
-    }
-    if (getMediaRequestPlaceholderMode(assistantDisplay, kind) === 'image') {
-      assistantDisplay.content = ''
-      assistantDisplay.imageBubblePlaceholder = true
-      assistantDisplay.imageBubblePlaceholderImage = createAssistantImageBubblePlaceholder(note, assistantDisplay.imageRequestInfo || '')
-    } else {
-      assistantDisplay.imageBubblePlaceholder = false
-      assistantDisplay.imageBubblePlaceholderImage = null
-      assistantDisplay.content = ''
-    }
-  }
-
-  setAssistantApiContentForDisplay(assistantDisplay, note)
-  return true
-}
-
-function createRequestAbortStateForMediaResume(requestHandle) {
-  const abortListeners = new Set()
-  const abortState = {
-    aborted: false,
-    onAbort(listener) {
-      if (typeof listener !== 'function') return () => {}
-      if (abortState.aborted) {
-        try {
-          listener()
-        } catch {
-          // ignore
-        }
-        return () => {}
-      }
-      abortListeners.add(listener)
-      return () => abortListeners.delete(listener)
-    },
-    abort() {
-      if (abortState.aborted) return
-      abortState.aborted = true
-      abortListeners.forEach((listener) => {
-        try {
-          listener()
-        } catch {
-          // ignore
-        }
-      })
-      abortListeners.clear()
-      try {
-        requestHandle?.abort?.()
-      } catch {
-        // ignore
-      }
-    }
-  }
-  return abortState
-}
-
-async function resumeMediaTask(msg, kind = 'video') {
-  if (kind !== 'video') return
-  if (preparingSend.value) return
-  if (!canResumeMediaTask(msg, kind)) {
-    message.warning('当前视频任务缺少可恢复的轮询信息')
-    return
-  }
-
-  const cfg = getOpenaiCompatibleMediaConfigOrHint(kind, msg, { requireSavedProvider: true })
-  if (!cfg) return
-
-  const requestMeta = getVideoResumeRequestMeta(msg)
-  const task = msg.videoTask || {}
-  const taskId = String(task.id || '').trim()
-  const requestHandle = new AbortController()
-  const abortState = createRequestAbortStateForMediaResume(requestHandle)
-  const startedAt = Number(task.startedAt || msg.mediaRequest?.startedAt || 0) || Date.now()
-  const placeholderMode = getMediaRequestPlaceholderMode(msg, kind)
-  const record = getMemorySessionForMessage(msg)
-
-  setMediaTaskResuming(msg, kind, true)
-  detachedMediaAbortStates.add(abortState)
-  record.runningTaskCount = Math.max(0, Number(record.runningTaskCount || 0)) + 1
-
-  try {
-    msg.videoTask = {
-      ...task,
-      id: taskId,
-      status: String(task.status || 'processing').trim() || 'processing',
-      stage: 'polling',
-      startedAt,
-      note: task.note || '正在继续查询视频任务，结果就绪后会展示在这里。'
-    }
-    applyVideoGenerationTaskToDisplay(msg, msg.videoTask, placeholderMode)
-    if (isDisplayMessageInActiveSession(msg)) await scrollToBottom()
-
-    const resolvedPayload = await waitForVideoGenerationResult({
-      initialPayload: { id: taskId, status: msg.videoTask.status || 'processing' },
-      requestMeta,
-      apiKey: cfg.apiKey,
-      signal: requestHandle.signal,
-      abortState,
-      timeoutMs: VIDEO_GENERATION_RESULT_TIMEOUT_MS,
-      initialPollDelayMs: 0,
-      onStatus: (_payload, taskState) => {
-        if (!taskState) return
-        msg.videoTask = {
-          ...(msg.videoTask || {}),
-          ...taskState,
-          id: taskState.id || taskId,
-          startedAt,
-          lastPolledAt: Date.now()
-        }
-        applyVideoGenerationTaskToDisplay(msg, msg.videoTask, placeholderMode)
-      }
-    })
-
-    if (!resolvedPayload) {
-      msg.videoTask = {
-        ...(msg.videoTask || {}),
-        id: taskId,
-        status: 'processing',
-        stage: 'polling',
-        startedAt,
-        note: '视频任务仍在生成中，稍后可继续轮询。'
-      }
-      applyVideoGenerationTaskToDisplay(msg, msg.videoTask, placeholderMode)
-      setAssistantApiContentForDisplay(msg, buildVideoGenerationPendingText(msg.videoTask))
-      message.info('视频任务仍在生成中，稍后可继续轮询。')
-      return
-    }
-
-    const generationTimeMs = Math.max(0, Date.now() - startedAt)
-    const videos = await persistChatMediaListAssets(
-      extractChatVideosFromToolResult(resolvedPayload).map((video) => ({
-        ...video,
-        generationTimeMs: Number(video.generationTimeMs || 0) || generationTimeMs
-      })),
-      { kind: 'video', messageId: msg.id }
-    )
-    if (!videos.length) {
-      const textResult = extractImageGenerationTextResult(resolvedPayload)
-      if (textResult) {
-        applyVideoGenerationTextToDisplay(msg, textResult)
-        setAssistantApiContentForDisplay(msg, textResult)
-        return
-      }
-      throw new Error(buildVideoGenerationCompatibilityError(resolvedPayload, requestMeta))
-    }
-
-    applyVideoGenerationVideosToDisplay(msg, {
-      videos,
-      userPrompt: getMediaRequestPrompt(msg, 'video')
-    })
-    setAssistantApiContentForDisplay(msg, buildVideoGenerationApiSummary({ videoCount: videos.length }))
-    message.success('视频结果已恢复')
-  } catch (err) {
-    if (abortState.aborted || isAbortError(err)) {
-      message.info('已停止继续轮询视频任务')
-    } else {
-      const errorText = err?.message || String(err)
-      applyMediaGenerationFailureToDisplay(msg, errorText)
-      message.error(msg.mediaFailure?.summary || mediaFailureSummary(errorText, 'video') || '继续轮询失败')
-    }
-  } finally {
-    detachedMediaAbortStates.delete(abortState)
-    record.runningTaskCount = Math.max(0, Number(record.runningTaskCount || 0) - 1)
-    setMediaTaskResuming(msg, kind, false)
-    void autoPersistMemorySessionWhenIdle(record)
-    if (isDisplayMessageInActiveSession(msg)) await scrollToBottom()
-  }
-}
-
-const CHAT_REQUEST_TIMEOUT_MS = 36000000
-
-async function runChatSession({
-  providerId = '',
-  providerKind = 'openai-compatible',
-  apiMode = 'auto',
-  requestMode = 'chat',
-  imageGenerationPlaceholderMode = 'text',
-  videoGenerationPlaceholderMode = 'text',
-  supportsVision = false,
-  baseUrl,
-  apiKey,
-  model,
-  imageGenerationRequestOptionsOverride = null,
-  videoGenerationRequestOptionsOverride = null,
-  sessionRecord = null,
-  memorySystemContent = '',
-  memorySourceUserText = '',
-  prepare
-}) {
-  if (sending.value) return false
-
-  sending.value = true
-  const runRecord = sessionRecord || getActiveMemorySession()
-  runRecord.runningTaskCount = Math.max(0, Number(runRecord.runningTaskCount || 0)) + 1
-  runRecord.chatRunCount = Math.max(0, Number(runRecord.chatRunCount || 0)) + 1
-  runRecord.state = buildCurrentChatState()
-  if (!isFinalizedMemorySessionTitle(runRecord)) runRecord.title = resolveMemorySessionTitle(runRecord)
-  let requestHandle = null
-  const abortListeners = new Set()
-  const requestAbortState = {
-    aborted: false,
-    memorySystemContent,
-    toolApprovalMode: normalizeToolApprovalMode(
-      runRecord?.toolApprovalMode,
-      runRecord?.autoApproveTools === false ? TOOL_APPROVAL_MODE_MANUAL : toolApprovalMode.value
-    ),
-    autoApproveTools: normalizeToolApprovalMode(
-      runRecord?.toolApprovalMode,
-      runRecord?.autoApproveTools === false ? TOOL_APPROVAL_MODE_MANUAL : toolApprovalMode.value
-    ) !== TOOL_APPROVAL_MODE_MANUAL,
-    onAbort(listener) {
-      if (typeof listener !== 'function') return () => {}
-      if (requestAbortState.aborted) {
-        try {
-          listener()
-        } catch {
-          // ignore
-        }
-        return () => {}
-      }
-      abortListeners.add(listener)
-      return () => {
-        abortListeners.delete(listener)
-      }
-    },
-    abort() {
-      if (requestAbortState.aborted) return
-      requestAbortState.aborted = true
-      abortListeners.forEach((listener) => {
-        try {
-          listener()
-        } catch {
-          // ignore
-        }
-      })
-      abortListeners.clear()
-      try {
-        requestHandle?.abort?.()
-      } catch {
-        // ignore
-      }
-    }
-  }
-  runRecordByAbortState.set(requestAbortState, runRecord)
-  runRecord.activeRequestAbortState = requestAbortState
-  abortController.value = requestAbortState
-  let timedOut = false
-  const requestTimeoutTimer = window.setTimeout(() => {
-    timedOut = true
-    requestAbortState.abort()
-  }, CHAT_REQUEST_TIMEOUT_MS)
-
-  let currentAssistantDisplay = null
-  let succeeded = false
-
-  try {
-    if (typeof prepare === 'function') await prepare()
-
-    if (providerKind === 'utools-ai') {
-      await runUtoolsAiChatRound({
-        providerId,
-        model,
-        setCurrentAssistantDisplay: (m) => {
-          currentAssistantDisplay = m
-        },
-        setAbortHandle: (handle) => {
-          requestHandle = handle
-        },
-        isAborted: () => requestAbortState.aborted,
-        abortState: requestAbortState
-      })
-    } else {
-      requestHandle = new AbortController()
-      if (requestAbortState.aborted) requestHandle.abort()
-      if (requestMode === 'image-generation') {
-        try {
-          await runImageGenerationRound({
-            providerId,
-            baseUrl,
-            apiKey,
-            model,
-            signal: requestHandle.signal,
-            placeholderMode: imageGenerationPlaceholderMode,
-            requestOptionsOverride: imageGenerationRequestOptionsOverride,
-            setCurrentAssistantDisplay: (m) => {
-              currentAssistantDisplay = m
-            },
-            abortState: requestAbortState
-          })
-        } catch (err) {
-          const allowTextFallback = imageGenerationPlaceholderMode !== 'image'
-          if (!allowTextFallback || !shouldFallbackMediaRequestToChat(err, 'image')) throw err
-          removeRunDisplayMessageById(requestAbortState, currentAssistantDisplay?.id)
-          currentAssistantDisplay = null
-          requestHandle = new AbortController()
-          if (requestAbortState.aborted) requestHandle.abort()
-          message.warning('图片生成接口不兼容当前返回，已自动回退为文本聊天。')
-          await runChatRounds({
-            providerId,
-            baseUrl,
-            apiKey,
-            apiMode,
-            model,
-            signal: requestHandle.signal,
-            assistantPlaceholderMode: imageGenerationPlaceholderMode,
-            supportsVision,
-            memorySystemContent,
-            setCurrentAssistantDisplay: (m) => {
-              currentAssistantDisplay = m
-            },
-            abortState: requestAbortState
-          })
-        }
-      } else if (requestMode === 'video-generation') {
-        try {
-          await runVideoGenerationRound({
-            providerId,
-            baseUrl,
-            apiKey,
-            model,
-            signal: requestHandle.signal,
-            placeholderMode: videoGenerationPlaceholderMode,
-            requestOptionsOverride: videoGenerationRequestOptionsOverride,
-            setCurrentAssistantDisplay: (m) => {
-              currentAssistantDisplay = m
-            },
-            abortState: requestAbortState
-          })
-        } catch (err) {
-          const allowTextFallback = videoGenerationPlaceholderMode !== 'video'
-          if (!allowTextFallback || !shouldFallbackMediaRequestToChat(err, 'video')) throw err
-          removeRunDisplayMessageById(requestAbortState, currentAssistantDisplay?.id)
-          currentAssistantDisplay = null
-          requestHandle = new AbortController()
-          if (requestAbortState.aborted) requestHandle.abort()
-          message.warning('视频生成接口不兼容当前返回，已自动回退为文本聊天。')
-          await runChatRounds({
-            providerId,
-            baseUrl,
-            apiKey,
-            apiMode,
-            model,
-            signal: requestHandle.signal,
-            assistantPlaceholderMode: videoGenerationPlaceholderMode,
-            supportsVision,
-            memorySystemContent,
-            setCurrentAssistantDisplay: (m) => {
-              currentAssistantDisplay = m
-            },
-            abortState: requestAbortState
-          })
-        }
-      } else {
-        await runChatRounds({
-          providerId,
-          baseUrl,
-          apiKey,
-          apiMode,
-          model,
-          signal: requestHandle.signal,
-          supportsVision,
-          memorySystemContent,
-          setCurrentAssistantDisplay: (m) => {
-            currentAssistantDisplay = m
-          },
-          abortState: requestAbortState
-        })
-      }
-    }
-    succeeded = true
-  } catch (err) {
-    if (requestAbortState.aborted || isAbortError(err)) {
-      const stopText = timedOut ? `（请求在 ${CHAT_REQUEST_TIMEOUT_MS}ms 后超时并已停止）` : '（已停止）'
-      if (currentAssistantDisplay) {
-        flushDeferredMessageFieldsForMessage(currentAssistantDisplay.id)
-        currentAssistantDisplay.streaming = false
-        currentAssistantDisplay.content = currentAssistantDisplay.content || stopText
-      } else {
-          getRunSessionTarget(requestAbortState).messages.push(createDisplayMessage('assistant', stopText))
-      }
-    } else {
-      const errorText = err?.message || String(err)
-      const mediaFailureApplied = applyMediaGenerationFailureToDisplay(currentAssistantDisplay, errorText)
-      if (mediaFailureApplied) {
-        // 媒体生成错误保留在任务卡片中，便于重试和查看建议。
-      } else if (currentAssistantDisplay) {
-        flushDeferredMessageFieldsForMessage(currentAssistantDisplay.id)
-        currentAssistantDisplay.streaming = false
-        const shouldRemovePlaceholder =
-          currentAssistantDisplay.transientRequestPlaceholder ||
-          (!String(currentAssistantDisplay.content || '').trim() &&
-            !String(currentAssistantDisplay.thinking || '').trim() &&
-            !(Array.isArray(currentAssistantDisplay.images) && currentAssistantDisplay.images.length) &&
-            !(Array.isArray(currentAssistantDisplay.videos) && currentAssistantDisplay.videos.length) &&
-            !currentAssistantDisplay.imageTask &&
-            !currentAssistantDisplay.videoTask)
-        if (shouldRemovePlaceholder) {
-          const targetSession = getRunSessionTarget(requestAbortState)
-          const idx = targetSession.messages.findIndex((m) => m.id === currentAssistantDisplay.id)
-          if (idx !== -1) targetSession.messages.splice(idx, 1)
-        }
-      }
-      message.error(mediaFailureApplied ? (currentAssistantDisplay?.mediaFailure?.summary || '媒体生成失败') : (errorText || '请求失败'))
-      await maybeScrollToBottomForRun(requestAbortState)
-    }
-  } finally {
-    window.clearTimeout(requestTimeoutTimer)
-    runRecord.runningTaskCount = Math.max(0, Number(runRecord.runningTaskCount || 0) - 1)
-    runRecord.chatRunCount = Math.max(0, Number(runRecord.chatRunCount || 0) - 1)
-    if (runRecord.activeRequestAbortState === requestAbortState) {
-      runRecord.activeRequestAbortState = null
-    }
-    currentAssistantDisplay = null
-    if (isMemorySessionActive(runRecord)) {
-      syncActiveRequestUiState(runRecord)
-    } else if (abortController.value === requestAbortState) {
-      sending.value = false
-      abortController.value = null
-    }
-    if (isMemorySessionActive(runRecord)) {
-      const record = saveActiveMemorySessionDraft()
-      void autoPersistMemorySessionWhenIdle(record)
-    } else {
-      runRecord.updatedAt = Date.now()
-      if (!isFinalizedMemorySessionTitle(runRecord)) runRecord.title = resolveMemorySessionTitle(runRecord)
-      void autoPersistMemorySessionWhenIdle(runRecord)
-    }
-    const memoryConfig = chatConfig.value?.memory
-    const memoryEnabled = isChatMemoryEnabled(memoryConfig)
-    if (memoryEnabled && memoryConfig?.autoExtract !== false && !requestAbortState.aborted && requestMode === 'chat') {
-      const assistantApiMessages = Array.isArray(runRecord.apiMessages) ? runRecord.apiMessages : []
-      const latestAssistant = [...assistantApiMessages].reverse().find((msg) => msg?.role === 'assistant' && String(msg?.content || '').trim())
-      const userText = String(memorySourceUserText || '').trim()
-      const assistantText = String(latestAssistant?.content || '').trim()
-      if (userText && assistantText) {
-        queueMemoryCandidateForRecord(runRecord, {
-          userText,
-          assistantText,
-          systemPrompt: buildCombinedSystemContent('', { sessionRecord: runRecord }),
-          summary: userText.slice(0, 140)
-        })
-      }
-    }
-    await maybeScrollToBottomForRun(requestAbortState)
-    runRecordByAbortState.delete(requestAbortState)
-    scheduleQueuedInputDrain(runRecord)
-  }
-
-  return succeeded
-}
-
-async function stageChatAttachmentsInSandbox(attachments, sessionTarget = null) {
-  const list = Array.isArray(attachments) ? attachments : []
-  const sandboxWorkspaceId = resolveMemorySessionSandboxWorkspaceId(
-    sessionTarget || getMemorySessionById(activeMemorySessionId.value)
-  )
-  const unstagedAttachments = list.filter((attachment) =>
-    attachment?.file &&
-    typeof attachment.file.arrayBuffer === 'function' &&
-    !String(attachment?.sandboxPath || '').trim()
-  )
-  if (!unstagedAttachments.length) return sandboxWorkspaceId
-
-  let importedWorkspaceId = sandboxWorkspaceId
-  for (const attachment of unstagedAttachments) {
-    let imported
-    try {
-      // Import one file at a time so a large selection is not duplicated in
-      // renderer memory before being written to disk.
-      imported = await importFilesToSandbox(sandboxWorkspaceId, [{
-        name: attachment.name || attachment.file?.name || 'attachment',
-        data: new Uint8Array(await attachment.file.arrayBuffer())
-      }])
-    } catch (error) {
-      throw new Error(`附件写入聊天沙盒失败：${error?.message || String(error)}`)
-    }
-
-    const entry = Array.isArray(imported?.imported) ? imported.imported[0] : null
-    if (!String(entry?.path || '').trim()) {
-      throw new Error('附件写入聊天沙盒不完整，请重试')
-    }
-
-    importedWorkspaceId = imported.workspaceId || importedWorkspaceId
-    attachment.sandboxWorkspaceId = importedWorkspaceId
-    attachment.sandboxPath = entry.path
-    attachment.sandboxDataPath = entry.dataPath || ''
-    // File objects are not serializable and may retain a large in-memory blob.
-    attachment.file = null
-  }
-  return importedWorkspaceId
-}
-
-async function ensureAttachmentSandboxSkillAvailable(attachments = []) {
-  if (!(Array.isArray(attachments) && attachments.some((item) => String(item?.sandboxPath || '').trim()))) return false
-  const skill = (skills.value || []).find((item) => String(item?._id || '').trim() === BUILTIN_SHELL_SKILL_ID)
-  if (!skill) return false
-
-  if (!normalizeStringList(selectedSkillIds.value).includes(BUILTIN_SHELL_SKILL_ID)) {
-    selectedSkillIds.value = normalizeStringList([...selectedSkillIds.value, BUILTIN_SHELL_SKILL_ID])
-    routerAddedSelectedSkillIds.add(BUILTIN_SHELL_SKILL_ID)
-  }
-  if (!normalizeStringList(agentSkillIds.value).includes(BUILTIN_SHELL_SKILL_ID)) {
-    agentSkillIds.value = normalizeStringList([...agentSkillIds.value, BUILTIN_SHELL_SKILL_ID])
-    routerAddedAgentSkillIds.add(BUILTIN_SHELL_SKILL_ID)
-  }
-  if (!normalizeStringList(activatedAgentSkillIds.value).includes(BUILTIN_SHELL_SKILL_ID)) {
-    activatedAgentSkillIds.value = normalizeStringList([...activatedAgentSkillIds.value, BUILTIN_SHELL_SKILL_ID])
-    routerActivatedAgentSkillIds.add(BUILTIN_SHELL_SKILL_ID)
-  }
-  if (isDirectorySkill(skill)) await loadSkillMainContent(BUILTIN_SHELL_SKILL_ID)
-  return true
-}
-
-async function prepareUserApiMessage({
-  text,
-  attachments,
-  userDisplay,
-  preferVision = true,
-  providerKind = 'openai-compatible',
-  sessionTarget = null,
-  imageAttachmentMode = 'chat'
-}) {
-  const targetSession = sessionTarget || session
-  const list = Array.isArray(attachments) ? attachments : []
-  const imageAttachmentsAsMediaReferences = imageAttachmentMode === 'media-reference'
-  if (list.length) {
-    await Promise.all(list.map((a) => ensureAttachmentParsed(a)))
-  }
-
-  await stageChatAttachmentsInSandbox(list, targetSession)
-  await ensureAttachmentSandboxSkillAvailable(list)
-
-  const attachmentContextBlocksForVision = []
-  const attachmentContextBlocksTextOnly = []
-  const imageAttachments = []
-
-  for (const a of list) {
-    const referenceBlock = buildChatAttachmentReferenceBlock(a, {
-      sessionId: targetSession?.id || activeMemorySessionId.value || 'default'
-    })
-    if (a.status === 'ready' && a.kind === 'image' && a.dataUrl) {
-      imageAttachments.push(a)
-      if (!imageAttachmentsAsMediaReferences) {
-        attachmentContextBlocksForVision.push(`${referenceBlock}\nThe image is also attached to this request for visual input.`)
-        attachmentContextBlocksTextOnly.push(`${referenceBlock}\nThe current provider receives only this file reference, not image pixels.`)
-      }
-      continue
-    }
-    if (a.status === 'ready') {
-      const fallbackPreview = a?.sandboxPath
-        ? ''
-        : truncateText(String(a.text || '').trim(), 8000, '（附件预览已截断）')
-      const block = [referenceBlock, fallbackPreview].filter(Boolean).join('\n')
-      attachmentContextBlocksForVision.push(block)
-      attachmentContextBlocksTextOnly.push(block)
-      continue
-    }
-    if (a.status === 'error') {
-      const block = `${referenceBlock}\nLocal preview parsing failed: ${a.error || 'unknown error'}. Read the sandbox file directly.`
-      attachmentContextBlocksForVision.push(block)
-      attachmentContextBlocksTextOnly.push(block)
-    }
-  }
-
-  try {
-    userDisplay.images = imageAttachments.map((a) => ({
-      id: newId(),
-      src: a.dataUrl,
-      name: a.name || 'image',
-      mime: a.mime || '',
-      size: Number(a.size || 0),
-      width: Number(a.width || 0),
-      height: Number(a.height || 0),
-      metaLine: a.metaLine || '',
-      svgTextPreview: a.svgTextPreview || ''
-    }))
-  } catch {
-    // ignore
-  }
-
-  const attachmentBlockForVision = attachmentContextBlocksForVision.length
-    ? `【附件内容】\n${attachmentContextBlocksForVision.join('\n\n')}`
-    : ''
-  const attachmentBlockTextOnly = attachmentContextBlocksTextOnly.length
-    ? `【附件内容】\n${attachmentContextBlocksTextOnly.join('\n\n')}`
-    : ''
-
-  const combinedTextForVision = [String(text || '').trim(), attachmentBlockForVision].filter(Boolean).join('\n\n')
-  const combinedTextTextOnly = [String(text || '').trim(), attachmentBlockTextOnly].filter(Boolean).join('\n\n')
-
-  const userApiMessage = { role: 'user', content: combinedTextTextOnly }
-  if (preferVision && imageAttachments.length) {
-    userApiMessage.content = [
-      {
-        type: 'text',
-        text: combinedTextForVision || '请结合下面的图片进行回答。'
-      },
-      ...imageAttachments.map((a) => ({
-        type: 'image_url',
-        image_url: { url: a.dataUrl }
-      }))
-    ]
-    userApiMessage.vision_fallback_text = combinedTextTextOnly
-  }
-
-  targetSession.apiMessages.push(userApiMessage)
-  userDisplay.apiIndex = targetSession.apiMessages.length - 1
-  if (targetSession === session) await scrollToBottom({ force: true })
-}
-
-function getLatestRealUserPromptText(apiMessages = session.apiMessages) {
-  for (let i = (Array.isArray(apiMessages) ? apiMessages : []).length - 1; i >= 0; i -= 1) {
-    const msg = apiMessages[i]
-    if (msg?.role !== 'user' || msg?.synthetic_tool_vision === true) continue
-    return extractEditableUserTextFromContent(msg.content)
-  }
-  return ''
-}
-
-async function regenerateAssistant(msg) {
-  if (sending.value || preparingSend.value) return
-  const cfg = getRequestConfigOrHint()
-  if (!cfg) return
-
-  typewriterFlushAll()
-  clearAllUserEditingState()
-
-  const assistantApiIndex = isFiniteNumber(msg?.apiIndex)
-    ? msg.apiIndex
-    : (() => {
-        for (let i = (session.apiMessages || []).length - 1; i >= 0; i--) {
-          if (session.apiMessages[i]?.role === 'assistant') return i
-        }
-        return -1
-      })()
-
-  if (!isFiniteNumber(assistantApiIndex) || assistantApiIndex < 0) {
-    message.warning('没有找到可重新生成的回答')
-    return
-  }
-
-  const userApiIndex = findNearestUserApiIndexBefore(assistantApiIndex)
-  if (!isFiniteNumber(userApiIndex) || userApiIndex < 0) {
-    message.error('未找到对应的用户提问，无法继续重新生成')
-    return
-  }
-
-  const userDisplayIndex =
-    findDisplayIndexByApiIndex('user', userApiIndex) >= 0
-      ? findDisplayIndexByApiIndex('user', userApiIndex)
-      : (() => {
-          const assistantDisplayIndex = (session.messages || []).findIndex((m) => m?.id === msg?.id)
-          if (assistantDisplayIndex <= 0) return -1
-          for (let i = assistantDisplayIndex - 1; i >= 0; i--) {
-            if (session.messages[i]?.role === 'user') return i
-          }
-          return -1
-        })()
-
-  if (userDisplayIndex < 0) {
-    message.error('未找到对应的用户气泡，无法继续重新生成')
-    return
-  }
-
-  const hasFollowing = session.messages.length > userDisplayIndex + 1 || session.apiMessages.length > userApiIndex + 1
-  const ok = await new Promise((resolve) => {
-    dialog.warning({
-      title: '确认重新生成',
-      content: hasFollowing ? '重新生成会删除本次回答及其后的对话内容，确定继续吗？' : '确定重新生成这条回答吗？',
-      positiveText: '重新生成',
-      negativeText: '取消',
-      onPositiveClick: () => resolve(true),
-      onNegativeClick: () => resolve(false),
-      onClose: () => resolve(false)
-    })
-  })
-  if (!ok) return
-
-  await startPreparingSend(async ({ release }) => {
-    truncateConversationAfterUser(userApiIndex, userDisplayIndex)
-    const requestRecord = getActiveMemorySession()
-    const userDisplay = session.messages[userDisplayIndex]
-    const attachments = Array.isArray(userDisplay?.attachments) ? userDisplay.attachments : []
-    const userText = extractEditableUserTextFromContent(getUserApiMessageContentByIndex(userApiIndex) ?? userDisplay?.content)
-    const { memorySystemContent, attachmentRecallText } = await prepareChatRequestContext({
-      cfg,
-      text: userText,
-      attachments,
-      requestRecord,
-      excludeLatestUserTurnFromMemoryRecall: true
-    })
-    const runPromise = runChatSession({
-      ...cfg,
-      sessionRecord: requestRecord,
-      memorySystemContent,
-      memorySourceUserText: [userText, attachmentRecallText].filter(Boolean).join('\n\n'),
-      prepare: async () => {
-        if (isMemorySessionActive(requestRecord)) await scrollToBottom({ force: true })
-      }
-    })
-    release()
-    await runPromise
-  })
-}
-
-function toggleOrSubmitUserEdit(msg) {
-  if (!msg || msg.role !== 'user') return
-  if (sending.value || preparingSend.value) return
-
-  if (!msg.editing) {
-    clearAllUserEditingState()
-    const userApiIndex = resolveUserApiIndexForDisplayMessage(msg)
-    const apiContent = getUserApiMessageContentByIndex(userApiIndex)
-    msg.editing = true
-    msg.editDraft = extractEditableUserTextFromContent(apiContent ?? msg.content)
-    scheduleScrollToBottom()
-    scheduleRefreshUserAnchorMeta()
-    return
-  }
-
-  submitUserEdit(msg)
-}
-
-async function submitUserEdit(msg) {
-  if (!msg || msg.role !== 'user') return
-  if (sending.value || preparingSend.value) return
-
-  const draft = String(msg.editDraft ?? '').trim()
-  const userApiIndex = resolveUserApiIndexForDisplayMessage(msg)
-  const hasAttachments = messageHasDisplayAttachments(msg, userApiIndex)
-  if (!draft && !hasAttachments) {
-    message.warning('内容不能为空')
-    return
-  }
-
-  const cfg = getRequestConfigOrHint()
-  if (!cfg) return
-
-  typewriterFlushAll()
-
-  if (!isFiniteNumber(userApiIndex) || userApiIndex < 0) {
-    message.error('未找到对应的请求记录，无法继续编辑并重发')
-    return
-  }
-
-  const userDisplayIndex = (session.messages || []).findIndex((m) => m?.id === msg?.id)
-  if (userDisplayIndex < 0) {
-    message.error('未找到对应的用户气泡，无法继续编辑并重发')
-    return
-  }
-
-  const hasFollowing = session.messages.length > userDisplayIndex + 1 || session.apiMessages.length > userApiIndex + 1
-  const ok = await new Promise((resolve) => {
-    dialog.warning({
-      title: '确认重发',
-      content: hasFollowing ? '重发会删除这条消息之后的所有对话内容，确定继续吗？' : '确定重发这条消息吗？' ,
-      positiveText: '重发',
-      negativeText: '取消',
-      onPositiveClick: () => resolve(true),
-      onNegativeClick: () => resolve(false),
-      onClose: () => resolve(false)
-    })
-  })
-  if (!ok) return
-
-  await startPreparingSend(async ({ release }) => {
-    msg.content = draft || (hasAttachments ? '(sent attachments)' : '')
-    msg.render = inferUserDisplayMessageRender(msg.content)
-    msg.editing = false
-    msg.editDraft = ''
-
-    if (session.apiMessages?.[userApiIndex]?.role === 'user') {
-      session.apiMessages[userApiIndex].content = mergeUserTextWithExistingAttachments(
-        session.apiMessages[userApiIndex].content,
-        draft
-      )
-    }
-
-    truncateConversationAfterUser(userApiIndex, userDisplayIndex)
-    const requestRecord = getActiveMemorySession()
-    const attachments = Array.isArray(msg?.attachments) ? msg.attachments : []
-    const { memorySystemContent, attachmentRecallText } = await prepareChatRequestContext({
-      cfg,
-      text: draft,
-      attachments,
-      requestRecord,
-      excludeLatestUserTurnFromMemoryRecall: true
-    })
-    const runPromise = runChatSession({
-      ...cfg,
-      sessionRecord: requestRecord,
-      memorySystemContent,
-      memorySourceUserText: [draft, attachmentRecallText].filter(Boolean).join('\n\n'),
-      prepare: async () => {
-        if (isMemorySessionActive(requestRecord)) await scrollToBottom({ force: true })
-      }
-    })
-    release()
-    await runPromise
-  })
-}
-
-function commitToolApprovalMode(value) {
-  const nextMode = normalizeToolApprovalMode(value)
-  toolApprovalMode.value = nextMode
-  try {
-    void Promise.resolve(updateChatConfig({ toolApprovalMode: nextMode })).catch((error) => {
-      console.warn('保存工具调用控制选项失败:', error)
-    })
-  } catch (error) {
-    console.warn('保存工具调用控制选项失败:', error)
-  }
-  const record = getActiveMemorySession()
-  if (record) {
-    record.toolApprovalMode = nextMode
-    record.autoApproveTools = nextMode !== TOOL_APPROVAL_MODE_MANUAL
-    if (record.activeRequestAbortState && typeof record.activeRequestAbortState === 'object') {
-      record.activeRequestAbortState.toolApprovalMode = nextMode
-      record.activeRequestAbortState.autoApproveTools = nextMode !== TOOL_APPROVAL_MODE_MANUAL
-    }
-    dispatchBuiltinAgentsToolApprovalModeChange(record, nextMode)
-    if (nextMode === TOOL_APPROVAL_MODE_FULL || nextMode === TOOL_APPROVAL_MODE_TRUSTED) {
-      pendingToolApprovals.value
-        .filter((request) => (
-          (nextMode === TOOL_APPROVAL_MODE_TRUSTED || request?.hardApproval !== true) &&
-          (!request?.sessionId || String(request.sessionId) === String(record.id))
-        ))
-        .forEach((request) => request?.settle?.('once'))
-      window.setTimeout(() => {
-        void flushMemorySessionApprovalQueue(record)
-      }, 0)
-    }
-  }
-}
-
-function setToolApprovalMode(value) {
-  const nextMode = normalizeToolApprovalMode(value)
-  if (nextMode === toolApprovalMode.value) return
-  if (nextMode === TOOL_APPROVAL_MODE_TRUSTED) {
-    dialog.error({
-      title: '启用完全信任？',
-      content: '此模式会记住为后续新会话的默认选项，并直接批准所有工具调用，包括命令、主机代码执行、删除及其他破坏性操作；子 Agent 也会继承。请仅在当前智能体、技能和 MCP 服务全部可信时启用。',
-      positiveText: '完全信任并记住',
-      negativeText: '取消',
-      onPositiveClick: () => commitToolApprovalMode(nextMode)
-    })
-    return
-  }
-  if (nextMode === TOOL_APPROVAL_MODE_FULL) {
-    dialog.warning({
-      title: '启用高风险自动调用？',
-      content: '此模式会记住为后续新会话的默认选项，并直接执行普通写入、常规命令和一般代码；明显破坏性的命令，以及删除、付款、发布等危险操作仍需确认。子 Agent 也会继承。',
-      positiveText: '启用高风险自动',
-      negativeText: '取消',
-      onPositiveClick: () => commitToolApprovalMode(nextMode)
-    })
-    return
-  }
-  commitToolApprovalMode(nextMode)
-}
-
-function toggleWebSearch() {
-  webSearchEnabled.value = !webSearchEnabled.value
-}
-
-function toggleAutoActivateAgentSkills() {
-  autoActivateAgentSkills.value = !autoActivateAgentSkills.value
-}
-
-function cycleToolMode() {
-  const order = ['auto', 'expanded', 'compact']
-  const current = String(toolMode.value || 'auto')
-  const idx = order.indexOf(current)
-  const next = order[(idx + 1 + order.length) % order.length]
-  toolMode.value = next
-  if (next === 'expanded') effectiveToolMode.value = 'expanded'
-  if (next === 'compact') effectiveToolMode.value = 'compact'
-}
-
-async function refreshActiveMcpTools() {
-  if (refreshingMcpTools.value) return
-  const servers = (activeMcpServers.value || []).filter((s) => s && !s.disabled && s._id)
-  if (!servers.length) {
-    message.info('当前没有启用的 MCP 服务')
-    return
-  }
-
-  refreshingMcpTools.value = true
-  try {
-    mcpListToolsCache.clear()
-    mcpListToolsInFlight.clear()
-    mcpToolsRevision.value += 1
-    clearMcpToolCatalog()
-    clearPinnedMcpToolHints()
-    await warmMcpToolCatalogForServers(servers, { forceRefresh: true })
-    message.success('已刷新 MCP 工具列表')
-  } catch (err) {
-    message.error('刷新 MCP 工具列表失败：' + (err?.message || String(err)))
-  } finally {
-    refreshingMcpTools.value = false
-  }
-}
-
-function normalizeImageGenerationMode(value) {
-  const mode = String(value || '').trim().toLowerCase()
-  if (mode === 'on' || mode === 'off') return mode
-  return 'auto'
-}
-
-function setImageGenerationMode(nextMode) {
-  const next = normalizeImageGenerationMode(nextMode)
-  imageGenerationMode.value = next
-}
-
-function setVideoGenerationMode(nextMode) {
-  const next = normalizeImageGenerationMode(nextMode)
-  videoGenerationMode.value = next
-}
-
-function assignImageGenerationParams(nextParams = {}) {
-  Object.assign(imageGenerationParams, normalizeImageGenerationParams(nextParams))
-}
-
-function assignVideoGenerationParams(nextParams = {}) {
-  Object.assign(videoGenerationParams, normalizeVideoGenerationParams(nextParams))
-}
-
-function setImageGenerationParamsEnabled(enabled) {
-  imageGenerationParamsEnabled.value = normalizeMediaGenerationParamsEnabled(enabled)
-}
-
-function setVideoGenerationParamsEnabled(enabled) {
-  videoGenerationParamsEnabled.value = normalizeMediaGenerationParamsEnabled(enabled)
-}
-
-function resetImageGenerationParams() {
-  assignImageGenerationParams(createDefaultImageGenerationParams())
-}
-
-function resetVideoGenerationParams() {
-  assignVideoGenerationParams(createDefaultVideoGenerationParams())
-}
-
-function getCurrentImageGenerationRequestOptions() {
-  return buildMediaGenerationManualRequestOptions(
-    'image',
-    imageGenerationParamsEnabled.value,
-    imageGenerationParams
-  )
-}
-
-function getCurrentVideoGenerationRequestOptions() {
-  return buildMediaGenerationManualRequestOptions(
-    'video',
-    videoGenerationParamsEnabled.value,
-    videoGenerationParams
-  )
-}
-
-function cycleImageGenerationMode() {
-  const order = ['auto', 'on', 'off']
-  const current = normalizeImageGenerationMode(imageGenerationMode.value)
-  const idx = order.indexOf(current)
-  setImageGenerationMode(order[(idx + 1 + order.length) % order.length])
-}
-
-function cycleVideoGenerationMode() {
-  const order = ['auto', 'on', 'off']
-  const current = normalizeImageGenerationMode(videoGenerationMode.value)
-  const idx = order.indexOf(current)
-  setVideoGenerationMode(order[(idx + 1 + order.length) % order.length])
-}
-
-function clearInlineAgentPicker() {
-  inlineAgentQuery.value = ''
-  inlineAgentMatchStart.value = -1
-  inlineAgentMatchEnd.value = -1
-  inlineAgentActiveIndex.value = 0
-}
-
-function clearInlineCommandPicker() {
-  inlineCommandMode.value = ''
-  inlineCommandType.value = ''
-  inlineCommandQuery.value = ''
-  inlineCommandMatchStart.value = -1
-  inlineCommandMatchEnd.value = -1
-  inlineCommandActiveIndex.value = 0
-}
-
-function clearInlinePickers() {
-  clearInlineAgentPicker()
-  clearInlineCommandPicker()
-}
-
-function getComposerTextareaEl() {
-  return composerPanelRef.value?.getTextareaEl?.() || null
-}
-
-function refreshComposerInlinePickers(options = {}) {
-  const text = typeof options.text === 'string' ? options.text : String(input.value || '')
-  const caret =
-    typeof options.caret === 'number'
-      ? options.caret
-      : (getComposerTextareaEl()?.selectionStart ?? text.length)
-
-  const commandContext = extractInlineCommandContext(text, caret)
-  if (commandContext) {
-    clearInlineAgentPicker()
-    inlineCommandMode.value = commandContext.mode
-    inlineCommandType.value = commandContext.type
-    inlineCommandQuery.value = commandContext.query
-    inlineCommandMatchStart.value = commandContext.start
-    inlineCommandMatchEnd.value = commandContext.end
-    if (commandContext.mode === 'item' && commandContext.type === 'prompt') {
-      void ensureMcpPromptCatalogLoaded({ silent: true })
-    }
-    return
-  }
-
-  const agentContext = extractInlineAgentContext(text, caret)
-  if (agentContext) {
-    clearInlineCommandPicker()
-    inlineAgentQuery.value = agentContext.query
-    inlineAgentMatchStart.value = agentContext.start
-    inlineAgentMatchEnd.value = agentContext.end
-    return
-  }
-
-  clearInlinePickers()
-}
-
-function handleComposerCursorChange() {
-  refreshComposerInlinePickers()
-}
-
-function handleComposerBlur() {
-  clearInlinePickers()
-}
-
-function focusComposerAt(position) {
-  nextTick(() => {
-    composerPanelRef.value?.focusComposer?.()
-    const el = getComposerTextareaEl()
-    if (el && Number.isFinite(position)) {
-      el.setSelectionRange(position, position)
-    }
-    refreshComposerInlinePickers({ caret: position })
-  })
-}
-
-function insertInlineCommandTrigger(kind) {
-  const normalizedKind = String(kind || '').trim().toLowerCase()
-  if (!INLINE_COMMAND_KIND_LABELS[normalizedKind]) return
-
-  clearInlinePickers()
-
-  const token = `/${normalizedKind} `
-  const raw = String(input.value || '')
-  const el = getComposerTextareaEl()
-  const start = el?.selectionStart ?? raw.length
-  const end = el?.selectionEnd ?? start
-  const before = raw.slice(0, start)
-  const after = raw.slice(end)
-  const prefix = before && !/[\s\n]$/.test(before) ? ' ' : ''
-  const suffix = after && !/^[\s\n]/.test(after) ? ' ' : ''
-
-  input.value = `${before}${prefix}${token}${suffix}${after}`
-  focusComposerAt(before.length + prefix.length + token.length)
-}
-
-function moveInlineAgentActive(step) {
-  const list = inlineAgentSuggestions.value
-  if (!list.length) return
-  const size = list.length
-  inlineAgentActiveIndex.value = (inlineAgentActiveIndex.value + step + size) % size
-}
-
-function applyInlineAgentSuggestion(agentId) {
-  const id = String(agentId || '').trim()
-  if (!id) return
-
-  const raw = String(input.value || '')
-  const start = inlineAgentMatchStart.value
-  const end = inlineAgentMatchEnd.value >= start ? inlineAgentMatchEnd.value : start
-  let nextCaret = Math.max(0, start)
-
-  if (start >= 0 && end >= start) {
-    const before = raw.slice(0, start)
-    let after = raw.slice(end)
-    if (/\s$/.test(before) && /^\s/.test(after)) {
-      after = after.replace(/^\s+/, ' ')
-    }
-    input.value = `${before}${after}`
-    nextCaret = before.length
-  }
-
-  applyAgent(id)
-  clearInlineAgentPicker()
-  focusComposerAt(nextCaret)
-}
-
-function moveInlineCommandActive(step) {
-  const list = inlineCommandSuggestions.value
-  if (!list.length) return
-  const size = list.length
-  let nextIndex = inlineCommandActiveIndex.value
-  let attempts = 0
-  do {
-    nextIndex = (nextIndex + step + size) % size
-    attempts += 1
-  } while (attempts < size && list[nextIndex]?.disabled)
-  inlineCommandActiveIndex.value = nextIndex
-}
-
-function getFirstEnabledInlineCommandIndex(list = inlineCommandSuggestions.value) {
-  const index = (Array.isArray(list) ? list : []).findIndex((item) => !item?.disabled)
-  return index >= 0 ? index : 0
-}
-
-function replaceInlineCommandToken(kind) {
-  const normalizedKind = String(kind || '').trim().toLowerCase()
-  if (!INLINE_COMMAND_KIND_LABELS[normalizedKind]) return
-
-  const raw = String(input.value || '')
-  const start = inlineCommandMatchStart.value
-  const end = inlineCommandMatchEnd.value >= start ? inlineCommandMatchEnd.value : start
-  const before = start >= 0 ? raw.slice(0, start) : raw
-  let after = end >= start ? raw.slice(end) : ''
-  const token = `/${normalizedKind} `
-
-  if (/^[ \t]+/.test(after)) {
-    after = after.replace(/^[ \t]+/, '')
-  } else if (after && !/^[\s\n]/.test(after)) {
-    after = ` ${after}`
-  }
-
-  input.value = `${before}${token}${after}`
-  focusComposerAt(before.length + token.length)
-}
-
-function removeInlineCommandToken() {
-  const raw = String(input.value || '')
-  const start = inlineCommandMatchStart.value
-  const end = inlineCommandMatchEnd.value >= start ? inlineCommandMatchEnd.value : start
-  let nextCaret = Math.max(0, start)
-
-  if (start >= 0 && end >= start) {
-    const before = raw.slice(0, start)
-    let after = raw.slice(end)
-    if (/\s$/.test(before) && /^\s/.test(after)) {
-      after = after.replace(/^\s+/, ' ')
-    }
-    input.value = `${before}${after}`
-    nextCaret = before.length
-  }
-
-  clearInlineCommandPicker()
-  focusComposerAt(nextCaret)
-}
-
-async function applyInlineCommandSuggestion(item) {
-  const value = String(item?.value || '').trim()
-  if (!value) return
-  if (item?.disabled) {
-    message.warning('该 MCP 已禁用，请先到设置页启用')
-    return
-  }
-
-  if (inlineCommandMode.value === 'kind') {
-    replaceInlineCommandToken(value)
-    return
-  }
-
-  if (inlineCommandType.value === 'prompt') {
-    const parsed = parsePromptOptionValue(value)
-    if (parsed.type === 'mcp') {
-      const promptItem = findMcpPromptCatalogItem(parsed.serverId, parsed.promptName)
-      if (!promptItem) {
-        message.warning('未找到该 MCP 提示词，请刷新后重试')
-        return
-      }
-
-      removeInlineCommandToken()
-      if (Array.isArray(promptItem.arguments) && promptItem.arguments.length) {
-        promptModalSelectedId.value = makeMcpPromptOptionValue(promptItem)
-        showPromptModal.value = true
-        return
-      }
-
-      await applyMcpPromptToComposer(promptItem)
-      return
-    }
-
-    const localPrompt = findLocalPromptById(parsed.promptId || null)
-    if (!localPrompt) {
-      message.warning('未找到该本地提示词，请刷新后重试')
-      removeInlineCommandToken()
-      return
-    }
-
-    if (isUserPrompt(localPrompt)) {
-      removeInlineCommandToken()
-      const variables = extractPromptVariables(localPrompt.content)
-      if (!variables.length) {
-        applyLocalPromptToComposer(localPrompt, {})
-        return
-      }
-      promptModalSelectedId.value = makeLocalPromptOptionValue(localPrompt._id)
-      resetPromptVariableFormData(variables, promptUserArgsForm)
-      showPromptModal.value = true
-      return
-    }
-
-    applyBasePromptSelection(localPrompt._id)
-    removeInlineCommandToken()
-    return
-  }
-
-  if (inlineCommandType.value === 'skill') {
-    const set = new Set(Array.isArray(selectedSkillIds.value) ? selectedSkillIds.value : [])
-    if (set.has(value)) set.delete(value)
-    else set.add(value)
-    selectedSkillIds.value = Array.from(set)
-    removeInlineCommandToken()
-    return
-  }
-
-  if (inlineCommandType.value === 'mcp') {
-    const set = new Set(Array.isArray(manualMcpIds.value) ? manualMcpIds.value : [])
-    if (set.has(value)) set.delete(value)
-    else set.add(value)
-    manualMcpIds.value = Array.from(set)
-    void ensureMcpPromptCatalogLoaded({ silent: true, forceRefresh: true })
-    removeInlineCommandToken()
-  }
-}
-
-function handleInputKeydown(e) {
-  if (isComposerCompositionKeydownEvent(e)) return
-
-  if (
-    sending.value &&
-    e.key === 'Enter' &&
-    !e.shiftKey &&
-    (e.ctrlKey || e.metaKey)
-  ) {
-    e.preventDefault()
-    steerCurrentRun()
-    return
-  }
-
-  if (!e.ctrlKey && !e.metaKey && !e.altKey && showInlineCommandPicker.value) {
-    if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      moveInlineCommandActive(1)
-      return
-    }
-
-    if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      moveInlineCommandActive(-1)
-      return
-    }
-
-    if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
-      const list = inlineCommandSuggestions.value
-      const active =
-        list[inlineCommandActiveIndex.value] ||
-        list[getFirstEnabledInlineCommandIndex(list)] ||
-        list[0]
-      if (active) {
-        e.preventDefault()
-        applyInlineCommandSuggestion(active)
-        return
-      }
-    }
-
-    if (e.key === 'Escape') {
-      e.preventDefault()
-      clearInlineCommandPicker()
-      return
-    }
-  }
-
-  if (!e.ctrlKey && !e.metaKey && !e.altKey && showInlineAgentPicker.value) {
-    if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      moveInlineAgentActive(1)
-      return
-    }
-
-    if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      moveInlineAgentActive(-1)
-      return
-    }
-
-    if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
-      const active = inlineAgentSuggestions.value[inlineAgentActiveIndex.value] || inlineAgentSuggestions.value[0]
-      if (active) {
-        e.preventDefault()
-        applyInlineAgentSuggestion(active.value)
-        return
-      }
-    }
-
-    if (e.key === 'Escape') {
-      e.preventDefault()
-      clearInlineAgentPicker()
-      return
-    }
-  }
-
-  if (!shouldSubmitComposerKeydownEvent(e)) return
-  e.preventDefault()
-  send()
-}
-
-function openSystemPromptModal() {
-  systemPromptDraft.value = basePromptText.value
-  showSystemPromptModal.value = true
-}
-
-function applyCustomSystemPrompt() {
-  const selectedPrompt = findLocalPromptById(selectedPromptId.value)
-  const nextState = resolveSystemPromptModalApplyState(
-    {
-      basePromptMode: basePromptMode.value,
-      selectedPromptId: selectedPromptId.value,
-      customSystemPrompt: customSystemPrompt.value,
-      customSystemPromptExplicit: customSystemPromptExplicit.value
-    },
-    {
-      draftText: systemPromptDraft.value,
-      selectedPromptId: selectedPromptId.value,
-      selectedPromptContent: isSystemPrompt(selectedPrompt) ? String(selectedPrompt?.content || '') : ''
-    }
-  )
-  basePromptMode.value = nextState.basePromptMode
-  selectedPromptId.value = nextState.selectedPromptId
-  customSystemPrompt.value = nextState.customSystemPrompt
-  customSystemPromptExplicit.value = nextState.customSystemPromptExplicit
-  showSystemPromptModal.value = false
-}
-
-function clearCustomSystemPrompt() {
-  systemPromptDraft.value = ''
-}
-
-function resetSystemPromptToSelectedPrompt() {
-  const p = findLocalPromptById(selectedPromptId.value)
-  systemPromptDraft.value = isSystemPrompt(p) ? String(p?.content || '') : ''
-}
-
-function syncContextWindowDraft(raw = effectiveContextWindowConfig.value) {
-  Object.assign(contextWindowDraft, resolveChatContextWindowOptions(raw))
-}
-
-function openContextWindowModal() {
-  syncContextWindowDraft()
-  contextWindowPreviewOmittedFilter.value = 'all'
-  showContextWindowModal.value = true
-}
-
-function handleContextWindowPresetChange(value) {
-  const preset = String(value || '').trim()
-  if (!preset || preset === 'custom') return
-  Object.assign(contextWindowDraft, resolveChatContextWindowOptions({ ...contextWindowDraft, preset }))
-}
-
-function resetContextWindowDraftToDefault() {
-  Object.assign(contextWindowDraft, resolveChatContextWindowOptions(globalContextWindowConfig.value))
-}
-
-async function applyContextWindowSettings() {
-  try {
-    const normalized = resolveChatContextWindowOptions(normalizeChatContextWindowConfig(contextWindowDraft))
-    const globalNormalized = normalizeChatContextWindowConfig(chatConfig.value?.contextWindow)
-    sessionContextWindowOverride.value = JSON.stringify(normalized) === JSON.stringify(globalNormalized)
-      ? null
-      : deepCopyJson(normalized, null)
-    const activeRecord = getMemorySessionById(activeMemorySessionId.value)
-    if (activeRecord) {
-      activeRecord.state = buildCurrentChatState()
-      activeRecord.updatedAt = Date.now()
-    }
-    syncContextWindowDraft(normalized)
-    showContextWindowModal.value = false
-    message.success('当前会话上下文策略已应用')
-  } catch (err) {
-    message.error('保存上下文窗口设置失败：' + (err?.message || String(err)))
-  }
-}
-
-function isCurrentModel(providerId, model) {
-  return providerId === selectedProviderId.value && model === selectedModel.value
-}
-
-function selectProviderModel(providerId, model) {
-  selectedProviderId.value = providerId
-  selectedModel.value = model
-  showModelModal.value = false
-}
-
-function openAgentModal() {
-  clearInlinePickers()
-  agentModalSelectedId.value = visibleSelectedAgent.value?._id || null
-  showAgentModal.value = true
-}
-
-function resetChatSetupUiState() {
-  clearInlinePickers()
-
-  // 关闭弹窗
-  showModelModal.value = false
-  showSystemPromptModal.value = false
-  showContextWindowModal.value = false
-  showAgentModal.value = false
-  showPromptModal.value = false
-  showSkillModal.value = false
-  showMcpModal.value = false
-
-  applyDefaultChatState()
-}
-
-function clearSelectedAgent() {
-  clearInlinePickers()
-  const skillIdsToRemove = new Set([
-    ...normalizeStringList(agentSkillIds.value),
-    ...normalizeStringList(selectedAgent.value?.skills)
-  ])
-  const mcpIdsToRemove = new Set(normalizeStringList(selectedAgent.value?.mcp))
-
-  if (skillIdsToRemove.size) {
-    selectedSkillIds.value = normalizeStringList((selectedSkillIds.value || []).filter((id) => !skillIdsToRemove.has(id)))
-  }
-  if (mcpIdsToRemove.size) {
-    manualMcpIds.value = normalizeStringList((manualMcpIds.value || []).filter((id) => !mcpIdsToRemove.has(id)))
-  }
-
-  applyDefaultGeneralAgent()
-  agentModalSelectedId.value = null
-  showAgentModal.value = false
-}
-
-function applyAgentModal() {
-  if (!agentModalSelectedId.value) return
-  applyAgent(agentModalSelectedId.value)
-  clearInlinePickers()
-  showAgentModal.value = false
-}
-
-function clearSelectedPrompt() {
-  const parsedBeforeClear = selectedPromptModalParsedValue.value
-  promptModalSelectedId.value = null
-  resetPromptVariableFormData([], promptUserArgsForm)
-  if (shouldClearBasePromptSelectionImmediately({
-    basePromptMode: basePromptMode.value,
-    selectedPromptId: selectedPromptId.value
-  }, parsedBeforeClear)) {
-    applyBasePromptSelection(null)
-  }
-  showPromptModal.value = false
-}
-
-async function applyPromptModal() {
-  const parsed = selectedPromptModalParsedValue.value
-  if (parsed.type === 'mcp') {
-    const promptItem = findMcpPromptCatalogItem(parsed.serverId, parsed.promptName)
-    if (!promptItem) {
-      message.warning('未找到该 MCP 提示词，请刷新后重试')
-      return
-    }
-
-    let args = {}
-    try {
-      args = buildMcpPromptArgsFromModal()
-    } catch (err) {
-      message.warning('MCP 提示词参数无效：' + (err?.message || String(err)))
-      return
-    }
-
-    const ok = await applyMcpPromptToComposer(promptItem, args)
-    if (!ok) return
-    showPromptModal.value = false
-    return
-  }
-
-  const localPrompt = findLocalPromptById(parsed.promptId || null)
-  if (!localPrompt) {
-    if (shouldClearBasePromptSelectionImmediately({
-      basePromptMode: basePromptMode.value,
-      selectedPromptId: selectedPromptId.value
-    }, parsed)) {
-      applyBasePromptSelection(null)
-    }
-    showPromptModal.value = false
-    return
-  }
-
-  if (isUserPrompt(localPrompt)) {
-    let values = {}
-    try {
-      values = buildLocalPromptArgsFromModal()
-    } catch (err) {
-      message.warning(err?.message || String(err))
-      return
-    }
-
-    const ok = applyLocalPromptToComposer(localPrompt, values)
-    if (!ok) return
-    showPromptModal.value = false
-    return
-  }
-
-  applyBasePromptSelection(localPrompt._id)
-  showPromptModal.value = false
-}
-
-function applySkillModal() {
-  selectedSkillIds.value = Array.isArray(skillModalSelectedIds.value) ? [...skillModalSelectedIds.value] : []
-  showSkillModal.value = false
-}
-
-function applyMcpModal() {
-  manualMcpIds.value = Array.isArray(mcpModalSelectedIds.value) ? [...mcpModalSelectedIds.value] : []
-  showMcpModal.value = false
-  void ensureMcpPromptCatalogLoaded({ silent: true, forceRefresh: true })
-}
-
-const contextWindowPresetOptions = [
-  {
-    label: '紧凑',
-    value: 'aggressive',
-    description: CHAT_CONTEXT_WINDOW_PRESETS.aggressive.description
-  },
-  {
-    label: '平衡',
-    value: 'balanced',
-    description: CHAT_CONTEXT_WINDOW_PRESETS.balanced.description
-  },
-  {
-    label: '宽松',
-    value: 'wide',
-    description: CHAT_CONTEXT_WINDOW_PRESETS.wide.description
-  },
-  {
-    label: '自定义',
-    value: 'custom',
-    description: '手动控制轮次、消息数量和字符预算。'
-  }
-]
-
-const contextWindowHistoryFocusOptions = [
-  {
-    label: CHAT_CONTEXT_WINDOW_HISTORY_FOCUS_PRESETS.recent.label,
-    value: 'recent',
-    description: CHAT_CONTEXT_WINDOW_HISTORY_FOCUS_PRESETS.recent.description
-  },
-  {
-    label: CHAT_CONTEXT_WINDOW_HISTORY_FOCUS_PRESETS.balanced.label,
-    value: 'balanced',
-    description: CHAT_CONTEXT_WINDOW_HISTORY_FOCUS_PRESETS.balanced.description
-  },
-  {
-    label: CHAT_CONTEXT_WINDOW_HISTORY_FOCUS_PRESETS.attachments.label,
-    value: 'attachments',
-    description: CHAT_CONTEXT_WINDOW_HISTORY_FOCUS_PRESETS.attachments.description
-  }
-]
-
-function resolveHistoryContextBudgetState(options = {}) {
-  const { tools = [], reservedCharsOverride = null, apiMessages = null, sessionRecord = null } = options || {}
-  const reservedChars = Number.isFinite(Number(reservedCharsOverride))
-    ? Math.max(0, Math.floor(Number(reservedCharsOverride)))
-    : calculateReservedRequestChars({
-        systemContent: systemContent.value,
-        tools
-      })
-  const sourceMessages = Array.isArray(apiMessages) ? apiMessages : session.apiMessages
-  const sourceChars = estimateMessagesSize(sourceMessages)
-  const tokenTelemetry = getContextTokenTelemetry(sessionRecord)
-  const budgetPlan = resolveChatContextWindowBudgetPlan(effectiveContextWindowConfig.value, {
-    reservedChars,
-    sourceChars,
-    reportedInputTokens: tokenTelemetry.inputTokens,
-    reportedRequestChars: tokenTelemetry.requestChars
-  })
-  const historyBudget = budgetPlan.historyCharsBudget
-  return {
-    reservedChars,
-    sourceChars,
-    budgetPlan,
-    historyBudget
-  }
-}
-
-function getHistoryContextCharBudget(options = {}) {
-  return resolveHistoryContextBudgetState(options).historyBudget
-}
-
-function buildRequestApiMessages(providerKind = 'openai-compatible', options = {}) {
-  const {
-    tools = [],
-    reservedCharsOverride = null,
-    apiMessages = null,
-    contextSummary = null,
-    sessionRecord = null
-  } = options || {}
-  const sourceMessages = Array.isArray(apiMessages) ? apiMessages : session.apiMessages
-  const summary =
-    contextSummary && typeof contextSummary === 'object'
-      ? contextSummary
-      : null
-  const summaryText = String(summary?.summaryText || '').trim()
-  const coveredMessageCount = Math.max(0, Math.floor(Number(summary?.coveredMessageCount || 0)))
-  const effectiveMessages =
-    summaryText && coveredMessageCount > 0 && coveredMessageCount <= sourceMessages.length
-      ? sourceMessages.slice(coveredMessageCount)
-      : sourceMessages
-  const budgetState = resolveHistoryContextBudgetState({
-    tools,
-    reservedCharsOverride,
-    apiMessages: effectiveMessages,
-    sessionRecord
-  })
-
-  return buildChatContextWindow(
-    effectiveMessages,
-    buildChatContextWindowRuntimeOptions(contextWindowResolvedOptions.value, {
-      providerKind,
-      maxChars: budgetState.historyBudget,
-      preserveToolResultTurns: budgetState.budgetPlan.mode !== 'compact'
-    })
-  )
-}
-
-async function requestContextWindowSummary({
-  providerKind = 'openai-compatible',
-  providerId = '',
-  baseUrl = '',
-  apiKey = '',
-  apiMode = 'auto',
-  model = '',
-  systemPrompt = '',
-  conversationPairs = []
-} = {}) {
-  const pairs = Array.isArray(conversationPairs) ? conversationPairs.filter((item) => item && (item.userText || item.assistantText)) : []
-  if (!pairs.length) return ''
-
-  const prompt = [
-    '请把下面这段较早的多轮对话压缩成后续继续聊天可用的历史摘要。',
-    '保留：用户身份、长期偏好、约束、项目背景、关键已决策事项、未完成事项、重要事实。',
-    '删除：寒暄、重复表述、低信息量回复、工具噪声。',
-    '输出要求：使用简洁中文，分点总结，控制在 800 字以内，不要编造。'
-  ]
-
-  pairs.forEach((item, index) => {
-    prompt.push(
-      [
-        `片段 ${index + 1}`,
-        item.userText ? `用户：\n${item.userText}` : '',
-        item.assistantText ? `助手：\n${item.assistantText}` : ''
-      ].filter(Boolean).join('\n\n')
-    )
-  })
-
-  if (providerKind === 'utools-ai') {
-    if (!canUseUtoolsAi()) return ''
-    const result = await window.utools.ai({
-      model,
-      messages: buildUtoolsAiMessages({
-        systemContent: systemPrompt,
-        apiMessages: [{ role: 'user', content: prompt.join('\n\n') }]
-      })
-    })
-    recordModelUsage(extractModelUsage(result), {
-      providerId,
-      model,
-      endpoint: 'utools-ai',
-      purpose: 'context-summary'
-    })
-    return truncateText(String(result?.content || '').trim(), 1200, '（摘要已截断）')
-  }
-
-  if (!baseUrl || !apiKey || !model) return ''
-  const result = await streamChatCompletion({
-    baseUrl,
-    apiKey,
-    apiMode,
-    body: {
-      model,
-      stream: true,
-      temperature: 0.2,
-      messages: buildRequestMessages({
-        baseUrl,
-        model,
-        apiMessages: [{ role: 'user', content: prompt.join('\n\n') }],
-        memorySystemContent: '',
-        tools: []
-      }).map((message, index) => {
-        if (index === 0 && message.role === 'system' && systemPrompt) {
-          return { ...message, content: systemPrompt }
-        }
-        return message
-      })
-    },
-    signal: undefined,
-    onDelta: null,
-    abortState: null
-  })
-  recordModelUsage(result?.usage, {
-    providerId,
-    model,
-    endpoint: result?.endpoint || 'auto',
-    purpose: 'context-summary'
-  })
-  return truncateText(String(result?.content || '').trim(), 1200, '（摘要已截断）')
-}
-
-function resolveContextSummaryCoverage({
-  sourceMessages = [],
-  cfg = null,
-  tools = [],
-  reservedCharsOverride = null,
-  targetSourceChars = null,
-  sessionRecord = null
-} = {}) {
-  const list = Array.isArray(sourceMessages) ? sourceMessages : []
-  if (!cfg || cfg.requestMode !== 'chat' || list.length < 1) {
-    return {
-      coveredCount: 0,
-      sourceSlice: [],
-      sourceHash: ''
-    }
-  }
-
-  const requestMessages = buildRequestApiMessages(cfg.providerKind || 'openai-compatible', {
-    tools,
-    reservedCharsOverride,
-    apiMessages: list,
-    sessionRecord
-  })
-  let coveredCount = Math.max(0, list.length - requestMessages.length)
-  if (coveredCount < 1 && list.length > 1 && Number.isFinite(Number(targetSourceChars))) {
-    const targetChars = Math.max(4000, Math.floor(Number(targetSourceChars)))
-    const keepRecentTurnsFull = Math.max(1, Number(contextWindowResolvedOptions.value?.keepRecentTurnsFull || 6))
-    const minKeptMessages = Math.max(1, Math.min(list.length - 1, Math.max(2, keepRecentTurnsFull * 2)))
-    let keepStart = Math.max(0, list.length - minKeptMessages)
-    let keptChars = estimateMessagesSize(list.slice(keepStart))
-
-    while (keepStart > 0) {
-      const nextMessageChars = estimateMessageSize(list[keepStart - 1])
-      if (keptChars + nextMessageChars > targetChars) break
-      keepStart -= 1
-      keptChars += nextMessageChars
-    }
-
-    if (keepStart > 0) coveredCount = keepStart
-  }
-
-  if (coveredCount < 1) {
-    return {
-      coveredCount: 0,
-      sourceSlice: [],
-      sourceHash: ''
-    }
-  }
-
-  const sourceSlice = list.slice(0, coveredCount)
-  return {
-    coveredCount,
-    sourceSlice,
-    sourceHash: buildContextSummarySourceHash(sourceSlice)
-  }
-}
-
-async function ensureContextWindowSummary({
-  cfg,
-  requestRecord,
-  tools = [],
-  reservedCharsOverride = null,
-  targetSourceChars = null,
-  force = false
-} = {}) {
-  if (!cfg || cfg.requestMode !== 'chat' || !requestRecord) return ''
-  const sourceMessages = Array.isArray(requestRecord.apiMessages) ? requestRecord.apiMessages : []
-  const { coveredCount, sourceSlice, sourceHash } = resolveContextSummaryCoverage({
-    sourceMessages,
-    cfg,
-    tools,
-    reservedCharsOverride,
-    targetSourceChars,
-    sessionRecord: requestRecord
-  })
-  if (coveredCount < 1) return ''
-
-  const cached = requestRecord.contextSummary && typeof requestRecord.contextSummary === 'object'
-    ? requestRecord.contextSummary
-    : null
-  if (!force && cached?.summaryText && cached.sourceHash === sourceHash && Number(cached.coveredMessageCount || 0) === coveredCount) {
-    return String(cached.summaryText || '').trim()
-  }
-
-  const cachedSummaryText = String(cached?.summaryText || '').trim()
-  const cachedCoveredCount = Math.max(0, Math.floor(Number(cached?.coveredMessageCount || 0)))
-  const hasForwardProgress = cachedSummaryText && cachedCoveredCount > 0 && cachedCoveredCount < coveredCount
-  const layeredSourceMessages = hasForwardProgress
-    ? [
-        {
-          role: 'system',
-          content: `previous compressed summary:\n${cachedSummaryText}`
-        },
-        ...sourceMessages.slice(cachedCoveredCount, coveredCount)
-      ]
-    : sourceMessages.slice(0, coveredCount)
-  const conversationTurns = buildContextSummaryTurnSegments(layeredSourceMessages, {
-    endExclusive: layeredSourceMessages.length
-  })
-  const conversationText = conversationTurns
-    .map((item, index) => {
-      const turnText = String(item?.turnText || item?.userText || '').trim()
-      if (!turnText) return ''
-      return [`turn ${index + 1}`, turnText].filter(Boolean).join('\n\n')
-    })
-    .filter(Boolean)
-    .join('\n\n---\n\n')
-  const conversationPairs = conversationText
-    ? [{
-        userText: `all history before compression:\n\n${conversationText}`,
-        assistantText: '',
-        summary: hasForwardProgress
-          ? `compressed history from previous summary plus ${conversationTurns.length} turns`
-          : `all prior history, ${conversationTurns.length} turns`
-      }]
-    : []
-  if (!conversationPairs.length) return ''
-  const summaryLevel = resolveContextSummaryLevel(cached, hasForwardProgress)
-  const summaryChain = resolveContextSummaryChain(cached, summaryLevel, hasForwardProgress)
-  const summarySourceLabel = resolveContextSummarySourceLabel(hasForwardProgress)
-
-  const summaryText = await requestContextWindowSummary({
-    providerKind: cfg.providerKind,
-    providerId: cfg.providerId,
-    baseUrl: cfg.baseUrl,
-    apiKey: cfg.apiKey,
-    apiMode: normalizeProviderApiMode(cfg.apiMode),
-    model: cfg.model,
-    systemPrompt: '你是一个对话历史压缩器，只输出供后续对话继续使用的忠实摘要。',
-    conversationPairs
-  }).catch((err) => {
-    console.warn('[chat context summary] generation failed:', err)
-    return ''
-  })
-
-  requestRecord.contextSummary = {
-    summaryText: String(summaryText || '').trim(),
-    coveredMessageCount: coveredCount,
-    coveredTurnCount: conversationTurns.length,
-    batchCount: 1,
-    summaryLevel,
-    summaryChain,
-    summarySourceLabel,
-    sourceHash,
-    updatedAt: Date.now()
-  }
-  return String(requestRecord.contextSummary.summaryText || '').trim()
-}
-
-function syncContextSummaryCacheForRecord(requestRecord, coverage = null) {
-  if (!requestRecord || typeof requestRecord !== 'object') return null
-  const cached = requestRecord.contextSummary && typeof requestRecord.contextSummary === 'object'
-    ? requestRecord.contextSummary
-    : null
-  if (!cached) return null
-
-  const coveredCount = Math.max(0, Math.floor(Number(coverage?.coveredCount || 0)))
-  const sourceHash = String(coverage?.sourceHash || '')
-  if (
-    !String(cached.summaryText || '').trim() ||
-    coveredCount < 1 ||
-    !sourceHash ||
-    coveredCount > (Array.isArray(requestRecord.apiMessages) ? requestRecord.apiMessages.length : 0)
-  ) {
-    requestRecord.contextSummary = createEmptyContextSummaryState()
-    return requestRecord.contextSummary
-  }
-
-  return cached
-}
-
-async function prepareChatRequestContext({
-  cfg,
-  text = '',
-  attachments = [],
-  requestRecord = null,
-  includeMemoryRecall = true,
-  excludeLatestUserTurnFromMemoryRecall = false
-} = {}) {
-  const safeText = String(text || '').trim()
-  const safeAttachments = Array.isArray(attachments) ? attachments : []
-  const targetRecord = requestRecord || getActiveMemorySession()
-
-  const triggerText = safeText || safeAttachments.map((a) => String(a?.name || '')).filter(Boolean).join(' ')
-  try {
-    await autoActivateAgentSkillsFromText(triggerText)
-  } catch {
-    // ignore
-  }
-
-  if (safeAttachments.length) {
-    try {
-      preparingSendStage.value = '正在解析附件'
-      await Promise.all(safeAttachments.map((a) => ensureAttachmentParsed(a)))
-      await enrichImageAttachmentsForMemoryRecall(safeAttachments, cfg)
-    } catch {
-      // ignore attachment parsing failure for recall
-    }
-    preparingSendStage.value = '正在写入聊天沙盒'
-    await stageChatAttachmentsInSandbox(safeAttachments, targetRecord)
-    if (cfg?.requestMode === 'chat') {
-      await ensureAttachmentSandboxSkillAvailable(safeAttachments)
-    }
-  }
-
-  let memorySystemContent = ''
-  let attachmentRecallText = ''
-  if (includeMemoryRecall && cfg?.requestMode === 'chat' && isChatMemoryEnabled(chatConfig.value?.memory)) {
-    try {
-      preparingSendStage.value = '正在召回记忆'
-      attachmentRecallText = buildMemoryRecallQueryFromAttachments(safeAttachments)
-      const memoryQueryText = [
-        buildMemoryRecallQueryFromRecord(targetRecord, safeText, {
-          excludeLatestUserTurn: excludeLatestUserTurnFromMemoryRecall
-        }),
-        attachmentRecallText
-      ].filter(Boolean).join('\n\n')
-      const recall = await buildMemoryInjection({
-        queryText: memoryQueryText,
-        userText: [safeText, attachmentRecallText].filter(Boolean).join('\n\n'),
-        systemPrompt: systemContent.value
-      })
-      memorySystemContent = String(recall?.text || '').trim()
-    } catch (err) {
-      console.warn('[chat memory] recall failed:', err)
-    }
-  }
-
-  try {
-    preparingSendStage.value = '正在压缩历史'
-    if (cfg?.requestMode !== 'chat') {
-      return {
-        requestRecord: targetRecord,
-        memorySystemContent,
-        attachmentRecallText
-      }
-    }
-    const contextCfg = effectiveContextWindowConfig.value
-    const resolvedContext = resolveChatContextWindowOptions(contextCfg)
-    const requestTools = []
-    const combinedSystemContent = buildCombinedSystemContent(memorySystemContent, { sessionRecord: targetRecord })
-    const reservedChars = calculateReservedRequestChars({ systemContent: combinedSystemContent, tools: requestTools })
-    const sourceMessages = Array.isArray(targetRecord.apiMessages) ? targetRecord.apiMessages : []
-    const budgetState = resolveHistoryContextBudgetState({
-      tools: requestTools,
-      reservedCharsOverride: reservedChars,
-      apiMessages: sourceMessages,
-      sessionRecord: targetRecord
-    })
-    const historyBudget = budgetState.historyBudget
-    const summaryTriggerChars = calculateContextSummaryTriggerChars({
-      historyCharsBudget: historyBudget
-    })
-    const sourceChars = estimateMessagesSize(sourceMessages)
-    const coverage = resolveContextSummaryCoverage({
-      sourceMessages,
-      cfg,
-      tools: requestTools,
-      reservedCharsOverride: reservedChars,
-      targetSourceChars: summaryTriggerChars,
-      sessionRecord: targetRecord
-    })
-    const cachedSummary = syncContextSummaryCacheForRecord(targetRecord, coverage)
-    const sourceBudgetMessages = buildRequestApiMessages(cfg.providerKind || 'openai-compatible', {
-      tools: requestTools,
-      reservedCharsOverride: reservedChars,
-      apiMessages: sourceMessages,
-      contextSummary: targetRecord?.contextSummary || null,
-      sessionRecord: targetRecord
-    })
-    const contextInspection = inspectChatContextWindow(
-      sourceMessages,
-      buildChatContextWindowRuntimeOptions(resolvedContext, {
-        providerKind: cfg.providerKind || 'openai-compatible',
-        maxChars: historyBudget,
-        preserveToolResultTurns: budgetState.budgetPlan.mode !== 'compact'
-      })
-    )
-    const contextWouldTrim =
-      sourceBudgetMessages.length < sourceMessages.length || hasChatContextWindowReduction(contextInspection)
-    const summaryMissing = !String(cachedSummary?.summaryText || '').trim()
-    const summaryStale =
-      coverage.coveredCount >= 1 &&
-      (
-        coverage.sourceHash !== String(cachedSummary?.sourceHash || '') ||
-        coverage.coveredCount !== Math.max(0, Math.floor(Number(cachedSummary?.coveredMessageCount || 0)))
-      )
-    const shouldSummarize = shouldSummarizeContextWindow({
-      sourceMessages,
-      sourceChars,
-      summaryTriggerChars,
-      coveredCount: coverage.coveredCount,
-      contextWouldTrim,
-      summaryMissing,
-      summaryStale,
-      minMessages: 2
-    })
-    if (shouldSummarize) {
-      await ensureContextWindowSummary({
-        cfg,
-        requestRecord: targetRecord,
-        tools: requestTools,
-        reservedCharsOverride: reservedChars,
-        targetSourceChars: summaryTriggerChars,
-        force: summaryStale
-      })
-    }
-  } catch (err) {
-    console.warn('[chat context summary] prepare failed:', err)
-  } finally {
-    preparingSendStage.value = '正在发送'
-  }
-
-  return {
-    requestRecord: targetRecord,
-    memorySystemContent,
-    attachmentRecallText
-  }
-}
-
-async function startPreparingSend(task) {
-  if (sending.value || preparingSend.value) return false
-  preparingSend.value = true
-  preparingSendStage.value = '正在准备上下文'
-  let released = false
-  const release = () => {
-    if (released) return
-    released = true
-    preparingSend.value = false
-    preparingSendStage.value = ''
-  }
-  try {
-    await task?.({ release })
-    release()
-    return true
-  } catch (err) {
-    release()
-    throw err
-  }
-}
-
-function isLikelyImageGenerationPrompt(text) {
-  const normalized = String(text || '').trim().toLowerCase()
-  if (!normalized) return false
-
-  return /(^|\b)(draw|generate|create|make|render|illustrate|design)(\b|$)|生成图片|生成一张图|生成一幅图|画一张图|画一幅图|做一张图|出图|产图|画图|绘图|海报|封面图|插画|头像|壁纸|logo/i.test(
-    normalized
-  )
-}
-
-function isLikelyVideoGenerationPrompt(text) {
-  const normalized = String(text || '').trim().toLowerCase()
-  if (!normalized) return false
-
-  return /(^|\b)(animate|generate|create|make|render)(\b|$)|生成视频|做个视频|出视频|产视频|视频生成|动画短片|短视频|motion video|text to video|text-to-video|img2video|image-to-video/i.test(
-    normalized
-  )
-}
-
-function buildEmptyAssistantResponseText(apiMessages = session.apiMessages) {
-  const imageMode = normalizeImageGenerationMode(imageGenerationMode.value)
-  const videoMode = normalizeImageGenerationMode(videoGenerationMode.value)
-  const model = String(selectedModel.value || '').trim()
-  const latestUserPrompt = (() => {
-    const list = Array.isArray(apiMessages) ? apiMessages : []
-    for (let i = list.length - 1; i >= 0; i -= 1) {
-      const msg = list[i]
-      if (msg?.role === 'user') return extractRequestMessageTextContent(msg.content)
-    }
-    return ''
-  })()
-
-  if (videoMode === 'on') {
-    return '（模型返回为空：当前已开启视频生成模式，但服务商/模型没有返回可用结果，请检查视频生成接口兼容性）'
-  }
-
-  if (imageMode === 'on') {
-    return '（模型返回为空：当前已开启图片生成模式，但服务商/模型没有返回可用结果，请检查图片生成接口兼容性）'
-  }
-
-  if (videoMode === 'auto' && isLikelyVideoGenerationPrompt(latestUserPrompt) && !isLikelyVideoGenerationModel(model)) {
-    return '（模型返回为空：如果这实际是视频生成请求，请将视频生成模式切换为开启后重试）'
-  }
-
-  if (imageMode === 'auto' && isLikelyImageGenerationPrompt(latestUserPrompt) && !isLikelyImageGenerationModel(model)) {
-    return '（模型返回为空：如果这实际是图片生成请求，请将图片生成模式切换为开启后重试）'
-  }
-
-  return '（模型返回为空：请检查服务商配置或接口兼容性）'
-}
-
-function buildMediaGenerationPromptFromHistory(userPrompt, options = {}) {
-  const currentPrompt = String(userPrompt || '').trim()
-  if (!currentPrompt) return ''
-
-  const mediaLabel = String(options.mediaLabel || '图片').trim() || '图片'
-  const promptLead = `当前${mediaLabel}生成需求：\n${currentPrompt}`
-  const mediaSystemContent = getMediaGenerationSystemContent()
-  const reservedChars = mediaSystemContent.length + promptLead.length + 2000
-  const requestMessages = buildRequestApiMessages('openai-compatible', {
-    reservedCharsOverride: reservedChars,
-    apiMessages: Array.isArray(options.apiMessages) ? options.apiMessages : null
-  })
-
-  let latestUserIndex = -1
-  for (let i = requestMessages.length - 1; i >= 0; i -= 1) {
-    if (requestMessages[i]?.role === 'user') {
-      latestUserIndex = i
-      break
-    }
-  }
-
-  const historyLines = (latestUserIndex > 0 ? requestMessages.slice(0, latestUserIndex) : [])
-    .filter((message) => message?.role === 'user' || message?.role === 'assistant')
-    .map((message) => {
-      const text = truncateInlineText(extractEditableUserTextFromContent(extractRequestMessageTextContent(message.content)), 800)
-      if (!text) return ''
-      const roleLabel = message.role === 'assistant' ? '助手' : '用户'
-      return `${roleLabel}: ${text}`
-    })
-    .filter(Boolean)
-
-  const contextText = historyLines.length
-    ? truncateText(historyLines.join('\n\n'), 6000, '（较早的对话上下文已截断）')
-    : ''
-
-  return [mediaSystemContent, contextText ? `参考最近对话上下文：\n${contextText}` : '', promptLead]
-    .filter(Boolean)
-    .join('\n\n')
-}
-
-function buildImageGenerationPromptFromHistory(userPrompt, options = {}) {
-  return buildMediaGenerationPromptFromHistory(userPrompt, { ...options, mediaLabel: '图片' })
-}
-
-function buildVideoGenerationPromptFromHistory(userPrompt, options = {}) {
-  return buildMediaGenerationPromptFromHistory(userPrompt, { ...options, mediaLabel: '视频' })
-}
-
-function hasToolStateMessages(messages) {
-  return (Array.isArray(messages) ? messages : []).some((message) => {
-    if (!message || typeof message !== 'object') return false
-    return message.role === 'tool' || (message.role === 'assistant' && Array.isArray(message.tool_calls) && message.tool_calls.length > 0)
-  })
-}
-
-function shouldRetryToolContinuationAsPlainText(errorText) {
-  const lower = String(errorText || '').toLowerCase()
-  if (!lower) return false
-  if (lower.includes('reasoning_content') && lower.includes('thinking mode')) return true
-  if (lower.includes('reasoning_content') && lower.includes('passed back to the api')) return true
-  if (lower.includes('request targeted an endpoint') && lower.includes('temporarily unavailable')) return true
-  if (lower.includes('endpoint') && lower.includes('closed') && lower.includes('temporarily unavailable')) return true
-  if (lower.includes('unsupported') && lower.includes('tool')) return true
-  if (lower.includes('does not support') && lower.includes('tool')) return true
-  return false
-}
-
-function buildRequestMessages(options = {}) {
-  const {
-    baseUrl = '',
-    model = '',
-    memorySystemContent = '',
-    sessionRecord = null,
-    forceReasoningContent = false,
-    compatToolCallIdAsFc = false,
-    visionFallbackText = '',
-    fallbackAllVisionMessages = false,
-    plainTextToolFallback = false,
-    apiMessages = null,
-    tools = []
-  } = options || {}
-  const sourceMessages = Array.isArray(apiMessages)
-    ? apiMessages
-    : buildRequestApiMessages('openai-compatible', {
-        tools,
-        contextSummary: sessionRecord?.contextSummary || null,
-        sessionRecord
-      })
-  return buildChatRequestMessages({
-    systemContent: buildCombinedSystemContent(memorySystemContent, { sessionRecord }),
-    sourceMessages,
-    needsReasoningContent: shouldIncludeReasoningContent({
-      baseUrl,
-      model,
-      forceReasoningContent,
-      apiMessages: sourceMessages
-    }),
-    compatToolCallIdAsFc,
-    visionFallbackText,
-    fallbackAllVisionMessages,
-    plainTextToolFallback
-  })
-}
-
-function resolveCurrentToolApprovalMode(abortState = abortController.value) {
-  if (abortState && typeof abortState.toolApprovalMode === 'string') {
-    return normalizeToolApprovalMode(abortState.toolApprovalMode)
-  }
-  const runRecord = getRunRecord(abortState)
-  if (runRecord) {
-    return normalizeToolApprovalMode(
-      runRecord.toolApprovalMode,
-      runRecord.autoApproveTools === false ? TOOL_APPROVAL_MODE_MANUAL : toolApprovalMode.value
-    )
-  }
-  return normalizeToolApprovalMode(toolApprovalMode.value)
-}
-
-function closeMcpClientSafely(server, client, pooled = false) {
-  try {
-    if (pooled && server?._id) closePooledMCPClient(server._id)
-    else client?.close?.()
-  } catch {
-    // ignore
-  }
-}
-
-function registerAbortableMcpClient(abortState, server, client, pooled = false) {
-  if (!abortState?.onAbort || !client) return null
-  return abortState.onAbort(() => {
-    closeMcpClientSafely(server, client, pooled)
-  }) || null
-}
-
-function ensureMcpToolsStatus(serverId) {
-  const id = String(serverId || '').trim()
-  if (!id) return null
-  if (!mcpToolsStatusByServerId[id]) {
-    mcpToolsStatusByServerId[id] = {
-      loading: false,
-      toolCount: 0,
-      updatedAt: 0,
-      lastError: '',
-      lastErrorAt: 0
-    }
-  }
-  return mcpToolsStatusByServerId[id]
-}
-
-function getMcpToolsCacheKey(server) {
-  const id = String(server?._id || '').trim()
-  const fingerprint = stableStringify({
-    transportType: server?.transportType,
-    command: server?.command,
-    args: server?.args,
-    url: server?.url,
-    method: server?.method,
-    headers: server?.headers,
-    env: server?.env,
-    cwd: server?.cwd
-  })
-  return `${id}|${fingerprint}`
-}
-
-function normalizeMcpPromptList(server, list) {
-  const serverId = String(server?._id || '').trim()
-  const serverName = String(server?.name || serverId).trim()
-  return (Array.isArray(list) ? list : [])
-    .map((prompt) => {
-      const name = String(prompt?.name || '').trim()
-      if (!name) return null
-      const description = String(prompt?.description || '').trim()
-      return {
-        serverId,
-        serverName,
-        name,
-        label: `${serverName} / ${name}`,
-        description,
-        arguments: normalizeMcpPromptArgumentDefinitions(prompt),
-        disabled: !!server?.disabled
-      }
-    })
-    .filter(Boolean)
-}
-
-function filterAllowedMcpTools(server, list) {
-  const allow = Array.isArray(server?.allowTools) ? server.allowTools.map((x) => String(x || '').trim()).filter(Boolean) : []
-  if (!allow.length) return Array.isArray(list) ? list : []
-  const enabledNames = new Set(allow)
-  return (Array.isArray(list) ? list : []).filter((t) => enabledNames.has(String(t?.name || '').trim()))
-}
-
-async function listMcpToolsForServer(server, options = {}) {
-  const forceRefresh = !!options.forceRefresh
-  const silent = !!options.silent
-  const abortState = options.abortState || null
-
-  throwIfAborted(abortState)
-
-  const serverId = String(server?._id || '').trim()
-  if (!serverId) return { ok: false, tools: [], error: new Error('missing server id') }
-
-  const status = ensureMcpToolsStatus(serverId)
-  const cacheKey = getMcpToolsCacheKey(server)
-  const now = Date.now()
-
-  const cached = mcpListToolsCache.get(cacheKey)
-  if (!forceRefresh && cached && now - cached.at < MCP_LIST_TOOLS_TTL_MS) {
-    if (status) {
-      status.loading = false
-      status.toolCount = Array.isArray(cached.tools) ? cached.tools.length : 0
-      status.updatedAt = cached.at
-      status.lastError = ''
-      status.lastErrorAt = 0
-    }
-    return { ok: true, tools: cached.tools, cached: true, updatedAt: cached.at }
-  }
-
-  const inflight = mcpListToolsInFlight.get(cacheKey)
-  if (inflight) return abortState ? waitForAbortable(inflight, abortState) : inflight
-
-  const promise = (async () => {
-    if (status) status.loading = true
-
-    let client = null
-    let pooled = false
-    let unregisterAbort = null
-    try {
-      ;({ client, pooled } = getOrCreateMCPClient(server))
-      if (!client?.listTools) {
-        throw new Error('MCP 客户端不可用（未注入 createMCPClient）')
-      }
-
-      const listTimeoutMs = Number(server?.timeout) || 10000
-      unregisterAbort = registerAbortableMcpClient(abortState, server, client, pooled)
-      const list = await waitForAbortable(
-        withTimeout(client.listTools(), listTimeoutMs, `获取 MCP 工具列表：${server.name || server._id}`),
-        abortState
-      )
-      try {
-        unregisterAbort?.()
-      } catch {
-        // ignore
-      }
-      unregisterAbort = null
-      throwIfAborted(abortState)
-      releaseMCPClient(server, client)
-      client = null
-
-      const tools = Array.isArray(list) ? list : Array.isArray(list?.tools) ? list.tools : []
-      const at = Date.now()
-      mcpListToolsCache.set(cacheKey, { at, tools })
-
-      if (status) {
-        status.loading = false
-        status.toolCount = tools.length
-        status.updatedAt = at
-        status.lastError = ''
-        status.lastErrorAt = 0
-      }
-
-      return { ok: true, tools, cached: false, updatedAt: at }
-    } catch (err) {
-      try {
-        unregisterAbort?.()
-      } catch {
-        // ignore
-      }
-      unregisterAbort = null
-
-      if (isAbortError(err) || abortState?.aborted) {
-        if (status) status.loading = false
-        throw createAbortError()
-      }
-
-      closeMcpClientSafely(server, client, pooled)
-
-      const errorText = err?.message || String(err)
-      if (status) {
-        status.loading = false
-        status.lastError = errorText
-        status.lastErrorAt = Date.now()
-      }
-
-      if (!silent) console.warn('listMcpToolsForServer failed', serverId, err)
-      return { ok: false, tools: [], error: err }
-    } finally {
-      try {
-        unregisterAbort?.()
-      } catch {
-        // ignore
-      }
-    }
-  })()
-
-  mcpListToolsInFlight.set(cacheKey, promise)
-  promise.finally(() => mcpListToolsInFlight.delete(cacheKey))
-  return promise
-}
-
-async function listMcpPromptsForServer(server, options = {}) {
-  const forceRefresh = !!options.forceRefresh
-  const abortState = options.abortState || null
-  throwIfAborted(abortState)
-
-  const serverId = String(server?._id || '').trim()
-  if (!serverId) return { ok: false, prompts: [], error: new Error('missing server id') }
-  if (server?.disabled) return { ok: true, prompts: [], disabled: true }
-
-  const cacheKey = getMcpToolsCacheKey(server)
-  const now = Date.now()
-  const cached = mcpListPromptsCache.get(cacheKey)
-  if (!forceRefresh && cached && now - cached.at < MCP_LIST_PROMPTS_TTL_MS) {
-    return { ok: true, prompts: cached.prompts, cached: true, updatedAt: cached.at }
-  }
-
-  const inflight = mcpListPromptsInFlight.get(cacheKey)
-  if (inflight) return abortState ? waitForAbortable(inflight, abortState) : inflight
-
-  const promise = (async () => {
-    let client = null
-    let pooled = false
-    let unregisterAbort = null
-    try {
-      ;({ client, pooled } = getOrCreateMCPClient(server))
-      if (!client?.listPrompts) {
-        throw new Error('MCP 客户端不支持 prompts/list')
-      }
-
-      const listTimeoutMs = Number(server?.timeout) || 10000
-      unregisterAbort = registerAbortableMcpClient(abortState, server, client, pooled)
-      const list = await waitForAbortable(
-        withTimeout(client.listPrompts(), listTimeoutMs, `获取 MCP 提示词列表：${server.name || server._id}`),
-        abortState
-      )
-      try {
-        unregisterAbort?.()
-      } catch {
-        // ignore
-      }
-      unregisterAbort = null
-      throwIfAborted(abortState)
-      releaseMCPClient(server, client)
-      client = null
-
-      const promptsList = Array.isArray(list) ? list : Array.isArray(list?.prompts) ? list.prompts : []
-      const prompts = normalizeMcpPromptList(server, promptsList)
-      const at = Date.now()
-      mcpListPromptsCache.set(cacheKey, { at, prompts })
-      return { ok: true, prompts, cached: false, updatedAt: at }
-    } catch (err) {
-      try {
-        unregisterAbort?.()
-      } catch {
-        // ignore
-      }
-      closeMcpClientSafely(server, client, pooled)
-      return { ok: false, prompts: [], error: err }
-    } finally {
-      mcpListPromptsInFlight.delete(cacheKey)
-    }
-  })()
-
-  mcpListPromptsInFlight.set(cacheKey, promise)
-  return promise
-}
-
-async function ensureMcpPromptCatalogLoaded(options = {}) {
-  const forceRefresh = !!options.forceRefresh
-  const silent = !!options.silent
-  if (mcpPromptCatalogLoadPromise && !forceRefresh) return mcpPromptCatalogLoadPromise
-
-  mcpPromptCatalogLoadPromise = (async () => {
-    const servers = (Array.isArray(activeMcpServers.value) ? activeMcpServers.value : []).filter((server) => server && server._id && !server.disabled)
-    if (!servers.length) {
-      mcpPromptCatalog.value = []
-      return []
-    }
-
-    loadingMcpPrompts.value = true
-    try {
-      const results = await Promise.all(servers.map((server) => listMcpPromptsForServer(server, { forceRefresh })))
-      const promptsList = []
-      results.forEach((result, index) => {
-        if (result?.ok) {
-          promptsList.push(...(Array.isArray(result.prompts) ? result.prompts : []))
-          return
-        }
-        if (!silent) {
-          const server = servers[index]
-          message.warning(`MCP 提示词加载失败：${server?.name || server?._id || ''} ${result?.error?.message || result?.error || ''}`.trim())
-        }
-      })
-      promptsList.sort((a, b) => String(a.serverName || '').localeCompare(String(b.serverName || ''), 'zh-Hans-CN') || String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN'))
-      mcpPromptCatalog.value = promptsList
-      return promptsList
-    } finally {
-      loadingMcpPrompts.value = false
-      mcpPromptCatalogLoadPromise = null
-    }
-  })()
-
-  return mcpPromptCatalogLoadPromise
-}
-
-function buildMcpPromptArgsFromModal() {
-  const args = selectedMcpPromptArgs.value
-  if (Array.isArray(args) && args.length) {
-    return buildMcpArgsFromForm(args, promptMcpArgsForm)
-  }
-
-  return undefined
-}
-
-function buildLocalPromptArgsFromModal() {
-  return buildPromptVariableValues(selectedLocalPromptVariables.value, promptUserArgsForm)
-}
-
-function stringifyPromptContentBlock(content) {
-  if (content === undefined || content === null) return ''
-  if (typeof content === 'string') return content
-  if (Array.isArray(content)) return content.map(stringifyPromptContentBlock).filter(Boolean).join('\n\n')
-  if (typeof content !== 'object') return String(content)
-
-  const type = String(content.type || '').trim()
-  if (type === 'text') return String(content.text || '').trim()
-  if (type === 'image') return `[图片${content.mimeType ? `：${content.mimeType}` : ''}]`
-  if (type === 'audio') return `[音频${content.mimeType ? `：${content.mimeType}` : ''}]`
-  if (type === 'resource') {
-    const resource = content.resource && typeof content.resource === 'object' ? content.resource : {}
-    if (typeof resource.text === 'string') return resource.text
-    if (resource.uri) return `[资源：${resource.uri}]`
-  }
-  if (content.uri) return `[资源：${content.uri}]`
-  return stableStringify(content)
-}
-
-function formatMcpPromptResultForComposer(result, item) {
-  const messages = Array.isArray(result?.messages) ? result.messages : []
-  const serverName = String(item?.serverName || item?.serverId || '').trim()
-  const promptName = String(item?.name || '').trim()
-  const header = `MCP Prompt: ${[serverName, promptName].filter(Boolean).join(' / ')}`
-
-  if (!messages.length) {
-    const fallback = stringifyPromptContentBlock(result?.content ?? result?.text ?? result)
-    return fallback ? `${header}\n\n${fallback}` : header
-  }
-
-  const blocks = messages
-    .map((messageItem) => {
-      const role = String(messageItem?.role || 'user').trim()
-      const content = stringifyPromptContentBlock(messageItem?.content).trim()
-      if (!content) return ''
-      const roleLabel = role === 'user' ? 'User' : role === 'assistant' ? 'Assistant' : role === 'system' ? 'System' : role
-      return `${roleLabel}:\n${content}`
-    })
-    .filter(Boolean)
-
-  return [header, ...blocks].filter(Boolean).join('\n\n').trim()
-}
-
-function insertTextIntoComposer(text) {
-  const insertion = String(text || '').trim()
-  if (!insertion) return
-
-  const raw = String(input.value || '')
-  const el = getComposerTextareaEl()
-  const start = el?.selectionStart ?? raw.length
-  const end = el?.selectionEnd ?? start
-  const before = raw.slice(0, start)
-  const after = raw.slice(end)
-  const prefix = before && !/[\s\n]$/.test(before) ? '\n\n' : ''
-  const suffix = after && !/^[\s\n]/.test(after) ? '\n\n' : ''
-  input.value = `${before}${prefix}${insertion}${suffix}${after}`
-  focusComposerAt(before.length + prefix.length + insertion.length)
-}
-
-function formatLocalUserPromptForComposer(prompt, values) {
-  const content = renderPromptTemplate(prompt?.content, values).trim()
-  return content
-}
-
-async function applyMcpPromptToComposer(item, args) {
-  const serverId = String(item?.serverId || '').trim()
-  const promptName = String(item?.name || '').trim()
-  if (!serverId || !promptName) return false
-
-  const server = (mcpServers.value || []).find((candidate) => candidate?._id === serverId) || null
-  if (!server || server.disabled) {
-    message.warning('该 MCP 不可用，请先到设置页启用')
-    return false
-  }
-
-  let client = null
-  let pooled = false
-  try {
-    ;({ client, pooled } = getOrCreateMCPClient(server))
-    if (!client?.getPrompt && !client?.sendRequest) throw new Error('MCP 客户端不支持 prompts/get')
-
-    const timeoutMs = Number(server?.timeout) || 30000
-    const result = await withTimeout(getMcpPrompt(client, promptName, args), timeoutMs, `获取 MCP 提示词：${server.name || server._id} / ${promptName}`)
-    releaseMCPClient(server, client)
-    client = null
-
-    insertTextIntoComposer(formatMcpPromptResultForComposer(result, item))
-    message.success('MCP 提示词已插入输入框，可编辑后发送')
-    return true
-  } catch (err) {
-    closeMcpClientSafely(server, client, pooled)
-    message.error('获取 MCP 提示词失败：' + (err?.message || String(err)))
-    return false
-  }
-}
-
-function applyLocalPromptToComposer(prompt, values) {
-  const rendered = formatLocalUserPromptForComposer(prompt, values)
-  if (!rendered) {
-    message.warning('该用户提示词内容为空')
-    return false
-  }
-  insertTextIntoComposer(rendered)
-  message.success('用户提示词已插入输入框，可继续编辑后发送')
-  return true
-}
-
-function normalizeOneLine(text, maxLen = 120) {
-  const s = String(text || '')
-    .replace(/\r\n/g, '\n')
-    .split('\n')
-    .map((x) => x.trim())
-    .filter(Boolean)
-    .join(' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-  if (!s) return ''
-  if (!maxLen || s.length <= maxLen) return s
-  return s.slice(0, Math.max(0, maxLen - 3)) + '...'
-}
-
-function buildToolArgsHint(tool) {
-  const schema = tool?.inputSchema
-  if (!schema || typeof schema !== 'object') return null
-
-  if (!isObjectLikeToolInputSchema(schema)) {
-    const rawType = Array.isArray(schema?.type) ? schema.type.filter(Boolean).join('|') : String(schema?.type || '').trim()
-    return rawType ? { input_type: rawType } : { input_type: 'any' }
-  }
-
-  const props = schema?.properties && typeof schema.properties === 'object' ? schema.properties : {}
-  const propKeys = Object.keys(props || {}).map((k) => String(k || '').trim()).filter(Boolean)
-
-  const requiredRaw = Array.isArray(schema?.required) ? schema.required : []
-  const required = requiredRaw.map((k) => String(k || '').trim()).filter(Boolean)
-  const requiredSet = new Set(required)
-
-  const optionalAll = propKeys.filter((k) => !requiredSet.has(k))
-  const optional = optionalAll.slice(0, MCP_CATALOG_MAX_OPTIONAL_KEYS_PER_TOOL)
-  const optionalTruncated = Math.max(0, optionalAll.length - optional.length)
-
-  const out = {}
-  if (required.length) out.required = required
-  if (optional.length) out.optional = optional
-  if (optionalTruncated > 0) out.optional_truncated = optionalTruncated
-
-  return Object.keys(out).length ? out : null
-}
-
-function buildMcpToolHint(tool) {
-  const name = String(tool?.name || '').trim()
-  if (!name) return null
-  const hint = { name }
-  const d = normalizeOneLine(tool?.description || '', 90)
-  if (d) hint.description = d
-  const argsHint = buildToolArgsHint(tool)
-  if (argsHint) Object.assign(hint, argsHint)
-  return hint
-}
-
-function upsertPinnedMcpToolHint(serverId, tool) {
-  const id = String(serverId || '').trim()
-  if (!id) return
-  const hint = buildMcpToolHint(tool)
-  if (!hint?.name) return
-
-  const prev = mcpPinnedToolHintsByServerId.get(id)
-  const list = Array.isArray(prev) ? prev : []
-  const next = [hint, ...list.filter((x) => String(x?.name || '') !== hint.name)]
-  if (next.length > MCP_PINNED_TOOL_HINTS_MAX_PER_SERVER) next.length = MCP_PINNED_TOOL_HINTS_MAX_PER_SERVER
-  mcpPinnedToolHintsByServerId.set(id, next)
-  mcpPinnedToolHintsRevision.value += 1
-}
-
-function clearPinnedMcpToolHints() {
-  try {
-    mcpPinnedToolHintsByServerId.clear()
-  } catch {
-    // ignore
-  }
-  mcpPinnedToolHintsRevision.value += 1
-}
-
-function buildMcpToolCatalogEntry(server, tools) {
-  const serverId = String(server?._id || '').trim()
-  const serverName = String(server?.name || serverId).trim() || serverId
-
-  const allow = Array.isArray(server?.allowTools) ? server.allowTools.map((x) => String(x || '').trim()).filter(Boolean) : []
-  const allowMode = allow.length ? 'whitelist' : 'all'
-
-  const allowed = filterAllowedMcpTools(server, tools)
-  const allNames = allowed.map((t) => String(t?.name || '').trim()).filter(Boolean)
-  const toolNames = allNames.slice(0, MCP_CATALOG_MAX_TOOL_NAMES_PER_SERVER)
-  const toolNamesTruncated = allNames.length > toolNames.length
-
-  const hints = []
-  for (const t of allowed) {
-    if (hints.length >= MCP_CATALOG_MAX_TOOL_HINTS_PER_SERVER) break
-    const hint = buildMcpToolHint(t)
-    // 只保留对参数有帮助的提示，避免无意义膨胀
-    if (hint && (hint.description || hint.required || hint.optional || hint.input_type)) hints.push(hint)
-  }
-
-  return {
-    ok: true,
-    server_id: serverId,
-    server_name: serverName,
-    keepAlive: !!server?.keepAlive,
-    allow_mode: allowMode,
-    allow_count: allow.length,
-    tool_count: allNames.length,
-    tool_names: toolNames,
-    tool_names_truncated: toolNamesTruncated,
-    tool_hints: hints,
-    updated_at: Date.now()
-  }
-}
-
-function setMcpToolCatalogEntry(serverId, entry) {
-  const id = String(serverId || '').trim()
-  if (!id) return
-  mcpToolCatalogByServerId.set(id, entry)
-  mcpToolCatalogRevision.value += 1
-}
-
-function clearMcpToolCatalog() {
-  try {
-    mcpToolCatalogByServerId.clear()
-  } catch {
-    // ignore
-  }
-  mcpToolCatalogRevision.value += 1
-}
-
-async function warmMcpToolCatalogForServers(servers, options = {}) {
-  const forceRefresh = !!options.forceRefresh
-  const abortState = options.abortState || null
-  const list = (Array.isArray(servers) ? servers : []).filter((s) => s && s._id && !s.disabled)
-  if (!list.length) return
-
-  throwIfAborted(abortState)
-  const results = await Promise.allSettled(list.map((s) => listMcpToolsForServer(s, { forceRefresh, silent: true, abortState })))
-  throwIfAborted(abortState)
-  list.forEach((server, idx) => {
-    const r = results[idx]
-    if (!r || r.status !== 'fulfilled' || !r.value?.ok) {
-      const err = r?.status === 'fulfilled' ? r.value?.error : r?.reason
-      setMcpToolCatalogEntry(String(server._id), {
-        ok: false,
-        server_id: String(server._id),
-        server_name: server.name || server._id,
-        keepAlive: !!server.keepAlive,
-        error: err?.message || String(err || 'listTools failed'),
-        updated_at: Date.now()
-      })
-      return
-    }
-
-    const entry = buildMcpToolCatalogEntry(server, r.value.tools)
-    setMcpToolCatalogEntry(String(server._id), entry)
-  })
-}
-
-function makeToolFunctionName(serverId, toolName) {
-  const raw = `mcp__${serverId}__${toolName}`
-  const safe = raw.replace(/[^a-zA-Z0-9_-]/g, '_')
-  if (safe.length <= 64) return safe
-  let hash = 0
-  for (let i = 0; i < safe.length; i++) hash = (hash * 31 + safe.charCodeAt(i)) >>> 0
-  return `${safe.slice(0, 55)}_${hash.toString(16).slice(0, 8)}`
-}
-
-function sanitizeToolInputSchemaForProvider(schemaRaw) {
-  const schema = deepCopyJson(schemaRaw, null)
-  const out = schema && typeof schema === 'object' && !Array.isArray(schema) ? schema : {}
-
-  // OpenAI/兼容接口限制：顶层 schema 必须是 object，且不允许 anyOf/oneOf/allOf/enum/not 等关键字
-  out.type = 'object'
-  if (!out.properties || typeof out.properties !== 'object' || Array.isArray(out.properties)) out.properties = {}
-  if (!('additionalProperties' in out)) out.additionalProperties = false
-  if (!Array.isArray(out.required)) delete out.required
-
-  delete out.oneOf
-  delete out.anyOf
-  delete out.allOf
-  delete out.enum
-  delete out.not
-
-  return out
-}
-
-function isObjectLikeToolInputSchema(schemaRaw) {
-  if (!schemaRaw || typeof schemaRaw !== 'object' || Array.isArray(schemaRaw)) return false
-  const type = schemaRaw.type
-  if (typeof type === 'string') return type === 'object'
-  if (Array.isArray(type)) return type.includes('object')
-  return !!(schemaRaw.properties && typeof schemaRaw.properties === 'object' && !Array.isArray(schemaRaw.properties))
-}
-
-function buildProviderToolDefinition(inputSchemaRaw) {
-  const fallback = { type: 'object', properties: {}, additionalProperties: false }
-  if (!inputSchemaRaw || typeof inputSchemaRaw !== 'object' || Array.isArray(inputSchemaRaw)) {
-    return {
-      parameters: fallback,
-      wrapped: false,
-      unwrapArgs(argsObj) {
-        return argsObj && typeof argsObj === 'object' && !Array.isArray(argsObj) ? argsObj : {}
-      }
-    }
-  }
-
-  if (isObjectLikeToolInputSchema(inputSchemaRaw)) {
-    return {
-      parameters: sanitizeToolInputSchemaForProvider(inputSchemaRaw) || fallback,
-      wrapped: false,
-      unwrapArgs(argsObj) {
-        return argsObj && typeof argsObj === 'object' && !Array.isArray(argsObj) ? argsObj : {}
-      }
-    }
-  }
-
-  const nested = deepCopyJson(inputSchemaRaw, null)
-  return {
-    parameters: {
-      type: 'object',
-      properties: {
-        input: nested
-      },
-      required: ['input'],
-      additionalProperties: false
-    },
-    wrapped: true,
-    unwrapArgs(argsObj) {
-      if (!argsObj || typeof argsObj !== 'object' || Array.isArray(argsObj)) return undefined
-      return argsObj.input
-    }
-  }
-}
-
-function buildProviderToolDescription(server, tool, definition) {
-  const base = tool?.description ? `[${server.name || server._id}] ${tool.description}` : `[${server.name || server._id}] ${tool?.name || ''}`
-  if (!definition?.wrapped) return base
-  return `${base} (the original inputSchema top level is not an object; call it with {"input": ...})`
-}
-
-async function buildToolsBundle(options = {}) {
-  const abortState = options.abortState || null
-  const targetSession = options.sessionTarget || getRunSessionTarget(abortState)
-  const functionMap = new Map()
-  const tools = []
-  const finalizeBundle = () => {
-    syncLastBuiltRequestToolsStats(tools)
-    return { tools, map: functionMap }
-  }
-
-  throwIfAborted(abortState)
-
-  if (webSearchEnabled.value) {
-    functionMap.set('web_search', { type: 'internal', internal: 'web_search', serverName: '内置联网', toolName: 'web_search' })
-    functionMap.set('web_read', { type: 'internal', internal: 'web_read', serverName: '内置联网', toolName: 'web_read' })
-    tools.push(
-      {
-        type: 'function',
-        function: {
-          name: 'web_search',
-          description: INTERNAL_TOOL_SPECS.webSearch.description,
-          parameters: INTERNAL_TOOL_SPECS.webSearch.parameters
-        }
-      },
-      {
-        type: 'function',
-        function: {
-          name: 'web_read',
-          description: INTERNAL_TOOL_SPECS.webRead.description,
-          parameters: INTERNAL_TOOL_SPECS.webRead.parameters
-        }
-      }
-    )
-  }
-
-  const skillBundle = buildSkillToolsBundle({
-    selectedSkills: runtimeSkillObjects.value,
-    availableSkills: skills.value,
-    agentSkillIds: runtimeAgentSkillIds.value,
-    internalToolSpecs: INTERNAL_TOOL_SPECS
-  })
-  skillBundle.tools.forEach((tool) => tools.push(tool))
-  skillBundle.map.forEach((mapping, name) => functionMap.set(name, mapping))
-
-  const servers = runtimeMcpServers.value.filter((s) => s && !s.disabled && s._id)
-
-  const desiredMode = String(toolMode.value || 'auto')
-  let mode = desiredMode
-  if (mode !== 'expanded' && mode !== 'compact') mode = 'auto'
-
-  const addCompactMcpTools = () => {
-    functionMap.set('mcp_discover', { type: 'internal', internal: 'mcp_discover', serverName: 'MCP', toolName: 'mcp_discover' })
-    functionMap.set('mcp_call', { type: 'internal', internal: 'mcp_call', serverName: 'MCP', toolName: 'mcp_call' })
-
-    tools.push(
-      {
-        type: 'function',
-        function: {
-          name: 'mcp_discover',
-          description: INTERNAL_TOOL_SPECS.mcpDiscover.description,
-          parameters: INTERNAL_TOOL_SPECS.mcpDiscover.parameters
-        }
-      },
-      {
-        type: 'function',
-        function: {
-          name: 'mcp_call',
-          description: INTERNAL_TOOL_SPECS.mcpCall.description,
-          parameters: INTERNAL_TOOL_SPECS.mcpCall.parameters
-        }
-      }
-    )
-  }
-
-  if (isDefaultGeneralAgent.value && servers.length) {
-    effectiveToolMode.value = 'compact'
-    addCompactMcpTools()
-    return finalizeBundle()
-  }
-
-  if (mode === 'compact') {
-    effectiveToolMode.value = 'compact'
-
-    // 保持 keepAlive 行为：在精简模式下也尽量预连接需要长连接的 MCP
-    servers
-      .filter((s) => s && s.keepAlive)
-      .forEach((s) => {
-        try {
-          getOrCreateMCPClient(s)
-        } catch {
-          // ignore
-        }
-      })
-
-    addCompactMcpTools()
-    await warmMcpToolCatalogForServers(servers, { forceRefresh: false, abortState })
-    throwIfAborted(abortState)
-    return finalizeBundle()
-  }
-
-  const shouldUseCompactByAuto = async () => {
-    if (mode !== 'auto') return false
-    let total = 0
-    for (const server of servers) {
-      throwIfAborted(abortState)
-      const listResult = await listMcpToolsForServer(server, { silent: true, abortState })
-      if (!listResult.ok) continue
-      const allowed = filterAllowedMcpTools(server, listResult.tools)
-      total += allowed.length
-      if (total > MAX_EXPANDED_TOOL_COUNT) return true
-    }
-    return false
-  }
-
-  if (await shouldUseCompactByAuto()) {
-    effectiveToolMode.value = 'compact'
-    servers
-      .filter((s) => s && s.keepAlive)
-      .forEach((s) => {
-        try {
-          getOrCreateMCPClient(s)
-        } catch {
-          // ignore
-        }
-      })
-    addCompactMcpTools()
-    await warmMcpToolCatalogForServers(servers, { forceRefresh: false, abortState })
-    throwIfAborted(abortState)
-    return finalizeBundle()
-  }
-
-  effectiveToolMode.value = 'expanded'
-
-  for (const server of servers) {
-    throwIfAborted(abortState)
-    const listResult = await listMcpToolsForServer(server, { silent: true, abortState })
-    if (!listResult.ok) {
-      const err = listResult.error || new Error('listTools failed')
-      throwIfAborted(abortState)
-      targetSession.messages.push(
-        createDisplayMessage(
-          'tool',
-          `### MCP 工具加载失败\n- 服务：**${server.name || server._id}**\n- 错误：${err.message || String(err)}`,
-          { toolMeta: `${server.name || server._id} / MCP` }
-        )
-      )
-      continue
-    }
-
-    const allowedTools = filterAllowedMcpTools(server, listResult.tools)
-    throwIfAborted(abortState)
-    for (const t of allowedTools) {
-      if (!t?.name) continue
-      const fnName = makeToolFunctionName(server._id, t.name)
-      const toolDef = buildProviderToolDefinition(t.inputSchema)
-      const approvalPolicy = resolveMcpToolApprovalPolicy(t)
-      functionMap.set(fnName, {
-        type: 'mcp',
-        serverId: server._id,
-        toolName: t.name,
-        serverName: server.name || server._id,
-        toolTitle: String(t.annotations?.title || '').trim(),
-        toolDescription: String(t.description || '').trim(),
-        transportType: server.transportType,
-        forceApproval: approvalPolicy.forceApproval,
-        hardApproval: approvalPolicy.hardApproval,
-        approvalKind: approvalPolicy.approvalKind,
-        approvalReason: approvalPolicy.approvalReason,
-        annotations: t.annotations || null,
-        unwrapArgs: toolDef.unwrapArgs
-      })
-
-      tools.push({
-        type: 'function',
-        function: {
-          name: fnName,
-          description: buildProviderToolDescription(server, t, toolDef),
-          parameters: toolDef.parameters
-        }
-      })
-    }
-  }
-
-  throwIfAborted(abortState)
-  return finalizeBundle()
-}
-
-function createDisplayMessage(role, content = '', extra = {}) {
-  const defaultRender = role === 'assistant' || role === 'thinking'
-    ? 'text'
-    : role === 'user'
-      ? inferUserDisplayMessageRender(content)
-      : 'md'
-  const base = { id: newId(), role, content, time: nextDisplayMessageTime(), render: defaultRender }
-  if (role === 'tool' || role === 'tool_call') {
-    base.toolExpanded = false
-    base.toolMeta = ''
-    base.toolStatus = role === 'tool_call' ? 'running' : ''
-    base.toolName = ''
-    base.toolServerName = ''
-    base.toolTitle = ''
-    base.toolDescription = ''
-    base.toolCallId = ''
-    base.toolArgsText = ''
-    base.toolAutoApproved = false
-    base.toolSubMeta = ''
-    base.toolTraceStreamId = ''
-    base.toolLiveTrace = []
-    base.toolAgentName = ''
-    base.toolLiveFinalContent = ''
-    base.toolLiveFinalReasoning = ''
-    base.toolLiveRound = 0
-    base.toolResultPayload = null
-  }
-  return reactive({ ...base, ...extra })
-}
-
-function resolveSelectedSkillTarget({ idCandidate = '', nameCandidate = '' } = {}) {
-  return resolveSelectedSkillTargetFromList(runtimeSkillObjects.value, {
-    idCandidate,
-    nameCandidate
-  })
-}
-
-function resolveInstalledSkillTarget({ idCandidate = '', nameCandidate = '' } = {}) {
-  return resolveSelectedSkillTargetFromList(skills.value, {
-    idCandidate,
-    nameCandidate
-  })
-}
-
-function listSelectedSkillsBrief(limit = 30) {
-  return listSelectedSkillsBriefFromList(runtimeSkillObjects.value, limit)
-}
-
-function listInstalledSkillsBrief(limit = 30) {
-  return listSelectedSkillsBriefFromList(skills.value, limit)
-}
-
-function selectSkillForSession(skillId) {
-  const id = String(skillId || '').trim()
-  if (!id || !resolveInstalledSkillTarget({ idCandidate: id })) {
-    return { ok: false, changed: false }
-  }
-
-  markSkillActivationPersistent([id])
-  const selected = normalizeStringList(selectedSkillIds.value)
-  const agent = normalizeStringList(agentSkillIds.value)
-  const activated = normalizeStringList(activatedAgentSkillIds.value)
-  const addedSelected = !selected.includes(id)
-  const addedAgent = !agent.includes(id)
-  const addedActivation = !activated.includes(id)
-
-  if (addedSelected) selectedSkillIds.value = [...selected, id]
-  if (addedAgent) agentSkillIds.value = [...agent, id]
-  if (addedActivation) activatedAgentSkillIds.value = [...activated, id]
-
-  return {
-    ok: true,
-    changed: addedSelected || addedAgent || addedActivation,
-    addedSelected,
-    addedAgent,
-    addedActivation
-  }
-}
-
-function normalizeSkillScriptPathCandidate(value) {
-  return String(value || '').trim().replace(/\\/g, '/').replace(/^\/+/, '')
-}
-
-function buildSkillScriptChoiceList(skill, limit = 20) {
-  return getSkillScriptCatalog(skill)
-    .slice(0, limit)
-    .map((entry) => ({
-      path: entry.path,
-      name: entry.name || undefined,
-      entry: !!entry.isLikelyEntrypoint || undefined,
-      runtime: entry.runtime || undefined,
-      description: entry.description || undefined,
-      when_to_use: entry.whenToUse || undefined,
-      output_type: entry.outputType || undefined
-    }))
-}
-
-function resolveSkillScriptTarget(skill, pathCandidate = '') {
-  const catalog = getSkillScriptCatalog(skill)
-  if (!catalog.length) {
-    return {
-      ok: false,
-      error: '当前技能没有可执行脚本',
-      catalog: []
-    }
-  }
-
-  const raw = normalizeSkillScriptPathCandidate(pathCandidate)
-  if (!raw) {
-    if (catalog.length === 1) {
-      return {
-        ok: true,
-        path: catalog[0].path,
-        entry: catalog[0],
-        inferred: true
-      }
-    }
-    return {
-      ok: false,
-      error: `path 不能为空；可用脚本：${stableStringify(buildSkillScriptChoiceList(skill))}`,
-      catalog
-    }
-  }
-
-  const norm = raw.toLowerCase()
-  const prefixed = norm.startsWith('scripts/') ? norm : `scripts/${norm}`
-  const basename = norm.split('/').pop() || norm
-  const basenameNoExt = basename.replace(/\.[^.]+$/, '')
-  const pushUnique = (target, entry) => {
-    if (!entry?.path) return
-    if (target.some((item) => item.path === entry.path)) return
-    target.push(entry)
-  }
-
-  const matches = []
-
-  catalog.forEach((entry) => {
-    const entryPath = String(entry?.path || '').trim().toLowerCase()
-    if (entryPath === norm || entryPath === prefixed) pushUnique(matches, entry)
-  })
-
-  if (!matches.length) {
-    catalog.forEach((entry) => {
-      const entryName = String(entry?.name || '').trim().toLowerCase()
-      if (entryName && entryName === norm) pushUnique(matches, entry)
-    })
-  }
-
-  if (!matches.length) {
-    catalog.forEach((entry) => {
-      const entryBase = String(entry?.path || '').trim().toLowerCase().split('/').pop() || ''
-      const entryBaseNoExt = entryBase.replace(/\.[^.]+$/, '')
-      if (entryBase === basename || entryBaseNoExt === basenameNoExt) pushUnique(matches, entry)
-    })
-  }
-
-  if (matches.length === 1) {
-    return {
-      ok: true,
-      path: matches[0].path,
-      entry: matches[0],
-      inferred: normalizeSkillScriptPathCandidate(pathCandidate) !== matches[0].path
-    }
-  }
-
-  if (matches.length > 1) {
-    return {
-      ok: false,
-      error: `脚本路径不唯一，请改用完整 path。候选：${stableStringify(buildSkillScriptChoiceList({ cache: { scriptCatalog: matches } }))}`,
-      catalog
-    }
-  }
-
-  const normalizedFileIndex = getSkillFileIndex(skill)
-  const directPath = [raw, prefixed]
-    .map((item) => normalizeSkillScriptPathCandidate(item))
-    .find((candidate) => candidate && normalizedFileIndex.scripts.includes(candidate) && isRunnableSkillScriptPath(candidate))
-
-  if (directPath) {
-    return {
-      ok: true,
-      path: directPath,
-      entry: {
-        path: directPath,
-        name: directPath.split('/').pop()?.replace(/\.[^.]+$/, '') || directPath,
-        description: '',
-        whenToUse: '',
-        outputType: 'text'
-      },
-      inferred: normalizeSkillScriptPathCandidate(pathCandidate) !== directPath
-    }
-  }
-
-  return {
-    ok: false,
-    error: `未找到脚本：${raw}。可用脚本：${stableStringify(buildSkillScriptChoiceList(skill))}`,
-    catalog
-  }
-}
-
-function resolveActiveMcpServer({ idCandidate = '', nameCandidate = '' } = {}) {
-  const list = Array.isArray(runtimeMcpServers.value) ? runtimeMcpServers.value : []
-
-  const id = String(idCandidate || '').trim()
-  if (id) {
-    const hit = list.find((s) => String(s?._id || '').trim() === id)
-    if (hit) return hit
-  }
-
-  const name = String(nameCandidate || '').trim()
-  if (name) {
-    const norm = name.toLowerCase()
-    return (
-      list.find((s) => String(s?.name || '').trim().toLowerCase() === norm) ||
-      list.find((s) => String(s?._id || '').trim().toLowerCase() === norm) ||
-      list.find((s) => String(s?.name || '').trim().toLowerCase().includes(norm)) ||
-      null
-    )
-  }
-
-  return null
-}
-
-function listActiveMcpServersBrief(limit = 30) {
-  const list = Array.isArray(runtimeMcpServers.value) ? runtimeMcpServers.value : []
-  return list
-    .filter((s) => s && s._id && !s.disabled)
-    .map((s) => ({
-      id: s._id,
-      name: s.name || s._id,
-      keepAlive: !!s.keepAlive,
-      allowTools: Array.isArray(s.allowTools) && s.allowTools.length ? s.allowTools.length : 'all'
-    }))
-    .slice(0, limit)
-}
-
-function getSkillMcpStatus(skill) {
-  const mcpIds = Array.isArray(skill?.mcp) ? skill.mcp.map((x) => String(x || '').trim()).filter(Boolean) : []
-  const mcpList = Array.isArray(mcpServers.value) ? mcpServers.value : []
-  const mcpById = new Map(mcpList.filter((s) => s && s._id).map((s) => [String(s._id), s]))
-  const mountedMcpIds = mcpIds.filter((id) => mcpById.has(String(id)))
-  const missingMcpIds = mcpIds.filter((id) => !mcpById.has(String(id)))
-  const mountedNames = mountedMcpIds.map((id) => mcpById.get(String(id))?.name || id)
-  return { mcpIds, mountedMcpIds, missingMcpIds, mountedNames }
-}
-
-function getWebOperationsApi() {
-  return globalThis?.aiToolsApi?.web || null
-}
-
-function getBuiltinSkillsApi() {
-  return globalThis?.aiToolsApi?.dangerous?.skills || null
-}
-
-const builtinSkillActionCatalog = createBuiltinSkillActionCatalog((skillId) => {
-  const api = getBuiltinSkillsApi()
-  if (typeof api?.listActions !== 'function') {
-    throw new Error('preload 未注入内置 Skill 动作 API')
-  }
-  return api.listActions(skillId)
-})
-
-function getWebToolMissingText() {
-  return '内置联网服务不可用：preload 未注入 aiToolsApi.web。请在 uTools 插件环境中运行，或重新构建插件。'
-}
-
-const WEB_TOOL_RESULT_GUIDANCE = '这些结果来自本次运行的联网工具。请优先基于工具结果回答，不要因为模型知识截止时间更早而反复搜索同一问题；资料不足时说明不足。'
-
-function buildWebToolModelContent(result) {
-  const payload = result && typeof result === 'object' ? deepCopyJson(result, {}) : {}
-  return stableStringify({
-    guidance: WEB_TOOL_RESULT_GUIDANCE,
-    ...payload
-  })
-}
-
-function formatWebSearchDisplay(result) {
-  const query = String(result?.query || '').trim()
-  const items = Array.isArray(result?.results) ? result.results : []
-  const lines = [`### 联网搜索结果${query ? `：${query}` : ''}`]
-  if (!items.length) {
-    lines.push('', '未找到可用结果。')
-    if (result?.error) lines.push(`错误：${result.error}`)
-    return lines.join('\n')
-  }
-  items.forEach((item, index) => {
-    const title = String(item?.title || item?.url || `结果 ${index + 1}`).trim()
-    const url = String(item?.url || '').trim()
-    const snippet = truncateInlineText(item?.snippet || '', 360)
-    lines.push('', `${index + 1}. ${url ? `[${title}](${url})` : title}`)
-    if (snippet) lines.push(`   ${snippet}`)
-  })
-  return lines.join('\n')
-}
-
-function formatWebReadDisplay(result) {
-  const title = String(result?.title || result?.finalUrl || result?.url || '网页').trim()
-  const url = String(result?.finalUrl || result?.url || '').trim()
-  const description = truncateInlineText(result?.description || '', 280)
-  const totalChars = Number(result?.totalChars)
-  const text = truncateInlineText(result?.text || '', 1200)
-  const lines = [`### 网页读取结果：${title}`]
-  if (url) lines.push(`- 来源：${url}`)
-  if (description) lines.push(`- 描述：${description}`)
-  if (Number.isFinite(totalChars) && totalChars > 0) {
-    lines.push(`- 正文：${totalChars} 字${result?.truncated ? '（已截断）' : ''}`)
-  }
-  if (text) lines.push('', '#### 摘录', text)
-  return lines.join('\n')
-}
-
-function buildWebToolSubMeta(payload) {
-  if (!payload || typeof payload !== 'object') return ''
-  const kind = String(payload.kind || '').trim()
-  if (kind === 'web_search_result') {
-    const count = Array.isArray(payload.results) ? payload.results.length : 0
-    const engine = String(payload.engine || '').trim()
-    return [`结果 ${count} 条`, engine].filter(Boolean).join(' · ')
-  }
-  if (kind === 'web_read_result') {
-    const title = truncateInlineText(payload.title || payload.finalUrl || payload.url || '', 42)
-    const totalChars = Number(payload.totalChars)
-    return [title, Number.isFinite(totalChars) && totalChars > 0 ? `${totalChars} 字` : ''].filter(Boolean).join(' · ')
-  }
-  return ''
-}
-
-async function executeBuiltinWebTool({ mapping, argsObj, serverName, toolName, abortState = null }) {
-  const api = getWebOperationsApi()
-  if (!api) {
-    return { ok: false, content: getWebToolMissingText(), display: `### 联网工具结果\n- 错误：${getWebToolMissingText()}` }
-  }
-
-  const internal = String(mapping?.internal || '').trim()
-  if (internal === 'web_search') {
-    const query = String(argsObj?.query ?? argsObj?.q ?? '').trim()
-    const limit = Math.min(Math.max(1, Math.floor(Number(argsObj?.limit) || 5)), 10)
-    if (!query) {
-      const errorText = 'query 不能为空'
-      return { ok: false, content: errorText, display: `### 联网搜索结果\n- 错误：${errorText}` }
-    }
-    throwIfAborted(abortState)
-    const result = await waitForAbortable(Promise.resolve(api.webSearch({ query, limit })), abortState)
-    throwIfAborted(abortState)
-    return {
-      ok: result?.ok !== false,
-      content: buildWebToolModelContent(result),
-      display: formatWebSearchDisplay(result),
-      payload: {
-        kind: 'web_search_result',
-        ...(result && typeof result === 'object' ? deepCopyJson(result, {}) : {})
-      },
-      serverName,
-      toolName
-    }
-  }
-
-  if (internal === 'web_read') {
-    const url = String(argsObj?.url || '').trim()
-    const maxChars = Math.min(Math.max(1000, Math.floor(Number(argsObj?.maxChars) || 12000)), 40000)
-    if (!url) {
-      const errorText = 'url 不能为空'
-      return { ok: false, content: errorText, display: `### 网页读取结果\n- 错误：${errorText}` }
-    }
-    throwIfAborted(abortState)
-    const result = await waitForAbortable(Promise.resolve(api.webRead({ url, maxChars })), abortState)
-    throwIfAborted(abortState)
-    return {
-      ok: true,
-      content: buildWebToolModelContent(result),
-      display: formatWebReadDisplay(result),
-      payload: {
-        kind: 'web_read_result',
-        ...(result && typeof result === 'object' ? deepCopyJson(result, {}) : {})
-      },
-      serverName,
-      toolName
-    }
-  }
-
-  return { ok: false, content: `未知联网工具：${internal}`, display: `### 联网工具结果\n- 错误：未知联网工具：${internal}` }
-}
-
-function normalizeToolCallExecutionContext(toolCall, toolMap) {
-  const fn = toolCall?.function?.name
-  const argsRaw = toolCall?.function?.arguments || ''
-  const toolCallId = String(toolCall?.id || '').trim()
-  const toolExecutionId = `tool_exec_${newId()}`
-  const mapping = toolMap.get(fn)
-  const serverName = mapping?.serverName || '未知'
-  const toolName = mapping?.toolName || fn
-  const toolTitle = String(mapping?.toolTitle || '').trim()
-  const toolDescription = String(mapping?.toolDescription || '').trim()
-  const parsedArgs = safeJsonParse(argsRaw)
-  const argsObj = parsedArgs.ok && parsedArgs.value && typeof parsedArgs.value === 'object' ? parsedArgs.value : {}
-  const argsText = parsedArgs.ok ? stableStringify(parsedArgs.value) : argsRaw
-
-  return {
-    toolCall,
-    toolCallId,
-    toolExecutionId,
-    fn,
-    mapping,
-    serverName,
-    toolName,
-    toolTitle,
-    toolDescription,
-    argsRaw,
-    argsObj,
-    argsText: argsText || '{}'
-  }
-}
-
-async function hydrateSkillGatewayExecutionContext(context, abortState = null) {
-  if (context?.mapping?.type !== 'internal' || context.mapping.internal !== 'skill_call') {
-    return context
-  }
-
-  let resolved = null
-  try {
-    throwIfAborted(abortState)
-    resolved = await waitForAbortable(
-      resolveBuiltinSkillCall({
-        selectedSkills: selectedSkillObjects.value,
-        catalog: builtinSkillActionCatalog,
-        args: context.argsObj,
-        isSkillLoaded: isSkillPromptContentLoaded
-      }),
-      abortState
-    )
-    throwIfAborted(abortState)
-  } catch (err) {
-    if (isAbortError(err) || abortState?.aborted) throw createAbortError()
-    resolved = { ok: false, error: err?.message || String(err) }
-  }
-
-  if (!resolved?.ok) {
-    return {
-      ...context,
-      mapping: {
-        ...context.mapping,
-        gatewayError: resolved?.error || 'Skill Action 解析失败',
-        gatewayDetails: resolved || null
-      }
-    }
-  }
-
-  return {
-    ...context,
-    mapping: resolved.mapping,
-    serverName: resolved.mapping.serverName,
-    toolName: resolved.mapping.toolName,
-    toolTitle: String(resolved.mapping.toolTitle || '').trim(),
-    toolDescription: String(resolved.mapping.toolDescription || '').trim(),
-    argsObj: resolved.args,
-    argsText: stableStringify(resolved.args)
-  }
-}
-
-function resolveToolApprovalTarget(context = {}) {
-  const mapping = context.mapping || {}
-  let serverId = String(mapping.serverId || '').trim()
-  let serverName = String(mapping.serverName || context.serverName || '').trim() || '未知'
-  let toolName = String(mapping.toolName || context.toolName || '').trim() || 'unknown'
-  let argsObj = context.argsObj && typeof context.argsObj === 'object' ? context.argsObj : {}
-  let argsText = String(context.argsText || '{}').trim() || '{}'
-  let server = serverId ? runtimeMcpServers.value.find((item) => String(item?._id || '') === serverId) : null
-
-  if (mapping?.type === 'internal' && mapping.internal === 'mcp_call') {
-    const wrapperArgs = argsObj
-    const serverIdCandidate = String(wrapperArgs?.server_id ?? wrapperArgs?.serverId ?? wrapperArgs?.id ?? '').trim()
-    const serverNameCandidate = String(wrapperArgs?.server_name ?? wrapperArgs?.serverName ?? wrapperArgs?.server ?? '').trim()
-    server = resolveActiveMcpServer({ idCandidate: serverIdCandidate, nameCandidate: serverNameCandidate })
-    serverId = String(server?._id || serverIdCandidate).trim()
-    serverName = String(server?.name || server?._id || serverNameCandidate || serverName).trim() || '未知'
-    toolName = String(wrapperArgs?.tool || toolName).trim() || 'unknown'
-    if (Object.prototype.hasOwnProperty.call(wrapperArgs, 'args')) {
-      argsObj = wrapperArgs.args
-    } else if (Object.prototype.hasOwnProperty.call(wrapperArgs, 'arguments')) {
-      argsObj = wrapperArgs.arguments
-    } else {
-      argsObj = {}
-    }
-    argsText = stableStringify(argsObj)
-  } else if (typeof mapping?.unwrapArgs === 'function') {
-    try {
-      argsObj = mapping.unwrapArgs(argsObj)
-      argsText = stableStringify(argsObj)
-    } catch {
-      // Keep the original model arguments for approval display if unwrapping fails.
-    }
-  }
-
-  if (mapping?.type === 'internal' && mapping.internal === 'run_skill_script') {
-    argsObj = normalizeSkillScriptApprovalArgs(argsObj, {
-      resolveSkill: resolveSelectedSkillTarget,
-      resolveScript: resolveSkillScriptTarget
-    })
-    argsText = stableStringify(argsObj)
-  }
-
-  let resolvedTool = null
-  if (server && toolName) {
-    const cachedTools = mcpListToolsCache.get(getMcpToolsCacheKey(server))?.tools
-    if (Array.isArray(cachedTools)) {
-      resolvedTool = cachedTools.find((tool) => String(tool?.name || '').trim() === toolName) || null
-    }
-  }
-  const isMcpTool =
-    mapping?.type === 'mcp' ||
-    (mapping?.type === 'internal' && mapping?.internal === 'mcp_call')
-  const resolvedPolicy = isMcpTool
-    ? resolveMcpToolApprovalPolicy(resolvedTool || {
-        name: toolName,
-        annotations: mapping.annotations || null
-      })
-    : {
-        forceApproval: false,
-        hardApproval: false,
-        approvalKind: 'tool',
-        approvalReason: ''
-      }
-  const configuredApprovalKind = String(mapping.approvalKind || resolvedPolicy.approvalKind || '').trim()
-  const isShell = configuredApprovalKind === 'shell'
-  const approvalKind =
-    isShell
-      ? 'shell'
-      : configuredApprovalKind === 'execution'
-        ? 'execution'
-        : 'tool'
-  const forceApproval =
-    isShell ||
-    configuredApprovalKind === 'execution' ||
-    mapping.forceApproval === true ||
-    resolvedPolicy.forceApproval === true
-  const hardApproval =
-    mapping.hardApproval === true ||
-    resolvedPolicy.hardApproval === true ||
-    (isShell && isDangerousShellApprovalCommand(argsObj, argsText))
-  const approvalReason =
-    isShell && hardApproval
-      ? '命令包含删除、系统修改或其他明显破坏性操作'
-      : isShell
-        ? '低风险模式下，命令执行需要确认具体命令和工作目录'
-        : configuredApprovalKind === 'execution'
-          ? (
-              toolName === 'notebook_execute_cell' || toolName === 'notebook_execute_all'
-                ? '将在主机 Notebook Runtime 中执行代码，可访问电脑文件并启动进程，不受会话沙盒限制'
-                : '低风险模式下，技能脚本或代码执行需要确认具体脚本和参数'
-            )
-          : String(mapping.approvalReason || resolvedPolicy.approvalReason || (
-              mapping.forceApproval === true ? '技能将写入数据或改变外部状态' : ''
-            )).trim()
-
-  return {
-    server,
-    serverId,
-    serverName,
-    toolName,
-    toolTitle: String(resolvedTool?.annotations?.title || mapping.toolTitle || context.toolTitle || '').trim(),
-    toolDescription: String(resolvedTool?.description || mapping.toolDescription || context.toolDescription || '').trim(),
-    argsObj,
-    argsText: String(argsText || '{}').trim() || '{}',
-    approvalKind,
-    forceApproval,
-    hardApproval,
-    approvalReason
-  }
-}
-
-async function prepareToolCallExecution(toolCall, toolMap, lastReasoningText, abortState = null) {
-  const targetSession = getRunSessionTarget(abortState)
-  const targetRecord = getRunRecord(abortState) || getActiveMemorySession()
-  throwIfAborted(abortState)
-  const normalizedContext = normalizeToolCallExecutionContext(toolCall, toolMap)
-  const context = await hydrateSkillGatewayExecutionContext(normalizedContext, abortState)
-  const approvalTarget = resolveToolApprovalTarget(context)
-  const usesCommandWorkspace =
-    approvalTarget.approvalKind === 'shell' ||
-    String(approvalTarget.serverId || '').trim() === BUILTIN_SHELL_SKILL_ID
-  const availableHostWorkspacePath = usesCommandWorkspace
-    ? resolveSessionHostWorkspacePath(targetRecord)
-    : ''
-  const commandWorkspaceScope = usesCommandWorkspace
-    ? resolveChatToolWorkspaceScope(
-        approvalTarget.toolName,
-        approvalTarget.argsObj,
-        { hasHostWorkspace: !!availableHostWorkspacePath }
-      )
-    : ''
-  const approvedHostWorkspacePath =
-    availableHostWorkspacePath &&
-    (commandWorkspaceScope === 'host' || commandWorkspaceScope === 'all')
-      ? availableHostWorkspacePath
-      : ''
-  const approvalKeyArgs = usesCommandWorkspace
-    ? {
-        ...approvalTarget.argsObj,
-        workspace_scope: commandWorkspaceScope,
-        ...(approvedHostWorkspacePath
-          ? { __host_workspace_path: approvedHostWorkspacePath }
-          : {})
-      }
-    : approvalTarget.argsObj
-  const approvalKey = buildSessionToolApprovalKey({
-    sessionId: String(targetRecord?.id || 'chat'),
-    serverId: approvalTarget.serverId,
-    serverName: approvalTarget.serverName,
-    toolName: approvalTarget.toolName,
-    approvalKind: approvalTarget.approvalKind,
-    args: approvalKeyArgs,
-    argsText: approvalTarget.argsText
-  })
-  const currentApprovalMode = resolveCurrentToolApprovalMode(abortState)
-  const autoApproved =
-    (approvalTarget.hardApproval !== true && sessionApprovedToolKeys.has(approvalKey)) ||
-    evaluateToolApproval({
-      mode: currentApprovalMode,
-      forceApproval: approvalTarget.forceApproval === true,
-      hardApproval: approvalTarget.hardApproval === true,
-      interactive: true
-    }).action === 'allow'
-
-  const pendingToolMessage = createPendingToolExecutionMessage({
-    serverName: approvalTarget.serverName,
-    toolName: approvalTarget.toolName,
-    toolTitle: approvalTarget.toolTitle,
-    toolDescription: approvalTarget.toolDescription,
-    argsText: approvalTarget.argsText,
-    autoApproved: autoApproved,
-    argsObj: approvalTarget.argsObj,
-    toolCallId: context.toolCallId,
-    toolExecutionId: context.toolExecutionId,
-    toolSessionId: String(targetRecord?.id || '').trim()
-  })
-  pendingToolMessage.toolAbortState = abortState || null
-  pendingToolMessage.toolApprovalMode = currentApprovalMode
-  if (usesCommandWorkspace) {
-    const chatWorkspaceId = resolveMemorySessionSandboxWorkspaceId(targetRecord)
-    pendingToolMessage.toolSubMeta =
-      commandWorkspaceScope === 'all'
-        ? approvedHostWorkspacePath
-          ? `检索：会话沙盒 ${chatWorkspaceId} + 本机工作区 ${approvedHostWorkspacePath}`
-          : `会话沙盒：${chatWorkspaceId}`
-        : commandWorkspaceScope === 'host'
-          ? `本机工作区：${approvedHostWorkspacePath || '未选择'}`
-          : `会话沙盒：${chatWorkspaceId}`
-  }
-  targetSession.messages.push(pendingToolMessage)
-  await maybeScrollToBottomForRun(abortState)
-
-  if (!context.mapping) {
-      targetSession.messages.push(
-        createToolExecutionResultMessage(`### 工具结果\n- 错误：未在工具注册表中找到：${context.fn}`, {
-          toolMeta: `${context.serverName} / ${context.toolName}`
-        }, context.toolCallId, context.toolExecutionId)
-      )
-    return {
-      ...context,
-      pendingToolMessage,
-      skipped: true,
-      execResult: { ok: false, content: `未在工具注册表中找到：${context.fn}` }
-    }
-  }
-
-  if (!autoApproved) {
-    const ok = await confirmToolCall({
-      serverName: approvalTarget.serverName,
-      toolName: approvalTarget.toolName,
-      argsText: approvalTarget.argsText,
-      reasoningText: lastReasoningText,
-      abortState,
-      sessionId: String(targetRecord?.id || 'chat'),
-      sessionTitle: resolveMemorySessionTitle(targetRecord),
-      approvalKind: approvalTarget.approvalKind,
-      hardApproval: approvalTarget.hardApproval === true,
-      extraLines: [
-        ...(approvalTarget.approvalReason
-          ? [`需要确认：${approvalTarget.approvalReason}`]
-          : []),
-        ...(approvedHostWorkspacePath
-          ? [`本机工作区：${approvedHostWorkspacePath}`]
-          : usesCommandWorkspace && commandWorkspaceScope === 'sandbox'
-            ? ['执行位置：会话沙盒']
-            : [])
-      ],
-      rememberText:
-        approvalTarget.approvalKind === 'shell'
-          ? '本会话允许相同命令'
-          : approvalTarget.approvalKind === 'execution'
-            ? '本会话允许相同脚本调用'
-            : '本会话允许此工具',
-      onRememberForSession:
-        approvalTarget.hardApproval === true
-          ? null
-          : () => sessionApprovedToolKeys.add(approvalKey)
-    })
-    if (ok === null) throw createAbortError()
-    throwIfAborted(abortState)
-    if (!ok) {
-      targetSession.messages.push(
-        createToolExecutionResultMessage(`### 工具结果\n- 工具：\`${context.toolName}\`\n- 状态：**已拒绝**`, {
-          toolMeta: `${context.serverName} / ${context.toolName}`
-        }, context.toolCallId, context.toolExecutionId)
-      )
-      return {
-        ...context,
-        pendingToolMessage,
-        skipped: true,
-        execResult: {
-          ok: false,
-          content: [
-            'TOOL_REJECTED',
-            `tool_name: ${context.toolName}`,
-            `server_name: ${context.serverName}`,
-            'status: rejected',
-            'reason: user_denied',
-            'message: The user explicitly rejected this tool call.',
-            'guidance: Do not claim the tool failed. Treat this as a user decision and continue by either explaining what can be done without the tool, asking for permission to use an alternative approach, or waiting for new user instructions.'
-          ].join('\n')
-        }
-      }
-    }
-  }
-
-  return {
-    ...context,
-    autoApproved,
-    pendingToolMessage,
-    skipped: false
-  }
-}
-
-function getToolCallParallelExecutionKey(prepared = {}) {
-  const mapping = prepared?.mapping
-  if (mapping?.type === 'internal' && mapping.internal === 'mcp_call') {
-    const argsObj = prepared?.argsObj && typeof prepared.argsObj === 'object' ? prepared.argsObj : {}
-    const serverIdCandidate = String(argsObj?.server_id ?? argsObj?.serverId ?? argsObj?.id ?? '').trim()
-    const serverNameCandidate = String(argsObj?.server_name ?? argsObj?.serverName ?? argsObj?.server ?? '').trim()
-    const server = resolveActiveMcpServer({ idCandidate: serverIdCandidate, nameCandidate: serverNameCandidate })
-    if (server?.keepAlive && server?._id) return `mcp-call:${server._id}`
-    return `parallel:${newId()}`
-  }
-
-  if (mapping?.type === 'mcp') {
-    const server = runtimeMcpServers.value.find((s) => s._id === mapping.serverId)
-    if (server?.keepAlive && server?._id) return `mcp:${server._id}`
-    return `parallel:${newId()}`
-  }
-
-  if (mapping?.type === 'skill' && mapping?.skillId) {
-    return `skill:${mapping.skillId}`
-  }
-
-  return `parallel:${newId()}`
-}
-
-const executePreparedSkillTool = createPreparedSkillToolExecutor({
-  activatedAgentSkillIds,
-  agentSkillIdSet: runtimeAgentSkillIdSet,
-  availableSkillObjects: skills,
-  buildToolExecutionResultSubMeta,
-  buildWebToolSubMeta,
-  builtinSkillActionCatalog,
-  deepCopyJson,
-  executeBuiltinWebTool,
-  extractChatImagesFromToolResult,
-  getBuiltinSkillsApi,
-  getLoadedSkillFilePathSet,
-  getSkillMcpStatus,
-  hasLoadedSkillMainContent,
-  listAvailableSkillsBrief: listInstalledSkillsBrief,
+const {
+  enqueueMemorySessionApprovalRequest,
+  removeMemorySessionApprovalRequest,
+  flushMemorySessionApprovalQueue,
+  prepareBuiltinAgentToolCallArgs,
+  dispatchBuiltinAgentsToolApprovalResponse,
+  createAbortAwareDialogStateFromController,
+  handleBuiltinAgentsToolApprovalRequest,
+  stop,
+  handleUserEditKeydown,
+  isFiniteNumber,
+  resolveUserApiIndexForDisplayMessage,
+  getUserApiMessageContentByIndex,
+  messageHasDisplayAttachments,
+  findNearestUserApiIndexBefore,
+  findDisplayIndexByApiIndex,
+  truncateConversationAfterUser,
+  resetComposerInput,
+  getRequestConfigOrHint,
+  syncLastBuiltRequestToolsStats,
+  dispatchBuiltinAgentsToolApprovalModeChange,
+  updateContextTokenTelemetry,
+  recordModelUsageFromPayload,
+  injectPendingGuidanceMessages,
+  runChatRounds,
+  mergeUtoolsAiStreamText,
+  runUtoolsAiChatRound,
+  runImageGenerationRound,
+  activeSessionMessageIdSet,
+  trackedMessageIdSet,
+  isDisplayMessageTracked,
+  sessionToolMessageCount,
+  compactToolMessageMode,
+  startDetachedVideoTaskPolling,
+  resolveVideoGenerationContentIfReady,
+  runVideoGenerationRound,
+  runDetachedVideoGenerationRequest,
+  startDetachedVideoGeneration,
+  getMediaRequestPrompt,
+  getMediaRequestPlaceholderMode,
+  getImageRequestOptionsFromMessage,
+  getVideoRequestOptionsFromMessage,
+  canRegenerateMedia,
+  mediaTaskResumeKey,
+  isMediaTaskResuming,
+  setMediaTaskResuming,
+  getVideoResumeRequestMeta,
+  canResumeMediaTask,
+  countResumableMediaTasks,
+  findOpenaiCompatibleProviderByBaseUrl,
+  getOpenaiCompatibleMediaConfigOrHint,
+  submitMediaGenerationPrompt,
+  regenerateMedia,
+  setAssistantApiContentForDisplay,
+  extractMediaFailureReasonLine,
+  mediaFailureSummary,
+  mediaFailureSuggestion,
+  applyMediaGenerationFailureToDisplay,
+  createRequestAbortStateForMediaResume,
+  resumeMediaTask,
+  CHAT_REQUEST_TIMEOUT_MS,
+  runChatSession,
+  stageChatAttachmentsInSandbox,
+  ensureAttachmentSandboxSkillAvailable,
+  prepareUserApiMessage,
+  getLatestRealUserPromptText,
+  regenerateAssistant,
+  toggleOrSubmitUserEdit,
+  submitUserEdit,
+  commitToolApprovalMode,
+  setToolApprovalMode,
+  toggleWebSearch,
+  toggleAutoActivateAgentSkills,
+  cycleToolMode,
+  refreshActiveMcpTools,
+  getComposerTextareaEl,
+  refreshComposerInlinePickers,
+  handleComposerCursorChange,
+  handleComposerBlur,
+  focusComposerAt,
+  insertInlineCommandTrigger,
+  applyInlineAgentSuggestion,
+  replaceInlineCommandToken,
+  removeInlineCommandToken,
+  applyInlineCommandSuggestion,
+  openSystemPromptModal,
+  applyCustomSystemPrompt,
+  clearCustomSystemPrompt,
+  resetSystemPromptToSelectedPrompt,
+  openContextWindowModal,
+  handleContextWindowPresetChange,
+  resetContextWindowDraftToDefault,
+  applyContextWindowSettings,
+  isCurrentModel,
+  selectProviderModel,
+  openAgentModal,
+  clearSelectedAgent,
+  applyAgentModal,
+  clearSelectedPrompt,
+  applyPromptModal,
+  applySkillModal,
+  applyMcpModal,
+  resolveHistoryContextBudgetState,
+  getHistoryContextCharBudget,
+  requestContextWindowSummary,
+  resolveContextSummaryCoverage,
+  ensureContextWindowSummary,
+  syncContextSummaryCacheForRecord,
+  prepareChatRequestContext,
+  startPreparingSend,
+  isLikelyImageGenerationPrompt,
+  isLikelyVideoGenerationPrompt,
+  buildEmptyAssistantResponseText,
+  buildMediaGenerationPromptFromHistory,
+  buildImageGenerationPromptFromHistory,
+  buildVideoGenerationPromptFromHistory,
+  hasToolStateMessages,
+  shouldRetryToolContinuationAsPlainText,
+  buildRequestMessages,
+  resolveCurrentToolApprovalMode,
+  closeMcpClientSafely,
+  registerAbortableMcpClient,
+  ensureMcpToolsStatus,
+  getMcpToolsCacheKey,
+  filterAllowedMcpTools,
+  listMcpToolsForServer,
+  listMcpPromptsForServer,
+  ensureMcpPromptCatalogLoaded,
+  buildMcpPromptArgsFromModal,
+  buildLocalPromptArgsFromModal,
+  insertTextIntoComposer,
+  applyMcpPromptToComposer,
+  applyLocalPromptToComposer,
+  upsertPinnedMcpToolHint,
+  buildMcpToolCatalogEntry,
+  setMcpToolCatalogEntry,
+  warmMcpToolCatalogForServers,
+  buildToolsBundle,
+  createDisplayMessage,
+  resolveSelectedSkillTarget,
+  resolveInstalledSkillTarget,
   listSelectedSkillsBrief,
+  listInstalledSkillsBrief,
+  selectSkillForSession,
+  normalizeSkillScriptPathCandidate,
+  buildSkillScriptChoiceList,
+  resolveSkillScriptTarget,
+  resolveActiveMcpServer,
+  listActiveMcpServersBrief,
+  getSkillMcpStatus,
+  getWebOperationsApi,
+  getBuiltinSkillsApi,
+  builtinSkillActionCatalog,
+  getWebToolMissingText,
+  WEB_TOOL_RESULT_GUIDANCE,
+  buildWebToolModelContent,
+  formatWebSearchDisplay,
+  formatWebReadDisplay,
+  buildWebToolSubMeta,
+  executeBuiltinWebTool,
+  normalizeToolCallExecutionContext,
+  hydrateSkillGatewayExecutionContext,
+  resolveToolApprovalTarget,
+  prepareToolCallExecution,
+  getToolCallParallelExecutionKey,
+  executePreparedSkillTool,
+  executePreparedMcpTool,
+  executePreparedToolCall,
+  executeToolCallsParallel,
+  executeToolCall,
+  queuedInputDrainTimers,
+  queuedInputDrainInFlight,
+  getComposerDraft,
+  clearComposerDraft,
+  enqueueComposerDraft,
+  steerCurrentRun,
+  removeQueuedInput,
+  steerQueuedInput,
+  scheduleQueuedInputDrain,
+  drainQueuedInputs,
+  dispatchChatDraft,
+  send
+} = (chatRequestRunnerApi = useChatRequestRunner({
+  BUILTIN_AGENTS_TOOL_APPROVAL_MODE_CHANGE_EVENT,
+  BUILTIN_AGENTS_TOOL_APPROVAL_REQUEST_EVENT,
+  BUILTIN_AGENTS_TOOL_APPROVAL_RESPONSE_EVENT,
+  BUILTIN_AGENTS_TRACE_EVENT,
+  BUILTIN_AGENT_ORCHESTRATION_SKILL_ID,
+  BUILTIN_SHELL_SKILL_ID,
+  CHAT_RUN_INPUT_MODE_QUEUE,
+  CHAT_RUN_INPUT_MODE_STEER,
+  CHAT_TOOL_COMPACT_MIN_MESSAGES,
+  CHAT_TOOL_COMPACT_MIN_TOOL_MESSAGES,
+  INLINE_COMMAND_KIND_LABELS,
+  INTERNAL_TOOL_SPECS,
+  MAX_EXPANDED_TOOL_COUNT,
+  MCP_CATALOG_MAX_TOOL_HINTS_PER_SERVER,
+  MCP_CATALOG_MAX_TOOL_NAMES_PER_SERVER,
+  MCP_LIST_PROMPTS_TTL_MS,
+  MCP_LIST_TOOLS_TTL_MS,
+  MCP_PINNED_TOOL_HINTS_MAX_PER_SERVER,
+  TOOL_APPROVAL_MODE_FULL,
+  TOOL_APPROVAL_MODE_MANUAL,
+  TOOL_APPROVAL_MODE_SAFE,
+  TOOL_APPROVAL_MODE_TRUSTED,
+  VIDEO_GENERATION_RESULT_TIMEOUT_MS,
+  abortController,
+  activatedAgentSkillIds,
+  activeAgentRunToolMessageByStreamId,
+  activeMcpIds,
+  activeMcpServers,
+  activeMemorySessionId,
+  agentModalSelectedId,
+  agentSkillIds,
+  applyAgent,
+  applyAssistantRequestPlaceholderMode,
+  applyBasePromptSelection,
+  applyDefaultChatState,
+  applyDefaultGeneralAgent,
+  applyImageGenerationImagesToDisplay,
+  applyImageGenerationTaskToDisplay,
+  applyImageGenerationTextToDisplay,
+  applyVideoGenerationTaskToDisplay,
+  applyVideoGenerationTextToDisplay,
+  applyVideoGenerationVideosToDisplay,
+  assistantImageTaskStatusLabel,
+  attachMediaRequestSnapshot,
+  autoActivateAgentSkills,
+  autoActivateAgentSkillsFromText,
+  autoPersistMemorySessionWhenIdle,
+  autoScrollEnabled,
+  autoScrollSuspendedByUser,
+  basePromptMode,
+  basePromptText,
+  buildActiveRequestOverrides,
+  buildChatAttachmentReferenceBlock,
+  buildChatContextWindow,
+  buildChatContextWindowRuntimeOptions,
+  buildChatRequestMessages,
+  buildCombinedSystemContent,
+  buildContextSummarySourceHash,
+  buildContextSummaryTurnSegments,
+  buildCurrentChatState,
+  buildImageGenerationApiSummary,
+  buildImageGenerationCompatibilityError,
+  buildImageGenerationPendingText,
+  buildImageGenerationRequestOptionsWithReferences,
+  buildManualImageGenerationRequestInfo,
+  buildManualVideoGenerationRequestInfo,
+  buildMcpArgsFromForm,
+  buildMcpToolHint,
+  buildMediaRequestSnapshot,
+  buildMemoryInjection,
+  buildMemoryRecallQueryFromAttachments,
+  buildMemoryRecallQueryFromRecord,
+  buildPromptVariableValues,
+  buildProviderToolDefinition,
+  buildProviderToolDescription,
+  buildSessionToolApprovalKey,
+  buildSkillToolsBundle,
+  buildToolExecutionResultSubMeta,
+  buildToolVisionUserMessage,
+  buildUtoolsAiMessages,
+  buildVideoGenerationApiSummary,
+  buildVideoGenerationCompatibilityError,
+  buildVideoGenerationPendingText,
+  buildVideoGenerationRequestOptionsWithReferences,
+  calculateContextSummaryTriggerChars,
+  calculateReservedRequestChars,
+  canGenerateMemorySessionTitle,
+  canRetryMemorySessionTitle,
+  canUseUtoolsAi,
+  cancelPendingToolApprovals,
+  chatConfig,
+  chatMessageEstimatedHeightCache,
+  chatRunInputQueue,
+  cleanupChatPreviewLinkHandlers,
+  cleanupPendingBuiltinAgentsEvents,
+  clearAssistantMediaBubblePlaceholders,
+  clearAttachmentFileReferences,
+  clearChatVirtualItemRemeasure,
+  clearInlineAgentPicker,
+  clearInlineCommandPicker,
+  clearInlinePickers,
+  clearStickyChatBubbleSync,
+  closeAllPooledMCPClients,
+  closePooledMCPClient,
+  collectAttachmentMediaReferenceImages,
+  collectImageGenerationRevisedPrompts,
+  composerInputKey,
+  composerPanelRef,
+  computed,
+  confirmToolCall,
+  contentHasUserAttachments,
+  contextWindowDraft,
+  contextWindowPreviewOmittedFilter,
+  contextWindowResolvedOptions,
+  createAbortError,
+  createAssistantImageBubblePlaceholder,
+  createAssistantVideoBubblePlaceholder,
+  createBuiltinSkillActionCatalog,
+  createEmptyContextSummaryState,
+  createImageGenerationPlaceholderDisplay,
+  createPendingLongTextAttachment,
+  createPendingToolExecutionMessage,
+  createPreparedMcpToolExecutor,
+  createPreparedSkillToolExecutor,
+  createRepeatedToolCallGuard,
+  createToolExecutionResultMessage,
+  createToolResultApiMessage,
+  createVideoGenerationPlaceholderDisplay,
+  customSystemPrompt,
+  customSystemPromptExplicit,
+  deepCopyJson,
+  deferredAppendMessageField,
+  deferredMessageFieldWaitIdle,
+  detachedMediaAbortStates,
+  dialog,
+  disconnectChatLayoutResizeObserver,
+  disconnectChatMessageVisibilityObserver,
+  effectiveContextWindowConfig,
+  effectiveToolMode,
+  enableFcToolCallIdCompat,
+  enrichImageAttachmentsForMemoryRecall,
+  ensureAttachmentParsed,
+  estimateMessageSize,
+  estimateMessagesSize,
+  estimateToolDefinitionsChars,
+  evaluateToolApproval,
+  extractChatImagesFromToolResult,
+  extractChatVideosFromToolResult,
+  extractContextTokenMetrics,
+  extractEditableUserTextFromContent,
+  extractImageGenerationPromptFromContent,
+  extractImageGenerationTaskState,
+  extractImageGenerationTextResult,
+  extractInlineAgentContext,
+  extractInlineCommandContext,
+  extractModelUsage,
+  extractPromptVariables,
+  extractUtoolsAiReasoningText,
+  extractVideoGenerationTaskState,
+  findLocalPromptById,
+  findMcpPromptCatalogItem,
+  flushDeferredMessageFieldsForMessage,
+  flushPendingBuiltinAgentsEvents,
+  formatLocalUserPromptForComposer,
+  formatMcpPromptResultForComposer,
+  formatToolResultContentForModel,
+  getActiveMemorySession,
+  getCompatKey,
+  getContextTokenTelemetry,
+  getCurrentImageGenerationRequestOptions,
+  getCurrentVideoGenerationRequestOptions,
+  getFirstEnabledInlineCommandIndex,
+  getLoadedSkillFilePathSet,
+  getMcpPrompt,
+  getMediaGenerationSystemContent,
+  getMemorySessionById,
+  getMemorySessionForMessage,
+  getMemorySessionForToolMessage,
+  getMemorySessionPendingApprovalCount,
+  getOrCreateMCPClient,
+  getProviderModelType,
+  getRunRecord,
+  getRunSessionTarget,
+  getSkillFileIndex,
+  getSkillScriptCatalog,
+  globalContextWindowConfig,
+  handleBuiltinAgentsTraceEvent,
+  hasChatContextWindowReduction,
+  hasLoadedSkillMainContent,
+  hasPendingBuiltinAgentsEvents,
+  imageGenerationMode,
+  importFilesToSandbox,
+  inferUserDisplayMessageRender,
+  inlineAgentActiveIndex,
+  inlineAgentMatchEnd,
+  inlineAgentMatchStart,
+  inlineAgentQuery,
+  inlineAgentSuggestions,
+  inlineCommandActiveIndex,
+  inlineCommandMatchEnd,
+  inlineCommandMatchStart,
+  inlineCommandMode,
+  inlineCommandQuery,
+  inlineCommandSuggestions,
+  inlineCommandType,
+  input,
+  inspectChatContextWindow,
+  isAbortError,
+  isAgentRunToolName,
+  isChatMemoryEnabled,
+  isComposerCompositionKeydownEvent,
+  isDangerousShellApprovalCommand,
+  isDefaultGeneralAgent,
+  isDirectorySkill,
+  isFcToolCallIdCompatEnabled,
+  isFinalizedMemorySessionTitle,
+  isLikelyImageGenerationModel,
+  isLikelyVideoGenerationModel,
+  isMemorySessionActive,
+  isMemorySessionChatRunning,
+  isRunnableSkillScriptPath,
+  isSkillPromptContentLoaded,
+  isSystemPrompt,
+  isToolMessage,
+  isUserPrompt,
+  isUtoolsBuiltinProvider,
+  lastBuiltRequestToolsStats,
+  listSelectedSkillsBriefFromList,
   loadSkillMainContent,
   loadedSkillContentById,
   loadedSkillFileCacheBySkillId,
+  loadingMcpPrompts,
+  makeLocalPromptOptionValue,
+  makeMcpPromptOptionValue,
+  makeToolFunctionName,
+  manualMcpIds,
   markSkillActivationPersistent,
+  maybeScheduleScrollToBottomForRun,
   maybeScrollToBottomForRun,
+  mcpListPromptsCache,
+  mcpListPromptsInFlight,
+  mcpListToolsCache,
+  mcpListToolsInFlight,
+  mcpModalSelectedIds,
+  mcpPinnedToolHintsByServerId,
+  mcpPinnedToolHintsRevision,
+  mcpPromptCatalog,
   mcpServers,
-  prepareBuiltinAgentToolCallArgs,
-  resolveAvailableSkillTarget: resolveInstalledSkillTarget,
-  resolveSelectedSkillTarget,
-  resolveSkillScriptTarget,
+  mcpToolCatalogByServerId,
+  mcpToolCatalogRevision,
+  mcpToolsRevision,
+  mcpToolsStatusByServerId,
+  memorySessions,
+  mergeUserTextWithExistingAttachments,
+  message,
+  messageContentHasImageUrl,
+  moveInlineAgentActive,
+  moveInlineCommandActive,
+  newId,
+  nextDisplayMessageTime,
+  nextTick,
+  normalizeAssistantToolCalls,
+  normalizeChatContextWindowConfig,
+  normalizeImageGenerationMode,
+  normalizeMcpPromptList,
+  normalizeProviderApiMode,
+  normalizeSkillScriptApprovalArgs,
+  normalizeStringList,
+  normalizeToolApprovalMode,
+  onBeforeUnmount,
+  parsePromptOptionValue,
+  pendingAttachments,
+  pendingToolApprovals,
+  persistChatMediaListAssets,
+  prepareAssistantDisplayForTextResponse,
+  preparingSend,
+  preparingSendStage,
+  promptMcpArgsForm,
+  promptModalSelectedId,
+  promptUserArgsForm,
+  providers,
+  queueMemoryCandidateForRecord,
+  reactive,
+  refreshingMcpTools,
+  registerUtoolsAiToolFunctions,
+  releaseMCPClient,
+  removeDisplayMessageById,
+  removeRunDisplayMessageById,
+  requestImageGeneration,
+  requestSessionTitleAsync,
+  requestVideoGeneration,
+  resetPromptVariableFormData,
+  resolveActiveAgentRunToolMessage,
+  resolveBuiltinSkillCall,
+  resolveChatContextWindowBudgetPlan,
+  resolveChatContextWindowOptions,
+  resolveChatLongTextAttachmentPlan,
+  resolveChatToolWorkspaceScope,
+  resolveContextSummaryChain,
+  resolveContextSummaryLevel,
+  resolveContextSummarySourceLabel,
+  resolveMcpToolApprovalPolicy,
+  resolveMemorySessionSandboxWorkspaceId,
+  resolveMemorySessionTitle,
+  resolveSelectedSkillTargetFromList,
+  resolveSessionHostWorkspacePath,
+  resolveSystemPromptModalApplyState,
+  resumingMediaTaskKeys,
+  routerActivatedAgentSkillIds,
+  routerAddedAgentSkillIds,
+  routerAddedSelectedSkillIds,
+  runRecordByAbortState,
+  runtimeAgentSkillIdSet,
+  runtimeAgentSkillIds,
+  runtimeMcpServers,
+  runtimeSkillObjects,
+  safeJsonParse,
+  saveActiveMemorySessionDraft,
+  scheduleRefreshUserAnchorMeta,
+  scheduleScrollToBottom,
+  scrollToBottom,
   searchCapabilities,
-  selectSkillForSession,
-  selectedSkillObjects: runtimeSkillObjects
+  selectedAgent,
+  selectedLocalPromptVariables,
+  selectedMcpPromptArgs,
+  selectedModel,
+  selectedPromptId,
+  selectedPromptModalParsedValue,
+  selectedProvider,
+  selectedProviderId,
+  selectedSkillIds,
+  selectedSkillObjects,
+  sending,
+  session,
+  sessionApprovedToolKeys,
+  sessionContextWindowOverride,
+  setStickyChatBubbleState,
+  shouldAutoAttachToolImagesForVision,
+  shouldClearBasePromptSelectionImmediately,
+  shouldFallbackMediaRequestToChat,
+  shouldFallbackVisionInputToText,
+  shouldFetchVideoGenerationContent,
+  shouldIncludeReasoningContent,
+  shouldRetryWithReasoningContent,
+  shouldRetryWithoutParallelToolCalls,
+  shouldSubmitComposerKeydownEvent,
+  shouldSummarizeContextWindow,
+  showAgentModal,
+  showContextWindowModal,
+  showInlineAgentPicker,
+  showInlineCommandPicker,
+  showMcpModal,
+  showMediaLibraryModal,
+  showModelModal,
+  showPromptModal,
+  showSkillModal,
+  showSystemPromptModal,
+  skillModalSelectedIds,
+  skills,
+  stableStringify,
+  streamChatCompletion,
+  syncActiveRequestUiState,
+  syncChatResponsiveState,
+  systemContent,
+  systemPromptDraft,
+  thinkingEffort,
+  throwIfAborted,
+  toolApprovalMode,
+  toolMode,
+  touchChatRunInputQueue,
+  truncateInlineText,
+  truncateText,
+  typewriterEnqueue,
+  typewriterFlushAll,
+  typewriterStates,
+  typewriterWaitIdle,
+  updateChatConfig,
+  useChatMessageTracking,
+  useChatUserMessageIndexing,
+  videoGenerationMode,
+  visibleSelectedAgent,
+  waitForAbortable,
+  waitForVideoGenerationResult,
+  webSearchEnabled,
+  withDefaultChatSandboxWorkspaceId,
+  withTimeout
+
+}))
+
+// The immediate config watcher runs before the request runner exists. Reapply
+// its initial synchronization now that the real callbacks are available.
+if (!showContextWindowModal.value && !sessionContextWindowOverride.value) {
+  syncContextWindowDraft(chatConfig.value?.contextWindow)
+}
+contextWindowStatsCache.value = buildContextWindowStats({
+  includeRequestDetails: showContextWindowModal.value
 })
 
-const executePreparedMcpTool = createPreparedMcpToolExecutor({
-  activeMcpServers: runtimeMcpServers,
-  buildMcpToolCatalogEntry,
-  buildToolExecutionResultSubMeta,
-  closeMcpClientSafely,
-  deepCopyJson,
-  extractChatImagesFromToolResult,
-  filterAllowedMcpTools,
-  listActiveMcpServersBrief,
-  listMcpToolsForServer,
-  maybeScrollToBottomForRun,
-  registerAbortableMcpClient,
-  resolveActiveMcpServer,
-  setMcpToolCatalogEntry,
-  upsertPinnedMcpToolHint
+const handleInputKeydown = createChatInputKeydownHandler({
+  isComposerCompositionKeydownEvent,
+  sending,
+  steerCurrentRun,
+  showInlineCommandPicker,
+  moveInlineCommandActive,
+  inlineCommandSuggestions,
+  inlineCommandActiveIndex,
+  getFirstEnabledInlineCommandIndex,
+  applyInlineCommandSuggestion,
+  clearInlineCommandPicker,
+  showInlineAgentPicker,
+  moveInlineAgentActive,
+  inlineAgentSuggestions,
+  inlineAgentActiveIndex,
+  applyInlineAgentSuggestion,
+  clearInlineAgentPicker,
+  shouldSubmitComposerKeydownEvent,
+  send
 })
 
-async function executePreparedToolCall(prepared, abortState = null) {
-  const targetSession = getRunSessionTarget(abortState)
-  throwIfAborted(abortState)
-  const {
-    toolCallId,
-    toolExecutionId
-  } = prepared || {}
-  const createCurrentToolResultMessage = (content = '', extra = {}) =>
-    createToolExecutionResultMessage(content, extra, toolCallId, toolExecutionId)
-
-  const skillExecution = await executePreparedSkillTool(
-    prepared,
-    { targetSession, createCurrentToolResultMessage },
-    abortState
-  )
-  if (skillExecution.handled) return skillExecution.result
-
-  return executePreparedMcpTool(
-    prepared,
-    { targetSession, createCurrentToolResultMessage },
-    abortState
-  )
-}
-
-async function executeToolCallsParallel(toolCalls, toolMap, lastReasoningText, abortState = null) {
-  const preparedCalls = []
-  for (const toolCall of Array.isArray(toolCalls) ? toolCalls : []) {
-    throwIfAborted(abortState)
-    preparedCalls.push(await prepareToolCallExecution(toolCall, toolMap, lastReasoningText, abortState))
-  }
-
-  const results = new Array(preparedCalls.length)
-  const chainsByKey = new Map()
-
-  preparedCalls.forEach((prepared, index) => {
-    if (prepared?.skipped) {
-      results[index] = prepared.execResult
-      return
-    }
-
-    const key = getToolCallParallelExecutionKey(prepared)
-    const previous = chainsByKey.get(key) || Promise.resolve()
-    const current = previous.then(async () => {
-      throwIfAborted(abortState)
-      return executePreparedToolCall(prepared, abortState)
-    })
-    chainsByKey.set(key, current.catch(() => {}))
-    results[index] = current
-  })
-
-  const resolved = await Promise.all(results.map(async (entry) => {
-    if (entry && typeof entry?.then === 'function') return entry
-    return entry
-  }))
-  throwIfAborted(abortState)
-  return resolved
-}
-
-async function executeToolCall(toolCall, toolMap, lastReasoningText, abortState = null) {
-  const [result] = await executeToolCallsParallel([toolCall], toolMap, lastReasoningText, abortState)
-  return result
-}
-
-const queuedInputDrainTimers = new Map()
-const queuedInputDrainInFlight = new Set()
-
-function getComposerDraft() {
-  const text = String(input.value || '').trim()
-  const attachments = Array.isArray(pendingAttachments.value) ? pendingAttachments.value.slice() : []
-  const plan = resolveChatLongTextAttachmentPlan(text, attachments)
-  if (!plan.wrapped) {
-    return {
-      text,
-      attachments,
-      validationError: String(plan.error || '')
-    }
-  }
-
-  const longTextAttachment = createPendingLongTextAttachment(plan)
-  if (!longTextAttachment) {
-    return {
-      text,
-      attachments,
-      validationError: '当前环境无法创建长文本附件，请改为手动上传 Markdown 文件。'
-    }
-  }
-  return {
-    text: plan.text,
-    attachments: [...attachments, longTextAttachment],
-    autoWrappedLongText: true,
-    validationError: ''
-  }
-}
-
-function clearComposerDraft() {
-  input.value = ''
-  resetComposerInput()
-  pendingAttachments.value = []
-}
-
-function enqueueComposerDraft(mode = CHAT_RUN_INPUT_MODE_QUEUE) {
-  if (preparingSend.value) return null
-  const draft = getComposerDraft()
-  if (draft.validationError) {
-    message.warning(draft.validationError)
-    return null
-  }
-  if (!draft.text && !draft.attachments.length) return null
-
-  clearAllUserEditingState()
-  const record = getActiveMemorySession()
-  const entry = chatRunInputQueue.enqueue(record.id, draft, mode)
-  if (!entry) return null
-
-  clearComposerDraft()
-  record.input = ''
-  record.pendingAttachments = []
-  record.updatedAt = Date.now()
-  touchChatRunInputQueue()
-  if (mode === CHAT_RUN_INPUT_MODE_STEER) {
-    message.info('已加入引导，将在当前任务的下一个安全边界生效')
-  } else {
-    message.info('消息已加入队列')
-  }
-  return entry
-}
-
-function steerCurrentRun() {
-  if (!sending.value) {
-    void send()
-    return
-  }
-  enqueueComposerDraft(CHAT_RUN_INPUT_MODE_STEER)
-}
-
-function removeQueuedInput(entryId) {
-  const removed = chatRunInputQueue.remove(activeMemorySessionId.value, entryId)
-  if (!removed) return
-  touchChatRunInputQueue()
-  message.info(removed.mode === CHAT_RUN_INPUT_MODE_STEER ? '已移除引导' : '已移除排队消息')
-}
-
-function steerQueuedInput(entryId) {
-  const updated = chatRunInputQueue.setMode(
-    activeMemorySessionId.value,
-    entryId,
-    CHAT_RUN_INPUT_MODE_STEER
-  )
-  if (!updated) return
-  touchChatRunInputQueue()
-  message.info('已改为引导，将在当前任务的下一个安全边界生效')
-}
-
-function scheduleQueuedInputDrain(record = getMemorySessionById(activeMemorySessionId.value)) {
-  const sessionId = String(record?.id || '').trim()
-  if (!sessionId || queuedInputDrainTimers.has(sessionId)) return
-  const timer = window.setTimeout(() => {
-    queuedInputDrainTimers.delete(sessionId)
-    void drainQueuedInputs(record)
-  }, 0)
-  queuedInputDrainTimers.set(sessionId, timer)
-}
-
-async function drainQueuedInputs(record) {
-  const sessionId = String(record?.id || '').trim()
-  if (!sessionId || queuedInputDrainInFlight.has(sessionId)) return
-  if (!isMemorySessionActive(record)) return
-  if (preparingSend.value || sending.value || isMemorySessionChatRunning(record)) return
-
-  const entry = chatRunInputQueue.takeNext(sessionId)
-  if (!entry) return
-  touchChatRunInputQueue()
-  queuedInputDrainInFlight.add(sessionId)
-  try {
-    const accepted = await dispatchChatDraft(entry)
-    if (!accepted) {
-      chatRunInputQueue.restore(sessionId, [entry])
-      touchChatRunInputQueue()
-      return
-    }
-  } finally {
-    queuedInputDrainInFlight.delete(sessionId)
-  }
-
-  if (chatRunInputQueue.count(sessionId) > 0) scheduleQueuedInputDrain(record)
-}
-
-async function dispatchChatDraft({ text: rawText, attachments: rawAttachments } = {}) {
-  if (sending.value || preparingSend.value) return false
-  const cfg = getRequestConfigOrHint()
-  if (!cfg) return false
-
-  const text = String(rawText || '').trim()
-  const attachments = Array.isArray(rawAttachments) ? rawAttachments.slice() : []
-  if (!text && !attachments.length) return false
-
-  let prepared = false
-  const accepted = await startPreparingSend(async ({ release }) => {
-    const userDisplay = createDisplayMessage('user', text || (attachments.length ? '(sent attachments)' : ''))
-    if (attachments.length) {
-      userDisplay.attachmentsExpanded = false
-      userDisplay.attachments = attachments
-    }
-    session.messages.push(userDisplay)
-    autoScrollEnabled.value = true
-    autoScrollSuspendedByUser.value = false
-    scheduleRefreshUserAnchorMeta()
-    await scrollToBottom({ force: true })
-    const requestRecord = getActiveMemorySession()
-    let memorySystemContent = ''
-    let attachmentRecallText = ''
-    try {
-      const prepared = await prepareChatRequestContext({
-        cfg,
-        text,
-        attachments,
-        requestRecord,
-        excludeLatestUserTurnFromMemoryRecall: true
-      })
-      memorySystemContent = prepared.memorySystemContent
-      attachmentRecallText = prepared.attachmentRecallText
-      if (cfg.requestMode === 'image-generation') {
-        const referenceImages = await collectAttachmentMediaReferenceImages(attachments, userDisplay)
-        cfg.imageGenerationRequestOptionsOverride = mergeReferenceImagesIntoRequestOptions(
-          cfg.imageGenerationRequestOptionsOverride && typeof cfg.imageGenerationRequestOptionsOverride === 'object'
-            ? cfg.imageGenerationRequestOptionsOverride
-            : {},
-          referenceImages,
-          'image'
-        )
-      }
-    } catch (err) {
-      removeDisplayMessageById(userDisplay.id)
-      autoScrollEnabled.value = true
-      autoScrollSuspendedByUser.value = false
-      scheduleRefreshUserAnchorMeta()
-      await scrollToBottom({ force: true })
-      message.error('发送准备失败：' + (err?.message || String(err)))
-      return
-    }
-    prepared = true
-    if (canGenerateMemorySessionTitle(requestRecord)) {
-      requestRecord.titlePostReplyRetryDone = false
-      requestSessionTitleAsync({
-        record: requestRecord,
-        cfg,
-        text,
-        attachments,
-        reason: 'initial'
-      })
-    }
-
-    if (cfg.requestMode === 'video-generation') {
-      release()
-      const generated = await startDetachedVideoGeneration({ cfg, text, attachments, userDisplay })
-      if (generated && canRetryMemorySessionTitle(requestRecord)) {
-        requestSessionTitleAsync({
-          record: requestRecord,
-          cfg,
-          text,
-          attachments,
-          reason: 'post_reply'
-        })
-      }
-      return
-    }
-
-    const runPromise = runChatSession({
-      ...cfg,
-      sessionRecord: requestRecord,
-      memorySystemContent,
-      memorySourceUserText: [text, attachmentRecallText].filter(Boolean).join('\n\n'),
-      prepare: async () => {
-        if (isMemorySessionActive(requestRecord)) await scrollToBottom({ force: true })
-        await prepareUserApiMessage({
-          text,
-          attachments,
-          userDisplay,
-          preferVision: cfg.supportsVision !== false,
-          providerKind: cfg.providerKind || 'openai-compatible',
-          sessionTarget: requestRecord,
-          imageAttachmentMode: cfg.requestMode === 'image-generation' ? 'media-reference' : 'chat'
-        })
-      }
-    })
-    release()
-    const succeeded = await runPromise
-
-    if (succeeded && canRetryMemorySessionTitle(requestRecord)) {
-      requestSessionTitleAsync({
-        record: requestRecord,
-        cfg,
-        text,
-        attachments,
-        reason: 'post_reply'
-      })
-    }
-
-  })
-  return accepted && prepared
-}
-
-async function send() {
-  if (preparingSend.value) return
-  if (sending.value) {
-    enqueueComposerDraft(CHAT_RUN_INPUT_MODE_QUEUE)
-    return
-  }
-
-  const draft = getComposerDraft()
-  if (draft.validationError) {
-    message.warning(draft.validationError)
-    return
-  }
-  if (!draft.text && !draft.attachments.length) return
-  clearAllUserEditingState()
-  clearComposerDraft()
-  const accepted = await dispatchChatDraft(draft)
-  if (!accepted) {
-    input.value = draft.text
-    pendingAttachments.value = draft.attachments
-    resetComposerInput()
-    return
-  }
-  scheduleQueuedInputDrain(getMemorySessionById(activeMemorySessionId.value))
-}
-
-const lastEnterKey = ref('')
-watch(
+bindUtoolsEnterDataListener({
   utoolsEnterData,
-  (val) => {
-    const key = buildUtoolsEnterEventKey(val)
-    if (!key) {
-      lastEnterKey.value = ''
-      return
-    }
-    if (key === lastEnterKey.value) return
-    lastEnterKey.value = key
-
-    input.value = typeof val.payload === 'string' ? val.payload : ''
-    send()
-  },
-  { immediate: true }
-)
+  buildUtoolsEnterEventKey,
+  input,
+  send
+})
 </script>
 
-<style scoped src="./Chat.css"></style>
+<style src="./Chat.css"></style>
