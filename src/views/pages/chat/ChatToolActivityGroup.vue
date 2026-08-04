@@ -113,7 +113,9 @@ const failedCount = computed(() => {
   return Number(counts.error || 0) + Number(counts.rejected || 0) + Number(counts.stopped || 0)
 })
 
-const headerText = computed(() => '已完成相关处理')
+const headerText = computed(() => (
+  failedCount.value > 0 ? '相关处理有未成功项' : '已完成相关处理'
+))
 
 const summaryText = computed(() => {
   const total = totalCount.value

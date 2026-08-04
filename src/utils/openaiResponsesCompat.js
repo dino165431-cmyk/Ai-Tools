@@ -10,6 +10,19 @@ function normalizeString(value) {
   return String(value ?? '').trim()
 }
 
+function isResponsesOutputTextDeltaType(value) {
+  const type = normalizeString(value).toLowerCase()
+  if (!type) return false
+  if (type.endsWith('output_text.delta')) return true
+
+  // Some compatible providers use a shorter `text.delta` event name. Keep
+  // supporting those events, but never treat echoed input or reasoning text as
+  // assistant output merely because their names also end in `text.delta`.
+  if (!type.endsWith('text.delta')) return false
+  if (/(^|[._])(input|reasoning|summary|refusal)([._]|$)/.test(type)) return false
+  return true
+}
+
 function sanitizeFunctionCallId(value, fallback = '') {
   const text = normalizeString(value || fallback)
   const suffix = text.replace(/^(call|fc)_/i, '').replace(/[^a-z0-9_-]/gi, '_') || Math.random().toString(16).slice(2)
@@ -385,7 +398,7 @@ export function applyResponsesStreamEvent(state, json) {
     throw err
   }
 
-  if ((type.endsWith('output_text.delta') || type.endsWith('text.delta')) && typeof json.delta === 'string') {
+  if (isResponsesOutputTextDeltaType(type) && typeof json.delta === 'string') {
     acc.content += json.delta
     events.push({ type: 'content', delta: json.delta, content: acc.content })
   }

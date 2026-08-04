@@ -366,6 +366,15 @@ function collectResponsesOutputItems(json) {
   ]
 }
 
+function isResponsesOutputTextDeltaType(value) {
+  const type = cleanString(value).toLowerCase()
+  if (!type) return false
+  if (type.endsWith('output_text.delta')) return true
+  if (!type.endsWith('text.delta')) return false
+  if (/(^|[._])(input|reasoning|summary|refusal)([._]|$)/.test(type)) return false
+  return true
+}
+
 function applyResponsesStreamEvent(state, json) {
   const events = []
   if (!json || typeof json !== 'object') return events
@@ -379,7 +388,7 @@ function applyResponsesStreamEvent(state, json) {
     error.name = 'ResponsesApiError'
     throw error
   }
-  if ((type.endsWith('output_text.delta') || type.endsWith('text.delta')) && typeof json.delta === 'string') {
+  if (isResponsesOutputTextDeltaType(type) && typeof json.delta === 'string') {
     state.content += json.delta
     events.push({ type: 'content', delta: json.delta, content: state.content })
   }

@@ -43,6 +43,16 @@ test('extractAssistantTextFromPayloads joins streamed output_text delta events',
   assert.equal(extractAssistantTextFromPayloads(payloads), '已经读完笔记。')
 })
 
+test('Responses text extraction ignores echoed input and reasoning deltas', () => {
+  const payloads = [
+    { type: 'response.input_text.delta', delta: '已调用工具：skill_call({...})' },
+    { type: 'response.reasoning_summary_text.delta', delta: '内部推理摘要' },
+    { type: 'response.output_text.delta', delta: '这是最终回答。' }
+  ]
+
+  assert.equal(extractAssistantTextFromPayloads(payloads), '这是最终回答。')
+})
+
 test('extractAssistantTextFromPayload ignores binary-looking image fields', () => {
   const payload = {
     output: [
@@ -133,6 +143,29 @@ test('applyResponsesStreamEvent converts text deltas and function calls', () => 
   assert.equal(result.toolCalls[0].id, 'fc_lookup')
   assert.equal(result.toolCalls[0].call_id, 'call_lookup')
   assert.equal(result.toolCalls[0].function.name, 'notes_read')
+})
+
+test('Responses stream does not publish input_text or reasoning text as assistant content', () => {
+  const state = createResponsesStreamAccumulator()
+  const events = []
+
+  events.push(...applyResponsesStreamEvent(state, {
+    type: 'response.input_text.delta',
+    delta: '已调用工具：skill_call({...})'
+  }))
+  events.push(...applyResponsesStreamEvent(state, {
+    type: 'response.reasoning_summary_text.delta',
+    delta: '检查工具结果'
+  }))
+  events.push(...applyResponsesStreamEvent(state, {
+    type: 'response.output_text.delta',
+    delta: '处理完成。'
+  }))
+
+  const result = finalizeResponsesStreamAccumulator(state)
+  assert.equal(result.content, '处理完成。')
+  assert.equal(result.reasoning, '检查工具结果')
+  assert.deepEqual(events.filter((event) => event.type === 'content').map((event) => event.delta), ['处理完成。'])
 })
 
 test('Responses function argument events retain call_id before the completed response item', () => {

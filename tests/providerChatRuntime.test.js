@@ -136,6 +136,29 @@ test('preload Responses stream merges item_id and call_id aliases for one functi
   assert.equal(result.toolCalls[0].function.arguments, '{"query":"notes"}')
 })
 
+test('preload Responses stream ignores echoed input and reasoning text deltas', () => {
+  const state = compat.createResponsesStreamAccumulator()
+  const events = []
+
+  events.push(...compat.applyResponsesStreamEvent(state, {
+    type: 'response.input_text.delta',
+    delta: '已调用工具：skill_call({...})'
+  }))
+  events.push(...compat.applyResponsesStreamEvent(state, {
+    type: 'response.reasoning_summary_text.delta',
+    delta: '内部推理'
+  }))
+  events.push(...compat.applyResponsesStreamEvent(state, {
+    type: 'response.output_text.delta',
+    delta: '最终回答'
+  }))
+
+  const result = compat.finalizeResponsesStreamAccumulator(state)
+  assert.equal(result.content, '最终回答')
+  assert.equal(result.reasoning, '内部推理')
+  assert.deepEqual(events.filter((event) => event.type === 'content').map((event) => event.delta), ['最终回答'])
+})
+
 test('provider chat runtime honors explicit API mode and only auto mode crosses endpoints', async () => {
   const originalFetch = globalThis.fetch
   const urls = []

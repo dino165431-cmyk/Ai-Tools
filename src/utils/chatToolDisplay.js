@@ -24,6 +24,59 @@ export function inferStructuredToolResultStatus(result) {
   return ''
 }
 
+function normalizeSandboxExitCode(result) {
+  const raw = result?.exitCode ?? result?.exit_code
+  if (raw === null || raw === undefined || raw === '') return null
+  const value = Number(raw)
+  return Number.isInteger(value) ? value : null
+}
+
+function compactSandboxFailureText(value, maxChars = 480) {
+  const text = String(value?.message || value || '').replace(/\s+/g, ' ').trim()
+  if (!text) return ''
+  return text.length > maxChars ? `${text.slice(0, Math.max(1, maxChars - 1))}…` : text
+}
+
+export function getSandboxToolResultPresentation(result, statusRaw = '') {
+  const payload = result && typeof result === 'object' && !Array.isArray(result) ? result : {}
+  const requestedStatus = String(statusRaw || '').trim().toLowerCase()
+  const status = ['running', 'paused', 'stopped', 'success', 'error', 'rejected'].includes(requestedStatus)
+    ? requestedStatus
+    : inferStructuredToolResultStatus(payload) || 'success'
+  const exitCode = normalizeSandboxExitCode(payload)
+  const isFailure = status === 'error' || status === 'rejected' || status === 'stopped'
+  const files = payload.changedFiles || payload.imported || payload.files
+  const hasPartialResult = isFailure && (
+    !!String(payload.stdout || '').trim() ||
+    !!String(payload.stderr || '').trim() ||
+    (Array.isArray(files) && files.length > 0)
+  )
+
+  let notice = ''
+  if (status === 'rejected') {
+    notice = compactSandboxFailureText(payload.error || payload.message) || '命令调用已被拒绝，未确认整体执行成功。'
+  } else if (status === 'stopped') {
+    notice = compactSandboxFailureText(payload.error || payload.message) || '命令执行已停止，未确认整体执行成功。'
+  } else if (status === 'error') {
+    if (payload.timedOut === true || payload.timeout === true) {
+      notice = '命令执行超时。'
+    } else {
+      notice = compactSandboxFailureText(payload.error || payload.errorMessage || payload.message)
+      if (!notice && exitCode !== null) notice = `命令以退出码 ${exitCode} 结束。`
+      if (!notice) notice = compactSandboxFailureText(payload.stderr)
+      if (!notice) notice = '命令未成功完成。'
+    }
+  }
+
+  return {
+    status,
+    exitCode,
+    isFailure,
+    hasPartialResult,
+    notice
+  }
+}
+
 export function inferToolDisplayContentStatus(content) {
   const text = String(content || '').replace(/\r\n?/g, '\n').trim()
   if (!text) return ''

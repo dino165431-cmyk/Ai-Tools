@@ -25,6 +25,15 @@ function isLikelyTextFieldKey(key) {
   return /(^|_)(text|content|message|output|output_text|response|answer|description|caption|summary|result)$/.test(normalized)
 }
 
+function isAssistantOutputTextDeltaType(value) {
+  const type = String(value || '').trim().toLowerCase()
+  if (!type) return false
+  if (type.endsWith('output_text.delta')) return true
+  if (!type.endsWith('text.delta')) return false
+  if (/(^|[._])(input|reasoning|summary|refusal)([._]|$)/.test(type)) return false
+  return true
+}
+
 function extractTextValue(value) {
   if (value == null) return ''
   if (typeof value === 'string') return value.trim()
@@ -114,7 +123,7 @@ export function extractAssistantTextFromPayloads(payloads) {
   list.forEach((item) => {
     if (!item || typeof item !== 'object') return
     const type = String(item.type || '').trim().toLowerCase()
-    if ((/output_text\.delta$/.test(type) || /text\.delta$/.test(type)) && typeof item.delta === 'string') {
+    if (isAssistantOutputTextDeltaType(type) && typeof item.delta === 'string') {
       deltas.push(item.delta)
     }
   })

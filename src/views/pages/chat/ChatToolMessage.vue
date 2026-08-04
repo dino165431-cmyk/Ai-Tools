@@ -99,7 +99,11 @@
       />
       <div
         v-else-if="sandboxToolPayload"
-        :class="['tool-message__sandbox', { 'is-dark': theme === 'dark' }]"
+        :class="[
+          'tool-message__sandbox',
+          `is-${sandboxResultPresentation.status}`,
+          { 'is-dark': theme === 'dark' }
+        ]"
       >
         <div class="tool-message__sandbox-header">
           <div>
@@ -112,15 +116,30 @@
               </span>
               <span v-else>工作区：{{ sandboxToolPayload.workspaceId || 'default' }}</span>
               <span v-if="sandboxToolPayload.cwd">目录：{{ sandboxToolPayload.cwd }}</span>
-              <span v-if="Number.isInteger(sandboxToolPayload.exitCode)">
-                退出码：{{ sandboxToolPayload.exitCode }}
+              <span v-if="sandboxResultPresentation.exitCode !== null">
+                退出码：{{ sandboxResultPresentation.exitCode }}
               </span>
             </div>
           </div>
+          <span
+            class="tool-message__sandbox-status"
+            :class="`is-${sandboxResultPresentation.status}`"
+          >
+            {{ helpers.toolMessageStatusLabel(msg) }}
+          </span>
+        </div>
+
+        <div v-if="sandboxResultPresentation.notice" class="tool-message__sandbox-notice">
+          <strong>{{ sandboxResultPresentation.notice }}</strong>
+          <span v-if="sandboxResultPresentation.hasPartialResult">
+            下方文件变化和命令输出是停止或失败前的部分结果，不代表整条命令执行成功。
+          </span>
         </div>
 
         <div v-if="sandboxFiles.length" class="tool-message__sandbox-files">
-          <div class="tool-message__sandbox-section-title">本次结果文件</div>
+          <div class="tool-message__sandbox-section-title">
+            {{ sandboxResultPresentation.isFailure ? '执行期间检测到的文件变化' : '本次结果文件' }}
+          </div>
           <button
             v-for="file in sandboxFiles"
             :key="file.dataPath || file.path"
@@ -270,7 +289,10 @@ import { NDropdown, NIcon, NImage, NImageGroup, useMessage } from 'naive-ui'
 import LazyMarkdownPreview from '@/components/LazyMarkdownPreview.vue'
 import { CHAT_CODE_AUTO_FOLD_THRESHOLD } from '@/utils/chatMarkdownPreview'
 import { collectSandboxFileCatalog } from '@/utils/chatSandboxFileLink.js'
-import { stripToolIdentityFromDisplayContent } from '@/utils/chatToolDisplay'
+import {
+  getSandboxToolResultPresentation,
+  stripToolIdentityFromDisplayContent
+} from '@/utils/chatToolDisplay'
 import { ChevronDownOutline, ChevronUpOutline } from '@vicons/ionicons5'
 import ChatAgentRunFlow from './ChatAgentRunFlow.vue'
 import { copyTextToClipboard } from '@/utils/clipboard'
@@ -347,6 +369,10 @@ const sandboxToolPayload = computed(() => {
   const kind = String(payload.kind || '').trim()
   return kind.startsWith('sandbox_') ? payload : null
 })
+const sandboxResultPresentation = computed(() => getSandboxToolResultPresentation(
+  sandboxToolPayload.value,
+  props.helpers?.getToolMessageStatus?.(props.msg)
+))
 const sandboxFiles = computed(() => {
   return collectSandboxFileCatalog([props.msg])
 })
@@ -819,6 +845,67 @@ async function handleSandboxFileMenuSelect(key) {
   background: linear-gradient(180deg, rgba(6, 78, 59, 0.36), rgba(15, 23, 42, 0.72));
 }
 
+.tool-message__sandbox-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tool-message__sandbox-status {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: rgb(4, 120, 87);
+  background: rgba(16, 185, 129, 0.12);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.tool-message__sandbox-status.is-error {
+  color: rgb(190, 18, 60);
+  background: rgba(244, 63, 94, 0.12);
+}
+
+.tool-message__sandbox-status.is-stopped,
+.tool-message__sandbox-status.is-rejected {
+  color: rgb(180, 83, 9);
+  background: rgba(245, 158, 11, 0.14);
+}
+
+.tool-message__sandbox.is-dark .tool-message__sandbox-status {
+  color: rgba(167, 243, 208, 0.96);
+  background: rgba(16, 185, 129, 0.18);
+}
+
+.tool-message__sandbox.is-dark .tool-message__sandbox-status.is-error {
+  color: rgba(254, 205, 211, 0.96);
+  background: rgba(244, 63, 94, 0.2);
+}
+
+.tool-message__sandbox.is-dark .tool-message__sandbox-status.is-stopped,
+.tool-message__sandbox.is-dark .tool-message__sandbox-status.is-rejected {
+  color: rgba(253, 230, 138, 0.96);
+  background: rgba(245, 158, 11, 0.2);
+}
+
+.tool-message__sandbox-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid rgba(244, 63, 94, 0.16);
+  border-radius: 9px;
+  color: rgb(159, 18, 57);
+  background: rgba(255, 241, 242, 0.76);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.tool-message__sandbox-notice span {
+  color: rgba(159, 18, 57, 0.78);
+}
+
 .tool-message__sandbox-title,
 .tool-message__sandbox-section-title {
   color: rgba(15, 23, 42, 0.88);
@@ -928,6 +1015,47 @@ async function handleSandboxFileMenuSelect(key) {
 
 .tool-message__sandbox-log pre.is-stderr {
   color: rgb(190, 18, 60);
+}
+
+.tool-message__sandbox.is-error {
+  border-color: rgba(244, 63, 94, 0.22);
+  background: linear-gradient(180deg, rgba(255, 241, 242, 0.9), rgba(248, 250, 252, 0.92));
+}
+
+.tool-message__sandbox.is-stopped,
+.tool-message__sandbox.is-rejected {
+  border-color: rgba(245, 158, 11, 0.24);
+  background: linear-gradient(180deg, rgba(255, 251, 235, 0.9), rgba(248, 250, 252, 0.92));
+}
+
+.tool-message__sandbox.is-error .tool-message__sandbox-file {
+  border-color: rgba(244, 63, 94, 0.15);
+}
+
+.tool-message__sandbox.is-stopped .tool-message__sandbox-file,
+.tool-message__sandbox.is-rejected .tool-message__sandbox-file {
+  border-color: rgba(245, 158, 11, 0.17);
+}
+
+.tool-message__sandbox.is-dark.is-error {
+  border-color: rgba(251, 113, 133, 0.26);
+  background: linear-gradient(180deg, rgba(76, 5, 25, 0.42), rgba(15, 23, 42, 0.72));
+}
+
+.tool-message__sandbox.is-dark.is-stopped,
+.tool-message__sandbox.is-dark.is-rejected {
+  border-color: rgba(251, 191, 36, 0.26);
+  background: linear-gradient(180deg, rgba(69, 26, 3, 0.4), rgba(15, 23, 42, 0.72));
+}
+
+.tool-message__sandbox.is-dark .tool-message__sandbox-notice {
+  border-color: rgba(251, 113, 133, 0.22);
+  color: rgba(254, 205, 211, 0.96);
+  background: rgba(76, 5, 25, 0.38);
+}
+
+.tool-message__sandbox.is-dark .tool-message__sandbox-notice span {
+  color: rgba(254, 205, 211, 0.76);
 }
 
 .tool-message__web {

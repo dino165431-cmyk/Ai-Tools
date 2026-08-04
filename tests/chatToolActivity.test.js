@@ -18,6 +18,19 @@ test('tool activity describes sandbox work instead of generic tool execution', (
   assert.equal(getToolActivityMeta(message), '')
 })
 
+test('sandbox command activity distinguishes the host workspace from the sandbox', () => {
+  const message = {
+    role: 'tool',
+    toolName: 'sandbox_run',
+    toolArgsText: JSON.stringify({ workspace_scope: 'host', command: 'npm test' }),
+    toolResultPayload: { workspaceKind: 'host', ok: false }
+  }
+
+  assert.equal(getToolActivityLabel(message, 'error'), '本机工作区执行命令失败')
+  assert.equal(getToolActivityLabel({ ...message, role: 'tool_call' }, 'running'), '正在本机工作区执行命令')
+  assert.equal(getToolActivityLabel({ ...message, toolResultPayload: { workspaceKind: 'host', ok: true } }, 'success'), '已在本机工作区执行命令')
+})
+
 test('sandbox file activity names the file action and target path while running', () => {
   const message = {
     role: 'tool_call',

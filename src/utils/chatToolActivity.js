@@ -33,6 +33,8 @@ const TOOL_LABELS = {
   notebook_execute_cell: ['正在运行超级笔记步骤', '已运行超级笔记步骤']
 }
 
+const HOST_COMMAND_TOOL_LABELS = ['正在本机工作区执行命令', '已在本机工作区执行命令']
+
 const TOOL_ACTION_VERBS = {
   add: '添加',
   browse: '浏览',
@@ -121,6 +123,17 @@ function safeParseObject(value) {
   }
 }
 
+function isHostCommandWorkspace(message) {
+  const payload = message?.toolResultPayload && typeof message.toolResultPayload === 'object'
+    ? message.toolResultPayload
+    : {}
+  if (String(payload.workspaceKind || '').trim().toLowerCase() === 'host') return true
+
+  const args = safeParseObject(message?.toolArgsText || message?.toolArgs)
+  const scope = String(args.workspace_scope ?? args.workspaceScope ?? '').trim().toLowerCase()
+  return scope === 'host'
+}
+
 function compactText(value, max = 88) {
   const text = String(value || '').replace(/\s+/g, ' ').trim()
   if (!text) return ''
@@ -165,7 +178,9 @@ export function getToolActivityLabel(message, statusRaw = '') {
   const status = String(statusRaw || message?.toolStatus || '').trim()
   const failed = status === 'error' || status === 'rejected' || status === 'stopped'
   const running = status === 'running' || status === 'paused' || message?.role === 'tool_call'
-  const known = TOOL_LABELS[toolName]
+  const known = toolName === 'sandbox_run' && isHostCommandWorkspace(message)
+    ? HOST_COMMAND_TOOL_LABELS
+    : TOOL_LABELS[toolName]
   const action = known?.[0]?.replace(/^正在/, '') || humanizeToolAction(toolName, message?.toolTitle)
   const base = known
     ? known[running ? 0 : 1]

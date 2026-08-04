@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  getSandboxToolResultPresentation,
   inferStructuredToolResultStatus,
   inferToolDisplayContentStatus,
   stripToolIdentityFromDisplayContent
@@ -49,6 +50,36 @@ test('structured tool result status treats nested runtime failures as errors', (
   assert.equal(inferStructuredToolResultStatus({ isError: true }), 'error')
   assert.equal(inferStructuredToolResultStatus({ status: 'rejected' }), 'rejected')
   assert.equal(inferStructuredToolResultStatus({ status: 'paused' }), 'paused')
+})
+
+test('sandbox result presentation keeps failure status clear when partial output exists', () => {
+  const presentation = getSandboxToolResultPresentation({
+    kind: 'sandbox_shell_result',
+    ok: false,
+    exitCode: '1',
+    stdout: 'FILE_OPERATIONS_OK',
+    changedFiles: [{ path: 'file-operations.js' }]
+  })
+
+  assert.equal(presentation.status, 'error')
+  assert.equal(presentation.exitCode, 1)
+  assert.equal(presentation.isFailure, true)
+  assert.equal(presentation.hasPartialResult, true)
+  assert.match(presentation.notice, /退出码 1/)
+})
+
+test('sandbox result presentation does not add a failure notice to successful commands', () => {
+  const presentation = getSandboxToolResultPresentation({
+    kind: 'sandbox_shell_result',
+    ok: true,
+    exitCode: 0,
+    stdout: 'OK'
+  })
+
+  assert.equal(presentation.status, 'success')
+  assert.equal(presentation.exitCode, 0)
+  assert.equal(presentation.isFailure, false)
+  assert.equal(presentation.notice, '')
 })
 
 test('tool display status ignores failure words inside successful fenced output', () => {
