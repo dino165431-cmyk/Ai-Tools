@@ -316,7 +316,7 @@ test('content index removes a note after it becomes encrypted', async (t) => {
   assert.equal(payload.entries.some((entry) => entry.path === 'transient.md'), false)
 })
 
-test('content index uses hybrid embedding search when configured', async (t) => {
+test('global content search config enables hybrid retrieval for Agent, Skill, MCP, notes, and sessions', async (t) => {
   const { tempRoot } = setupIndexTest(t)
   storage.delete('global-config')
 
@@ -336,9 +336,10 @@ test('content index uses hybrid embedding search when configured', async (t) => 
   const originalFetch = globalThis.fetch
   function vectorForText(text) {
     const value = String(text || '').toLowerCase()
-    if (/(settlement|invoice|billing|payment)/.test(value)) return [1, 0, 0]
-    if (/(reschedule|calendar|availability|meeting)/.test(value)) return [0, 1, 0]
-    return [0, 0, 1]
+    if (/(settlement|invoice|billing|payment)/.test(value)) return [1, 0, 0, 0]
+    if (/(reschedule|calendar|availability|meeting)/.test(value)) return [0, 1, 0, 0]
+    if (/(release|rollback|deployment|shipping|protection)/.test(value)) return [0, 0, 1, 0]
+    return [0, 0, 0, 1]
   }
 
   globalThis.fetch = async (_url, options = {}) => {
@@ -361,6 +362,29 @@ test('content index uses hybrid embedding search when configured', async (t) => 
     apikey: 'test-key',
     selectModels: ['test-embed']
   })
+  globalConfig.addMcpServer({
+    _id: 'test-release-mcp',
+    name: 'Release Operations',
+    description: 'Deployment rollback tooling',
+    transportType: 'stdio',
+    command: 'node',
+    args: []
+  })
+  globalConfig.addSkill({
+    _id: 'test-release-skill',
+    name: 'Release Guard',
+    description: 'Audit deployments and prepare rollback plans',
+    mcp: ['test-release-mcp']
+  })
+  globalConfig.addAgent({
+    _id: 'test-release-agent',
+    name: 'Release Reviewer',
+    provider: 'test-embedding-provider',
+    model: 'test-chat',
+    prompt: '',
+    skills: ['test-release-skill'],
+    mcp: []
+  })
   await globalConfig.updateContentSearchConfig({
     searchMode: 'hybrid',
     embedding: {
@@ -375,12 +399,41 @@ test('content index uses hybrid embedding search when configured', async (t) => 
     storage.delete('global-config')
   })
 
+  const rebuiltAgent = await contentIndex.rebuildIndex('agent', { reason: 'hybrid_test' })
+  const rebuiltCapability = await contentIndex.rebuildIndex('capability', { reason: 'hybrid_test' })
   const rebuiltNote = await contentIndex.rebuildIndex('note', { reason: 'hybrid_test' })
   const rebuiltSession = await contentIndex.rebuildIndex('session', { reason: 'hybrid_test' })
+  const agentEntry = rebuiltAgent.entries.find((entry) => entry.agentId === 'test-release-agent')
+  const skillEntry = rebuiltCapability.entries.find((entry) => entry.skillId === 'test-release-skill')
+  const mcpEntry = rebuiltCapability.entries.find((entry) => entry.mcpId === 'test-release-mcp')
+  assert.ok(agentEntry?.embedding?.length > 0)
+  assert.ok(skillEntry?.embedding?.length > 0)
+  assert.ok(mcpEntry?.embedding?.length > 0)
   assert.ok(Array.isArray(rebuiltNote.entries[0].embedding))
   assert.ok(rebuiltNote.entries[0].embedding.length > 0)
   assert.ok(Array.isArray(rebuiltSession.entries[0].embedding))
   assert.ok(rebuiltSession.entries[0].embedding.length > 0)
+
+  const agentResult = await contentIndex.searchIndex('agent', { query: 'shipping protection' })
+  assert.equal(agentResult.searchMode, 'hybrid')
+  assert.equal(agentResult.semanticUsed, true)
+  assert.equal(agentResult.items[0]?.agentId, 'test-release-agent')
+
+  const skillResult = await contentIndex.searchIndex('capability', {
+    query: 'shipping protection',
+    capabilityType: 'skill'
+  })
+  assert.equal(skillResult.searchMode, 'hybrid')
+  assert.equal(skillResult.semanticUsed, true)
+  assert.equal(skillResult.items[0]?.skillId, 'test-release-skill')
+
+  const mcpResult = await contentIndex.searchIndex('capability', {
+    query: 'shipping protection',
+    capabilityType: 'mcp'
+  })
+  assert.equal(mcpResult.searchMode, 'hybrid')
+  assert.equal(mcpResult.semanticUsed, true)
+  assert.equal(mcpResult.items[0]?.mcpId, 'test-release-mcp')
 
   const noteResult = await contentIndex.searchIndex('note', { query: 'settlement' })
   assert.equal(noteResult.returned, 1)

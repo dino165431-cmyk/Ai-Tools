@@ -230,10 +230,10 @@
         <n-flex vertical :size="12">
           <n-flex justify="space-between" align="center" wrap :size="12">
             <n-flex vertical :size="6" style="min-width: 280px;">
-              <n-text strong>Agent / 笔记 / 会话检索</n-text>
+              <n-text strong>能力 / 笔记 / 会话检索</n-text>
               <n-text depth="3">{{ contentSearchSummary }}</n-text>
               <n-text depth="3" style="font-size: 12px;">
-                默认仅做关键词检索；配置向量模型并切到混合模式后，会对 Agent、笔记和会话索引同时生成 embedding，并在搜索时结合关键词与语义分数。笔记索引同时覆盖 Markdown 与 .ipynb 超级笔记，会提取标题、正文、Markdown Cell、代码 Cell 和运行时信息；笔记页顶部搜索也会复用同一索引。Agent 索引会随智能体、提示词、技能、MCP 和服务商配置变更自动维护；笔记与会话索引会随各自内容的增删改、移动以及配置切换自动维护。加密笔记不会进入笔记索引，也不会出现在搜索和最近列表中。
+                默认仅做关键词检索；完整配置向量服务商和模型并切到混合模式后，会对能力、笔记和会话索引生成 embedding，并在搜索时结合关键词与语义分数。能力索引覆盖 Agent、技能和 MCP，并随对应配置、提示词和服务商变更自动维护；笔记索引同时覆盖 Markdown 与 .ipynb 超级笔记，会提取标题、正文、Markdown Cell、代码 Cell 和运行时信息，笔记页顶部搜索也会复用同一索引。笔记与会话索引会随各自内容的增删改、移动以及配置切换自动维护。加密笔记不会进入笔记索引，也不会出现在搜索和最近列表中。
               </n-text>
             </n-flex>
             <n-flex align="center" :size="10" wrap>
@@ -487,10 +487,10 @@
       </template>
     </n-modal>
 
-    <n-modal v-model:show="contentSearchConfigModal.show" preset="card" title="编辑 Agent / 笔记 / 会话检索配置" style="width: 760px; max-width: 95%;">
+    <n-modal v-model:show="contentSearchConfigModal.show" preset="card" title="编辑能力 / 笔记 / 会话检索配置" style="width: 760px; max-width: 95%;">
       <n-flex vertical :size="12">
         <n-alert type="info" :show-icon="false">
-          默认是关键词检索。你可以先配置向量服务商和模型，再把检索模式切到“混合”，这样 Agent、笔记和会话搜索都会同时利用关键词与语义相似度。加密笔记不会进入笔记索引，也不会被检索出来。
+          该全局配置统一作用于 Agent、技能、MCP、笔记和会话搜索。完整配置向量服务商和模型后才能选择“混合检索”；配置不完整时会自动回退到关键词检索。加密笔记不会进入笔记索引，也不会被检索出来。
         </n-alert>
         <n-form label-placement="left" label-width="120px">
           <n-form-item label="检索模式">
@@ -844,11 +844,6 @@ const contextWindowHistoryFocusOptions = [
   { label: '优先附件', value: 'attachments' }
 ]
 
-const contentSearchModeOptions = [
-  { label: '关键词检索', value: 'keyword' },
-  { label: '混合检索', value: 'hybrid' }
-]
-
 const webSearchApiProviderOptions = [
   { label: '仅使用 HTML 搜索兜底', value: 'none' },
   { label: '博查搜索 API（国内友好，完整网页搜索）', value: 'bocha_search' },
@@ -987,6 +982,20 @@ const actionPasswordModal = reactive({
 const actionPayload = ref(null)
 const memoryDraft = reactive(normalizeChatMemoryConfig(DEFAULT_CHAT_MEMORY_CONFIG))
 const contentSearchDraft = reactive(normalizeContentSearchConfig(DEFAULT_CONTENT_SEARCH_CONFIG))
+const contentSearchEmbeddingConfigured = computed(() => {
+  return !!String(contentSearchDraft.embedding.providerId || '').trim()
+    && !!String(contentSearchDraft.embedding.model || '').trim()
+})
+const contentSearchModeOptions = computed(() => [
+  { label: '关键词检索', value: 'keyword' },
+  {
+    label: contentSearchEmbeddingConfigured.value
+      ? '混合检索'
+      : '混合检索（需先配置向量服务商和模型）',
+    value: 'hybrid',
+    disabled: !contentSearchEmbeddingConfigured.value
+  }
+])
 
 const noteSecurity = computed(() => normalizeNoteSecurityConfig(noteConfig.value?.noteSecurity))
 const configSecurity = computed(() => normalizeConfigSecurityState(rawConfigSecurity.value))
@@ -1163,9 +1172,10 @@ const contentSearchEmbeddingModelOptions = computed(() => buildProviderModelOpti
 const contentSearchSummary = computed(() => {
   const search = normalizeContentSearchConfig(contentSearchConfig.value)
   const provider = findProviderById(search.embedding.providerId)
-  const embeddingText = search.embedding.model
+  const embeddingConfigured = !!search.embedding.providerId && !!search.embedding.model
+  const embeddingText = embeddingConfigured
     ? `向量：${provider?.name || search.embedding.providerId} / ${search.embedding.model}`
-    : '向量模型未配置，仍保持关键词检索'
+    : '向量配置不完整，已使用关键词检索'
   const modeText = search.searchMode === 'hybrid' ? '混合模式' : '关键词模式'
   return [modeText, embeddingText].join(' / ')
 })
@@ -1271,6 +1281,12 @@ watch(
     }
   }
 )
+
+watch(contentSearchEmbeddingConfigured, (configured) => {
+  if (!configured && contentSearchDraft.searchMode === 'hybrid') {
+    contentSearchDraft.searchMode = 'keyword'
+  }
+})
 
 watch(
   () => contextWindowDraft.preset,
@@ -1965,7 +1981,7 @@ async function saveContentSearchConfig() {
     await updateContentSearchConfig(normalized)
     syncContentSearchDraft(normalized)
     closeContentSearchConfigModal()
-    message.success('Agent / 笔记 / 会话检索配置已保存')
+    message.success('能力 / 笔记 / 会话检索配置已保存')
   } catch (err) {
     syncContentSearchDraft(contentSearchConfig.value)
     message.error(err?.message || String(err))

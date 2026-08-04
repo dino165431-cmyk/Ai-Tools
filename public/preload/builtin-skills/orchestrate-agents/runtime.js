@@ -2135,11 +2135,11 @@ function clampInteger(value, options = {}) {
 const ACTIONS = [
   {
     name: 'agents_list',
-    description: 'List available Agents configured in the app. With query, it searches Agent id/name/provider/model/prompt/skills/MCP; default is keyword search and it automatically becomes hybrid semantic search when the global Agent/Notes/Sessions search config enables embeddings. The result includes searchMode and semanticUsed.',
+    description: 'List available Agents configured in the app. With query, it searches Agent id/name/provider/model/prompt/skills/MCP. Agents, Skills, and MCP share the global capabilities/notes/sessions search config: keyword search is the default, and hybrid semantic search is used only when an embedding provider and model are fully configured and hybrid mode is enabled. The result includes searchMode and semanticUsed.',
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Optional Agent query. Supports id/name/provider/model/prompt/skill/MCP keywords; when embeddings are configured it can also match semantically.' }
+        query: { type: 'string', description: 'Optional Agent query. Supports id/name/provider/model/prompt/skill/MCP keywords; when global hybrid retrieval is fully configured it can also match semantically.' }
       },
       additionalProperties: false
     }

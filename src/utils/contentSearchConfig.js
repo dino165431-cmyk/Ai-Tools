@@ -20,11 +20,15 @@ function normalizeEmbedding(raw) {
 
 export function normalizeContentSearchConfig(raw) {
   const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
-  const searchMode = normalizeString(src.searchMode).toLowerCase() === 'hybrid' ? 'hybrid' : 'keyword'
+  const embedding = normalizeEmbedding(src.embedding)
+  const hybridRequested = normalizeString(src.searchMode).toLowerCase() === 'hybrid'
+  const searchMode = hybridRequested && embedding.providerId && embedding.model
+    ? 'hybrid'
+    : 'keyword'
 
   return {
     searchMode,
-    embedding: normalizeEmbedding(src.embedding)
+    embedding
   }
 }
 
