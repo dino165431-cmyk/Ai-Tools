@@ -1,13 +1,26 @@
 import {
   ChatbubbleEllipsesOutline,
+  BookOutline,
+  BulbOutline,
   CheckmarkOutline,
+  CloudDownloadOutline,
+  CloudUploadOutline,
+  CodeSlashOutline,
   CloseOutline,
+  CreateOutline,
+  DocumentTextOutline,
+  ExtensionPuzzleOutline,
+  FolderOpenOutline,
+  GlobeOutline,
   HardwareChipOutline,
   PauseCircleOutline,
+  PeopleOutline,
   PersonCircleOutline,
   RefreshOutline,
+  SearchOutline,
   ShieldOutline,
-  SparklesOutline
+  SparklesOutline,
+  TerminalOutline
 } from '@vicons/ionicons5'
 import { getAgentRunMessageStatus } from '@/utils/chatAgentRun'
 import {
@@ -29,6 +42,15 @@ const TOOL_MESSAGE_STATUS_LABELS = {
   success: '已完成',
   error: '失败',
   rejected: '已拒绝'
+}
+
+const TOOL_ACTIVITY_PHASE_LABELS = {
+  running: '进行中',
+  paused: '已暂停',
+  stopped: '已停止',
+  success: '刚完成',
+  error: '需留意',
+  rejected: '已跳过'
 }
 
 export function useChatToolPresentation() {
@@ -86,6 +108,10 @@ export function useChatToolPresentation() {
     return toolMessageStatusText(getToolMessageStatus(msg))
   }
 
+  function toolActivityPhaseLabel(msg) {
+    return TOOL_ACTIVITY_PHASE_LABELS[getToolMessageStatus(msg)] || '处理中'
+  }
+
   function toolMessageLabel(msg) {
     return getToolActivityLabel(msg, getToolMessageStatus(msg))
   }
@@ -103,7 +129,8 @@ export function useChatToolPresentation() {
   }
 
   function shouldShowToolActivityStatus(msg) {
-    return ['paused', 'stopped', 'error', 'rejected'].includes(getToolMessageStatus(msg))
+    return msg?.toolActivityCurrent === true ||
+      ['paused', 'stopped', 'error', 'rejected'].includes(getToolMessageStatus(msg))
   }
 
   function toolActivityIcon(msg) {
@@ -112,6 +139,32 @@ export function useChatToolPresentation() {
     if (status === 'paused') return PauseCircleOutline
     if (status === 'error' || status === 'rejected' || status === 'stopped') return CloseOutline
     return CheckmarkOutline
+  }
+
+  function toolActivityActionIcon(msg) {
+    const name = String(msg?.toolName || '').trim().toLowerCase()
+    if (!name) return HardwareChipOutline
+    if (name.includes('agent')) return PeopleOutline
+    if (name.includes('notebook')) return CodeSlashOutline
+    if (name.includes('skill')) return BulbOutline
+    if (name.includes('note')) return BookOutline
+    if (name.includes('web_search')) return SearchOutline
+    if (name.includes('web_read') || name.includes('browse') || name.includes('open_url')) return GlobeOutline
+    if (name.includes('mcp')) return ExtensionPuzzleOutline
+    if (name.includes('sandbox_run') || name.includes('bash_run') || name.includes('shell') || name.includes('command')) {
+      return TerminalOutline
+    }
+    if (name.includes('import') || name.includes('download')) return CloudDownloadOutline
+    if (name.includes('export') || name.includes('upload')) return CloudUploadOutline
+    if (name.includes('list') || name.includes('folder') || name.includes('directory')) return FolderOpenOutline
+    if (name.includes('write') || name.includes('edit') || name.includes('create') || name.includes('save') || name.includes('update')) {
+      return CreateOutline
+    }
+    if (name.includes('read') || name.includes('file') || name.includes('document')) return DocumentTextOutline
+    if (name.includes('search') || name.includes('find') || name.includes('query') || name.includes('lookup') || name.includes('discover')) {
+      return SearchOutline
+    }
+    return HardwareChipOutline
   }
 
   function isToolActivityGroup(msg) {
@@ -198,6 +251,7 @@ export function useChatToolPresentation() {
 
   function shouldRenderCompactToolMessage(msg) {
     if (!isToolMessage(msg)) return false
+    if (msg?.toolActivityCurrent) return false
     if (msg.toolExpanded || msg.streaming || msg.editing || msg.attachmentsExpanded || msg.thinkingExpanded) return false
     return true
   }
@@ -210,12 +264,14 @@ export function useChatToolPresentation() {
     toolMessageStatusDetailText,
     getToolMessageStatus,
     toolMessageStatusLabel,
+    toolActivityPhaseLabel,
     toolMessageLabel,
     toolActivityMeta,
     toolActivityToolName,
     toolActivitySource,
     shouldShowToolActivityStatus,
     toolActivityIcon,
+    toolActivityActionIcon,
     isToolActivityGroup,
     isAssistantActivityMessage,
     isChatActivityMessage,

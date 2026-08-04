@@ -179,6 +179,11 @@
                           size="14"
                           :class="['chat-tool-compact__state-icon', { 'is-spinning': helpers.getToolMessageStatus(msg) === 'running' }]"
                         />
+                        <n-icon
+                          :component="helpers.toolActivityActionIcon(msg)"
+                          size="14"
+                          class="chat-tool-compact__action-icon"
+                        />
                         <span class="chat-tool-compact__label">{{ helpers.toolMessageLabel(msg) }}</span>
                         <span v-if="helpers.toolActivityMeta(msg)" class="chat-tool-compact__meta">{{ helpers.toolActivityMeta(msg) }}</span>
                         <span

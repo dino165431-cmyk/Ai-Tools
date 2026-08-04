@@ -8,9 +8,9 @@
       @click="actions.toggleGroup(group)"
     >
       <n-icon :component="failedCount > 0 ? AlertCircleOutline : CheckmarkCircleOutline" size="15" />
-      <span class="tool-activity-group__label">已执行 {{ totalCount }} 个工具步骤</span>
+      <span class="tool-activity-group__label">{{ headerText }}</span>
       <span class="tool-activity-group__summary">{{ summaryText }}</span>
-      <span class="tool-activity-group__hint">{{ group.toolGroupExpanded ? '收起' : '展开' }}</span>
+      <span class="tool-activity-group__hint">{{ group.toolGroupExpanded ? '收起过程' : '查看过程' }}</span>
       <n-icon
         :component="group.toolGroupExpanded ? ChevronUpOutline : ChevronDownOutline"
         size="14"
@@ -34,6 +34,11 @@
             :component="helpers.toolActivityIcon(message)"
             size="14"
             class="chat-tool-compact__state-icon"
+          />
+          <n-icon
+            :component="helpers.toolActivityActionIcon(message)"
+            size="14"
+            class="chat-tool-compact__action-icon"
           />
           <span class="chat-tool-compact__label">{{ helpers.toolMessageLabel(message) }}</span>
           <span v-if="helpers.toolActivityMeta(message)" class="chat-tool-compact__meta">
@@ -108,14 +113,15 @@ const failedCount = computed(() => {
   return Number(counts.error || 0) + Number(counts.rejected || 0) + Number(counts.stopped || 0)
 })
 
+const headerText = computed(() => '已完成相关处理')
+
 const summaryText = computed(() => {
-  const counts = props.group?.toolGroupCounts || {}
-  const parts = []
-  if (counts.success) parts.push(`${counts.success} 成功`)
-  if (counts.error) parts.push(`${counts.error} 失败`)
-  if (counts.rejected) parts.push(`${counts.rejected} 已拒绝`)
-  if (counts.stopped) parts.push(`${counts.stopped} 已停止`)
-  return parts.join(' · ') || '已完成'
+  const total = totalCount.value
+  if (!total) return ''
+  if (!props.group?.toolGroupExpanded) {
+    return failedCount.value > 0 ? `${failedCount.value} 项需留意` : ''
+  }
+  return failedCount.value > 0 ? `共 ${total} 项 · ${failedCount.value} 项需留意` : `共 ${total} 项`
 })
 </script>
 
@@ -146,8 +152,8 @@ const summaryText = computed(() => {
 }
 
 .tool-activity-group__header.has-errors {
-  border-color: rgba(208, 48, 80, 0.16);
-  background: rgba(208, 48, 80, 0.05);
+  border-color: rgba(245, 158, 11, 0.24);
+  background: rgba(245, 158, 11, 0.07);
 }
 
 .tool-activity-group__label {
@@ -200,8 +206,8 @@ const summaryText = computed(() => {
 }
 
 :global(.chat-page.dark) .tool-activity-group__header.has-errors {
-  border-color: rgba(251, 113, 133, 0.20);
-  background: rgba(251, 113, 133, 0.08);
+  border-color: rgba(251, 191, 36, 0.24);
+  background: rgba(245, 158, 11, 0.10);
 }
 
 :global(.chat-page.dark) .tool-activity-group__summary {

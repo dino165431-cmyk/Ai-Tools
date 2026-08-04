@@ -1474,6 +1474,20 @@
   animation: tool-icon-spin 0.9s linear infinite;
 }
 
+.chat-tool-compact__action-icon {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  color: rgb(3, 105, 161);
+  background: rgba(14, 165, 233, 0.10);
+}
+
+.chat-page.dark .chat-tool-compact__action-icon {
+  color: rgb(125, 211, 252);
+  background: rgba(56, 189, 248, 0.12);
+}
+
 .chat-tool-compact__label {
   font-weight: 600;
   flex: 0 0 auto;

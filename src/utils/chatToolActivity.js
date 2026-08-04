@@ -4,7 +4,12 @@ const TOOL_LABELS = {
   sandbox_import: ['正在把文件复制到沙盒', '已把文件复制到沙盒'],
   sandbox_export: ['正在把结果保存到本机工作区', '已把结果保存到本机工作区'],
   sandbox_list: ['正在查看沙盒文件', '已查看沙盒文件'],
+  sandbox_read_file: ['正在读取文件', '已读取文件'],
+  sandbox_write_file: ['正在写入文件', '已写入文件'],
+  sandbox_status: ['正在检查工作区', '已检查工作区'],
   sandbox_reset: ['正在清理沙盒工作区', '已清理沙盒工作区'],
+  read_file: ['正在读取文件', '已读取文件'],
+  write_file: ['正在写入文件', '已写入文件'],
   web_search: ['正在搜索资料', '已搜索资料'],
   web_read: ['正在阅读网页', '已阅读网页'],
   notes_search: ['正在搜索笔记', '已搜索笔记'],
@@ -197,8 +202,31 @@ export function getToolActivityMeta(message) {
   const query = args.query || args.keyword || payload.query
   if (query) return compactText(query, 80)
 
-  const targetPath = args.path || args.file_path || args.relative_path || payload.path
+  const targetPath =
+    args.path ||
+    args.file_path ||
+    args.filePath ||
+    args.relative_path ||
+    args.relativePath ||
+    args.target_path ||
+    args.targetPath ||
+    args.source_path ||
+    args.sourcePath ||
+    args.destination_path ||
+    args.destinationPath ||
+    payload.path
   if (targetPath) return compactText(targetPath, 88)
+
+  const pathList =
+    args.paths ||
+    args.file_paths ||
+    args.filePaths ||
+    args.source_paths ||
+    args.sourcePaths
+  if (Array.isArray(pathList) && pathList.length) {
+    const firstPath = String(pathList[0] || '').trim()
+    return compactText(pathList.length === 1 ? firstPath : `${firstPath} 等 ${pathList.length} 个文件`, 88)
+  }
 
   const url = args.url || payload.finalUrl || payload.url
   if (url) return compactText(url, 88)

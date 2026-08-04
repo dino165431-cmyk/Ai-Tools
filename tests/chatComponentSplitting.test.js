@@ -611,6 +611,25 @@ test('chat delegates request execution, streaming, cancellation, and approvals t
   }
 })
 
+test('request runner mounts assistant messages only after real content arrives', () => {
+  assert.match(
+    chatRequestRunnerSource,
+    /applyAssistantRequestPlaceholderMode\(assistantDisplay, assistantPlaceholderMode\)\s+let assistantDisplayMounted = false/
+  )
+  assert.match(
+    chatRequestRunnerSource,
+    /if \(evt\?\.type === 'content' && evt\.delta\) \{\s+prepareAssistantDisplayForTextResponse\(assistantDisplay\)\s+ensureAssistantDisplayMounted\(\)/
+  )
+  assert.match(
+    chatRequestRunnerSource,
+    /if \(evt\?\.type === 'reasoning' && evt\.delta\) \{\s+prepareAssistantDisplayForTextResponse\(assistantDisplay\)\s+ensureAssistantDisplayMounted\(\)/
+  )
+  assert.doesNotMatch(
+    chatRequestRunnerSource,
+    /^\s{4}createStreamingAssistantDisplay\(\)\s*$/m
+  )
+})
+
 test('request runner delegates image and video generation lifecycle to a composable', () => {
   assert.match(
     chatRequestRunnerSource,

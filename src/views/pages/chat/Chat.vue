@@ -3311,12 +3311,14 @@ const {
   toolMessageStatusDetailText,
   getToolMessageStatus,
   toolMessageStatusLabel,
+  toolActivityPhaseLabel,
   toolMessageLabel,
   toolActivityMeta,
   toolActivityToolName,
   toolActivitySource,
   shouldShowToolActivityStatus,
   toolActivityIcon,
+  toolActivityActionIcon,
   isToolActivityGroup,
   isAssistantActivityMessage,
   isChatActivityMessage,
@@ -3560,7 +3562,9 @@ const toolMessageHelpers = {
   toolMessageLabel,
   getToolMessageStatus,
   toolMessageStatusLabel,
+  toolActivityPhaseLabel,
   toolActivityIcon,
+  toolActivityActionIcon,
   toolActivityMeta,
   toolActivitySource,
   toolActivityToolName,
@@ -3586,6 +3590,7 @@ const toolActivityGroupHelpers = {
   shouldRenderCompactToolMessage,
   shouldShowToolActivityStatus,
   toolActivityIcon,
+  toolActivityActionIcon,
   toolActivityMeta,
   toolMessageLabel,
   toolMessageStatusLabel
@@ -3615,6 +3620,7 @@ const conversationPanelHelpers = {
   getToolMessageStatus,
   formatTime,
   toolActivityIcon,
+  toolActivityActionIcon,
   toolMessageLabel,
   toolActivityMeta,
   shouldShowToolActivityStatus,
@@ -3664,9 +3670,16 @@ function toggleThinking(msg) {
 
 function toggleToolExpanded(msg) {
   if (!msg || (msg.role !== 'tool' && msg.role !== 'tool_call')) return
-  msg.toolExpanded = !msg.toolExpanded
-  scheduleChatVirtualItemRemeasure(msg, { followTail: msg.toolExpanded && isAtBottom.value })
-  if (msg.toolExpanded && !chatVirtualizedEnabled.value) scheduleScrollToBottom()
+  const messageId = String(msg.id || '').trim()
+  const owner = getMemorySessionForToolMessage(msg)
+  const sourceMessage = messageId && Array.isArray(owner?.messages)
+    ? owner.messages.find((candidate) => String(candidate?.id || '').trim() === messageId) || msg
+    : msg
+  sourceMessage.toolExpanded = !sourceMessage.toolExpanded
+  scheduleChatVirtualItemRemeasure(sourceMessage, {
+    followTail: sourceMessage.toolExpanded && isAtBottom.value
+  })
+  if (sourceMessage.toolExpanded && !chatVirtualizedEnabled.value) scheduleScrollToBottom()
   scheduleRefreshUserAnchorMeta()
   scheduleStickyChatBubbleSync()
 }

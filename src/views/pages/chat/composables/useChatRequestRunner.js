@@ -1161,8 +1161,14 @@ export function useChatRequestRunner(dependencies) {
         transientRequestPlaceholder: String(assistantPlaceholderMode || 'text').trim().toLowerCase() !== 'text'
       })
       applyAssistantRequestPlaceholderMode(assistantDisplay, assistantPlaceholderMode)
-      targetSession.messages.push(assistantDisplay)
-      setCurrentAssistantDisplay(assistantDisplay)
+      let assistantDisplayMounted = false
+      const ensureAssistantDisplayMounted = () => {
+        if (assistantDisplayMounted) return assistantDisplay
+        targetSession.messages.push(assistantDisplay)
+        setCurrentAssistantDisplay(assistantDisplay)
+        assistantDisplayMounted = true
+        return assistantDisplay
+      }
   
       let lastReasoningText = ''
   
@@ -1170,10 +1176,13 @@ export function useChatRequestRunner(dependencies) {
         if (abortState?.aborted || signal?.aborted) return
         if (evt?.type === 'content' && evt.delta) {
           prepareAssistantDisplayForTextResponse(assistantDisplay)
+          ensureAssistantDisplayMounted()
           typewriterEnqueue(assistantDisplay, String(evt.delta))
         }
   
         if (evt?.type === 'reasoning' && evt.delta) {
+          prepareAssistantDisplayForTextResponse(assistantDisplay)
+          ensureAssistantDisplayMounted()
           deferredAppendMessageField(assistantDisplay, 'thinking', String(evt.delta), { scheduleScroll: true })
           lastReasoningText = String(evt.reasoning || '')
         }
@@ -1299,6 +1308,7 @@ export function useChatRequestRunner(dependencies) {
 
       if (result?.content && !assistantDisplay.content && !typewriterStates.has(assistantDisplay.id)) {
         prepareAssistantDisplayForTextResponse(assistantDisplay)
+        ensureAssistantDisplayMounted()
         typewriterEnqueue(assistantDisplay, String(result.content || ''))
       }
   
@@ -1321,11 +1331,13 @@ export function useChatRequestRunner(dependencies) {
         assistantDisplay.images = assistantImages
         assistantDisplay.transientRequestPlaceholder = false
         clearAssistantMediaBubblePlaceholders(assistantDisplay)
+        ensureAssistantDisplayMounted()
       }
       if (assistantVideos.length) {
         assistantDisplay.videos = assistantVideos
         assistantDisplay.transientRequestPlaceholder = false
         clearAssistantMediaBubblePlaceholders(assistantDisplay)
+        ensureAssistantDisplayMounted()
       }
       maybeScheduleScrollToBottomForRun(abortState)
   
@@ -1351,7 +1363,9 @@ export function useChatRequestRunner(dependencies) {
         !(Array.isArray(assistantDisplay.images) && assistantDisplay.images.length) &&
         !(Array.isArray(assistantDisplay.videos) && assistantDisplay.videos.length)
       ) {
+        prepareAssistantDisplayForTextResponse(assistantDisplay)
         assistantDisplay.content = buildEmptyAssistantResponseText(targetSession.apiMessages)
+        ensureAssistantDisplayMounted()
       }
   
       setCurrentAssistantDisplay(null)
@@ -1379,9 +1393,7 @@ export function useChatRequestRunner(dependencies) {
         prepareAssistantDisplayForTextResponse(assistantDisplay)
         assistantDisplay.content = fallbackText
         assistantDisplay.thinking = ''
-        if (!targetSession.messages.some((msg) => msg?.id === assistantDisplay.id)) {
-          targetSession.messages.push(assistantDisplay)
-        }
+        ensureAssistantDisplayMounted()
         await maybeScrollToBottomForRun(abortState)
         break
       }
@@ -1523,8 +1535,6 @@ export function useChatRequestRunner(dependencies) {
     }
   
     const ensureStreamingAssistantDisplay = () => assistantDisplay || createStreamingAssistantDisplay()
-  
-    createStreamingAssistantDisplay()
   
     let streamedContent = ''
     let streamedReasoning = ''

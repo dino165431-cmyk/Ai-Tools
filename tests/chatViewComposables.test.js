@@ -369,6 +369,18 @@ test('chat tool presentation preserves status precedence and compact display sta
     presentation.shouldRenderCompactToolMessage({ ...paused, toolExpanded: true }),
     false
   )
+  const current = { ...pending, toolActivityCurrent: true }
+  assert.equal(presentation.shouldRenderCompactToolMessage(current), false)
+  assert.equal(presentation.shouldShowToolActivityStatus(current), true)
+  assert.equal(presentation.toolActivityPhaseLabel(current), '进行中')
+  assert.equal(
+    presentation.toolActivityPhaseLabel({ role: 'tool', toolStatus: 'error' }),
+    '需留意'
+  )
+  assert.notEqual(
+    presentation.toolActivityActionIcon({ toolName: 'sandbox_read_file' }),
+    presentation.toolActivityActionIcon({ toolName: 'sandbox_run' })
+  )
   assert.deepEqual(presentation.chatAvatarIconClasses(pending), {
     'is-streaming': false,
     'is-spinning': true

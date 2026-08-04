@@ -35,7 +35,7 @@ test('user message preview is bounded by both lines and characters', () => {
   assert.doesNotMatch(preview, /line-5-/)
 })
 
-test('consecutive completed tool activities collapse into one stable display group', () => {
+test('completed tool history folds while the latest finished step stays visible', () => {
   const messages = [
     { id: 'u1', role: 'user', content: 'go' },
     tool('t1'),
@@ -47,26 +47,59 @@ test('consecutive completed tool activities collapse into one stable display gro
     resolveToolStatus: (message) => message.toolStatus
   })
 
-  assert.equal(display.length, 2)
+  assert.equal(display.length, 3)
   assert.equal(display[1].role, 'tool_group')
   assert.equal(display[1].id, 'tool-activity-group-t1')
-  assert.equal(display[1].toolGroupMessages.length, 4)
+  assert.equal(display[1].toolGroupMessages.length, 3)
   assert.deepEqual(display[1].toolGroupCounts, {
-    success: 3,
+    success: 2,
     error: 1,
     rejected: 0,
     stopped: 0
   })
+  assert.equal(display[2].id, 't4')
+  assert.equal(display[2].toolActivityCurrent, true)
 })
 
-test('two adjacent completed tool activities group early to avoid dense row churn', () => {
+test('a previous completed step folds only after the next step has started', () => {
   const display = buildChatDisplayMessages([tool('t1'), tool('t2')], {
     resolveToolStatus: (message) => message.toolStatus
   })
 
-  assert.equal(display.length, 1)
+  assert.equal(display.length, 2)
   assert.equal(display[0].role, 'tool_group')
-  assert.equal(display[0].toolGroupMessages.length, 2)
+  assert.equal(display[0].toolGroupMessages.length, 1)
+  assert.equal(display[0].toolGroupMessages[0].id, 't1')
+  assert.equal(display[1].id, 't2')
+  assert.equal(display[1].toolActivityCurrent, true)
+})
+
+test('the final assistant stage folds the last completed tool into history', () => {
+  const display = buildChatDisplayMessages([
+    tool('t1'),
+    tool('t2'),
+    { id: 'a1', role: 'assistant', streaming: true, content: '' }
+  ], {
+    resolveToolStatus: (message) => message.toolStatus
+  })
+
+  assert.equal(display.length, 2)
+  assert.equal(display[0].role, 'tool_group')
+  assert.deepEqual(display[0].toolGroupMessages.map((message) => message.id), ['t1', 't2'])
+  assert.equal(display[1].id, 'a1')
+})
+
+test('a running tool is prominent while completed history is folded', () => {
+  const messages = [tool('t1'), tool('t2', 'running')]
+  const display = buildChatDisplayMessages(messages, {
+    resolveToolStatus: (message) => message.toolStatus
+  })
+
+  assert.equal(display[0].role, 'tool_group')
+  assert.equal(display[0].toolGroupMessages.length, 1)
+  assert.equal(display[1].id, 't2')
+  assert.equal(display[1].toolActivityCurrent, true)
+  assert.equal(Object.hasOwn(messages[1], 'toolActivityCurrent'), false)
 })
 
 test('tool activity groups stay stable while more completed tools append', () => {

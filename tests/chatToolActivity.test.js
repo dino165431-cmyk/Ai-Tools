@@ -18,6 +18,37 @@ test('tool activity describes sandbox work instead of generic tool execution', (
   assert.equal(getToolActivityMeta(message), '')
 })
 
+test('sandbox file activity names the file action and target path while running', () => {
+  const message = {
+    role: 'tool_call',
+    toolName: 'sandbox_read_file',
+    toolArgsText: JSON.stringify({ path: 'inbox/error-log.txt' })
+  }
+
+  assert.equal(getToolActivityLabel(message, 'running'), '正在读取文件')
+  assert.equal(getToolActivityMeta(message), 'inbox/error-log.txt')
+  assert.equal(getToolActivityLabel({ ...message, role: 'tool' }, 'success'), '已读取文件')
+})
+
+test('tool activity recognizes common camel-case and multi-file path arguments', () => {
+  assert.equal(
+    getToolActivityMeta({
+      role: 'tool_call',
+      toolName: 'read_file',
+      toolArgsText: JSON.stringify({ filePath: 'src/App.vue' })
+    }),
+    'src/App.vue'
+  )
+  assert.equal(
+    getToolActivityMeta({
+      role: 'tool_call',
+      toolName: 'sandbox_import',
+      toolArgsText: JSON.stringify({ source_paths: ['one.txt', 'two.txt'] })
+    }),
+    'one.txt 等 2 个文件'
+  )
+})
+
 test('tool activity summarizes returned files', () => {
   const message = {
     role: 'tool',

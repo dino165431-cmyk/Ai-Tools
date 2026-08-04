@@ -1,21 +1,54 @@
 <template>
-  <div :class="['tool-message', 'chat-page', theme, { 'is-dark': theme === 'dark', 'is-expanded': msg.toolExpanded }]">
+  <div
+    :class="[
+      'tool-message',
+      'chat-page',
+      theme,
+      {
+        'is-dark': theme === 'dark',
+        'is-expanded': msg.toolExpanded,
+        'is-current': msg.toolActivityCurrent
+      }
+    ]"
+    :role="msg.toolActivityCurrent ? 'status' : undefined"
+    :aria-live="msg.toolActivityCurrent ? 'polite' : undefined"
+  >
     <div class="tool-message__toggle" @click="actions.toggleToolExpanded(msg)">
       <n-icon
+        v-if="!msg.toolActivityCurrent"
         :component="helpers.toolActivityIcon(msg)"
         size="15"
         :class="['tool-message__state-icon', { 'is-spinning': helpers.getToolMessageStatus(msg) === 'running' }]"
       />
+      <n-icon
+        :component="helpers.toolActivityActionIcon(msg)"
+        size="15"
+        class="tool-message__action-icon"
+      />
+      <span
+        v-if="msg.toolActivityCurrent"
+        class="tool-message__phase"
+        :class="[
+          `is-${helpers.getToolMessageStatus(msg)}`,
+          { 'is-live': helpers.getToolMessageStatus(msg) === 'running' }
+        ]"
+      >
+        {{ helpers.toolActivityPhaseLabel(msg) }}
+      </span>
       <span class="tool-message__label">{{ helpers.toolMessageLabel(msg) }}</span>
       <span
-        v-if="helpers.shouldShowToolActivityStatus(msg)"
+        v-if="!msg.toolActivityCurrent && helpers.shouldShowToolActivityStatus(msg)"
         class="tool-message__status"
         :class="`is-${helpers.getToolMessageStatus(msg)}`"
       >
         {{ helpers.toolMessageStatusLabel(msg) }}
       </span>
-      <span class="tool-message__hint">收起</span>
-      <n-icon :component="ChevronUpOutline" size="14" class="tool-message__chevron" />
+      <span class="tool-message__hint">{{ msg.toolExpanded ? '收起详情' : '查看详情' }}</span>
+      <n-icon
+        :component="msg.toolExpanded ? ChevronUpOutline : ChevronDownOutline"
+        size="14"
+        class="tool-message__chevron"
+      />
     </div>
     <p v-if="helpers.toolActivityMeta(msg)" class="tool-message__summary">
       {{ helpers.toolActivityMeta(msg) }}
@@ -238,7 +271,7 @@ import LazyMarkdownPreview from '@/components/LazyMarkdownPreview.vue'
 import { CHAT_CODE_AUTO_FOLD_THRESHOLD } from '@/utils/chatMarkdownPreview'
 import { collectSandboxFileCatalog } from '@/utils/chatSandboxFileLink.js'
 import { stripToolIdentityFromDisplayContent } from '@/utils/chatToolDisplay'
-import { ChevronUpOutline } from '@vicons/ionicons5'
+import { ChevronDownOutline, ChevronUpOutline } from '@vicons/ionicons5'
 import ChatAgentRunFlow from './ChatAgentRunFlow.vue'
 import { copyTextToClipboard } from '@/utils/clipboard'
 import { getSafeExternalUrl, safeOpenExternal } from '@/utils/safeOpenExternal'
@@ -435,6 +468,24 @@ async function handleSandboxFileMenuSelect(key) {
   box-shadow: 0 7px 20px rgba(2, 6, 23, 0.14);
 }
 
+.tool-message.is-current {
+  width: min(100%, 780px);
+  max-width: 100%;
+  padding: 9px 10px 10px;
+  overflow: clip;
+  box-sizing: border-box;
+  border: 1px solid rgba(14, 165, 233, 0.24);
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(14, 165, 233, 0.08), rgba(248, 250, 252, 0.78));
+  box-shadow: 0 7px 20px rgba(14, 116, 144, 0.07);
+}
+
+.tool-message.is-current.is-dark {
+  border-color: rgba(56, 189, 248, 0.28);
+  background: linear-gradient(135deg, rgba(14, 165, 233, 0.12), rgba(15, 23, 42, 0.52));
+  box-shadow: 0 8px 22px rgba(2, 6, 23, 0.18);
+}
+
 .tool-message__toggle {
   display: flex;
   align-items: center;
@@ -457,6 +508,20 @@ async function handleSandboxFileMenuSelect(key) {
   animation: tool-message-icon-spin 0.9s linear infinite;
 }
 
+.tool-message__action-icon {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  color: rgb(3, 105, 161);
+  background: rgba(14, 165, 233, 0.11);
+}
+
+.tool-message.is-dark .tool-message__action-icon {
+  color: rgb(125, 211, 252);
+  background: rgba(56, 189, 248, 0.14);
+}
+
 @keyframes tool-message-icon-spin {
   to {
     transform: rotate(360deg);
@@ -473,6 +538,65 @@ async function handleSandboxFileMenuSelect(key) {
   flex: 0 0 auto;
   min-width: 0;
   white-space: nowrap;
+}
+
+.tool-message__phase {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  color: rgb(3, 105, 161);
+  background: rgba(14, 165, 233, 0.12);
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.tool-message__phase::before {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  content: '';
+}
+
+.tool-message__phase.is-live::before {
+  animation: tool-message-phase-pulse 1.4s ease-in-out infinite;
+}
+
+.tool-message.is-dark .tool-message__phase {
+  color: rgb(125, 211, 252);
+  background: rgba(56, 189, 248, 0.14);
+}
+
+.tool-message__phase.is-error,
+.tool-message__phase.is-stopped,
+.tool-message__phase.is-rejected {
+  color: rgb(180, 83, 9);
+  background: rgba(245, 158, 11, 0.14);
+}
+
+.tool-message.is-dark .tool-message__phase.is-error,
+.tool-message.is-dark .tool-message__phase.is-stopped,
+.tool-message.is-dark .tool-message__phase.is-rejected {
+  color: rgb(253, 230, 138);
+  background: rgba(245, 158, 11, 0.16);
+}
+
+@keyframes tool-message-phase-pulse {
+  50% {
+    opacity: 0.35;
+    transform: scale(0.72);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-message__phase.is-live::before {
+    animation: none;
+  }
 }
 
 .tool-message__tool-name {

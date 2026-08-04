@@ -57,9 +57,23 @@ function hasVisibleMedia(message) {
 function isGroupableToolActivity(message, resolveStatus) {
   if (!isToolRole(message) || hasVisibleMedia(message)) return false
   if (String(message?.toolName || '').trim() === 'agent_run') return false
+  if (message?.toolActivityCurrent) return false
   if (message?.streaming || message?.editing || message?.attachmentsExpanded || message?.thinkingExpanded) return false
   const status = String(resolveStatus(message) || '').trim()
   return ['success', 'error', 'rejected', 'stopped'].includes(status)
+}
+
+function isLiveToolActivity(message, resolveStatus) {
+  if (!isToolRole(message)) return false
+  const status = String(resolveStatus(message) || '').trim()
+  return status === 'running' || status === 'paused'
+}
+
+function decorateCurrentToolActivity(message) {
+  return {
+    ...message,
+    toolActivityCurrent: true
+  }
 }
 
 function buildToolActivityGroup(messages, resolveStatus, expandedGroupIds) {
@@ -104,9 +118,22 @@ export function buildChatDisplayMessages(messages, options = {}) {
   const out = []
   let pending = []
 
-  const flush = () => {
+  // A completed tail item stays visible until another stage is appended. This
+  // gives the user time to see what just finished; the next tool/assistant
+  // message is the signal that it can move into history.
+  const trailingCurrentToolIndex = (() => {
+    if (options.retainLatestToolActivity === false || !list.length) return -1
+    const index = list.length - 1
+    const message = list[index]
+    if (!isToolRole(message) || hasVisibleMedia(message)) return -1
+    if (String(message?.toolName || '').trim() === 'agent_run') return -1
+    const status = String(resolveStatus(message) || '').trim()
+    return ['success', 'error', 'rejected', 'stopped'].includes(status) ? index : -1
+  })()
+
+  const flush = (forceGroup = false) => {
     if (!pending.length) return
-    if (pending.length >= minGroupSize) {
+    if (forceGroup || pending.length >= minGroupSize) {
       out.push(buildToolActivityGroup(pending, resolveStatus, expandedGroupIds))
     } else {
       out.push(...pending)
@@ -114,12 +141,16 @@ export function buildChatDisplayMessages(messages, options = {}) {
     pending = []
   }
 
-  list.forEach((message) => {
+  list.forEach((sourceMessage, index) => {
+    const isCurrent = index === trailingCurrentToolIndex || isLiveToolActivity(sourceMessage, resolveStatus)
+    const message = isCurrent ? decorateCurrentToolActivity(sourceMessage) : sourceMessage
     if (isGroupableToolActivity(message, resolveStatus)) {
-      pending.push(message)
+      pending.push(sourceMessage)
       return
     }
-    flush()
+    // Once a following stage exists, even a single completed tool belongs in
+    // the history fold instead of lingering as another standalone row.
+    flush(true)
     out.push(message)
   })
   flush()
