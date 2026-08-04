@@ -133,6 +133,43 @@ export function shouldRetainChatVirtualization(options = {}) {
   })
 }
 
+export function resolveChatDeferredLayoutPolicy(options = {}) {
+  const itemCount = Number.isFinite(Number(options.itemCount))
+    ? Math.max(0, Math.floor(Number(options.itemCount)))
+    : 0
+  const estimatedHeight = Number.isFinite(Number(options.estimatedHeight))
+    ? Math.max(0, Number(options.estimatedHeight))
+    : 0
+  const viewportHeight = Number.isFinite(Number(options.viewportHeight)) && Number(options.viewportHeight) > 0
+    ? Number(options.viewportHeight)
+    : 800
+  const minItems = Math.max(1, Math.floor(Number(options.minItems) || 16))
+  const minEstimatedHeight = Math.max(0, Number(options.minEstimatedHeight) || 4800)
+  const heightViewportMultiplier = Math.max(1, Number(options.heightViewportMultiplier) || 6)
+  const heightThreshold = Math.max(minEstimatedHeight, viewportHeight * heightViewportMultiplier)
+  const enabled = options.virtualized !== true && itemCount >= minItems && estimatedHeight >= heightThreshold
+
+  const minPreloadMarginPx = Math.max(0, Number(options.minPreloadMarginPx) || 1200)
+  const maxPreloadMarginPx = Math.max(
+    minPreloadMarginPx,
+    Number(options.maxPreloadMarginPx) || 2400
+  )
+  const preloadViewportMultiplier = Math.max(1, Number(options.preloadViewportMultiplier) || 2.5)
+  const preloadMarginPx = enabled
+    ? Math.round(Math.min(
+        maxPreloadMarginPx,
+        Math.max(minPreloadMarginPx, viewportHeight * preloadViewportMultiplier)
+      ))
+    : 0
+
+  return {
+    enabled,
+    estimatedHeight,
+    heightThreshold,
+    preloadMarginPx
+  }
+}
+
 export function resolveChatAdaptiveVirtualRange(range = {}, options = {}) {
   const count = Number.isFinite(Number(range.count))
     ? Math.max(0, Math.floor(Number(range.count)))
@@ -240,9 +277,15 @@ export function shouldDeferChatHeavyBlockLayout(message, options = {}) {
   // estimate-based layout pass that changes the measured item height as it
   // approaches the viewport and makes the scrollbar jump.
   if (options.virtualized === true) return false
+  if (options.deferredLayoutEnabled === false) return false
 
   const id = String(message.id || '').trim()
   if (!id) return true
+
+  const layoutReadyMessageIds = options.layoutReadyMessageIds instanceof Set
+    ? options.layoutReadyMessageIds
+    : null
+  if (layoutReadyMessageIds?.has(id)) return false
 
   const visibleMessageIds = options.visibleMessageIds instanceof Set ? options.visibleMessageIds : null
   if (!visibleMessageIds) return true

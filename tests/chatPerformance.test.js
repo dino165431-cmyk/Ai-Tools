@@ -6,6 +6,7 @@ import {
   isExpectedChatProgrammaticScroll,
   resolveChatAdaptiveVirtualRange,
   resolveChatBottomScrollTarget,
+  resolveChatDeferredLayoutPolicy,
   resolveChatHeavyRenderTuning,
   resolveChatVirtualItemGap,
   shouldDeferChatHeavyBlockLayout,
@@ -113,6 +114,59 @@ test('virtualization retention uses hysteresis and releases compacted histories'
   }), true)
 })
 
+test('deferred chat layout requires both enough messages and enough content height', () => {
+  assert.deepEqual(resolveChatDeferredLayoutPolicy({
+    itemCount: 12,
+    estimatedHeight: 20_000,
+    viewportHeight: 800
+  }), {
+    enabled: false,
+    estimatedHeight: 20_000,
+    heightThreshold: 4800,
+    preloadMarginPx: 0
+  })
+
+  assert.equal(resolveChatDeferredLayoutPolicy({
+    itemCount: 30,
+    estimatedHeight: 3200,
+    viewportHeight: 800
+  }).enabled, false)
+
+  assert.deepEqual(resolveChatDeferredLayoutPolicy({
+    itemCount: 30,
+    estimatedHeight: 6400,
+    viewportHeight: 800
+  }), {
+    enabled: true,
+    estimatedHeight: 6400,
+    heightThreshold: 4800,
+    preloadMarginPx: 2000
+  })
+
+  assert.deepEqual(resolveChatDeferredLayoutPolicy({
+    itemCount: 30,
+    estimatedHeight: 7000,
+    viewportHeight: 1200
+  }), {
+    enabled: false,
+    estimatedHeight: 7000,
+    heightThreshold: 7200,
+    preloadMarginPx: 0
+  })
+  assert.equal(resolveChatDeferredLayoutPolicy({
+    itemCount: 30,
+    estimatedHeight: 7200,
+    viewportHeight: 1200
+  }).preloadMarginPx, 2400)
+
+  assert.equal(resolveChatDeferredLayoutPolicy({
+    virtualized: true,
+    itemCount: 30,
+    estimatedHeight: 6400,
+    viewportHeight: 800
+  }).enabled, false)
+})
+
 test('markdown height estimation accounts for wide text and folded code blocks', () => {
   const ascii = estimateChatMarkdownContentHeight('a'.repeat(88), { charsPerLine: 44 })
   const cjk = estimateChatMarkdownContentHeight('中'.repeat(88), { charsPerLine: 44 })
@@ -183,6 +237,27 @@ test('shouldDeferChatHeavyBlockLayout avoids double virtualization', () => {
     shouldDeferChatHeavyBlockLayout(
       { id: 'virtual-item', content: 'long markdown' },
       { virtualized: true, visibleMessageIds: new Set() }
+    ),
+    false
+  )
+})
+
+test('shouldDeferChatHeavyBlockLayout keeps stable and preloaded messages in document flow', () => {
+  assert.equal(
+    shouldDeferChatHeavyBlockLayout(
+      { id: 'offscreen-long-reply' },
+      { deferredLayoutEnabled: false, visibleMessageIds: new Set() }
+    ),
+    false
+  )
+  assert.equal(
+    shouldDeferChatHeavyBlockLayout(
+      { id: 'preloaded-history' },
+      {
+        deferredLayoutEnabled: true,
+        layoutReadyMessageIds: new Set(['preloaded-history']),
+        visibleMessageIds: new Set()
+      }
     ),
     false
   )

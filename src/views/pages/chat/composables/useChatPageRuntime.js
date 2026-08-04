@@ -15,6 +15,11 @@ export function useChatPageRuntime({
   CHAT_ASSISTANT_MESSAGE_BASE_HEIGHT,
   CHAT_CODE_AUTO_FOLD_THRESHOLD,
   CHAT_DEFAULT_MESSAGE_HEIGHT,
+  CHAT_DEFERRED_LAYOUT_MIN_ESTIMATED_HEIGHT_PX,
+  CHAT_DEFERRED_LAYOUT_MIN_VIEWPORTS,
+  CHAT_DEFERRED_LAYOUT_PRELOAD_MAX_PX,
+  CHAT_DEFERRED_LAYOUT_PRELOAD_MIN_PX,
+  CHAT_DEFERRED_LAYOUT_PRELOAD_VIEWPORTS,
   CHAT_HEAVY_RENDER_SEED_COUNT,
   CHAT_LIST_GAP_PX,
   CHAT_RECENT_HEAVY_RENDER_COUNT,
@@ -62,6 +67,7 @@ export function useChatPageRuntime({
   preparingSend,
   resolveChatAdaptiveVirtualRange,
   resolveChatBottomScrollTarget,
+  resolveChatDeferredLayoutPolicy,
   resolveChatHeavyRenderTuning,
   resolveChatVirtualItemGap,
   scrollbarRef,
@@ -107,6 +113,7 @@ const {
 const expandedToolActivityGroupIds = ref(new Set())
 const visibleHeavyChatMessageIds = ref(new Set())
 const hydratedHeavyChatMessageIds = ref(new Set())
+const laidOutHeavyChatMessageIds = ref(new Set())
 const chatSessionOpeningHeavyRender = ref(false)
 const recentHeavyChatMessageIds = computed(() => {
   const ids = new Set()
@@ -314,6 +321,28 @@ function mergeHydratedHeavyChatMessageIds(ids) {
   return true
 }
 
+function replaceLaidOutHeavyChatMessageIds(ids) {
+  const next = ids instanceof Set ? new Set(ids) : new Set()
+  if (areStringSetsEqual(laidOutHeavyChatMessageIds.value, next)) return false
+  laidOutHeavyChatMessageIds.value = next
+  return true
+}
+
+function mergeLaidOutHeavyChatMessageIds(ids) {
+  const next = new Set(laidOutHeavyChatMessageIds.value)
+  let changed = false
+  const source = ids instanceof Set ? ids : new Set(Array.isArray(ids) ? ids : [])
+  source.forEach((value) => {
+    const id = String(value || '').trim()
+    if (!id || next.has(id)) return
+    next.add(id)
+    changed = true
+  })
+  if (!changed) return false
+  laidOutHeavyChatMessageIds.value = next
+  return true
+}
+
 function pruneHydratedHeavyChatMessageIds(options = {}) {
   const current = hydratedHeavyChatMessageIds.value
   if (!(current instanceof Set) || !current.size) return false
@@ -360,9 +389,10 @@ function pruneHydratedHeavyChatMessageIds(options = {}) {
 function rememberHydratedHeavyChatMessage(messageId) {
   const id = String(messageId || '').trim()
   if (!id) return false
-  const changed = mergeHydratedHeavyChatMessageIds([id])
+  const hydratedChanged = mergeHydratedHeavyChatMessageIds([id])
+  const layoutChanged = mergeLaidOutHeavyChatMessageIds([id])
   pruneHydratedHeavyChatMessageIds()
-  return changed
+  return hydratedChanged || layoutChanged
 }
 
 let chatSessionOpeningHeavyRenderToken = 0
@@ -389,8 +419,14 @@ async function withChatSessionOpeningHeavyRender(task) {
 
 function primeHydratedHeavyChatMessages(messages, options = {}) {
   const seedIds = collectHeavyRenderSeedMessageIds(messages, options)
-  if (options.replace !== false) return replaceHydratedHeavyChatMessageIds(seedIds)
-  return mergeHydratedHeavyChatMessageIds(seedIds)
+  if (options.replace !== false) {
+    const hydratedChanged = replaceHydratedHeavyChatMessageIds(seedIds)
+    const layoutChanged = replaceLaidOutHeavyChatMessageIds(seedIds)
+    return hydratedChanged || layoutChanged
+  }
+  const hydratedChanged = mergeHydratedHeavyChatMessageIds(seedIds)
+  const layoutChanged = mergeLaidOutHeavyChatMessageIds(seedIds)
+  return hydratedChanged || layoutChanged
 }
 
 async function maybeWarmMarkdownPreviewRuntimeForMessages(messages, options = {}) {
@@ -536,6 +572,43 @@ const chatVirtualizedEnabled = computed(() => {
   if (!chatDisplayMessages.value.length) return false
   return chatVirtualizationRequested.value
 })
+
+// Decide from message-derived height rather than the current DOM scrollHeight:
+// deferred blocks contain placeholder sizes, so feeding that measured value
+// back into the policy would make the mode oscillate as blocks are laid out.
+const chatDeferredLayoutPolicy = computed(() => resolveChatDeferredLayoutPolicy({
+  virtualized: chatVirtualizedEnabled.value,
+  itemCount: chatDisplayMessages.value.length,
+  estimatedHeight: chatEstimatedContentHeight.value,
+  viewportHeight: chatViewportHeight.value,
+  minItems: CHAT_VIRTUALIZATION_MIN_ITEMS_FOR_HEIGHT,
+  minEstimatedHeight: CHAT_DEFERRED_LAYOUT_MIN_ESTIMATED_HEIGHT_PX,
+  heightViewportMultiplier: CHAT_DEFERRED_LAYOUT_MIN_VIEWPORTS,
+  preloadViewportMultiplier: CHAT_DEFERRED_LAYOUT_PRELOAD_VIEWPORTS,
+  minPreloadMarginPx: CHAT_DEFERRED_LAYOUT_PRELOAD_MIN_PX,
+  maxPreloadMarginPx: CHAT_DEFERRED_LAYOUT_PRELOAD_MAX_PX
+}))
+
+const chatHeavyRenderRootMarginPx = computed(() => Math.max(
+  0,
+  Number(chatHeavyRenderTuning.value.rootMarginPx) || 0,
+  Number(chatDeferredLayoutPolicy.value.preloadMarginPx) || 0
+))
+
+watch(
+  () => chatDeferredLayoutPolicy.value.enabled,
+  (enabled, wasEnabled) => {
+    if (!enabled || wasEnabled) return
+    const ids = []
+    for (const [id, el] of chatMessageElMap.entries()) {
+      if (!(el instanceof HTMLElement) || !el.isConnected) continue
+      const msg = resolveChatMessageById(id)
+      if (isMarkdownHeavyRenderCandidate(msg)) ids.push(id)
+    }
+    mergeLaidOutHeavyChatMessageIds(ids)
+  },
+  { flush: 'pre' }
+)
 
 const chatDisplayMessageIndexById = computed(() => {
   const indexById = new Map()
@@ -1084,6 +1157,7 @@ function setupChatMessageVisibilityObserver() {
   chatMessageVisibilityObserver = new IntersectionObserver(
     (entries) => {
       let changed = false
+      const layoutReadyIds = []
       entries.forEach((entry) => {
         const id = String(entry.target?.dataset?.messageId || '').trim()
         if (!id) return
@@ -1092,16 +1166,23 @@ function setupChatMessageVisibilityObserver() {
             intersectingHeavyChatMessageIds.add(id)
             changed = true
           }
-          rememberHydratedHeavyChatMessage(id)
+          layoutReadyIds.push(id)
         } else if (intersectingHeavyChatMessageIds.delete(id)) {
           changed = true
         }
       })
+      if (layoutReadyIds.length) {
+        mergeHydratedHeavyChatMessageIds(layoutReadyIds)
+        pruneHydratedHeavyChatMessageIds()
+        if (chatDeferredLayoutPolicy.value.enabled) {
+          mergeLaidOutHeavyChatMessageIds(layoutReadyIds)
+        }
+      }
       if (changed) syncVisibleHeavyChatMessageIds()
     },
     {
       root,
-      rootMargin: `${Math.max(0, Number(chatHeavyRenderTuning.value.rootMarginPx) || 0)}px 0px`
+      rootMargin: `${chatHeavyRenderRootMarginPx.value}px 0px`
     }
   )
 
@@ -1196,6 +1277,8 @@ function shouldRenderHeavyChatMessage(msg) {
 function shouldDeferHeavyChatBlockLayout(msg) {
   return shouldDeferChatHeavyBlockLayout(msg, {
     virtualized: chatVirtualizedEnabled.value,
+    deferredLayoutEnabled: chatDeferredLayoutPolicy.value.enabled,
+    layoutReadyMessageIds: laidOutHeavyChatMessageIds.value,
     visibleMessageIds: visibleHeavyChatMessageIds.value
   })
 }
@@ -1290,6 +1373,7 @@ function setupChatLayoutResizeObserver() {
 
   chatScrollEl.value = container
   chatLayoutResizeObserver = new ResizeObserver(() => {
+    updateAtBottomState(container)
     scheduleRefreshUserAnchorMeta()
     if (!chatVirtualizedEnabled.value) maybeScheduleStreamingScroll()
   })
@@ -1390,6 +1474,15 @@ watch(
         hydratedHeavyChatMessageIds.value = nextHydratedIds
       }
     }
+    if (laidOutHeavyChatMessageIds.value.size) {
+      const nextLaidOutIds = new Set()
+      laidOutHeavyChatMessageIds.value.forEach((id) => {
+        if (validIds.has(id)) nextLaidOutIds.add(id)
+      })
+      if (nextLaidOutIds.size !== laidOutHeavyChatMessageIds.value.size) {
+        laidOutHeavyChatMessageIds.value = nextLaidOutIds
+      }
+    }
     Array.from(chatMessageElMap.keys()).forEach((id) => {
       if (!validIds.has(id)) chatMessageElMap.delete(id)
     })
@@ -1406,7 +1499,7 @@ watch(
 )
 
 watch(
-  () => `${chatHeavyRenderTuning.value.viewportBuffer}|${chatHeavyRenderTuning.value.rootMarginPx}|${chatHeavyRenderTuning.value.maxHydrated}`,
+  () => `${chatHeavyRenderTuning.value.viewportBuffer}|${chatHeavyRenderRootMarginPx.value}|${chatHeavyRenderTuning.value.maxHydrated}`,
   () => {
     pruneHydratedHeavyChatMessageIds()
     if (chatMessageVisibilityObserver) setupChatMessageVisibilityObserver()

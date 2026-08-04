@@ -49,6 +49,13 @@ test('dense short chat messages use calibrated estimates instead of tall generic
 test('ordinary multi-turn chats stay in normal document flow and dynamic virtual cards remeasure', () => {
   assert.match(chatSource, /const CHAT_VIRTUALIZATION_MIN_MESSAGES = 72/)
   assert.match(chatSource, /const CHAT_VIRTUALIZATION_MIN_ITEMS_FOR_HEIGHT = 16/)
+  assert.match(chatSource, /const CHAT_DEFERRED_LAYOUT_MIN_ESTIMATED_HEIGHT_PX = 4_800/)
+  assert.match(chatSource, /const CHAT_DEFERRED_LAYOUT_MIN_VIEWPORTS = 6/)
+  assert.match(pageRuntimeSource, /const chatDeferredLayoutPolicy = computed/)
+  assert.match(pageRuntimeSource, /estimatedHeight:\s*chatEstimatedContentHeight\.value/)
+  assert.match(pageRuntimeSource, /layoutReadyMessageIds:\s*laidOutHeavyChatMessageIds\.value/)
+  assert.match(pageRuntimeSource, /mergeLaidOutHeavyChatMessageIds\(layoutReadyIds\)/)
+  assert.match(pageRuntimeSource, /rootMargin:\s*`\$\{chatHeavyRenderRootMarginPx\.value\}px 0px`/)
   assert.match(pageRuntimeSource, /const chatDynamicLayoutRevision = computed/)
   assert.match(pageRuntimeSource, /watch\(\s*chatDynamicLayoutRevision[\s\S]*scheduleChatVirtualItemRemeasure/)
 })
