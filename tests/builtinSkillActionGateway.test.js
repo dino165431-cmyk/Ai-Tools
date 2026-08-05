@@ -8,6 +8,10 @@ const {
   discoverBuiltinSkillActions,
   resolveBuiltinSkillCall
 } = require('../public/preload/builtin-skills/action-gateway.js')
+const {
+  BUILTIN_SKILL_IDS,
+  listBuiltinSkillActions
+} = require('../public/preload/builtin-skills/index.js')
 
 const skill = {
   _id: 'builtin_skill_notes',
@@ -32,6 +36,7 @@ const registry = {
           additionalProperties: false
         },
         forceApproval: false,
+        hardApproval: true,
         approvalKind: 'tool'
       }
     ]
@@ -65,5 +70,27 @@ test('nested Agent gateway discovers and resolves selected Skill actions', async
   assert.equal(resolved.ok, true)
   assert.equal(resolved.mapping.type, 'skill')
   assert.equal(resolved.mapping.toolName, 'notes_read')
+  assert.equal(resolved.mapping.hardApproval, true)
   assert.deepEqual(resolved.args, { path: 'demo.md' })
+})
+
+test('built-in Skill actions separate read, write and destructive risk levels', async () => {
+  const notes = await listBuiltinSkillActions(BUILTIN_SKILL_IDS.notes)
+  const config = await listBuiltinSkillActions(BUILTIN_SKILL_IDS.config)
+  const shell = await listBuiltinSkillActions(BUILTIN_SKILL_IDS.shell)
+  const noteAction = (name) => notes.find((action) => action.name === name)
+  const configAction = (name) => config.find((action) => action.name === name)
+  const shellAction = (name) => shell.find((action) => action.name === name)
+
+  assert.equal(noteAction('notes_read')?.forceApproval, false)
+  assert.equal(noteAction('notes_write')?.forceApproval, true)
+  assert.equal(noteAction('notes_write')?.hardApproval, false)
+  assert.equal(noteAction('notes_delete')?.hardApproval, true)
+  assert.equal(noteAction('notebook_execute_cell')?.forceApproval, true)
+  assert.equal(noteAction('notebook_execute_cell')?.hardApproval, false)
+  assert.equal(configAction('config_update_provider')?.hardApproval, false)
+  assert.equal(configAction('config_delete_provider')?.hardApproval, true)
+  assert.equal(shellAction('sandbox_run')?.forceApproval, true)
+  assert.equal(shellAction('sandbox_run')?.hardApproval, false)
+  assert.equal(shellAction('sandbox_reset')?.hardApproval, true)
 })

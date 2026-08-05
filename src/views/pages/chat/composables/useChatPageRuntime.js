@@ -659,7 +659,6 @@ const chatVirtualizer = useVirtualizer(computed(() => ({
 })))
 
 let chatVirtualMeasureFrame = 0
-let chatVirtualMeasureSettleFrame = 0
 let chatVirtualMeasureFollowTail = false
 let chatVirtualMeasureGeneration = 0
 const pendingChatVirtualMeasureIds = new Set()
@@ -718,18 +717,9 @@ function scheduleChatVirtualItemRemeasure(messageOrId, options = {}) {
       scheduleRefreshUserAnchorMeta()
       scheduleStickyChatBubbleSync()
 
-      if (chatVirtualMeasureSettleFrame) {
-        if (typeof window?.cancelAnimationFrame === 'function') {
-          window.cancelAnimationFrame(chatVirtualMeasureSettleFrame)
-        } else {
-          clearTimeout(chatVirtualMeasureSettleFrame)
-        }
-      }
-      chatVirtualMeasureSettleFrame = raf(() => {
-        chatVirtualMeasureSettleFrame = 0
-        measurePendingChatVirtualItems(ids)
-        if (followTail) scheduleScrollToBottom({ force: true })
-      })
+      // measureElement keeps observing the item with ResizeObserver, so a second
+      // forced read on the next frame only creates layout pressure for dense cards.
+      if (followTail) scheduleScrollToBottom({ force: true })
     })
   })
 }
@@ -743,15 +733,7 @@ function clearChatVirtualItemRemeasure() {
       clearTimeout(chatVirtualMeasureFrame)
     }
   }
-  if (chatVirtualMeasureSettleFrame > 0) {
-    if (typeof window?.cancelAnimationFrame === 'function') {
-      window.cancelAnimationFrame(chatVirtualMeasureSettleFrame)
-    } else {
-      clearTimeout(chatVirtualMeasureSettleFrame)
-    }
-  }
   chatVirtualMeasureFrame = 0
-  chatVirtualMeasureSettleFrame = 0
   chatVirtualMeasureFollowTail = false
   pendingChatVirtualMeasureIds.clear()
 }
@@ -784,24 +766,40 @@ const chatDynamicLayoutRevision = computed(() => (
     .join('|')
 ))
 
+function getChangedChatLayoutMessageIds(nextRevision, previousRevision) {
+  const previousById = new Map(
+    String(previousRevision || '').split('|').filter(Boolean).map((entry) => {
+      const [id, ...parts] = entry.split(':')
+      return [id, parts.join(':')]
+    })
+  )
+  return String(nextRevision || '').split('|').filter(Boolean).flatMap((entry) => {
+    const [id, ...parts] = entry.split(':')
+    return id && previousById.get(id) !== parts.join(':') ? [id] : []
+  })
+}
+
 watch(
   chatToolGroupLayoutRevision,
-  () => {
+  (nextRevision, previousRevision) => {
     if (!chatVirtualizedEnabled.value) return
-    chatDisplayMessages.value
-      .filter((message) => isToolActivityGroup(message))
-      .forEach((group) => scheduleChatVirtualItemRemeasure(group, { followTail: isAtBottom.value }))
+    getChangedChatLayoutMessageIds(nextRevision, previousRevision).forEach((id) => {
+      const group = chatDisplayMessages.value[chatDisplayMessageIndexById.value.get(id)]
+      if (isToolActivityGroup(group)) {
+        scheduleChatVirtualItemRemeasure(group, { followTail: isAtBottom.value })
+      }
+    })
   },
   { flush: 'post' }
 )
 
 watch(
   chatDynamicLayoutRevision,
-  () => {
+  (nextRevision, previousRevision) => {
     if (!chatVirtualizedEnabled.value) return
     const shouldFollowTail = isAtBottom.value
-    chatVirtualItems.value.forEach((item) => {
-      const message = chatDisplayMessages.value[item.index]
+    getChangedChatLayoutMessageIds(nextRevision, previousRevision).forEach((id) => {
+      const message = chatDisplayMessages.value[chatDisplayMessageIndexById.value.get(id)]
       if (message) scheduleChatVirtualItemRemeasure(message, { followTail: shouldFollowTail })
     })
   },

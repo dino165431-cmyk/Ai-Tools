@@ -784,12 +784,87 @@ function getMcpToolApprovalPolicy(server, tool) {
   const explicitlyReadOnly =
     annotations.readOnlyHint === true &&
     annotations.destructiveHint !== true
-  const hardApprovalName = cleanString(tool?.name)
+  const explicitlyMutating =
+    annotations.readOnlyHint === false ||
+    annotations.destructiveHint === true
+  const nameTokens = cleanString(tool?.name)
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter(Boolean)
-    .some((token) => [
+  const mutatingName = nameTokens.some((token) => [
+    'add',
+    'approve',
+    'archive',
+    'book',
+    'cancel',
+    'comment',
+    'connect',
+    'copy',
+    'create',
+    'delete',
+    'disable',
+    'disconnect',
+    'edit',
+    'enable',
+    'execute',
+    'follow',
+    'import',
+    'install',
+    'invite',
+    'like',
+    'login',
+    'logout',
+    'move',
+    'order',
+    'patch',
+    'pay',
+    'publish',
+    'purchase',
+    'reject',
+    'remove',
+    'rename',
+    'reply',
+    'run',
+    'save',
+    'schedule',
+    'send',
+    'set',
+    'share',
+    'start',
+    'stop',
+    'submit',
+    'subscribe',
+    'uninstall',
+    'update',
+    'upload',
+    'write'
+  ].includes(token))
+  const inferredReadOnly =
+    !explicitlyMutating &&
+    !explicitlyReadOnly &&
+    [
+      'browse',
+      'check',
+      'count',
+      'describe',
+      'discover',
+      'fetch',
+      'find',
+      'get',
+      'inspect',
+      'list',
+      'lookup',
+      'preview',
+      'query',
+      'read',
+      'retrieve',
+      'search',
+      'status',
+      'view'
+    ].includes(nameTokens[0]) &&
+    !mutatingName
+  const hardApprovalName = nameTokens.some((token) => [
       'cancel',
       'delete',
       'disable',
@@ -807,10 +882,11 @@ function getMcpToolApprovalPolicy(server, tool) {
       'uninstall'
     ].includes(token))
   return {
-    forceApproval: !explicitlyReadOnly,
+    forceApproval: mutatingName || !(explicitlyReadOnly || inferredReadOnly),
     hardApproval: annotations.destructiveHint === true || hardApprovalName,
     approvalKind: 'tool',
-    explicitlyReadOnly
+    explicitlyReadOnly,
+    inferredReadOnly
   }
 }
 

@@ -445,10 +445,7 @@ export function useChatRequestRunner(dependencies) {
     if (!nextRequest) return false
 
     const approvalDecision = evaluateToolApproval({
-      mode: normalizeToolApprovalMode(
-        record.toolApprovalMode,
-        record.autoApproveTools === false ? TOOL_APPROVAL_MODE_MANUAL : TOOL_APPROVAL_MODE_SAFE
-      ),
+      mode: resolveCurrentToolApprovalMode(record.activeRequestAbortState || null, record),
       forceApproval: nextRequest.forceApproval === true,
       hardApproval: nextRequest.hardApproval === true,
       interactive: true
@@ -663,10 +660,7 @@ export function useChatRequestRunner(dependencies) {
     const forceApproval =
       detail.forceApproval === true ||
       approvalKind === 'shell'
-    const hardApproval =
-      detail.hardApproval === true ||
-      approvalKind === 'shell' ||
-      approvalKind === 'execution'
+    const hardApproval = detail.hardApproval === true
     const approvalKey = buildSessionToolApprovalKey({
       sessionId: String(targetRecord?.id || 'chat'),
       serverId,
@@ -675,9 +669,9 @@ export function useChatRequestRunner(dependencies) {
       approvalKind,
       argsText
     })
-    const inheritedMode = normalizeToolApprovalMode(
-      targetRecord?.toolApprovalMode,
-      targetRecord?.autoApproveTools === false ? TOOL_APPROVAL_MODE_MANUAL : toolApprovalMode.value
+    const inheritedMode = resolveCurrentToolApprovalMode(
+      targetRecord?.activeRequestAbortState || null,
+      targetRecord
     )
     const autoApproved =
       (hardApproval !== true && sessionApprovedToolKeys.has(approvalKey)) ||
@@ -2200,6 +2194,25 @@ export function useChatRequestRunner(dependencies) {
         metaLine: a.metaLine || '',
         svgTextPreview: a.svgTextPreview || ''
       }))
+
+      // A title may have created the session file before attachment parsing finishes.
+      // Persist the previews as soon as both pieces are available so reopening that
+      // in-flight session never observes a JSON record whose sidecar is still empty.
+      const sessionFilePath = String(targetSession?.activeSessionFilePath || '').trim()
+      if (sessionFilePath && userDisplay.images.length) {
+        userDisplay.images = await persistChatMediaListAssets(userDisplay.images, {
+          kind: 'image',
+          messageId: userDisplay.id,
+          sessionFilePath
+        })
+        // Commit the matching asset reference into the already-created session
+        // record. This is intentionally allowed while the request is running:
+        // otherwise autosave waits for completion and leaves a reload window.
+        await autoPersistMemorySessionWhenIdle(targetSession, {
+          notify: false,
+          allowWhileRunning: true
+        })
+      }
     } catch {
       // ignore
     }
@@ -2440,6 +2453,10 @@ export function useChatRequestRunner(dependencies) {
     if (record) {
       record.toolApprovalMode = nextMode
       record.autoApproveTools = nextMode !== TOOL_APPROVAL_MODE_MANUAL
+      if (record.state && typeof record.state === 'object') {
+        record.state.toolApprovalMode = nextMode
+        record.state.autoApproveTools = nextMode !== TOOL_APPROVAL_MODE_MANUAL
+      }
       if (record.activeRequestAbortState && typeof record.activeRequestAbortState === 'object') {
         record.activeRequestAbortState.toolApprovalMode = nextMode
         record.activeRequestAbortState.autoApproveTools = nextMode !== TOOL_APPROVAL_MODE_MANUAL
@@ -2461,7 +2478,10 @@ export function useChatRequestRunner(dependencies) {
 
   function setToolApprovalMode(value) {
     const nextMode = normalizeToolApprovalMode(value)
-    if (nextMode === toolApprovalMode.value) return
+    if (nextMode === toolApprovalMode.value) {
+      commitToolApprovalMode(nextMode)
+      return
+    }
     if (nextMode === TOOL_APPROVAL_MODE_TRUSTED) {
       dialog.error({
         title: '启用完全信任？',
@@ -3604,11 +3624,14 @@ export function useChatRequestRunner(dependencies) {
     })
   }
   
-  function resolveCurrentToolApprovalMode(abortState = abortController.value) {
+  function resolveCurrentToolApprovalMode(abortState = abortController.value, record = null) {
+    const runRecord = record || getRunRecord(abortState)
+    if (runRecord && isMemorySessionActive(runRecord)) {
+      return normalizeToolApprovalMode(toolApprovalMode.value)
+    }
     if (abortState && typeof abortState.toolApprovalMode === 'string') {
       return normalizeToolApprovalMode(abortState.toolApprovalMode)
     }
-    const runRecord = getRunRecord(abortState)
     if (runRecord) {
       return normalizeToolApprovalMode(
         runRecord.toolApprovalMode,

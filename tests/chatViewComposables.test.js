@@ -1156,6 +1156,27 @@ test('chat session manager receives auto-persist title and identity helpers', as
   assert.deepEqual(calls, ['mark-title-ready', 'get-persist-key', 'has-resolved-title'])
 })
 
+test('chat session manager permits an explicit in-flight attachment snapshot', () => {
+  const calls = []
+  const record = { id: 'running-session', messages: [{ role: 'user', content: 'image' }] }
+  const manager = useChatSessionManager({
+    isMemorySessionRunning: () => true,
+    canPersistMemorySessionToHistory: () => {
+      calls.push('can-persist')
+      return true
+    },
+    hasResolvedMemorySessionTitle: () => {
+      calls.push('has-title')
+      return false
+    }
+  })
+
+  assert.equal(manager.autoPersistMemorySessionWhenIdle(record), '')
+  assert.deepEqual(calls, [])
+  assert.equal(manager.autoPersistMemorySessionWhenIdle(record, { allowWhileRunning: true }), '')
+  assert.deepEqual(calls, ['can-persist', 'has-title'])
+})
+
 test('chat media generation receives prompt, usage, and video presentation helpers', async () => {
   const targetSession = {
     messages: [],

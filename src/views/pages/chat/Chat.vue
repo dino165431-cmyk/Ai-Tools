@@ -931,7 +931,7 @@ const chatToolApprovalModeOptions = [
     key: TOOL_APPROVAL_MODE_SAFE
   },
   {
-    label: '高风险自动（普通命令与代码自动，危险操作确认）',
+    label: '高风险自动（普通写入、命令与代码自动，危险操作确认）',
     key: TOOL_APPROVAL_MODE_FULL
   },
   {
@@ -4339,9 +4339,11 @@ async function loadSessionFromFile(filePath, options = {}) {
   ) {
     await sessionTreeRef.value?.selectPath?.(relPath)
     syncActiveRequestUiState(activeRecord)
-    finishHistorySessionLoad(loadToken, {
-      phase: '历史会话已显示',
-      detail: '当前已是所选会话'
+    hydrateLoadedSessionMediaInBackground({
+      token: loadToken,
+      record: activeRecord,
+      messages: activeRecord.messages,
+      sessionFilePath: relPath
     })
     return true
   }

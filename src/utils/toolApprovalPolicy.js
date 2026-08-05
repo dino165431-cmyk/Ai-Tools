@@ -252,7 +252,7 @@ export function resolveMcpToolApprovalPolicy(tool) {
               : '工具未声明只读，且无法可靠判定为查询操作'
 
   return {
-    forceApproval: !(explicitlyReadOnly || inferredReadOnly),
+    forceApproval: mutatingName || !(explicitlyReadOnly || inferredReadOnly),
     hardApproval: annotations.destructiveHint === true || hardApprovalName,
     approvalKind: 'tool',
     explicitlyReadOnly,

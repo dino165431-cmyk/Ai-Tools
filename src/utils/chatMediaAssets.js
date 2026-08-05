@@ -1,4 +1,4 @@
-import { createDirectory, deleteItem, getFileBlobUrl, listDirectory, writeFile } from './fileOperations.js'
+import { clearImageBlobCache, createDirectory, deleteItem, getFileBlobUrl, listDirectory, writeFile } from './fileOperations.js'
 
 const CHAT_SESSION_ASSET_DIR_SUFFIX = '.assets'
 
@@ -212,7 +212,11 @@ export async function persistChatMediaListAssets(mediaList = [], options = {}) {
     const src = String(media.src || '').trim()
 
     if (existingPath && existingRef) {
-      const hydratedSrc = src || await getFileBlobUrl(existingPath).catch(() => '')
+      const savedPath = getChatMediaAssetPath(media)
+      const shouldRefreshMovedBlobUrl = /^blob:/i.test(src) && !!savedPath && savedPath !== existingPath
+      const hydratedSrc = (!src || shouldRefreshMovedBlobUrl)
+        ? await getFileBlobUrl(existingPath).catch(() => '')
+        : src
       out.push({
         ...media,
         kind,
@@ -333,6 +337,9 @@ export async function hydrateChatSessionMediaAssets(sessionLike = {}, options = 
         media.assetPath = assetPath
         media.localPath = assetPath
         if (!String(media.src || '').trim() || isTransientChatMediaSrc(media.src)) {
+          // Blob URLs are process-local and can have been revoked after a session
+          // rename or preload lifecycle reset. Do not reuse a stale cached URL.
+          clearImageBlobCache(assetPath)
           media.src = await getFileBlobUrl(assetPath).catch(() => '')
         }
       }

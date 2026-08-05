@@ -346,26 +346,22 @@ function normalizeActionSpec(skillId, action) {
     name === 'agent_run' ||
     name === 'notebook_execute_cell' ||
     name === 'notebook_execute_all'
+  const actionTokens = name.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+  const destructive =
+    source.annotations?.destructiveHint === true ||
+    actionTokens.some((token) => token === 'delete' || token === 'remove' || token === 'reset')
 
   return {
     ...source,
     annotations: {
       ...(source.annotations && typeof source.annotations === 'object' ? source.annotations : {}),
       readOnlyHint: readOnly,
-      destructiveHint:
-        source.annotations?.destructiveHint === true ||
-        name.endsWith('_delete') ||
-        name === 'sandbox_reset' ||
-        name === 'notes_delete' ||
-        name === 'notebook_delete_cell'
+      destructiveHint: destructive
     },
     forceApproval: isExecution || !readOnly,
     hardApproval:
       source.hardApproval === true ||
-      name === 'sandbox_reset' ||
-      name === 'notebook_execute_cell' ||
-      name === 'notebook_execute_all' ||
-      source.annotations?.destructiveHint === true,
+      destructive,
     approvalKind: isShell ? 'shell' : isExecution ? 'execution' : 'tool'
   }
 }

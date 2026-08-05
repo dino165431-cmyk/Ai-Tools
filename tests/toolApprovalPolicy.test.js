@@ -193,6 +193,13 @@ test('safe mode auto-approves declared or conventionally named read-only MCP too
   )
   assert.equal(
     resolveMcpToolApprovalPolicy({
+      name: 'get_and_update_account',
+      annotations: { readOnlyHint: true }
+    }).forceApproval,
+    true
+  )
+  assert.equal(
+    resolveMcpToolApprovalPolicy({
       annotations: { readOnlyHint: true, destructiveHint: true }
     }).forceApproval,
     true

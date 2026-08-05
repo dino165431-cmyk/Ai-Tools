@@ -57,5 +57,8 @@ test('ordinary multi-turn chats stay in normal document flow and dynamic virtual
   assert.match(pageRuntimeSource, /mergeLaidOutHeavyChatMessageIds\(layoutReadyIds\)/)
   assert.match(pageRuntimeSource, /rootMargin:\s*`\$\{chatHeavyRenderRootMarginPx\.value\}px 0px`/)
   assert.match(pageRuntimeSource, /const chatDynamicLayoutRevision = computed/)
+  assert.match(pageRuntimeSource, /function getChangedChatLayoutMessageIds/)
   assert.match(pageRuntimeSource, /watch\(\s*chatDynamicLayoutRevision[\s\S]*scheduleChatVirtualItemRemeasure/)
+  assert.doesNotMatch(pageRuntimeSource, /chatVirtualItems\.value\.forEach\(\(item\) =>\s*\{\s*const message = chatDisplayMessages\.value\[item\.index\]/)
+  assert.doesNotMatch(pageRuntimeSource, /chatVirtualMeasureSettleFrame/)
 })

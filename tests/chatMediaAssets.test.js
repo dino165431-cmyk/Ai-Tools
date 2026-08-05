@@ -4,9 +4,11 @@ import assert from 'node:assert/strict'
 import {
   buildChatSessionAssetsDirectory,
   collectChatMediaAssetPathsFromPayload,
+  hydrateChatSessionMediaAssets,
   inferChatMediaAssetExtension,
   isChatSessionAssetsDirectoryPath,
   isTransientChatMediaSrc,
+  persistChatMediaListAssets,
   resolveChatMediaAssetPath,
   serializeChatMediaForSave
 } from '../src/utils/chatMediaAssets.js'
@@ -110,4 +112,60 @@ test('global chat media paths are not treated as managed assets', () => {
     }, { sessionFilePath: 'session/history/test.json' }),
     []
   )
+})
+
+test('persisted media refreshes a blob URL after its session sidecar moves', async () => {
+  const originalApi = globalThis.aiToolsApi
+  const requestedPaths = []
+  try {
+    globalThis.aiToolsApi = {
+      files: {
+        getFileBlobUrl: async (filePath) => {
+          requestedPaths.push(filePath)
+          return `blob:fresh:${filePath}`
+        }
+      }
+    }
+
+    const sessionFilePath = 'session/history/renamed.json'
+    const [media] = await persistChatMediaListAssets([
+      {
+        assetRef: 'msg/image.jpg',
+        assetPath: 'session/history/original.json.assets/msg/image.jpg',
+        src: 'blob:revoked-original-url'
+      }
+    ], { kind: 'image', sessionFilePath })
+
+    const expectedPath = 'session/history/renamed.json.assets/msg/image.jpg'
+    assert.deepEqual(requestedPaths, [expectedPath])
+    assert.equal(media.assetPath, expectedPath)
+    assert.equal(media.src, `blob:fresh:${expectedPath}`)
+  } finally {
+    if (originalApi === undefined) delete globalThis.aiToolsApi
+    else globalThis.aiToolsApi = originalApi
+  }
+})
+
+test('history hydration clears a stale blob cache before restoring local media', async () => {
+  const originalApi = globalThis.aiToolsApi
+  const clearedPaths = []
+  try {
+    globalThis.aiToolsApi = {
+      files: {
+        clearImageBlobCache: (filePath) => clearedPaths.push(filePath),
+        getFileBlobUrl: async (filePath) => `blob:restored:${filePath}`
+      }
+    }
+    const messages = [{ images: [{ assetRef: 'msg/image.jpg', src: 'blob:expired' }] }]
+    const sessionFilePath = 'session/history/restored.json'
+    const expectedPath = 'session/history/restored.json.assets/msg/image.jpg'
+
+    await hydrateChatSessionMediaAssets({ messages }, { sessionFilePath })
+
+    assert.deepEqual(clearedPaths, [expectedPath])
+    assert.equal(messages[0].images[0].src, `blob:restored:${expectedPath}`)
+  } finally {
+    if (originalApi === undefined) delete globalThis.aiToolsApi
+    else globalThis.aiToolsApi = originalApi
+  }
 })

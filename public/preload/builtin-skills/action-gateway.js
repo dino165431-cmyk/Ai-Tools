@@ -213,6 +213,7 @@ async function resolveBuiltinSkillCall({ profile, registry, args = {} }) {
       serverName: cleanString(skill?.name || skillId) || skillId,
       toolName: cleanString(action?.name),
       forceApproval: action?.forceApproval === true,
+      hardApproval: action?.hardApproval === true,
       approvalKind: cleanString(action?.approvalKind) || 'tool',
       annotations: action?.annotations && typeof action.annotations === 'object'
         ? action.annotations

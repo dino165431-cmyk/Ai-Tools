@@ -513,7 +513,7 @@ export function useChatSessionManager(dependencies) {
   }
 
   function autoPersistMemorySessionWhenIdle(record, options = {}) {
-    if (isMemorySessionRunning(record)) return ''
+    if (isMemorySessionRunning(record) && options.allowWhileRunning !== true) return ''
     if (!canPersistMemorySessionToHistory(record)) return ''
     const currentPath = String(record?.activeSessionFilePath || '').trim()
     if (!hasResolvedMemorySessionTitle(record)) return ''

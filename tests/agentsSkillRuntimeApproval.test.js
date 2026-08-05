@@ -81,7 +81,7 @@ test('nested sub-agents inherit the current approval mode and runtime supports l
   assert.match(source, /runState\.toolApprovalMode = mode/)
 })
 
-test('nested sub-agents prompt for MCP tools unless they are explicitly read-only', () => {
+test('nested sub-agents auto-approve declared or conventionally named read-only MCP tools', () => {
   const { getMcpToolApprovalPolicy } = loadApprovalHelpers()
 
   assert.equal(getMcpToolApprovalPolicy({}, {}).forceApproval, true)
@@ -92,6 +92,15 @@ test('nested sub-agents prompt for MCP tools unless they are explicitly read-onl
   assert.equal(
     getMcpToolApprovalPolicy({}, { annotations: { readOnlyHint: true } }).forceApproval,
     false
+  )
+  assert.equal(getMcpToolApprovalPolicy({}, { name: 'get_my_accounts' }).forceApproval, false)
+  assert.equal(getMcpToolApprovalPolicy({}, { name: 'get_and_delete_account' }).forceApproval, true)
+  assert.equal(
+    getMcpToolApprovalPolicy({}, {
+      name: 'get_and_update_account',
+      annotations: { readOnlyHint: true }
+    }).forceApproval,
+    true
   )
   assert.equal(getMcpToolApprovalPolicy({}, { name: 'delete_account' }).hardApproval, true)
 })

@@ -26,9 +26,17 @@ test('chat remembers the selected approval mode and exposes complete trust', () 
 
 test('chat high-risk mode distinguishes ordinary and destructive command execution', () => {
   const source = readSource('src/views/pages/chat/composables/useChatRequestRunner.js')
+  const chatSource = readSource('src/views/pages/chat/Chat.vue')
   const catalogSource = readSource('public/preload/builtin-skills/index.js')
 
   assert.match(source, /isDangerousShellApprovalCommand\(argsObj,\s*argsText\)/)
+  assert.match(source, /const hardApproval = detail\.hardApproval === true/)
+  assert.match(
+    source,
+    /if \(runRecord && isMemorySessionActive\(runRecord\)\) \{\s*return normalizeToolApprovalMode\(toolApprovalMode\.value\)/
+  )
+  assert.match(source, /record\.state\.toolApprovalMode = nextMode/)
+  assert.match(chatSource, /高风险自动（普通写入、命令与代码自动，危险操作确认）/)
   assert.match(source, /普通写入、常规命令和一般代码/)
   assert.match(source, /直接批准所有工具调用，包括命令、主机代码执行、删除及其他破坏性操作/)
   assert.match(catalogSource, /name === 'notebook_execute_cell'/)
