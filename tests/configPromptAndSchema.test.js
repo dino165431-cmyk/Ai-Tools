@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
@@ -54,6 +55,16 @@ function resetConfigStorage() {
   storage.delete('global-config')
   fs.rmSync(path.dirname(getLocalNotebookRuntimeConfigPath()), { recursive: true, force: true })
   fs.rmSync(path.join(globalThis.utools.getPath('userData'), '.ai-tools-settings'), { recursive: true, force: true })
+}
+
+function hasPython3Runtime() {
+  return [
+    ['python', ['--version']],
+    ['py', ['-3', '--version']]
+  ].some(([command, args]) => {
+    const result = spawnSync(command, args, { windowsHide: true, timeout: 10000 })
+    return !result.error && result.status === 0
+  })
 }
 
 test('remote Skill package installation rejects local and private network targets', async () => {
@@ -170,6 +181,15 @@ test('directory Skill package export and install preserve scripts, references, a
   assert.equal(globalConfig.readSkillFile(installed._id, '.env.example').content, 'TOKEN=replace-me\n')
   assert.deepEqual(fs.readFileSync(path.join(installed.sourcePath, 'assets', 'icon.bin')), Buffer.from([0, 1, 2, 255]))
   assert.equal(fs.existsSync(path.join(installed.sourcePath, '.env')), false)
+
+  fs.writeFileSync(path.join(installed.sourcePath, '.env'), 'TOKEN=local-package-secret\n', 'utf8')
+  const previousInstalledPath = installed.sourcePath
+  const updated = globalConfig.installSkillPackageFromFile(packagePath, { overwrite: true })
+  const reinstalled = globalConfig.getSkill(updated.skill.id)
+  assert.equal(updated.skill.action, 'updated')
+  assert.notEqual(path.resolve(reinstalled.sourcePath), path.resolve(previousInstalledPath))
+  assert.equal(fs.existsSync(previousInstalledPath), false)
+  assert.equal(fs.readFileSync(path.join(reinstalled.sourcePath, '.env'), 'utf8'), 'TOKEN=local-package-secret\n')
 })
 
 test('builtin config Skill includes native action rules and import guidance', () => {
@@ -859,6 +879,11 @@ test('runSkillScript executes JavaScript files under imported skill scripts', as
   fs.writeFileSync(path.join(skillDir, '.env.example'), 'DEMO_API_KEY=replace-me\n', 'utf8')
 
   const imported = globalConfig.importSkillDirectory(skillDir)
+  fs.writeFileSync(
+    path.join(skillDir, '.env'),
+    ['DEMO_API_KEY=loaded-after-import', 'DEMO_LABEL="latest value"'].join('\n'),
+    'utf8'
+  )
   process.env.AI_TOOLS_TEST_SECRET = 'must-not-leak'
   t.after(() => delete process.env.AI_TOOLS_TEST_SECRET)
   const result = await globalConfig.runSkillScript(
@@ -883,9 +908,14 @@ test('runSkillScript executes JavaScript files under imported skill scripts', as
   assert.equal(result.output.env.skillRoot, path.resolve(imported.sourcePath).replace(/\\/g, '/'))
   assert.equal(result.output.env.scriptPath, 'scripts/run.js')
   assert.equal(result.output.env.inheritedSecret, undefined)
-  assert.equal(result.output.env.configuredValue, 'loaded-from-skill')
-  assert.equal(result.output.env.configuredLabel, 'hello world')
+  assert.equal(result.output.env.configuredValue, 'loaded-after-import')
+  assert.equal(result.output.env.configuredLabel, 'latest value')
   assert.equal(fs.existsSync(path.join(imported.sourcePath, '.env')), true)
+
+  fs.rmSync(path.join(skillDir, '.env'))
+  const withoutSourceEnv = await globalConfig.runSkillScript(imported._id, 'scripts/run.js', { timeout_ms: 5000 })
+  assert.equal(withoutSourceEnv.output.env.configuredValue, undefined)
+  assert.equal(withoutSourceEnv.output.env.configuredLabel, undefined)
 
   const listedFiles = globalConfig.listSkillFiles(imported._id)
   assert.equal(listedFiles.extra.includes('.env'), false)
@@ -921,11 +951,53 @@ test('runSkillScript rejects reserved variables from imported skill .env', async
     /cannot override reserved environment variable: AI_TOOLS_SKILL_ROOT/
   )
 
-  fs.writeFileSync(path.join(imported.sourcePath, '.env'), 'NODE_OPTIONS=--trace-warnings\n', 'utf8')
+  fs.writeFileSync(path.join(skillDir, '.env'), 'NODE_OPTIONS=--trace-warnings\n', 'utf8')
   await assert.rejects(
     globalConfig.runSkillScript(imported._id, 'scripts/run.js', { timeout_ms: 5000 }),
     /cannot override reserved environment variable: NODE_OPTIONS/
   )
+})
+
+test('refresh and delete reclaim obsolete managed skill and runtime directories', (t) => {
+  resetConfigStorage()
+  globalConfig.ensureBuiltins()
+
+  const { skillDir } = createSkillFixture(t, {
+    folderName: 'managed-cleanup-skill',
+    skillName: 'Managed Cleanup Skill',
+    descriptionLines: ['Managed cleanup'],
+    scriptName: 'run.js',
+    scriptContent: "process.stdout.write('ok')"
+  })
+
+  const first = globalConfig.importSkillDirectory(skillDir)
+  const firstVersionRoot = path.dirname(first.sourcePath)
+  const skillIdRoot = path.dirname(firstVersionRoot)
+  const orphanVersionRoot = path.join(skillIdRoot, 'orphan-version')
+  fs.mkdirSync(path.join(orphanVersionRoot, 'orphan-skill'), { recursive: true })
+
+  const runtimeSkillRoot = path.join(
+    globalConfig.getConfig().dataStorageRoot,
+    '.ai-tools-settings',
+    'runtime',
+    'skills',
+    first._id
+  )
+  fs.mkdirSync(path.join(runtimeSkillRoot, 'cache'), { recursive: true })
+
+  const refreshed = globalConfig.refreshSkillFromSource(first._id)
+  const refreshedVersionRoot = path.dirname(refreshed.sourcePath)
+  assert.notEqual(path.resolve(refreshed.sourcePath), path.resolve(first.sourcePath))
+  assert.equal(fs.existsSync(firstVersionRoot), false)
+  assert.equal(fs.existsSync(orphanVersionRoot), false)
+  assert.deepEqual(
+    fs.readdirSync(skillIdRoot).map((name) => path.resolve(skillIdRoot, name)),
+    [path.resolve(refreshedVersionRoot)]
+  )
+
+  globalConfig.deleteSkill(first._id)
+  assert.equal(fs.existsSync(skillIdRoot), false)
+  assert.equal(fs.existsSync(runtimeSkillRoot), false)
 })
 
 test('directory skill caches script manifest metadata and supports auto-selecting the only runnable script', async (t) => {
@@ -1037,6 +1109,51 @@ test('directory skill infers Python entry scripts and header metadata without ma
   assert.equal(imported.cache.scriptCatalog[0].outputType, 'json')
   assert.equal(imported.cache.scriptCatalog[0].outputTypeDeclared, false)
   assert.equal(imported.cache.scriptCatalog[1].path, 'scripts/helpers/util.py')
+})
+
+test('runSkillScript prepares and reuses an isolated Python environment from requirements.txt', {
+  skip: hasPython3Runtime() ? false : 'Python 3 runtime is unavailable'
+}, async (t) => {
+  resetConfigStorage()
+  globalConfig.ensureBuiltins()
+
+  const { skillDir } = createSkillFixture(t, {
+    folderName: 'python-dependency-skill',
+    skillName: 'Python Dependency Skill',
+    descriptionLines: ['Python dependency environment'],
+    scriptName: 'run.py',
+    scriptContent: [
+      'import json',
+      'import os',
+      'import sys',
+      "print(json.dumps({'prefix': sys.prefix, 'virtual_env': os.getenv('VIRTUAL_ENV', '')}))"
+    ].join('\n')
+  })
+  fs.writeFileSync(path.join(skillDir, 'requirements.txt'), '# intentionally empty\n', 'utf8')
+  const imported = globalConfig.importSkillDirectory(skillDir)
+
+  let first
+  try {
+    first = await globalConfig.runSkillScript(imported._id, 'scripts/run.py', { timeout_ms: 5000 })
+  } catch (error) {
+    if (/failed to prepare Python dependencies|No module named (?:venv|ensurepip)/i.test(String(error?.message || error))) {
+      t.skip(`Python venv support is unavailable: ${error?.message || error}`)
+      return
+    }
+    throw error
+  }
+
+  assert.equal(first.ok, true)
+  assert.equal(first.pythonEnvironment.managed, true)
+  assert.equal(first.pythonEnvironment.reused, false)
+  assert.equal(first.pythonEnvironment.dependencyFile, 'requirements.txt')
+  assert.equal(path.resolve(first.output.prefix), path.resolve(first.pythonEnvironment.environmentRoot))
+  assert.equal(path.resolve(first.output.virtual_env), path.resolve(first.pythonEnvironment.environmentRoot))
+
+  const second = await globalConfig.runSkillScript(imported._id, 'scripts/run.py', { timeout_ms: 5000 })
+  assert.equal(second.pythonEnvironment.managed, true)
+  assert.equal(second.pythonEnvironment.reused, true)
+  assert.equal(path.resolve(second.pythonEnvironment.environmentRoot), path.resolve(first.pythonEnvironment.environmentRoot))
 })
 
 test('runSkillScript rejects invalid JSON stdout when manifest requires json output', async (t) => {

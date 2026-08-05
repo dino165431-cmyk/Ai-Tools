@@ -198,7 +198,7 @@ export const INTERNAL_TOOL_SPECS = Object.freeze({
   },
   runSkillScript: {
     description:
-      '执行当前已选择技能目录下 `scripts/` 中的脚本。适用于 skill 自带的自动化脚本。必须传 skill id；`path` 优先传完整相对路径，若该 skill 只有 1 个可执行脚本则可省略。路径只能位于 `scripts/` 下。支持 `.js/.mjs/.cjs/.py/.ps1/.sh`。标准 skill 通常通过 `SKILL.md` 和脚本顶部 docstring / 注释说明如何使用脚本；`scripts/manifest.json` 仅作为可选兼容扩展。可选传 `args`、`input`、`timeout_ms`。示例：{"id":"skill_xxx","path":"scripts/run.js","args":["--target","demo"]}。',
+      '执行当前已选择技能目录下 `scripts/` 中的脚本。适用于 skill 自带的自动化脚本。宿主会为该次执行注入技能根目录最新的 `.env`；Python 技能声明 `requirements.txt`、`scripts/requirements.txt` 或 `pyproject.toml` 时会自动准备并复用隔离依赖环境。因此必须通过本工具检查技能环境或依赖，不要用通用沙盒 Shell 的环境推断技能运行状态。必须传 skill id；`path` 优先传完整相对路径，若该 skill 只有 1 个可执行脚本则可省略。路径只能位于 `scripts/` 下。支持 `.js/.mjs/.cjs/.py/.ps1/.sh`。标准 skill 通常通过 `SKILL.md` 和脚本顶部 docstring / 注释说明如何使用脚本；`scripts/manifest.json` 仅作为可选兼容扩展。可选传 `args`、`input`、`timeout_ms`。示例：{"id":"skill_xxx","path":"scripts/run.js","args":["--target","demo"]}。',
     parameters: {
       type: 'object',
       properties: {

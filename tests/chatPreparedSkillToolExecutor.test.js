@@ -177,6 +177,57 @@ test('prepared skill executor keeps an auto-routed skill available when its scri
   assert.deepEqual(persistedSkillIds, ['skill_adjust'])
 })
 
+test('prepared skill executor reports managed Python dependency reuse without exposing runtime paths', async () => {
+  const context = createExecutionContext()
+  const execute = createPreparedSkillToolExecutor({
+    extractChatImagesFromToolResult: () => [],
+    maybeScrollToBottomForRun: async () => {},
+    resolveSelectedSkillTarget: () => ({
+      _id: 'skill_release',
+      name: '发布工具'
+    }),
+    resolveSkillScriptTarget: () => ({
+      ok: true,
+      path: 'scripts/publish.py'
+    }),
+    runSkillRegistryScript: async () => ({
+      ok: true,
+      path: 'scripts/publish.py',
+      command: 'python',
+      outputType: 'json',
+      output: { ok: true },
+      stdout: '{"ok":true}',
+      stderr: '',
+      exitCode: 0,
+      scriptMeta: { runtime: 'py' },
+      pythonEnvironment: {
+        managed: true,
+        reused: true,
+        dependencyFile: 'requirements.txt',
+        dependencyType: 'requirements',
+        environmentRoot: 'C:/secret/runtime/path'
+      }
+    })
+  })
+
+  const execution = await execute(
+    {
+      mapping: { type: 'internal', internal: 'run_skill_script' },
+      serverName: 'Skill',
+      toolName: 'run_skill_script',
+      argsObj: { id: 'skill_release', path: 'scripts/publish.py' }
+    },
+    context
+  )
+
+  assert.equal(execution.handled, true)
+  assert.equal(execution.result.ok, true)
+  assert.match(execution.result.content, /python_environment/)
+  assert.match(execution.result.content, /requirements\.txt/)
+  assert.doesNotMatch(execution.result.content, /secret\/runtime\/path/)
+  assert.match(context.targetSession.messages[0].content, /复用现有隔离环境/)
+})
+
 test('prepared skill discovery searches the installed catalog, not only selected skills', async () => {
   const context = createExecutionContext()
   const installed = {

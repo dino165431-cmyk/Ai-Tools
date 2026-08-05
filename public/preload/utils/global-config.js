@@ -1,4 +1,5 @@
 ﻿const fs = require('fs');
+const crypto = require('crypto');
 const http = require('http');
 const https = require('https');
 const path = require('path');
@@ -1468,6 +1469,7 @@ const RESERVED_SKILL_ENV_KEYS = new Set([
     'PYTHONHOME',
     'PYTHONPATH',
     'PYTHONSTARTUP',
+    'VIRTUAL_ENV',
     'BASH_ENV',
     'ENV',
     'LD_PRELOAD',
@@ -1579,6 +1581,12 @@ const SKILL_SCRIPT_HELPER_SEGMENTS = new Set(['lib', 'libs', 'utils', 'common', 
 const SKILL_SCRIPT_HELPER_BASENAMES = new Set(['__init__', 'util', 'utils', 'common', 'shared', 'helper', 'helpers', 'base', 'types', 'constants'])
 const MANAGED_SKILLS_RELATIVE_PATH = path.join('.ai-tools-settings', 'skills')
 const MAX_MANAGED_SKILL_FILES = 50000
+const MAX_SKILL_PYTHON_DEPENDENCY_FILE_BYTES = 1024 * 1024
+const SKILL_PYTHON_DEPENDENCY_CANDIDATES = Object.freeze([
+    { path: 'requirements.txt', type: 'requirements' },
+    { path: 'scripts/requirements.txt', type: 'requirements' },
+    { path: 'pyproject.toml', type: 'project' }
+])
 
 function normalizeSkillPathForMatch(filePath) {
     return String(filePath || '').trim().replace(/\\/g, '/').replace(/^\/+/, '')
@@ -1860,6 +1868,7 @@ class GlobalConfig {
         GlobalConfig.instance = this;
 
         this.STORAGE_KEY = 'global-config';
+        this._skillPythonSetupQueues = new Map();
 
         this._defaultConfig = {
             theme: 'light',
@@ -2831,6 +2840,84 @@ class GlobalConfig {
         return managedRoot
     }
 
+    _getManagedSkillIdRoot(config, skillId) {
+        const safeSkillId = String(skillId || '').trim()
+        if (!/^[A-Za-z0-9_-]+$/.test(safeSkillId)) return ''
+
+        const managedRoot = this._getManagedSkillsRoot(config)
+        const skillIdRoot = path.resolve(managedRoot, safeSkillId)
+        if (!isPathInside(managedRoot, skillIdRoot) || skillIdRoot === managedRoot) {
+            throw new Error('managed skill id path escaped the managed skills directory')
+        }
+        return skillIdRoot
+    }
+
+    _getManagedSkillVersionRootForSource(config, skillId, sourcePath) {
+        const skillIdRoot = this._getManagedSkillIdRoot(config, skillId)
+        const source = typeof sourcePath === 'string' && sourcePath.trim()
+            ? path.resolve(sourcePath.trim())
+            : ''
+        if (!skillIdRoot || !source || !isPathInside(skillIdRoot, source) || source === skillIdRoot) return ''
+
+        const relative = path.relative(skillIdRoot, source)
+        const segments = relative.split(path.sep).filter(Boolean)
+        if (segments.length < 2) return ''
+
+        const versionRoot = path.resolve(skillIdRoot, segments[0])
+        return isPathInside(skillIdRoot, versionRoot) && versionRoot !== skillIdRoot ? versionRoot : ''
+    }
+
+    _pruneManagedSkillVersions(config, skillId, keepSourcePaths = []) {
+        const skillIdRoot = this._getManagedSkillIdRoot(config, skillId)
+        if (!skillIdRoot || !fs.existsSync(skillIdRoot)) return []
+
+        const keepVersionRoots = new Set(
+            normalizeStringList(keepSourcePaths)
+                .map((sourcePath) => this._getManagedSkillVersionRootForSource(config, skillId, sourcePath))
+                .filter(Boolean)
+                .map((versionRoot) => path.resolve(versionRoot))
+        )
+        const removed = []
+
+        fs.readdirSync(skillIdRoot, { withFileTypes: true }).forEach((entry) => {
+            const candidate = path.resolve(skillIdRoot, entry.name)
+            if (!isPathInside(skillIdRoot, candidate) || candidate === skillIdRoot) return
+            if (keepVersionRoots.has(candidate)) return
+            fs.rmSync(candidate, { recursive: true, force: true })
+            removed.push(candidate)
+        })
+
+        if (!fs.readdirSync(skillIdRoot).length) {
+            fs.rmdirSync(skillIdRoot)
+        }
+        return removed
+    }
+
+    _cleanupManagedSkillStorage(config, skillId) {
+        const skillIdRoot = this._getManagedSkillIdRoot(config, skillId)
+        if (skillIdRoot && fs.existsSync(skillIdRoot)) {
+            fs.rmSync(skillIdRoot, { recursive: true, force: true })
+        }
+
+        const safeSkillId = String(skillId || '').trim()
+        if (!/^[A-Za-z0-9_-]+$/.test(safeSkillId)) return
+        const dataRoot = this._ensureWritableDataStorageRoot(config)
+        const runtimeSkillsRoot = path.resolve(dataRoot, '.ai-tools-settings', 'runtime', 'skills')
+        const runtimeSkillRoot = path.resolve(runtimeSkillsRoot, safeSkillId)
+        if (isPathInside(runtimeSkillsRoot, runtimeSkillRoot) && runtimeSkillRoot !== runtimeSkillsRoot && fs.existsSync(runtimeSkillRoot)) {
+            fs.rmSync(runtimeSkillRoot, { recursive: true, force: true })
+        }
+    }
+
+    _pruneManagedSkillVersionsAfterCommit(config, skillId, keepSourcePaths = []) {
+        try {
+            return this._pruneManagedSkillVersions(config, skillId, keepSourcePaths)
+        } catch (error) {
+            console.warn(`清理 Skill ${skillId} 的旧托管版本失败。`, error)
+            return []
+        }
+    }
+
     _assertManagedSkillSourceTree(sourceRoot) {
         const root = this._ensureAbsoluteDirectory(sourceRoot, 'sourcePath')
         const stack = [root]
@@ -2912,6 +2999,45 @@ class GlobalConfig {
         return this.refreshSkillFromSource(skill._id)
     }
 
+    _getSkillDotEnvRoot(skill, skillRoot) {
+        const managedRoot = path.resolve(skillRoot)
+        const originalSourcePath = typeof skill?.install?.originalSourcePath === 'string'
+            ? skill.install.originalSourcePath.trim()
+            : ''
+        if (!originalSourcePath || !path.isAbsolute(originalSourcePath)) return managedRoot
+
+        const originalRoot = path.resolve(originalSourcePath)
+        if (originalRoot === managedRoot || !fs.existsSync(originalRoot)) return managedRoot
+
+        let originalStat = null
+        try {
+            originalStat = fs.statSync(originalRoot)
+        } catch {
+            return managedRoot
+        }
+        if (!originalStat.isDirectory()) return managedRoot
+
+        const originalEnvPath = path.resolve(originalRoot, SKILL_DOTENV_FILENAME)
+        return isPathInside(originalRoot, originalEnvPath) ? originalRoot : managedRoot
+    }
+
+    _preserveSkillDotEnv(existingSkill, nextSkill) {
+        const previousRoot = typeof existingSkill?.sourcePath === 'string' ? existingSkill.sourcePath.trim() : ''
+        const nextRoot = typeof nextSkill?.sourcePath === 'string' ? nextSkill.sourcePath.trim() : ''
+        if (!previousRoot || !nextRoot || previousRoot === nextRoot) return false
+        if (!path.isAbsolute(previousRoot) || !path.isAbsolute(nextRoot)) return false
+
+        const previousEnvRoot = this._getSkillDotEnvRoot(existingSkill, previousRoot)
+        const previousEnvPath = path.resolve(previousEnvRoot, SKILL_DOTENV_FILENAME)
+        const nextEnvPath = path.resolve(nextRoot, SKILL_DOTENV_FILENAME)
+        if (!isPathInside(previousEnvRoot, previousEnvPath) || !isPathInside(nextRoot, nextEnvPath)) return false
+        if (!fs.existsSync(previousEnvPath) || fs.existsSync(nextEnvPath)) return false
+
+        this._loadSkillDotEnv(previousEnvRoot)
+        fs.copyFileSync(previousEnvPath, nextEnvPath, fs.constants.COPYFILE_EXCL)
+        return true
+    }
+
     _loadSkillDotEnv(skillRoot) {
         const envPath = path.resolve(skillRoot, SKILL_DOTENV_FILENAME)
         if (!isPathInside(skillRoot, envPath)) {
@@ -2948,9 +3074,15 @@ class GlobalConfig {
         return safeEnv
     }
 
-    _buildSkillRuntimeEnvironment(dataRoot, skill, skillRoot, scriptPath) {
+    _getSkillRuntimeRoot(dataRoot, skill) {
         const safeSkillId = String(skill?._id || 'skill').replace(/[^A-Za-z0-9_-]/g, '_')
         const runtimeRoot = path.resolve(dataRoot, '.ai-tools-settings', 'runtime', 'skills', safeSkillId)
+        if (!isPathInside(dataRoot, runtimeRoot)) throw new Error('skill runtime path escaped dataStorageRoot')
+        return runtimeRoot
+    }
+
+    _buildSkillRuntimeEnvironment(dataRoot, skill, skillRoot, scriptPath) {
+        const runtimeRoot = this._getSkillRuntimeRoot(dataRoot, skill)
         const tempRoot = path.join(runtimeRoot, 'tmp')
         const configRoot = path.join(runtimeRoot, 'config')
         const cacheRoot = path.join(runtimeRoot, 'cache')
@@ -2960,7 +3092,7 @@ class GlobalConfig {
             fs.mkdirSync(dir, { recursive: true })
         })
 
-        const skillEnv = this._loadSkillDotEnv(skillRoot)
+        const skillEnv = this._loadSkillDotEnv(this._getSkillDotEnvRoot(skill, skillRoot))
         const env = {}
         ;[
             'PATH',
@@ -3004,6 +3136,328 @@ class GlobalConfig {
             SKILL_ROOT: skillRoot,
             SKILL_ENTRY_FILE: String(skill?.entryFile || 'SKILL.md'),
             SKILL_SCRIPT_PATH: scriptPath
+        }
+    }
+
+    _runSkillProcess(command, args, options = {}) {
+        return new Promise((resolve, reject) => {
+            const child = execFile(
+                command,
+                Array.isArray(args) ? args : [],
+                {
+                    cwd: options.cwd,
+                    env: options.env,
+                    windowsHide: true,
+                    timeout: options.timeoutMs,
+                    maxBuffer: options.maxBuffer || 8 * 1024 * 1024
+                },
+                (error, stdout, stderr) => {
+                    if (error) {
+                        const err = new Error(stderr || stdout || error.message || String(error))
+                        err.code = error.code
+                        err.stdout = String(stdout || '')
+                        err.stderr = String(stderr || '')
+                        reject(err)
+                        return
+                    }
+                    resolve({
+                        stdout: String(stdout || ''),
+                        stderr: String(stderr || '')
+                    })
+                }
+            )
+
+            if (child?.stdin) {
+                const input = options.input === undefined || options.input === null ? '' : String(options.input)
+                if (input) child.stdin.write(input)
+                child.stdin.end()
+            }
+        })
+    }
+
+    _buildSkillDependencyInstallerEnvironment(runtimeEnv) {
+        const allowedKeys = [
+            'PATH',
+            'Path',
+            'PATHEXT',
+            'SystemRoot',
+            'SYSTEMROOT',
+            'WINDIR',
+            'ComSpec',
+            'COMSPEC',
+            'LANG',
+            'LC_ALL',
+            'TERM',
+            'NUMBER_OF_PROCESSORS',
+            'PROCESSOR_ARCHITECTURE',
+            'HOME',
+            'USERPROFILE',
+            'APPDATA',
+            'LOCALAPPDATA',
+            'TMP',
+            'TEMP',
+            'TMPDIR',
+            'XDG_CONFIG_HOME',
+            'XDG_CACHE_HOME',
+            'XDG_DATA_HOME'
+        ]
+        const env = {}
+        allowedKeys.forEach((key) => {
+            if (runtimeEnv?.[key] !== undefined) env[key] = runtimeEnv[key]
+        })
+        return env
+    }
+
+    _buildSkillVirtualEnvironment(runtimeEnv, environmentRoot) {
+        const binRoot = process.platform === 'win32'
+            ? path.join(environmentRoot, 'Scripts')
+            : path.join(environmentRoot, 'bin')
+        const inheritedPath = String(runtimeEnv?.PATH ?? runtimeEnv?.Path ?? '')
+        const nextPath = inheritedPath ? `${binRoot}${path.delimiter}${inheritedPath}` : binRoot
+        const env = {
+            ...(runtimeEnv || {}),
+            VIRTUAL_ENV: environmentRoot,
+            PATH: nextPath
+        }
+        if (process.platform === 'win32' || runtimeEnv?.Path !== undefined) env.Path = nextPath
+        return env
+    }
+
+    _getSkillVirtualEnvironmentPythonPath(environmentRoot) {
+        return process.platform === 'win32'
+            ? path.join(environmentRoot, 'Scripts', 'python.exe')
+            : path.join(environmentRoot, 'bin', 'python')
+    }
+
+    _findSkillPythonDependencySpec(skillRoot) {
+        for (const candidate of SKILL_PYTHON_DEPENDENCY_CANDIDATES) {
+            const resolved = this._resolveSkillFileAbs(skillRoot, candidate.path)
+            if (!fs.existsSync(resolved.abs)) continue
+
+            const stat = fs.lstatSync(resolved.abs)
+            if (stat.isSymbolicLink() || !stat.isFile()) {
+                throw new Error(`Python dependency declaration must be a regular file: ${resolved.inner}`)
+            }
+            if (stat.size > MAX_SKILL_PYTHON_DEPENDENCY_FILE_BYTES) {
+                throw new Error(`Python dependency declaration cannot exceed ${MAX_SKILL_PYTHON_DEPENDENCY_FILE_BYTES} bytes: ${resolved.inner}`)
+            }
+
+            const content = fs.readFileSync(resolved.abs)
+            const fingerprint = crypto
+                .createHash('sha256')
+                .update(`ai-tools-skill-python-v1\0${candidate.type}\0${resolved.inner}\0`)
+                .update(content)
+
+            if (candidate.type === 'project') {
+                fingerprint.update(`\0${path.resolve(skillRoot)}`)
+                ;['uv.lock', 'poetry.lock', 'pdm.lock'].forEach((lockPath) => {
+                    const lockResolved = this._resolveSkillFileAbs(skillRoot, lockPath)
+                    if (!fs.existsSync(lockResolved.abs)) return
+                    const lockStat = fs.lstatSync(lockResolved.abs)
+                    if (lockStat.isSymbolicLink() || !lockStat.isFile()) return
+                    if (lockStat.size > MAX_SKILL_PYTHON_DEPENDENCY_FILE_BYTES) return
+                    fingerprint.update(`\0${lockResolved.inner}\0`).update(fs.readFileSync(lockResolved.abs))
+                })
+            }
+
+            return {
+                type: candidate.type,
+                path: resolved.inner,
+                absPath: resolved.abs,
+                fingerprint: fingerprint.digest('hex')
+            }
+        }
+        return null
+    }
+
+    _readSkillPythonEnvironmentMarker(environmentRoot) {
+        const markerPath = path.join(environmentRoot, '.ai-tools-ready.json')
+        if (!fs.existsSync(markerPath)) return null
+        try {
+            const parsed = JSON.parse(fs.readFileSync(markerPath, 'utf8'))
+            return parsed && typeof parsed === 'object' ? parsed : null
+        } catch {
+            return null
+        }
+    }
+
+    _pruneSkillPythonEnvironments(pythonRoot, keepEnvironmentRoot) {
+        if (!fs.existsSync(pythonRoot)) return
+        const keep = path.resolve(keepEnvironmentRoot)
+        fs.readdirSync(pythonRoot, { withFileTypes: true }).forEach((entry) => {
+            const candidate = path.resolve(pythonRoot, entry.name)
+            if (!isPathInside(pythonRoot, candidate) || candidate === pythonRoot || candidate === keep) return
+            try {
+                fs.rmSync(candidate, { recursive: true, force: true })
+            } catch (error) {
+                console.warn('清理旧 Skill Python 虚拟环境失败。', error)
+            }
+        })
+    }
+
+    async _ensureSkillPythonEnvironment({ dataRoot, skill, skillRoot, runtimeEnv, dependencySpec, timeoutMs }) {
+        const runtimeRoot = this._getSkillRuntimeRoot(dataRoot, skill)
+        const pythonRoot = path.resolve(runtimeRoot, 'python')
+        const environmentName = dependencySpec.fingerprint.slice(0, 24)
+        const environmentRoot = path.resolve(pythonRoot, environmentName)
+        if (!isPathInside(runtimeRoot, pythonRoot) || !isPathInside(pythonRoot, environmentRoot)) {
+            throw new Error('skill Python environment path escaped the skill runtime directory')
+        }
+        fs.mkdirSync(pythonRoot, { recursive: true })
+
+        const environmentPython = this._getSkillVirtualEnvironmentPythonPath(environmentRoot)
+        const existingMarker = this._readSkillPythonEnvironmentMarker(environmentRoot)
+        if (existingMarker?.fingerprint === dependencySpec.fingerprint && fs.existsSync(environmentPython)) {
+            this._pruneSkillPythonEnvironments(pythonRoot, environmentRoot)
+            return {
+                command: environmentPython,
+                env: this._buildSkillVirtualEnvironment(runtimeEnv, environmentRoot),
+                metadata: {
+                    managed: true,
+                    reused: true,
+                    dependencyFile: dependencySpec.path,
+                    dependencyType: dependencySpec.type,
+                    environmentRoot
+                }
+            }
+        }
+
+        const installTimeoutMs = Math.max(5 * 60 * 1000, Math.min(10 * 60 * 1000, Number(timeoutMs) || 0))
+        const installerEnv = this._buildSkillDependencyInstallerEnvironment(runtimeEnv)
+        const pythonCandidates = [
+            { command: 'python', prefixArgs: [], label: 'python' },
+            { command: 'py', prefixArgs: ['-3'], label: 'py -3' }
+        ]
+        const errors = []
+
+        for (const candidate of pythonCandidates) {
+            fs.rmSync(environmentRoot, { recursive: true, force: true })
+            let setupStage = 'venv'
+
+            try {
+                await this._runSkillProcess(
+                    candidate.command,
+                    [...candidate.prefixArgs, '-m', 'venv', environmentRoot],
+                    {
+                        cwd: skillRoot,
+                        env: installerEnv,
+                        timeoutMs: installTimeoutMs
+                    }
+                )
+
+                const environmentPythonPath = this._getSkillVirtualEnvironmentPythonPath(environmentRoot)
+                if (!fs.existsSync(environmentPythonPath)) {
+                    throw new Error(`virtual environment did not create a Python executable: ${environmentPythonPath}`)
+                }
+
+                const pipArgs = [
+                    '-m',
+                    'pip',
+                    'install',
+                    '--disable-pip-version-check',
+                    '--no-input',
+                    '--require-virtualenv'
+                ]
+                if (dependencySpec.type === 'requirements') {
+                    pipArgs.push('-r', dependencySpec.absPath)
+                } else {
+                    pipArgs.push(skillRoot)
+                }
+
+                setupStage = 'pip'
+                await this._runSkillProcess(environmentPythonPath, pipArgs, {
+                    cwd: dependencySpec.type === 'requirements' ? path.dirname(dependencySpec.absPath) : skillRoot,
+                    env: this._buildSkillVirtualEnvironment(installerEnv, environmentRoot),
+                    timeoutMs: installTimeoutMs
+                })
+
+                fs.writeFileSync(
+                    path.join(environmentRoot, '.ai-tools-ready.json'),
+                    JSON.stringify({
+                        version: 1,
+                        fingerprint: dependencySpec.fingerprint,
+                        dependencyFile: dependencySpec.path,
+                        dependencyType: dependencySpec.type,
+                        createdAt: new Date().toISOString()
+                    }, null, 2),
+                    'utf8'
+                )
+
+                this._pruneSkillPythonEnvironments(pythonRoot, environmentRoot)
+
+                return {
+                    command: this._getSkillVirtualEnvironmentPythonPath(environmentRoot),
+                    env: this._buildSkillVirtualEnvironment(runtimeEnv, environmentRoot),
+                    metadata: {
+                        managed: true,
+                        reused: false,
+                        dependencyFile: dependencySpec.path,
+                        dependencyType: dependencySpec.type,
+                        environmentRoot
+                    }
+                }
+            } catch (error) {
+                fs.rmSync(environmentRoot, { recursive: true, force: true })
+                const detail = toSkillScriptPreviewText(error?.message || String(error), 500)
+                errors.push(`${candidate.label}: ${detail || 'unknown error'}`)
+                const missingInstallerRuntime = error?.code === 'ENOENT'
+                    || /No module named (?:venv|ensurepip|pip)|ensurepip is not available/i.test(String(error?.message || error))
+                if (setupStage === 'pip' && !missingInstallerRuntime) {
+                    throw new Error(
+                        `failed to install Python dependencies from ${dependencySpec.path} with ${candidate.label}: ${detail || 'unknown error'}`
+                    )
+                }
+            }
+        }
+
+        throw new Error(
+            `failed to prepare Python dependencies from ${dependencySpec.path}: ${errors.join(' | ') || 'no Python 3 runtime found'}`
+        )
+    }
+
+    async _prepareSkillPythonRuntime({ dataRoot, skill, skillRoot, runtimeEnv, timeoutMs }) {
+        const dependencySpec = this._findSkillPythonDependencySpec(skillRoot)
+        if (!dependencySpec) {
+            return {
+                attempts: [
+                    { command: 'python', prefixArgs: [] },
+                    { command: 'py', prefixArgs: ['-3'] }
+                ],
+                env: runtimeEnv,
+                metadata: {
+                    managed: false,
+                    reused: false,
+                    dependencyFile: '',
+                    dependencyType: ''
+                }
+            }
+        }
+
+        const queueKey = path.resolve(this._getSkillRuntimeRoot(dataRoot, skill), 'python')
+        const previous = this._skillPythonSetupQueues.get(queueKey) || Promise.resolve()
+        const current = previous
+            .catch(() => undefined)
+            .then(() => this._ensureSkillPythonEnvironment({
+                dataRoot,
+                skill,
+                skillRoot,
+                runtimeEnv,
+                dependencySpec,
+                timeoutMs
+            }))
+        this._skillPythonSetupQueues.set(queueKey, current)
+
+        try {
+            const prepared = await current
+            return {
+                attempts: [{ command: prepared.command, prefixArgs: [] }],
+                env: prepared.env,
+                metadata: prepared.metadata
+            }
+        } finally {
+            if (this._skillPythonSetupQueues.get(queueKey) === current) {
+                this._skillPythonSetupQueues.delete(queueKey)
+            }
         }
     }
 
@@ -3439,6 +3893,7 @@ class GlobalConfig {
             if (hasPackagedFiles) {
                 materializedPackage = this._buildInstalledFilePackageSkill(config, pkg);
                 skill = materializedPackage.skill;
+                if (existingSkill) this._preserveSkillDotEnv(existingSkill, skill)
             }
 
             if (existingSkill) {
@@ -3462,6 +3917,9 @@ class GlobalConfig {
             this._applyBuiltinsInPlace(config);
             this._save(config);
             committed = true;
+            if (hasPackagedFiles && skill?.sourcePath) {
+                this._pruneManagedSkillVersionsAfterCommit(config, skillId, [skill.sourcePath])
+            }
 
             const missingMcpIds = (Array.isArray(skill?.mcp) ? skill.mcp : [])
                 .map((id) => String(id || '').trim())
@@ -3670,50 +4128,63 @@ class GlobalConfig {
             throw new Error(`skill id already exists: ${sourceRecord._id}`)
         }
 
-        const managedRoot = this._copySkillDirectoryToManagedRoot(config, absRoot, sourceRecord._id, sourceRecord.packageName)
-        const record = this._buildDirectorySkillRecord(managedRoot, {
-            id: sourceRecord._id,
-            existing
-        })
-        const bindings = this._normalizeDirectorySkillBindings(existing, options)
-        record.triggers = bindings.triggers
-        record.mcp = bindings.mcp
+        let managedRoot = ''
+        let committed = false
+        try {
+            managedRoot = this._copySkillDirectoryToManagedRoot(config, absRoot, sourceRecord._id, sourceRecord.packageName)
+            const record = this._buildDirectorySkillRecord(managedRoot, {
+                id: sourceRecord._id,
+                existing
+            })
+            const bindings = this._normalizeDirectorySkillBindings(existing, options)
+            record.triggers = bindings.triggers
+            record.mcp = bindings.mcp
 
-        if (options.install && typeof options.install === 'object') {
-            record.install = {
-                ...(record.install && typeof record.install === 'object' ? record.install : {}),
-                ...options.install,
-                managed: true,
-                originalSourcePath: absRoot,
-                ...(resolvedSource.discovered && resolvedSource.requested ? { selectedPath: resolvedSource.requested } : {})
+            if (options.install && typeof options.install === 'object') {
+                record.install = {
+                    ...(record.install && typeof record.install === 'object' ? record.install : {}),
+                    ...options.install,
+                    managed: true,
+                    originalSourcePath: absRoot,
+                    ...(resolvedSource.discovered && resolvedSource.requested ? { selectedPath: resolvedSource.requested } : {})
+                }
+            } else if (!record.install || typeof record.install !== 'object') {
+                record.install = {
+                    type: 'directory',
+                    importedAt: new Date().toISOString(),
+                    managed: true,
+                    originalSourcePath: absRoot,
+                    ...(resolvedSource.discovered && resolvedSource.requested ? { selectedPath: resolvedSource.requested } : {})
+                }
+            } else {
+                record.install = {
+                    ...record.install,
+                    managed: true,
+                    originalSourcePath: absRoot,
+                    ...(resolvedSource.discovered && resolvedSource.requested ? { selectedPath: resolvedSource.requested } : {})
+                }
             }
-        } else if (!record.install || typeof record.install !== 'object') {
-            record.install = {
-                type: 'directory',
-                importedAt: new Date().toISOString(),
-                managed: true,
-                originalSourcePath: absRoot,
-                ...(resolvedSource.discovered && resolvedSource.requested ? { selectedPath: resolvedSource.requested } : {})
+
+            if (conflict && (!existing || conflict._id !== existing._id)) {
+                if (!options.overwrite) {
+                    throw new Error(`skill id already exists: ${record._id}`)
+                }
             }
-        } else {
-            record.install = {
-                ...record.install,
-                managed: true,
-                originalSourcePath: absRoot,
-                ...(resolvedSource.discovered && resolvedSource.requested ? { selectedPath: resolvedSource.requested } : {})
+
+            config.skills[record._id] = record
+            this._applyBuiltinsInPlace(config)
+            this._save(config)
+            committed = true
+            this._pruneManagedSkillVersionsAfterCommit(config, record._id, [record.sourcePath])
+            return this._clone(record)
+        } finally {
+            if (!committed && managedRoot && path.resolve(managedRoot) !== path.resolve(absRoot)) {
+                const failedVersionRoot = this._getManagedSkillVersionRootForSource(config, sourceRecord._id, managedRoot)
+                if (failedVersionRoot && fs.existsSync(failedVersionRoot)) {
+                    fs.rmSync(failedVersionRoot, { recursive: true, force: true })
+                }
             }
         }
-
-        if (conflict && (!existing || conflict._id !== existing._id)) {
-            if (!options.overwrite) {
-                throw new Error(`skill id already exists: ${record._id}`)
-            }
-        }
-
-        config.skills[record._id] = record
-        this._applyBuiltinsInPlace(config)
-        this._save(config)
-        return this._clone(record)
     }
 
     importSkillFile(filePath, options = {}) {
@@ -3930,47 +4401,27 @@ class GlobalConfig {
         }
         const runtimeEnv = this._buildSkillRuntimeEnvironment(dataRoot, skill, skillRoot, resolved.inner)
 
-        const runExecFile = (command, args) => {
-            return new Promise((resolve, reject) => {
-                const child = execFile(
-                    command,
-                    args,
-                    {
-                        cwd: execCwd,
-                        env: runtimeEnv,
-                        windowsHide: true,
-                        timeout: timeoutMs,
-                        maxBuffer: 8 * 1024 * 1024
-                    },
-                    (error, stdout, stderr) => {
-                        if (error) {
-                            const err = new Error(stderr || stdout || error.message || String(error))
-                            err.code = error.code
-                            err.stdout = String(stdout || '')
-                            err.stderr = String(stderr || '')
-                            reject(err)
-                            return
-                        }
-                        resolve({
-                            stdout: String(stdout || ''),
-                            stderr: String(stderr || '')
-                        })
-                    }
-                )
-
-                if (child?.stdin) {
-                    if (stdinText) child.stdin.write(stdinText)
-                    child.stdin.end()
-                }
-            })
-        }
-
         const attempts = []
+        let executionEnv = runtimeEnv
+        let pythonEnvironment = null
         if (['.js', '.cjs', '.mjs'].includes(ext)) {
             attempts.push({ command: process.execPath || 'node', args: [resolved.abs, ...scriptArgs] })
         } else if (ext === '.py') {
-            attempts.push({ command: 'python', args: [resolved.abs, ...scriptArgs] })
-            attempts.push({ command: 'py', args: ['-3', resolved.abs, ...scriptArgs] })
+            const preparedPython = await this._prepareSkillPythonRuntime({
+                dataRoot,
+                skill,
+                skillRoot,
+                runtimeEnv,
+                timeoutMs
+            })
+            executionEnv = preparedPython.env
+            pythonEnvironment = preparedPython.metadata
+            preparedPython.attempts.forEach((attempt) => {
+                attempts.push({
+                    command: attempt.command,
+                    args: [...(attempt.prefixArgs || []), resolved.abs, ...scriptArgs]
+                })
+            })
         } else if (ext === '.ps1') {
             attempts.push({
                 command: 'powershell.exe',
@@ -3985,7 +4436,12 @@ class GlobalConfig {
         let lastError = null
         for (const attempt of attempts) {
             try {
-                const result = await runExecFile(attempt.command, attempt.args)
+                const result = await this._runSkillProcess(attempt.command, attempt.args, {
+                    cwd: execCwd,
+                    env: executionEnv,
+                    timeoutMs,
+                    input: stdinText
+                })
                 const expectedJson = scriptMeta?.outputType === 'json' && !!scriptMeta?.outputTypeDeclared
                 const parsedOutput = tryParseJsonText(result.stdout, { force: expectedJson })
 
@@ -4008,7 +4464,8 @@ class GlobalConfig {
                     sourceType: 'directory',
                     outputType,
                     output: parsedOutput.ok ? parsedOutput.value : result.stdout,
-                    scriptMeta: scriptMeta || null
+                    scriptMeta: scriptMeta || null,
+                    pythonEnvironment
                 }
             } catch (err) {
                 lastError = err
@@ -4484,6 +4941,11 @@ class GlobalConfig {
         if (!config.skills[id]) throw new Error('Skill not found');
         delete config.skills[id];
         this._save(config);
+        try {
+            this._cleanupManagedSkillStorage(config, id)
+        } catch (error) {
+            console.warn(`清理已删除 Skill ${id} 的托管文件失败。`, error)
+        }
         return config.skills;
     }
 

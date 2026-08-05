@@ -526,12 +526,31 @@ async function streamResponsesCompletion({ baseUrl, apiKey, body, signal, isAbor
 }
 
 async function streamResponsesCompletionWithFallback(args) {
-  try {
-    return await streamResponsesCompletion({ ...args, stream: true })
-  } catch (error) {
-    if (error?.name === 'AbortError') throw error
-    if (!shouldRetryResponsesWithoutStreaming(error?.message || error)) throw error
-    return streamResponsesCompletion({ ...args, stream: false })
+  let requestBody = args?.body
+  let useStreaming = true
+  let retriedWithoutTemperature = false
+
+  while (true) {
+    try {
+      return await streamResponsesCompletion({ ...args, body: requestBody, stream: useStreaming })
+    } catch (error) {
+      if (error?.name === 'AbortError') throw error
+      const errorText = error?.message || error
+      if (useStreaming && shouldRetryResponsesWithoutStreaming(errorText)) {
+        useStreaming = false
+        continue
+      }
+      if (
+        !retriedWithoutTemperature &&
+        Object.prototype.hasOwnProperty.call(requestBody || {}, 'temperature') &&
+        shouldRetryWithoutTemperature(errorText)
+      ) {
+        retriedWithoutTemperature = true
+        requestBody = withoutTemperature(requestBody)
+        continue
+      }
+      throw error
+    }
   }
 }
 
@@ -570,6 +589,33 @@ function shouldRetryWithoutChatCompletionStreamUsage(errorText) {
   return /(unsupported|unknown|unrecognized|invalid|not allowed|extra field|unexpected|does not support|不支持|未知参数|非法参数)/i.test(text)
 }
 
+function withoutTemperature(body = {}) {
+  const source = body && typeof body === 'object' && !Array.isArray(body) ? body : {}
+  if (!Object.prototype.hasOwnProperty.call(source, 'temperature')) return source
+  const next = { ...source }
+  delete next.temperature
+  return next
+}
+
+function shouldRetryWithoutTemperature(errorText) {
+  const text = String(errorText || '').trim().toLowerCase()
+  if (!text || !text.includes('temperature')) return false
+  return (
+    text.includes('unsupported') ||
+    text.includes('not supported') ||
+    text.includes('does not support') ||
+    text.includes("doesn't support") ||
+    text.includes('only default') ||
+    text.includes('only the default') ||
+    text.includes('unknown parameter') ||
+    text.includes('unrecognized') ||
+    text.includes('not allowed') ||
+    text.includes('extra inputs are not permitted') ||
+    text.includes('invalid parameter') ||
+    text.includes('invalid request')
+  )
+}
+
 async function streamChatCompletions({ baseUrl, apiKey, body, signal, isAborted, onDelta }) {
   throwIfAborted(signal, isAborted)
   const requestArgs = {
@@ -580,17 +626,35 @@ async function streamChatCompletions({ baseUrl, apiKey, body, signal, isAborted,
     label: 'Chat Completions'
   }
   let responseInfo
-  try {
-    responseInfo = await requestEndpointResponse({
-      ...requestArgs,
-      body: withChatCompletionStreamUsage(body)
-    })
-  } catch (error) {
-    if (!shouldRetryWithoutChatCompletionStreamUsage(error?.message || error)) throw error
-    responseInfo = await requestEndpointResponse({
-      ...requestArgs,
-      body: withoutChatCompletionStreamUsage(body)
-    })
+  let requestBody = withChatCompletionStreamUsage(body)
+  let retriedWithoutStreamUsage = false
+  let retriedWithoutTemperature = false
+  while (true) {
+    try {
+      responseInfo = await requestEndpointResponse({
+        ...requestArgs,
+        body: requestBody
+      })
+      break
+    } catch (error) {
+      if (error?.name === 'AbortError') throw error
+      const errorText = error?.message || error
+      if (!retriedWithoutStreamUsage && shouldRetryWithoutChatCompletionStreamUsage(errorText)) {
+        retriedWithoutStreamUsage = true
+        requestBody = withoutChatCompletionStreamUsage(requestBody)
+        continue
+      }
+      if (
+        !retriedWithoutTemperature &&
+        Object.prototype.hasOwnProperty.call(requestBody || {}, 'temperature') &&
+        shouldRetryWithoutTemperature(errorText)
+      ) {
+        retriedWithoutTemperature = true
+        requestBody = withoutTemperature(requestBody)
+        continue
+      }
+      throw error
+    }
   }
   const { response, usedUrl } = responseInfo
   let content = ''
@@ -714,6 +778,8 @@ module.exports = {
     withChatCompletionStreamUsage,
     withoutChatCompletionStreamUsage,
     shouldRetryWithoutChatCompletionStreamUsage,
+    withoutTemperature,
+    shouldRetryWithoutTemperature,
     normalizeBaseUrl,
     buildResponsesRequestBodyFromChatBody,
     createResponsesStreamAccumulator,

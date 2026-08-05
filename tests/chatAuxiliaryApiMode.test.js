@@ -15,6 +15,10 @@ const requestRunnerSource = fs.readFileSync(
   path.resolve('src/views/pages/chat/composables/useChatRequestRunner.js'),
   'utf8'
 )
+const chatMemorySource = fs.readFileSync(
+  path.resolve('src/utils/chatMemory.js'),
+  'utf8'
+)
 
 function getFunctionSource(source, name, nextDeclaration) {
   const asyncDeclaration = `async function ${name}`
@@ -72,4 +76,33 @@ test('chat auxiliary model requests inherit the configured provider API mode', (
     contextSummaryDispatcher,
     /requestContextWindowSummary\(\{[\s\S]*?apiMode:\s*normalizeProviderApiMode\(cfg\.apiMode\)/
   )
+})
+
+test('chat auxiliary model requests do not force a sampling temperature', () => {
+  const auxiliaryRequests = [
+    getFunctionSource(
+      chatSource,
+      'buildAttachmentVisionRecallSummary',
+      'async function enrichImageAttachmentsForMemoryRecall'
+    ),
+    getFunctionSource(
+      sessionManagerSource,
+      'requestSessionTitleFromModel',
+      'async function moveAutoChatSessionAssetsForRename'
+    ),
+    getFunctionSource(
+      requestRunnerSource,
+      'requestContextWindowSummary',
+      'function resolveContextSummaryCoverage'
+    ),
+    getFunctionSource(
+      chatMemorySource,
+      'requestMemoryExtraction',
+      'function buildRecallText'
+    )
+  ]
+
+  auxiliaryRequests.forEach((source) => {
+    assert.doesNotMatch(source, /\btemperature\s*:/)
+  })
 })

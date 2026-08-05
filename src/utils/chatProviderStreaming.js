@@ -15,8 +15,10 @@ import {
 } from './providerModelConfig'
 import {
   shouldRetryWithoutChatCompletionStreamUsage,
+  shouldRetryWithoutTemperature,
   withChatCompletionStreamUsage,
-  withoutChatCompletionStreamUsage
+  withoutChatCompletionStreamUsage,
+  withoutTemperature
 } from './chatRequestCompat'
 import { extractAssistantTextFromPayload, extractAssistantTextFromPayloads } from './chatAssistantResponse'
 import { consumeJsonEventStream } from './streamJsonEvents'
@@ -152,12 +154,31 @@ async function streamResponsesCompletion({
 }
 
 async function streamResponsesCompletionWithFallback(args) {
-  try {
-    return await streamResponsesCompletion({ ...args, stream: true })
-  } catch (error) {
-    if (isAbortError(error) || args?.abortState?.aborted || args?.signal?.aborted) throw createAbortError()
-    if (!shouldRetryResponsesWithoutStreaming(error?.message || error)) throw error
-    return await streamResponsesCompletion({ ...args, stream: false })
+  let requestBody = args?.body
+  let useStreaming = true
+  let retriedWithoutTemperature = false
+
+  while (true) {
+    try {
+      return await streamResponsesCompletion({ ...args, body: requestBody, stream: useStreaming })
+    } catch (error) {
+      if (isAbortError(error) || args?.abortState?.aborted || args?.signal?.aborted) throw createAbortError()
+      const errorText = error?.message || error
+      if (useStreaming && shouldRetryResponsesWithoutStreaming(errorText)) {
+        useStreaming = false
+        continue
+      }
+      if (
+        !retriedWithoutTemperature &&
+        Object.prototype.hasOwnProperty.call(requestBody || {}, 'temperature') &&
+        shouldRetryWithoutTemperature(errorText)
+      ) {
+        retriedWithoutTemperature = true
+        requestBody = withoutTemperature(requestBody)
+        continue
+      }
+      throw error
+    }
   }
 }
 
@@ -198,6 +219,7 @@ export async function streamChatCompletion({
   let lastNetworkError = null
   let requestBody = withChatCompletionStreamUsage(body)
   let retriedWithoutStreamUsage = false
+  let retriedWithoutTemperature = false
 
   while (true) {
     response = null
@@ -237,6 +259,15 @@ export async function streamChatCompletion({
     if (!retriedWithoutStreamUsage && shouldRetryWithoutChatCompletionStreamUsage(errorText)) {
       retriedWithoutStreamUsage = true
       requestBody = withoutChatCompletionStreamUsage(requestBody)
+      continue
+    }
+    if (
+      !retriedWithoutTemperature &&
+      Object.prototype.hasOwnProperty.call(requestBody || {}, 'temperature') &&
+      shouldRetryWithoutTemperature(errorText)
+    ) {
+      retriedWithoutTemperature = true
+      requestBody = withoutTemperature(requestBody)
       continue
     }
     if (automaticApiFallback && shouldFallbackChatCompletionsToResponses(errorText)) {

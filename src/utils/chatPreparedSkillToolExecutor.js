@@ -441,6 +441,14 @@ export function createPreparedSkillToolExecutor(runtime) {
       const scriptMeta = result?.scriptMeta && typeof result.scriptMeta === 'object'
         ? result.scriptMeta
         : (resolvedScript.entry || null)
+      const pythonEnvironment = result?.pythonEnvironment && typeof result.pythonEnvironment === 'object'
+        ? {
+            managed: result.pythonEnvironment.managed === true,
+            reused: result.pythonEnvironment.reused === true,
+            dependency_file: String(result.pythonEnvironment.dependencyFile || ''),
+            dependency_type: String(result.pythonEnvironment.dependencyType || '')
+          }
+        : null
       const images = extractChatImagesFromToolResult(result)
       const hasJsonOutput = outputType === 'json' && parsedOutput !== null
       const resultText = stringifyToolResultForLlm({
@@ -456,7 +464,8 @@ export function createPreparedSkillToolExecutor(runtime) {
         output: hasJsonOutput ? parsedOutput : undefined,
         stdout: hasJsonOutput ? '' : stdout,
         stderr,
-        script_meta: scriptMeta
+        script_meta: scriptMeta,
+        python_environment: pythonEnvironment || undefined
       })
 
       const sections = [
@@ -471,6 +480,14 @@ export function createPreparedSkillToolExecutor(runtime) {
         ].filter(Boolean).join('\n'))
       } else if (scriptMeta?.runtime) {
         sections.push(`#### 脚本信息\n- 运行时：${scriptMeta.runtime}`)
+      }
+      if (pythonEnvironment) {
+        sections.push([
+          '#### Python 环境',
+          pythonEnvironment.managed
+            ? `- 依赖：${pythonEnvironment.dependency_file || '已声明'}（${pythonEnvironment.reused ? '复用现有隔离环境' : '已新建隔离环境'}）`
+            : '- 依赖：未发现依赖声明，使用系统 Python'
+        ].join('\n'))
       }
       if (hasJsonOutput) {
         sections.push(`#### 输出（JSON）\n\`\`\`json\n${stableStringify(parsedOutput)}\n\`\`\``)

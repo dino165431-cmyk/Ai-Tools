@@ -11,8 +11,10 @@ import {
   shouldIncludeReasoningContent,
   shouldRetryWithReasoningContent,
   shouldRetryWithoutChatCompletionStreamUsage,
+  shouldRetryWithoutTemperature,
   withChatCompletionStreamUsage,
-  withoutChatCompletionStreamUsage
+  withoutChatCompletionStreamUsage,
+  withoutTemperature
 } from '../src/utils/chatRequestCompat.js'
 
 test('tool history helpers preserve distinct Responses item id and call_id', () => {
@@ -179,6 +181,21 @@ test('stream usage helpers request final usage and support compatibility fallbac
     true
   )
   assert.equal(shouldRetryWithoutChatCompletionStreamUsage('invalid api key'), false)
+})
+
+test('temperature compatibility helpers only remove explicitly rejected overrides', () => {
+  const body = { model: 'gpt-test', temperature: 0.2, top_p: 0.9 }
+  const compatible = withoutTemperature(body)
+
+  assert.deepEqual(compatible, { model: 'gpt-test', top_p: 0.9 })
+  assert.equal(body.temperature, 0.2)
+  assert.equal(
+    shouldRetryWithoutTemperature(
+      "Unsupported value: 'temperature' does not support 0.2 with this model. Only the default (1) value is supported."
+    ),
+    true
+  )
+  assert.equal(shouldRetryWithoutTemperature('invalid api key'), false)
 })
 
 test('sanitizeRequestToolMessages keeps tool call ids aligned in fc compatibility mode', () => {

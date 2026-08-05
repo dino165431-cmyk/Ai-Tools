@@ -887,8 +887,7 @@ async function requestMemoryExtraction({ userText, assistantText, systemPrompt, 
     messages: buildUtoolsAiMessages({
       systemContent: '你是一个严格的结构化信息提取器，只输出 JSON。',
       apiMessages: [{ role: 'user', content: prompt }]
-    }),
-    temperature: 0.2
+    })
   }
 
   if (provider?.providerType === 'utools-ai' || provider?.builtin) {
@@ -909,8 +908,7 @@ async function requestMemoryExtraction({ userText, assistantText, systemPrompt, 
 
   const chatBody = {
     model,
-    messages: body.messages,
-    temperature: 0.2
+    messages: body.messages
   }
   const configuredApiMode = normalizeProviderApiMode(provider.apiMode)
   const automaticApiFallback = allowsAutomaticApiFallback(configuredApiMode)

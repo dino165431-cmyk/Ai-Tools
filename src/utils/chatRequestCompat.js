@@ -127,6 +127,33 @@ export function shouldRetryWithoutChatCompletionStreamUsage(errorText = '') {
   )
 }
 
+export function withoutTemperature(body = {}) {
+  const source = body && typeof body === 'object' && !Array.isArray(body) ? body : {}
+  if (!Object.prototype.hasOwnProperty.call(source, 'temperature')) return source
+  const next = { ...source }
+  delete next.temperature
+  return next
+}
+
+export function shouldRetryWithoutTemperature(errorText = '') {
+  const lower = normalizeLowercaseText(errorText)
+  if (!lower || !lower.includes('temperature')) return false
+  return (
+    lower.includes('unsupported') ||
+    lower.includes('not supported') ||
+    lower.includes('does not support') ||
+    lower.includes("doesn't support") ||
+    lower.includes('only default') ||
+    lower.includes('only the default') ||
+    lower.includes('unknown parameter') ||
+    lower.includes('unrecognized') ||
+    lower.includes('not allowed') ||
+    lower.includes('extra inputs are not permitted') ||
+    lower.includes('invalid parameter') ||
+    lower.includes('invalid request')
+  )
+}
+
 function normalizeMessageRole(role) {
   return String(role || '').trim().toLowerCase()
 }

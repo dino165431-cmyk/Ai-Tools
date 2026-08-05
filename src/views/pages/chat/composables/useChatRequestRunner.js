@@ -3079,7 +3079,6 @@ export function useChatRequestRunner(dependencies) {
       body: {
         model,
         stream: true,
-        temperature: 0.2,
         messages: buildRequestMessages({
           baseUrl,
           model,

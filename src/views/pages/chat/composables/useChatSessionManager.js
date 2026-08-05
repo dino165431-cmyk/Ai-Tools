@@ -205,7 +205,6 @@ export function useChatSessionManager(dependencies) {
       body: {
         model,
         stream: true,
-        temperature: 0.2,
         max_tokens: 64,
         messages: [
           { role: 'system', content: systemPrompt },

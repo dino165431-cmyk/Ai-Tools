@@ -29,6 +29,18 @@ test('preload Chat Completions requests usage in streaming mode with a compatibl
   assert.equal(compat.shouldRetryWithoutChatCompletionStreamUsage('invalid api key'), false)
 })
 
+test('preload temperature compatibility helpers preserve the original request body', () => {
+  const body = { model: 'gpt-test', temperature: 0.2, top_p: 0.9 }
+
+  assert.deepEqual(compat.withoutTemperature(body), { model: 'gpt-test', top_p: 0.9 })
+  assert.equal(body.temperature, 0.2)
+  assert.equal(
+    compat.shouldRetryWithoutTemperature("Unsupported parameter: 'temperature' is not supported with this model."),
+    true
+  )
+  assert.equal(compat.shouldRetryWithoutTemperature('invalid api key'), false)
+})
+
 test('preload Responses conversion keeps item id and call id separate', () => {
   const body = compat.buildResponsesRequestBodyFromChatBody({
     model: 'gpt-test',
@@ -206,6 +218,54 @@ test('provider chat runtime honors explicit API mode and only auto mode crosses 
     assert.equal(chatResult.endpoint, 'chat-completions')
     assert.equal(chatResult.content, 'chat-ok')
     assert.deepEqual(urls, ['https://example.test/v1/chat/completions'])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('provider chat runtime retries rejected temperature overrides across both API modes', async () => {
+  const originalFetch = globalThis.fetch
+
+  try {
+    for (const apiMode of ['chat-completions', 'responses']) {
+      const requestBodies = []
+      globalThis.fetch = async (_url, options) => {
+        requestBodies.push(JSON.parse(options.body))
+        if (requestBodies.length === 1) {
+          return new Response(JSON.stringify({
+            error: { message: "Unsupported parameter: 'temperature' is not supported with this model." }
+          }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' }
+          })
+        }
+
+        const responseText = apiMode === 'responses'
+          ? 'data: {"type":"response.output_text.delta","delta":"ok"}\n\ndata: {"type":"response.completed"}\n\n'
+          : 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
+        return new Response(responseText, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' }
+        })
+      }
+
+      const result = await providerChatRuntime.streamProviderChatCompletion({
+        baseUrl: 'https://example.test/v1',
+        apiKey: 'test',
+        apiMode,
+        body: {
+          model: 'gpt-test',
+          stream: true,
+          temperature: 0.2,
+          messages: [{ role: 'user', content: 'hi' }]
+        }
+      })
+
+      assert.equal(result.content, 'ok')
+      assert.equal(requestBodies.length, 2)
+      assert.equal(requestBodies[0].temperature, 0.2)
+      assert.equal(Object.hasOwn(requestBodies[1], 'temperature'), false)
+    }
   } finally {
     globalThis.fetch = originalFetch
   }

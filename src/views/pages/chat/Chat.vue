@@ -1372,7 +1372,6 @@ async function buildAttachmentVisionRecallSummary(att, cfg) {
       body: {
         model,
         stream: true,
-        temperature: 0.2,
         messages: [
           {
             role: 'user',

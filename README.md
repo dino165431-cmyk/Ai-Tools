@@ -55,6 +55,9 @@
 - 支持内联技能
 - 支持导入目录型技能或单独导入 `SKILL.md`
 - 支持为技能绑定触发词、标签、正则、意图和 MCP 依赖
+- 目录型技能根目录的 `.env` 会在脚本执行时安全注入，修改后无需在 Python 中额外调用 `python-dotenv`
+- Python 技能可通过 `requirements.txt`、`scripts/requirements.txt` 或 `pyproject.toml` 声明依赖，首次执行时自动创建并复用技能专属虚拟环境
+- 刷新、覆盖安装和删除技能时会回收已经失效的托管版本与运行时目录
 
 #### MCP
 
@@ -205,4 +208,3 @@ npm test
 - 这是一个明显偏“本地工作流”的 uTools 插件，不是纯网页应用
 - 部分能力依赖 uTools 提供的运行环境与 preload 注入能力
 - Notebook Runtime、本地搜索代理等配置只保存在当前电脑本地，不参与普通云同步覆盖
-
