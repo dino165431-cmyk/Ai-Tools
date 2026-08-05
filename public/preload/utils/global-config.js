@@ -2,8 +2,9 @@
 const crypto = require('crypto');
 const http = require('http');
 const https = require('https');
+const os = require('os');
 const path = require('path');
-const { exec, execFile } = require('child_process');
+const { exec, execFile, execFileSync } = require('child_process');
 const { parseEnv: parseNodeEnv } = require('util');
 const { fileURLToPath } = require('url');
 const {
@@ -2902,11 +2903,16 @@ class GlobalConfig {
         const safeSkillId = String(skillId || '').trim()
         if (!/^[A-Za-z0-9_-]+$/.test(safeSkillId)) return
         const dataRoot = this._ensureWritableDataStorageRoot(config)
-        const runtimeSkillsRoot = path.resolve(dataRoot, '.ai-tools-settings', 'runtime', 'skills')
-        const runtimeSkillRoot = path.resolve(runtimeSkillsRoot, safeSkillId)
-        if (isPathInside(runtimeSkillsRoot, runtimeSkillRoot) && runtimeSkillRoot !== runtimeSkillsRoot && fs.existsSync(runtimeSkillRoot)) {
-            fs.rmSync(runtimeSkillRoot, { recursive: true, force: true })
-        }
+        const runtimeSkillsRoots = new Set([
+            this._getSkillRuntimeBaseRoot(dataRoot),
+            path.resolve(dataRoot, '.ai-tools-settings', 'runtime', 'skills')
+        ])
+        runtimeSkillsRoots.forEach((runtimeSkillsRoot) => {
+            const runtimeSkillRoot = path.resolve(runtimeSkillsRoot, safeSkillId)
+            if (isPathInside(runtimeSkillsRoot, runtimeSkillRoot) && runtimeSkillRoot !== runtimeSkillsRoot && fs.existsSync(runtimeSkillRoot)) {
+                fs.rmSync(runtimeSkillRoot, { recursive: true, force: true })
+            }
+        })
     }
 
     _pruneManagedSkillVersionsAfterCommit(config, skillId, keepSourcePaths = []) {
@@ -3076,19 +3082,44 @@ class GlobalConfig {
 
     _getSkillRuntimeRoot(dataRoot, skill) {
         const safeSkillId = String(skill?._id || 'skill').replace(/[^A-Za-z0-9_-]/g, '_')
-        const runtimeRoot = path.resolve(dataRoot, '.ai-tools-settings', 'runtime', 'skills', safeSkillId)
-        if (!isPathInside(dataRoot, runtimeRoot)) throw new Error('skill runtime path escaped dataStorageRoot')
+        const runtimeBaseRoot = this._getSkillRuntimeBaseRoot(dataRoot)
+        const runtimeRoot = path.resolve(runtimeBaseRoot, safeSkillId)
+        if (!isPathInside(runtimeBaseRoot, runtimeRoot)) throw new Error('skill runtime path escaped managed runtime directory')
         return runtimeRoot
+    }
+
+    _getSkillRuntimeBaseRoot(dataRoot) {
+        const shortRootCandidates = [
+            String(process.env.LOCALAPPDATA || '').trim(),
+            String(process.env.TEMP || process.env.TMP || os.tmpdir() || '').trim()
+        ]
+        for (const candidateRoot of shortRootCandidates) {
+            if (!candidateRoot || !path.isAbsolute(candidateRoot)) continue
+            const base = path.resolve(candidateRoot)
+            const shortRuntimeRoot = path.resolve(base, 'AiTools', 'skill-runtime')
+            if (!isPathInside(base, shortRuntimeRoot) || shortRuntimeRoot === base) continue
+            try {
+                fs.mkdirSync(shortRuntimeRoot, { recursive: true })
+                return shortRuntimeRoot
+            } catch {
+                // Sandboxed or locked environments fall back to the configured data root.
+            }
+        }
+
+        const fallbackRoot = path.resolve(dataRoot, '.ai-tools-settings', 'runtime', 'skills')
+        if (!isPathInside(dataRoot, fallbackRoot)) throw new Error('skill runtime path escaped dataStorageRoot')
+        return fallbackRoot
     }
 
     _buildSkillRuntimeEnvironment(dataRoot, skill, skillRoot, scriptPath) {
         const runtimeRoot = this._getSkillRuntimeRoot(dataRoot, skill)
+        const runtimeBaseRoot = this._getSkillRuntimeBaseRoot(dataRoot)
         const tempRoot = path.join(runtimeRoot, 'tmp')
         const configRoot = path.join(runtimeRoot, 'config')
         const cacheRoot = path.join(runtimeRoot, 'cache')
         const dataHome = path.join(runtimeRoot, 'data')
         ;[runtimeRoot, tempRoot, configRoot, cacheRoot, dataHome].forEach((dir) => {
-            if (!isPathInside(dataRoot, dir)) throw new Error('skill runtime path escaped dataStorageRoot')
+            if (!isPathInside(runtimeBaseRoot, dir)) throw new Error('skill runtime path escaped managed runtime directory')
             fs.mkdirSync(dir, { recursive: true })
         })
 
@@ -3175,6 +3206,32 @@ class GlobalConfig {
         })
     }
 
+    _runSkillProcessSync(command, args, options = {}) {
+        try {
+            const stdout = execFileSync(
+                command,
+                Array.isArray(args) ? args : [],
+                {
+                    cwd: options.cwd,
+                    env: options.env,
+                    windowsHide: true,
+                    timeout: options.timeoutMs,
+                    maxBuffer: options.maxBuffer || 8 * 1024 * 1024,
+                    encoding: 'utf8'
+                }
+            )
+            return { stdout: String(stdout || ''), stderr: '' }
+        } catch (error) {
+            const stdout = String(error?.stdout || '')
+            const stderr = String(error?.stderr || '')
+            const err = new Error(stderr || stdout || error?.message || String(error))
+            err.code = error?.code
+            err.stdout = stdout
+            err.stderr = stderr
+            throw err
+        }
+    }
+
     _buildSkillDependencyInstallerEnvironment(runtimeEnv) {
         const allowedKeys = [
             'PATH',
@@ -3245,7 +3302,7 @@ class GlobalConfig {
             const content = fs.readFileSync(resolved.abs)
             const fingerprint = crypto
                 .createHash('sha256')
-                .update(`ai-tools-skill-python-v1\0${candidate.type}\0${resolved.inner}\0`)
+                .update(`ai-tools-skill-python-v2\0${candidate.type}\0${resolved.inner}\0`)
                 .update(content)
 
             if (candidate.type === 'project') {
@@ -3337,7 +3394,7 @@ class GlobalConfig {
             try {
                 await this._runSkillProcess(
                     candidate.command,
-                    [...candidate.prefixArgs, '-m', 'venv', environmentRoot],
+                    [...candidate.prefixArgs, '-m', 'venv', '--system-site-packages', environmentRoot],
                     {
                         cwd: skillRoot,
                         env: installerEnv,
@@ -3374,10 +3431,11 @@ class GlobalConfig {
                 fs.writeFileSync(
                     path.join(environmentRoot, '.ai-tools-ready.json'),
                     JSON.stringify({
-                        version: 1,
+                        version: 2,
                         fingerprint: dependencySpec.fingerprint,
                         dependencyFile: dependencySpec.path,
                         dependencyType: dependencySpec.type,
+                        systemSitePackages: true,
                         createdAt: new Date().toISOString()
                     }, null, 2),
                     'utf8'
@@ -3415,6 +3473,144 @@ class GlobalConfig {
         )
     }
 
+    _ensureSkillPythonEnvironmentSync({ dataRoot, skill, skillRoot, runtimeEnv, dependencySpec, timeoutMs }) {
+        const runtimeRoot = this._getSkillRuntimeRoot(dataRoot, skill)
+        const pythonRoot = path.resolve(runtimeRoot, 'python')
+        const environmentName = dependencySpec.fingerprint.slice(0, 24)
+        const environmentRoot = path.resolve(pythonRoot, environmentName)
+        if (!isPathInside(runtimeRoot, pythonRoot) || !isPathInside(pythonRoot, environmentRoot)) {
+            throw new Error('skill Python environment path escaped the skill runtime directory')
+        }
+        fs.mkdirSync(pythonRoot, { recursive: true })
+
+        const environmentPython = this._getSkillVirtualEnvironmentPythonPath(environmentRoot)
+        const existingMarker = this._readSkillPythonEnvironmentMarker(environmentRoot)
+        if (existingMarker?.fingerprint === dependencySpec.fingerprint && fs.existsSync(environmentPython)) {
+            this._pruneSkillPythonEnvironments(pythonRoot, environmentRoot)
+            return {
+                command: environmentPython,
+                env: this._buildSkillVirtualEnvironment(runtimeEnv, environmentRoot),
+                metadata: {
+                    managed: true,
+                    reused: true,
+                    dependencyFile: dependencySpec.path,
+                    dependencyType: dependencySpec.type,
+                    environmentRoot
+                }
+            }
+        }
+
+        const installTimeoutMs = Math.max(5 * 60 * 1000, Math.min(10 * 60 * 1000, Number(timeoutMs) || 0))
+        const installerEnv = this._buildSkillDependencyInstallerEnvironment(runtimeEnv)
+        const pythonCandidates = [
+            { command: 'python', prefixArgs: [], label: 'python' },
+            { command: 'py', prefixArgs: ['-3'], label: 'py -3' }
+        ]
+        const errors = []
+
+        for (const candidate of pythonCandidates) {
+            fs.rmSync(environmentRoot, { recursive: true, force: true })
+            let setupStage = 'venv'
+
+            try {
+                this._runSkillProcessSync(
+                    candidate.command,
+                    [...candidate.prefixArgs, '-m', 'venv', '--system-site-packages', environmentRoot],
+                    {
+                        cwd: skillRoot,
+                        env: installerEnv,
+                        timeoutMs: installTimeoutMs
+                    }
+                )
+
+                const environmentPythonPath = this._getSkillVirtualEnvironmentPythonPath(environmentRoot)
+                if (!fs.existsSync(environmentPythonPath)) {
+                    throw new Error(`virtual environment did not create a Python executable: ${environmentPythonPath}`)
+                }
+
+                const pipArgs = [
+                    '-m',
+                    'pip',
+                    'install',
+                    '--disable-pip-version-check',
+                    '--no-input',
+                    '--require-virtualenv'
+                ]
+                if (dependencySpec.type === 'requirements') {
+                    pipArgs.push('-r', dependencySpec.absPath)
+                } else {
+                    pipArgs.push(skillRoot)
+                }
+
+                setupStage = 'pip'
+                this._runSkillProcessSync(environmentPythonPath, pipArgs, {
+                    cwd: dependencySpec.type === 'requirements' ? path.dirname(dependencySpec.absPath) : skillRoot,
+                    env: this._buildSkillVirtualEnvironment(installerEnv, environmentRoot),
+                    timeoutMs: installTimeoutMs
+                })
+
+                fs.writeFileSync(
+                    path.join(environmentRoot, '.ai-tools-ready.json'),
+                    JSON.stringify({
+                        version: 2,
+                        fingerprint: dependencySpec.fingerprint,
+                        dependencyFile: dependencySpec.path,
+                        dependencyType: dependencySpec.type,
+                        systemSitePackages: true,
+                        createdAt: new Date().toISOString()
+                    }, null, 2),
+                    'utf8'
+                )
+
+                this._pruneSkillPythonEnvironments(pythonRoot, environmentRoot)
+
+                return {
+                    command: this._getSkillVirtualEnvironmentPythonPath(environmentRoot),
+                    env: this._buildSkillVirtualEnvironment(runtimeEnv, environmentRoot),
+                    metadata: {
+                        managed: true,
+                        reused: false,
+                        dependencyFile: dependencySpec.path,
+                        dependencyType: dependencySpec.type,
+                        environmentRoot
+                    }
+                }
+            } catch (error) {
+                fs.rmSync(environmentRoot, { recursive: true, force: true })
+                const detail = toSkillScriptPreviewText(error?.message || String(error), 500)
+                errors.push(`${candidate.label}: ${detail || 'unknown error'}`)
+                const missingInstallerRuntime = error?.code === 'ENOENT'
+                    || /No module named (?:venv|ensurepip|pip)|ensurepip is not available/i.test(String(error?.message || error))
+                if (setupStage === 'pip' && !missingInstallerRuntime) {
+                    throw new Error(
+                        `failed to install Python dependencies from ${dependencySpec.path} with ${candidate.label}: ${detail || 'unknown error'}`
+                    )
+                }
+            }
+        }
+
+        throw new Error(
+            `failed to prepare Python dependencies from ${dependencySpec.path}: ${errors.join(' | ') || 'no Python 3 runtime found'}`
+        )
+    }
+
+    _prepareSkillPythonDependenciesForImport(config, skill, skillRoot) {
+        const dependencySpec = this._findSkillPythonDependencySpec(skillRoot)
+        if (!dependencySpec) return null
+
+        const dataRoot = this._ensureWritableDataStorageRoot(config)
+        const runtimeEnv = this._buildSkillRuntimeEnvironment(dataRoot, skill, skillRoot, '')
+        const prepared = this._ensureSkillPythonEnvironmentSync({
+            dataRoot,
+            skill,
+            skillRoot,
+            runtimeEnv,
+            dependencySpec,
+            timeoutMs: 10 * 60 * 1000
+        })
+        return prepared.metadata
+    }
+
     async _prepareSkillPythonRuntime({ dataRoot, skill, skillRoot, runtimeEnv, timeoutMs }) {
         const dependencySpec = this._findSkillPythonDependencySpec(skillRoot)
         if (!dependencySpec) {
@@ -3433,30 +3629,26 @@ class GlobalConfig {
             }
         }
 
-        const queueKey = path.resolve(this._getSkillRuntimeRoot(dataRoot, skill), 'python')
-        const previous = this._skillPythonSetupQueues.get(queueKey) || Promise.resolve()
-        const current = previous
-            .catch(() => undefined)
-            .then(() => this._ensureSkillPythonEnvironment({
-                dataRoot,
-                skill,
-                skillRoot,
-                runtimeEnv,
-                dependencySpec,
-                timeoutMs
-            }))
-        this._skillPythonSetupQueues.set(queueKey, current)
+        const runtimeRoot = this._getSkillRuntimeRoot(dataRoot, skill)
+        const pythonRoot = path.resolve(runtimeRoot, 'python')
+        const environmentRoot = path.resolve(pythonRoot, dependencySpec.fingerprint.slice(0, 24))
+        const environmentPython = this._getSkillVirtualEnvironmentPythonPath(environmentRoot)
+        const marker = this._readSkillPythonEnvironmentMarker(environmentRoot)
+        if (marker?.fingerprint !== dependencySpec.fingerprint || !fs.existsSync(environmentPython)) {
+            throw new Error(
+                `Python dependencies from ${dependencySpec.path} are not prepared. Refresh the Skill to install them into its managed environment.`
+            )
+        }
 
-        try {
-            const prepared = await current
-            return {
-                attempts: [{ command: prepared.command, prefixArgs: [] }],
-                env: prepared.env,
-                metadata: prepared.metadata
-            }
-        } finally {
-            if (this._skillPythonSetupQueues.get(queueKey) === current) {
-                this._skillPythonSetupQueues.delete(queueKey)
+        return {
+            attempts: [{ command: environmentPython, prefixArgs: [] }],
+            env: this._buildSkillVirtualEnvironment(runtimeEnv, environmentRoot),
+            metadata: {
+                managed: true,
+                reused: true,
+                dependencyFile: dependencySpec.path,
+                dependencyType: dependencySpec.type,
+                environmentRoot
             }
         }
     }
@@ -3894,6 +4086,19 @@ class GlobalConfig {
                 materializedPackage = this._buildInstalledFilePackageSkill(config, pkg);
                 skill = materializedPackage.skill;
                 if (existingSkill) this._preserveSkillDotEnv(existingSkill, skill)
+                const pythonDependencies = this._prepareSkillPythonDependenciesForImport(config, skill, skill.sourcePath)
+                if (pythonDependencies) {
+                    skill.install = {
+                        ...(skill.install && typeof skill.install === 'object' ? skill.install : {}),
+                        pythonDependencies: {
+                            status: 'ready',
+                            dependencyFile: pythonDependencies.dependencyFile,
+                            dependencyType: pythonDependencies.dependencyType,
+                            reused: !!pythonDependencies.reused,
+                            preparedAt: new Date().toISOString()
+                        }
+                    }
+                }
             }
 
             if (existingSkill) {
@@ -4162,6 +4367,17 @@ class GlobalConfig {
                     managed: true,
                     originalSourcePath: absRoot,
                     ...(resolvedSource.discovered && resolvedSource.requested ? { selectedPath: resolvedSource.requested } : {})
+                }
+            }
+
+            const pythonDependencies = this._prepareSkillPythonDependenciesForImport(config, record, managedRoot)
+            if (pythonDependencies) {
+                record.install.pythonDependencies = {
+                    status: 'ready',
+                    dependencyFile: pythonDependencies.dependencyFile,
+                    dependencyType: pythonDependencies.dependencyType,
+                    reused: !!pythonDependencies.reused,
+                    preparedAt: new Date().toISOString()
                 }
             }
 

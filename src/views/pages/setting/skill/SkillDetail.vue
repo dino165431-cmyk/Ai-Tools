@@ -427,12 +427,21 @@ const installLines = computed(() => {
   const cache = currentSkill.value?.cache && typeof currentSkill.value.cache === 'object'
     ? currentSkill.value.cache
     : {}
+  const pythonDependencies = install.pythonDependencies && typeof install.pythonDependencies === 'object'
+    ? install.pythonDependencies
+    : null
   return [
     { label: '导入类型', value: install.type },
     { label: '原始来源', value: install.originalSourcePath || install.filePath },
     { label: '选中路径', value: install.selectedPath },
+    pythonDependencies?.dependencyFile
+      ? {
+          label: 'Python 依赖',
+          value: `${pythonDependencies.dependencyFile}（${pythonDependencies.reused ? '复用已就绪环境' : '已预装'}）`
+        }
+      : null,
     { label: '最近解析', value: cache.refreshedAt }
-  ].filter((item) => item.value)
+  ].filter((item) => item?.value)
 })
 
 watch(

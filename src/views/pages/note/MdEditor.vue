@@ -1220,6 +1220,24 @@ async function waitForPreviewImages(preview) {
   await Promise.all(images.map((img) => waitForImageReady(img)));
 }
 
+async function hydratePreviewImagesForExport(preview) {
+  const images = Array.from(preview?.querySelectorAll?.('img') || []);
+  if (!images.length) return;
+
+  const imageObserver = ensurePreviewImageObserver(preview);
+  images.forEach((img) => preparePreviewImage(img, imageObserver));
+
+  // 导出时不能依赖 IntersectionObserver：预览区外的图片也必须完成本地路径解析，
+  // 后续克隆时才能将它们嵌入为 data URL。
+  await Promise.all(images.map(async (img) => {
+    const localPath = String(img?.dataset?.localSrcPath || '').trim();
+    if (!localPath) return;
+
+    const url = await loadPreviewImageBlobUrl(localPath);
+    if (url && img.isConnected) img.src = url;
+  }));
+}
+
 function previewDiagramNodeIsRendered(node) {
   if (!(node instanceof HTMLElement)) return true;
   if (node.classList.contains('md-editor-echarts')) {
@@ -1413,22 +1431,35 @@ async function inlineClonedImages(sourceRoot, cloneRoot) {
 
   await Promise.all(cloneImages.map(async (cloneImg, index) => {
     const sourceImg = sourceImages[index];
-    if (!(cloneImg instanceof HTMLImageElement) || !(sourceImg instanceof HTMLImageElement)) return;
+    if (!(cloneImg instanceof HTMLImageElement)) return;
 
-    const localPath = String(sourceImg.dataset.localSrcPath || '').trim();
-    const currentSrc = String(sourceImg.currentSrc || sourceImg.src || cloneImg.getAttribute('src') || '').trim();
+    const localPath = String(
+      cloneImg.dataset.localSrcPath ||
+      sourceImg?.dataset?.localSrcPath ||
+      ''
+    ).trim();
+    const currentSrc = String(
+      sourceImg?.currentSrc ||
+      sourceImg?.src ||
+      cloneImg.currentSrc ||
+      cloneImg.src ||
+      cloneImg.getAttribute('src') ||
+      ''
+    ).trim();
     let nextSrc = currentSrc;
 
     try {
       if (localPath) {
         const buffer = await readFile(localPath, null);
-        nextSrc = await binaryToDataUrl(buffer, guessMimeByExt(path.extname(localPath)));
-      } else if (currentSrc.startsWith('blob:')) {
+        const dataUrl = await binaryToDataUrl(buffer, guessMimeByExt(path.extname(localPath)));
+        if (dataUrl) nextSrc = dataUrl;
+      }
+      if (nextSrc === currentSrc && currentSrc.startsWith('blob:')) {
         const response = await fetch(currentSrc);
         if (response.ok) {
           nextSrc = await blobToDataUrl(await response.blob());
         }
-      } else if (/^https?:\/\//i.test(currentSrc)) {
+      } else if (nextSrc === currentSrc && /^https?:\/\//i.test(currentSrc)) {
         const response = await fetch(currentSrc);
         if (response.ok) {
           nextSrc = await blobToDataUrl(await response.blob());
@@ -1583,6 +1614,7 @@ async function waitForPreviewExportReady() {
   if (previewHasDiagramHosts(preview)) {
     decoratePreviewDiagrams(preview);
   }
+  await hydratePreviewImagesForExport(preview);
   await waitForPreviewImages(preview);
   await waitForPreviewDiagrams(preview);
   await waitForAnimationFrames(2);

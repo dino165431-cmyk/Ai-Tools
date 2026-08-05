@@ -1112,7 +1112,7 @@ test('directory skill infers Python entry scripts and header metadata without ma
   assert.equal(imported.cache.scriptCatalog[1].path, 'scripts/helpers/util.py')
 })
 
-test('runSkillScript prepares and reuses an isolated Python environment from requirements.txt', {
+test('skill import prepares an isolated Python environment from requirements.txt for later reuse', {
   skip: hasPython3Runtime() ? false : 'Python 3 runtime is unavailable'
 }, async (t) => {
   resetConfigStorage()
@@ -1131,10 +1131,12 @@ test('runSkillScript prepares and reuses an isolated Python environment from req
     ].join('\n')
   })
   fs.writeFileSync(path.join(skillDir, 'requirements.txt'), '# intentionally empty\n', 'utf8')
-  const imported = globalConfig.importSkillDirectory(skillDir)
-
+  let imported
   let first
   try {
+    imported = globalConfig.importSkillDirectory(skillDir)
+    assert.equal(imported.install.pythonDependencies.status, 'ready')
+    assert.equal(imported.install.pythonDependencies.dependencyFile, 'requirements.txt')
     first = await globalConfig.runSkillScript(imported._id, 'scripts/run.py', { timeout_ms: 5000 })
   } catch (error) {
     if (/failed to prepare Python dependencies|No module named (?:venv|ensurepip)/i.test(String(error?.message || error))) {
@@ -1146,8 +1148,15 @@ test('runSkillScript prepares and reuses an isolated Python environment from req
 
   assert.equal(first.ok, true)
   assert.equal(first.pythonEnvironment.managed, true)
-  assert.equal(first.pythonEnvironment.reused, false)
+  assert.equal(first.pythonEnvironment.reused, true)
   assert.equal(first.pythonEnvironment.dependencyFile, 'requirements.txt')
+  const environmentMarker = JSON.parse(fs.readFileSync(
+    path.join(first.pythonEnvironment.environmentRoot, '.ai-tools-ready.json'),
+    'utf8'
+  ))
+  assert.equal(environmentMarker.systemSitePackages, true)
+  const runtimeBaseRoot = globalConfig._getSkillRuntimeBaseRoot(globalConfig.getConfig().dataStorageRoot)
+  assert.equal(path.relative(runtimeBaseRoot, first.pythonEnvironment.environmentRoot).startsWith('..'), false)
   assert.equal(path.resolve(first.output.prefix), path.resolve(first.pythonEnvironment.environmentRoot))
   assert.equal(path.resolve(first.output.virtual_env), path.resolve(first.pythonEnvironment.environmentRoot))
 
