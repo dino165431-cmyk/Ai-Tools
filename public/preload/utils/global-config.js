@@ -4,7 +4,7 @@ const http = require('http');
 const https = require('https');
 const os = require('os');
 const path = require('path');
-const { exec, execFile, execFileSync } = require('child_process');
+const { spawn, spawnSync, exec, execFile, execFileSync } = require('child_process');
 const { parseEnv: parseNodeEnv } = require('util');
 const { fileURLToPath } = require('url');
 const {
@@ -29,6 +29,33 @@ const {
 const SKILL_PACKAGE_DOWNLOAD_TIMEOUT_MS = 30_000;
 const MAX_SKILL_PACKAGE_ERROR_RESPONSE_BYTES = 512 * 1024;
 const MAX_SKILL_PACKAGE_REDIRECTS = 4;
+
+function killProcessTreeSafely(proc) {
+    if (!proc || !Number.isFinite(Number(proc.pid))) return
+    if (process.platform === 'win32') {
+        try {
+            spawnSync('taskkill', ['/PID', String(proc.pid), '/T', '/F'], {
+                windowsHide: true,
+                stdio: 'ignore'
+            })
+            return
+        } catch {
+            // Fall through to the generic kill below.
+        }
+    } else {
+        try {
+            // detached: true makes the child a process-group leader.
+            process.kill(-proc.pid, 'SIGKILL')
+        } catch {
+            // Fall through to the generic kill below.
+        }
+    }
+    try {
+        proc.kill('SIGKILL')
+    } catch {
+        // The process may already be gone.
+    }
+}
 
 function formatBytesAsMiB(bytes) {
     return `${Math.floor(Number(bytes) / 1024 / 1024)}MiB`;
@@ -3172,33 +3199,103 @@ class GlobalConfig {
 
     _runSkillProcess(command, args, options = {}) {
         return new Promise((resolve, reject) => {
-            const child = execFile(
+            const timeoutMs = Math.max(1000, Math.floor(Number(options.timeoutMs) || 120000))
+            const maxBuffer = options.maxBuffer || 8 * 1024 * 1024
+            const stdoutChunks = []
+            const stderrChunks = []
+            const stdoutBytes = { value: 0 }
+            const stderrBytes = { value: 0 }
+            let settled = false
+            let timedOut = false
+            let settleTimer = null
+
+            const child = spawn(
                 command,
                 Array.isArray(args) ? args : [],
                 {
                     cwd: options.cwd,
                     env: options.env,
                     windowsHide: true,
-                    timeout: options.timeoutMs,
-                    maxBuffer: options.maxBuffer || 8 * 1024 * 1024
-                },
-                (error, stdout, stderr) => {
-                    if (error) {
-                        const err = new Error(stderr || stdout || error.message || String(error))
-                        err.code = error.code
-                        err.stdout = String(stdout || '')
-                        err.stderr = String(stderr || '')
-                        reject(err)
-                        return
-                    }
-                    resolve({
-                        stdout: String(stdout || ''),
-                        stderr: String(stderr || '')
-                    })
+                    detached: process.platform !== 'win32',
+                    stdio: ['pipe', 'pipe', 'pipe']
                 }
             )
 
-            if (child?.stdin) {
+            const appendChunk = (chunks, counter, chunk) => {
+                const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk || ''))
+                if (!bytes.length || counter.value >= maxBuffer) return
+                const remaining = maxBuffer - counter.value
+                chunks.push(bytes.length > remaining ? bytes.subarray(0, remaining) : bytes)
+                counter.value += Math.min(bytes.length, remaining)
+            }
+
+            const collectOutput = () => ({
+                stdout: Buffer.concat(stdoutChunks, stdoutBytes.value).toString('utf8'),
+                stderr: Buffer.concat(stderrChunks, stderrBytes.value).toString('utf8')
+            })
+
+            child.stdout?.on('data', (chunk) => appendChunk(stdoutChunks, stdoutBytes, chunk))
+            child.stderr?.on('data', (chunk) => appendChunk(stderrChunks, stderrBytes, chunk))
+
+            const failTimeout = () => {
+                if (settled) return
+                settled = true
+                clearTimeout(settleTimer)
+                const output = collectOutput()
+                const err = new Error(output.stderr || output.stdout || `skill process timed out after ${timeoutMs}ms`)
+                err.code = 'ETIMEDOUT'
+                err.killed = true
+                err.stdout = output.stdout
+                err.stderr = output.stderr
+                reject(err)
+            }
+
+            const timer = setTimeout(() => {
+                timedOut = true
+                killProcessTreeSafely(child)
+                // Grandchildren may keep the pipes open so 'close' may never fire;
+                // force-settle shortly after the kill attempt.
+                settleTimer = setTimeout(() => {
+                    try { child.stdout?.destroy() } catch { /* ignore */ }
+                    try { child.stderr?.destroy() } catch { /* ignore */ }
+                    failTimeout()
+                }, 3000)
+            }, timeoutMs)
+
+            child.once('error', (error) => {
+                if (settled) return
+                settled = true
+                clearTimeout(timer)
+                clearTimeout(settleTimer)
+                const err = new Error(error.message || String(error))
+                err.code = error.code
+                err.stdout = Buffer.concat(stdoutChunks, stdoutBytes.value).toString('utf8')
+                err.stderr = Buffer.concat(stderrChunks, stderrBytes.value).toString('utf8')
+                reject(err)
+            })
+
+            child.once('close', (code, signal) => {
+                clearTimeout(timer)
+                clearTimeout(settleTimer)
+                if (settled) return
+                if (timedOut) {
+                    failTimeout()
+                    return
+                }
+                settled = true
+                if (code !== 0) {
+                    const output = collectOutput()
+                    const err = new Error(output.stderr || output.stdout || `skill process exited with code ${code}`)
+                    err.code = code
+                    err.stdout = output.stdout
+                    err.stderr = output.stderr
+                    reject(err)
+                    return
+                }
+                resolve(collectOutput())
+            })
+
+            if (child.stdin) {
                 const input = options.input === undefined || options.input === null ? '' : String(options.input)
                 if (input) child.stdin.write(input)
                 child.stdin.end()
@@ -4704,7 +4801,13 @@ class GlobalConfig {
         const before = this._discoverSkillDirectoriesInRoots(fallbackRoots)
 
         const execResult = await new Promise((resolve, reject) => {
-            exec(command, { cwd, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
+            let settled = false
+            let settleTimer = null
+            const child = exec(command, { cwd, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
+                if (settled) return
+                settled = true
+                clearTimeout(timer)
+                clearTimeout(settleTimer)
                 if (error) {
                     const err = new Error(stderr || stdout || error.message || String(error))
                     err.stdout = stdout
@@ -4717,6 +4820,16 @@ class GlobalConfig {
                     stderr: String(stderr || '')
                 })
             })
+            const timer = setTimeout(() => {
+                killProcessTreeSafely(child)
+                settleTimer = setTimeout(() => {
+                    if (settled) return
+                    settled = true
+                    const err = new Error('install command timed out after 120000ms')
+                    err.code = 'ETIMEDOUT'
+                    reject(err)
+                }, 3000)
+            }, 120000)
         })
 
         const explicitPaths = new Set(this._collectSkillPathsFromCommandOutput(execResult.stdout))

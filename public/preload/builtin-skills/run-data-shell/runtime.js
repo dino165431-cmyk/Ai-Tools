@@ -25,6 +25,7 @@ const MAX_EXPORTED_FILE_BYTES = 50 * 1024 * 1024
 const MAX_LISTED_ACTIVE_FILES = 500
 const DEFAULT_TIMEOUT_MS = 30000
 const MAX_TIMEOUT_MS = 120000
+const FORCE_SETTLE_GRACE_MS = 3000
 const SUPPORTED_SHELLS = new Set(['auto', 'powershell', 'bash'])
 const SUPPORTED_WORKSPACE_SCOPES = new Set(['sandbox', 'host'])
 const RUNTIME_PATH_CACHE_MS = 30000
@@ -456,6 +457,33 @@ function resolveShellLaunch(shellRaw, command) {
     shell,
     executable: resolveBashExecutable(),
     args: ['--noprofile', '--norc', '-c', command]
+  }
+}
+
+function killProcessTree(proc) {
+  if (!proc || !Number.isFinite(Number(proc.pid))) return
+  if (process.platform === 'win32') {
+    try {
+      spawnSync('taskkill', ['/PID', String(proc.pid), '/T', '/F'], {
+        windowsHide: true,
+        stdio: 'ignore'
+      })
+      return
+    } catch {
+      // Fall through to the generic kill below.
+    }
+  } else {
+    try {
+      // detached: true makes the child a process-group leader.
+      process.kill(-proc.pid, 'SIGKILL')
+    } catch {
+      // Fall through to the generic kill below.
+    }
+  }
+  try {
+    proc.kill('SIGKILL')
+  } catch {
+    // The process may already be gone.
   }
 }
 
@@ -944,12 +972,14 @@ async function runSandboxCommand(command, options = {}) {
     const child = spawn(launch.executable, launch.args, {
       cwd,
       windowsHide: true,
+      detached: process.platform !== 'win32',
       shell: false,
       env: buildChildEnvironment(runtimeRoot, workspaceId, workspaceKind, launch.shell)
     })
 
     let settled = false
     let timedOut = false
+    let settleTimer = null
     const finish = async (result) => {
       if (settled) return
       settled = true
@@ -980,13 +1010,31 @@ async function runSandboxCommand(command, options = {}) {
 
     const timer = setTimeout(() => {
       timedOut = true
-      child.kill()
+      killProcessTree(child)
+      // Orphaned grandchildren may keep stdout/stderr pipes open, so 'close'
+      // may never fire. Force-settle shortly after the kill attempt.
+      settleTimer = setTimeout(() => {
+        try { child.stdout?.destroy() } catch { /* ignore */ }
+        try { child.stderr?.destroy() } catch { /* ignore */ }
+        void finish({
+          ok: false,
+          exitCode: null,
+          signal: null,
+          timedOut: true,
+          timeoutMs,
+          cwd: relative,
+          stdout: finishOutputCollector(stdout).text,
+          stderr: finishOutputCollector(stderr).text,
+          truncated: stdout.truncated || stderr.truncated
+        }).catch(reject)
+      }, FORCE_SETTLE_GRACE_MS)
     }, timeoutMs)
 
     child.stdout?.on('data', (chunk) => appendOutputChunk(stdout, chunk))
     child.stderr?.on('data', (chunk) => appendOutputChunk(stderr, chunk))
     child.once('error', (error) => {
       clearTimeout(timer)
+      clearTimeout(settleTimer)
       if (settled) return
       settled = true
       hostWatcher?.close()
@@ -994,6 +1042,7 @@ async function runSandboxCommand(command, options = {}) {
     })
     child.once('close', (code, signal) => {
       clearTimeout(timer)
+      clearTimeout(settleTimer)
       const stdoutResult = finishOutputCollector(stdout)
       const stderrResult = finishOutputCollector(stderr)
       void finish({
@@ -1333,5 +1382,6 @@ module.exports._test = {
   readWorkspaceFile,
   writeWorkspaceFile,
   exportSandboxFile,
-  getSandboxStatus
+  getSandboxStatus,
+  killProcessTree
 }

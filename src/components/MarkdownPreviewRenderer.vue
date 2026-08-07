@@ -21,6 +21,7 @@
       :sanitize="sanitizeHtml"
       :sanitize-mermaid="sanitizeSvgMarkup"
       :no-echarts="true"
+      :no-mermaid="true"
     />
   </div>
 </template>

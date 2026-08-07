@@ -357,6 +357,16 @@ export async function ensureMarkdownPreviewRuntime() {
           markdownItPlugins: (plugins) => [
             ...enhanceDiagramPlugins(plugins),
             {
+              type: 'echarts-project',
+              plugin: createDiagramFencePlugin('echarts', { themeAttr: 'data-echarts-theme' }),
+              options: {}
+            },
+            {
+              type: 'mermaid-project',
+              plugin: createDiagramFencePlugin('mermaid', { themeAttr: 'data-mermaid-theme' }),
+              options: {}
+            },
+            {
               type: 'mermaid-normalize',
               plugin: createMermaidNormalizePlugin(),
               options: {}

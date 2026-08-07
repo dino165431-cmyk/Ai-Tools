@@ -652,8 +652,8 @@ const chatVirtualizer = useVirtualizer(computed(() => ({
   paddingStart: isDenseChatLayout.value ? 8 : 14,
   paddingEnd: isDenseChatLayout.value ? 8 : 14,
   enabled: chatVirtualizedEnabled.value,
-  anchorTo: 'end',
-  followOnAppend: true,
+  anchorTo: autoScrollSuspendedByUser.value ? 'auto' : 'end',
+  followOnAppend: !autoScrollSuspendedByUser.value,
   scrollEndThreshold: SCROLL_BOTTOM_THRESHOLD_PX,
   useAnimationFrameWithResizeObserver: true
 })))
@@ -910,9 +910,23 @@ function getChatVirtualItemStyle(msg) {
 }
 
 function maybeScheduleStreamingScroll(options = {}) {
-  if (!shouldFollowStreamingScroll(options)) return false
-  scheduleScrollToBottom()
-  return true
+  if (shouldFollowStreamingScroll(options)) {
+    scheduleScrollToBottom()
+    return true
+  }
+  if (Date.now() > userChatScrollIntentUntil && autoScrollSuspendedByUser.value) {
+    const el = chatScrollEl.value || resolveScrollbarContainerEl()
+    if (el) {
+      updateAtBottomState(el)
+      if (isAtBottom.value) {
+        autoScrollSuspendedByUser.value = false
+        autoScrollEnabled.value = true
+        scheduleScrollToBottom()
+        return true
+      }
+    }
+  }
+  return false
 }
 
 const {
@@ -1548,8 +1562,7 @@ function handleChatScroll(e) {
   const currentTop = Number(targetEl?.scrollTop || 0)
   const previousTop = didProcessChatScroll ? lastProcessedChatScrollTop : Number(chatScrollTop.value || 0)
   const isProgrammaticScroll = isExpectedProgrammaticChatScroll(currentTop)
-  const hasUserScrollIntent = Date.now() <= userChatScrollIntentUntil
-  if (!isProgrammaticScroll && currentTop + 1 < previousTop && (!chatVirtualizedEnabled.value || hasUserScrollIntent)) {
+  if (!isProgrammaticScroll && currentTop + 1 < previousTop) {
     autoScrollSuspendedByUser.value = true
     autoScrollEnabled.value = false
   }
@@ -1588,10 +1601,7 @@ function processChatScroll(elMaybe) {
   const nextScrollTop = Number(chatScrollTop.value || 0)
   const isProgrammaticScroll = isExpectedProgrammaticChatScroll(nextScrollTop)
   const hasUserScrollIntent = Date.now() <= userChatScrollIntentUntil
-  const isUserScrollingUp =
-    didProcessChatScroll &&
-    (nextScrollTop + 1 < prevScrollTop) &&
-    (!chatVirtualizedEnabled.value || hasUserScrollIntent)
+  const isUserScrollingUp = didProcessChatScroll && (nextScrollTop + 1 < prevScrollTop)
   const isUserScrollingDown = didProcessChatScroll && (nextScrollTop > prevScrollTop + 1)
   lastProcessedChatScrollTop = nextScrollTop
   didProcessChatScroll = true
@@ -1599,7 +1609,7 @@ function processChatScroll(elMaybe) {
   if (!isProgrammaticScroll && isUserScrollingUp) {
     autoScrollSuspendedByUser.value = true
     autoScrollEnabled.value = false
-  } else if (atBottom) {
+  } else if (atBottom && !hasUserScrollIntent) {
     autoScrollSuspendedByUser.value = false
     autoScrollEnabled.value = true
   } else if (!isProgrammaticScroll && autoScrollEnabled.value && distanceFromBottom > SCROLL_AUTO_DISABLE_DISTANCE_PX) {

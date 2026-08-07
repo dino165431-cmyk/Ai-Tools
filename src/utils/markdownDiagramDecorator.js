@@ -1489,6 +1489,64 @@ export function createMarkdownDiagramDecorator(options = {}) {
     }
   }
 
+  let mermaidRenderQueue = Promise.resolve()
+  function enqueueMermaidRender(task) {
+    const next = mermaidRenderQueue.then(task, task)
+    mermaidRenderQueue = next.catch(() => {})
+    return next
+  }
+
+  function renderMermaidErrorState(node, error) {
+    if (!node) return
+    const source = readDiagramNodeText(node)
+    const line = Number(node.dataset.line || 0)
+    node.dataset.processed = ''
+    node.dataset.aiToolsDiagramError = 'true'
+    node.classList.add('note-preview-echarts-error-host')
+    node.innerHTML = [
+      '<div class="note-preview-diagram-error">',
+      '  <div class="note-preview-diagram-error__title">Mermaid 渲染失败</div>',
+      '  <div class="note-preview-diagram-error__message">' + escapeHtml(error?.message || '渲染失败') + '</div>',
+      '  <div class="note-preview-diagram-error__meta">' + (line > 0 ? '代码块起始行：' + line : '请检查当前 mermaid 代码块') + '</div>',
+      '  <details class="note-preview-diagram-error__details">',
+      '    <summary>查看当前源码</summary>',
+      '    <pre><code>' + escapeHtml(source) + '</code></pre>',
+      '  </details>',
+      '</div>'
+    ].join('\n')
+    applyDiagramSize(node, 'mermaid')
+  }
+
+  async function renderMermaidNode(node) {
+    if (!node || node.dataset.aiToolsDiagramRendering === 'true' || node.dataset.aiToolsDiagramError === 'true') return
+
+    node.dataset.aiToolsDiagramRendering = 'true'
+    return enqueueMermaidRender(async () => {
+      try {
+        const source = cacheDiagramSource(node, readDiagramNodeText(node))
+        if (!source.trim()) throw new Error('Mermaid 源码为空')
+
+        const svgMarkup = await renderMermaidSvgForExport(source, getTheme(), null)
+        if (!node.isConnected) return
+
+        const container = document.createElement('p')
+        container.className = 'md-editor-mermaid'
+        container.setAttribute('data-processed', '')
+        container.setAttribute('data-content', source)
+        if (node.dataset.line) container.dataset.line = node.dataset.line
+        container.innerHTML = svgMarkup
+        node.replaceWith(container)
+
+        applyDiagramSize(container, 'mermaid')
+        ensureDiagramActionBar(container, 'mermaid')
+      } catch (err) {
+        if (node.isConnected) renderMermaidErrorState(node, err)
+      } finally {
+        delete node.dataset.aiToolsDiagramRendering
+      }
+    })
+  }
+
   function ensureDiagramActionBar(node, kind) {
     if (!node || node.dataset.aiToolsDiagramError === 'true') return
     if (node.dataset.aiToolsDiagramEnhanced === 'true') return
@@ -1561,6 +1619,11 @@ export function createMarkdownDiagramDecorator(options = {}) {
   function decorate(root) {
     if (!root) return
     cleanupDetachedEchartsNodes()
+
+    root.querySelectorAll('div.md-editor-mermaid:not([data-processed])').forEach((node) => {
+      if (node.dataset.closed === 'false') return
+      void renderMermaidNode(node)
+    })
 
     root.querySelectorAll('div.md-editor-echarts:not([data-processed])').forEach((node) => {
       if (node.dataset.closed === 'false') return
