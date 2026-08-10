@@ -29,6 +29,8 @@
       :tool-mode-display-text="toolModeDisplayText"
       :context-window-summary-tag="contextWindowSummaryTag"
       :context-window-summary-tag-type="contextWindowSummaryTagType"
+      :context-window-summary-level="contextWindowSummaryLevel"
+      :context-window-summary-percent="contextWindowSummaryPercent"
       :context-window-summary-tooltip-text="contextWindowSummaryTooltipText"
       :active-session-file-path="activeSessionFilePath"
       :active-session-display-title="activeSessionDisplayTitle"
@@ -442,7 +444,8 @@ import { isChatMemoryEnabled } from '@/utils/chatMemoryConfig'
 import { shouldRetryWithoutParallelToolCalls } from '@/utils/openaiResponsesCompat.js'
 import {
   getProviderModelType,
-  normalizeProviderApiMode
+  normalizeProviderApiMode,
+  resolveModelContextWindowTokens
 } from '@/utils/providerModelConfig.js'
 import {
   collectImageGenerationRevisedPrompts,
@@ -2763,7 +2766,8 @@ const contextWindowBudgetPlan = computed(() => {
     reservedChars,
     sourceChars,
     reportedInputTokens: tokenTelemetry.inputTokens,
-    reportedRequestChars: tokenTelemetry.requestChars
+    reportedRequestChars: tokenTelemetry.requestChars,
+    modelContextTokens: resolveModelContextWindowTokens(selectedProvider.value, selectedModel.value)
   })
   return {
     ...basePlan,
@@ -2812,7 +2816,8 @@ function buildContextWindowStats({ includeRequestDetails = false } = {}) {
     reservedChars,
     sourceChars,
     reportedInputTokens: tokenTelemetry.inputTokens,
-    reportedRequestChars: tokenTelemetry.requestChars
+    reportedRequestChars: tokenTelemetry.requestChars,
+    modelContextTokens: resolveModelContextWindowTokens(selectedProvider.value, selectedModel.value)
   })
   const historyBudgetChars = budgetPlan.historyCharsBudget
   const rawAttachmentCount = countChatContextAttachmentMessages(rawMessages)
@@ -2934,7 +2939,8 @@ watch(
       reservedChars,
       sourceChars: estimateMessagesSize(rawMessages),
       reportedInputTokens: tokenTelemetry.inputTokens,
-      reportedRequestChars: tokenTelemetry.requestChars
+      reportedRequestChars: tokenTelemetry.requestChars,
+      modelContextTokens: resolveModelContextWindowTokens(selectedProvider.value, selectedModel.value)
     })
 
     contextWindowPreviewState.value = inspectChatContextWindow(
@@ -2973,6 +2979,8 @@ const {
   contextWindowPreviewBudgetSummaryText,
   contextWindowBudgetStatus,
   contextWindowSummaryTagType,
+  contextWindowSummaryLevel,
+  contextWindowSummaryPercent,
   contextWindowSummaryTooltipText,
   contextWindowCompressedSummaryText,
   contextWindowCompressedSummaryMetaText,
@@ -5240,6 +5248,7 @@ const {
   resolveBuiltinSkillCall,
   resolveChatContextWindowBudgetPlan,
   resolveChatContextWindowOptions,
+  resolveModelContextWindowTokens,
   resolveChatLongTextAttachmentPlan,
   resolveChatToolWorkspaceScope,
   resolveContextSummaryChain,

@@ -7,10 +7,10 @@ export const CHAT_CONTEXT_WINDOW_PRESETS = Object.freeze({
     maxTurns: 18,
     keepRecentTurnsFull: 6,
     maxMessages: 120,
-    maxTokensExpanded: 32000,
-    maxTokensCompact: 24000,
-    maxCharsExpanded: 128000,
-    maxCharsCompact: 96000,
+    maxTokensExpanded: 131072,
+    maxTokensCompact: 98304,
+    maxCharsExpanded: 524288,
+    maxCharsCompact: 393216,
     autoCompactTriggerPercent: 75
   }),
   balanced: Object.freeze({
@@ -19,10 +19,10 @@ export const CHAT_CONTEXT_WINDOW_PRESETS = Object.freeze({
     maxTurns: 48,
     keepRecentTurnsFull: 16,
     maxMessages: 320,
-    maxTokensExpanded: 100000,
-    maxTokensCompact: 80000,
-    maxCharsExpanded: 400000,
-    maxCharsCompact: 320000,
+    maxTokensExpanded: 262144,
+    maxTokensCompact: 196608,
+    maxCharsExpanded: 1048576,
+    maxCharsCompact: 786432,
     autoCompactTriggerPercent: 80
   }),
   wide: Object.freeze({
@@ -31,14 +31,25 @@ export const CHAT_CONTEXT_WINDOW_PRESETS = Object.freeze({
     maxTurns: 96,
     keepRecentTurnsFull: 32,
     maxMessages: 800,
-    maxTokensExpanded: 250000,
-    maxTokensCompact: 200000,
-    maxCharsExpanded: 1000000,
-    maxCharsCompact: 800000,
+    maxTokensExpanded: 524288,
+    maxTokensCompact: 393216,
+    maxCharsExpanded: 2097152,
+    maxCharsCompact: 1572864,
+    autoCompactTriggerPercent: 85
+  }),
+  max: Object.freeze({
+    label: '最大',
+    description: '最大化利用 1M 超长窗口模型，适合长链路连续任务。',
+    maxTurns: 128,
+    keepRecentTurnsFull: 48,
+    maxMessages: 1000,
+    maxTokensExpanded: 1048576,
+    maxTokensCompact: 786432,
+    maxCharsExpanded: 4194304,
+    maxCharsCompact: 3145728,
     autoCompactTriggerPercent: 85
   })
 })
-
 export const CHAT_CONTEXT_WINDOW_HISTORY_FOCUS_PRESETS = Object.freeze({
   recent: Object.freeze({
     label: '优先最近',
@@ -251,12 +262,24 @@ export function resolveChatContextWindowOptions(raw) {
 
 export function resolveChatContextWindowBudgetPlan(raw, runtime = {}) {
   const resolved = resolveChatContextWindowOptions(raw)
-  const expandedTokens = isFinitePositiveNumber(resolved.maxTokensExpanded)
+  const modelContextTokens = isFinitePositiveNumber(runtime?.modelContextTokens)
+    ? Math.floor(runtime.modelContextTokens)
+    : null
+  const outputReserveTokens = modelContextTokens
+    ? Math.min(32768, Math.max(8192, Math.floor(modelContextTokens * 0.08)))
+    : 0
+  const rawExpandedTokens = isFinitePositiveNumber(resolved.maxTokensExpanded)
     ? Math.floor(resolved.maxTokensExpanded)
     : Number.MAX_SAFE_INTEGER
-  const compactTokens = isFinitePositiveNumber(resolved.maxTokensCompact)
+  const rawCompactTokens = isFinitePositiveNumber(resolved.maxTokensCompact)
     ? Math.floor(resolved.maxTokensCompact)
-    : expandedTokens
+    : rawExpandedTokens
+  const expandedTokens = modelContextTokens
+    ? Math.max(1000, Math.min(rawExpandedTokens, modelContextTokens - outputReserveTokens))
+    : rawExpandedTokens
+  const compactTokens = modelContextTokens
+    ? Math.max(1000, Math.min(rawCompactTokens, Math.floor(expandedTokens * 0.75)))
+    : rawCompactTokens
   const expandedChars = isFinitePositiveNumber(resolved.maxCharsExpanded)
     ? Math.floor(resolved.maxCharsExpanded)
     : Number.MAX_SAFE_INTEGER
@@ -320,6 +343,7 @@ export function resolveChatContextWindowBudgetPlan(raw, runtime = {}) {
     triggerRatio,
     budgetUnit: telemetryAvailable ? 'token' : 'char',
     telemetryAvailable,
+    modelContextTokens,
     expandedTokens,
     compactTokens,
     baseTokens,

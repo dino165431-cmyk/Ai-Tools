@@ -335,6 +335,7 @@ export function useChatRequestRunner(dependencies) {
     selectedPromptModalParsedValue,
     selectedProvider,
     selectedProviderId,
+    resolveModelContextWindowTokens,
     selectedSkillIds,
     selectedSkillObjects,
     sending,
@@ -1102,6 +1103,54 @@ export function useChatRequestRunner(dependencies) {
     return true
   }
 
+  async function maybeCompactContextInline(targetSession, tools, abortState, requestCfg = {}) {
+    if (!targetSession || typeof targetSession !== "object") return false
+    const sourceMessages = Array.isArray(targetSession.apiMessages) ? targetSession.apiMessages : []
+    if (sourceMessages.length < 4) return false
+    const reservedChars = calculateReservedRequestChars({ systemContent: systemContent.value, tools })
+    const sourceChars = estimateMessagesSize(sourceMessages)
+    const tokenTelemetry = getContextTokenTelemetry(targetSession)
+    const budgetPlan = resolveChatContextWindowBudgetPlan(effectiveContextWindowConfig.value, {
+      reservedChars,
+      sourceChars,
+      reportedInputTokens: tokenTelemetry.inputTokens,
+      reportedRequestChars: tokenTelemetry.requestChars,
+      modelContextTokens: resolveModelContextWindowTokens(selectedProvider.value, selectedModel.value)
+    })
+    if (budgetPlan.mode !== "compact" || budgetPlan.reason !== "auto_threshold") return false
+    const summaryTriggerChars = calculateContextSummaryTriggerChars({ historyCharsBudget: budgetPlan.historyCharsBudget })
+    const summaryText = await ensureContextWindowSummary({
+      cfg: {
+        requestMode: "chat",
+        providerKind: "openai-compatible",
+        providerId: String(requestCfg.providerId || "").trim(),
+        baseUrl: requestCfg.baseUrl,
+        apiKey: requestCfg.apiKey,
+        apiMode: normalizeProviderApiMode(requestCfg.apiMode),
+        model: requestCfg.model
+      },
+      requestRecord: targetSession,
+      tools,
+      reservedCharsOverride: reservedChars,
+      targetSourceChars: summaryTriggerChars,
+      force: false
+    }).catch((err) => {
+      console.warn("[chat context summary] inline compact failed:", err)
+      return ""
+    })
+    return !!String(summaryText || "").trim()
+  }
+
+  function pushCompactResumeStep(targetSession, abortState) {
+    if (!targetSession || typeof targetSession !== "object") return
+    const step = createDisplayMessage("user", "", {
+      guidance: true,
+      compactGuidance: true,
+      content: "（较早历史已压缩，继续处理中）"
+    })
+    targetSession.messages.push(step)
+    maybeScrollToBottomForRun(abortState)
+  }
   async function runChatRounds({
     providerId = '',
     baseUrl,
@@ -1146,7 +1195,17 @@ export function useChatRequestRunner(dependencies) {
     for (let round = 0; ; round += 1) {
       throwIfAborted(abortState)
       await refreshToolsBundleIfNeeded()
-      if (round > 0) await injectPendingGuidanceMessages(abortState, { preferVision: supportsVision })
+      if (round > 0) {
+        const inlineCompacted = await maybeCompactContextInline(targetSession, tools, abortState, {
+          providerId,
+          baseUrl,
+          apiKey,
+          apiMode,
+          model
+        })
+        if (inlineCompacted) pushCompactResumeStep(targetSession, abortState)
+        await injectPendingGuidanceMessages(abortState, { preferVision: supportsVision })
+      }
       const assistantDisplay = createDisplayMessage('assistant', '', {
         thinking: '',
         thinkingExpanded: false,
@@ -2992,7 +3051,8 @@ export function useChatRequestRunner(dependencies) {
       reservedChars,
       sourceChars,
       reportedInputTokens: tokenTelemetry.inputTokens,
-      reportedRequestChars: tokenTelemetry.requestChars
+      reportedRequestChars: tokenTelemetry.requestChars,
+      modelContextTokens: resolveModelContextWindowTokens(selectedProvider.value, selectedModel.value)
     })
     const historyBudget = budgetPlan.historyCharsBudget
     return {
@@ -3038,7 +3098,7 @@ export function useChatRequestRunner(dependencies) {
       buildChatContextWindowRuntimeOptions(contextWindowResolvedOptions.value, {
         providerKind,
         maxChars: budgetState.historyBudget,
-        preserveToolResultTurns: budgetState.budgetPlan.mode !== 'compact'
+        preserveToolResultTurns: budgetState.budgetPlan.mode !== 'compact' || !summaryText
       })
     )
   }
@@ -3400,7 +3460,7 @@ export function useChatRequestRunner(dependencies) {
         buildChatContextWindowRuntimeOptions(resolvedContext, {
           providerKind: cfg.providerKind || 'openai-compatible',
           maxChars: historyBudget,
-          preserveToolResultTurns: budgetState.budgetPlan.mode !== 'compact'
+          preserveToolResultTurns: budgetState.budgetPlan.mode !== 'compact' || !String(cachedSummary?.summaryText || '').trim()
         })
       )
       const contextWouldTrim =

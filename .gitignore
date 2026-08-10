@@ -27,3 +27,7 @@ __pycache__/
 *.sw?
 
 !public/**
+
+# PowerShell 运行时分析缓存（避免误提交）
+Microsoft/
+

@@ -140,8 +140,11 @@
       </n-tag>
       <n-tooltip v-if="contextWindowSummaryTag" trigger="hover">
         <template #trigger>
-          <n-tag size="small" bordered :type="contextWindowSummaryTagType">
-            {{ contextWindowSummaryTag }}
+          <n-tag size="small" bordered :type="contextWindowSummaryTagType" class="chat-context-window-tag">
+            <span class="chat-context-window-tag__bar">
+              <span class="chat-context-window-tag__fill" :class="`is-${contextWindowSummaryLevel || 'safe'}`" :style="{ width: `${contextWindowSummaryPercent || 0}%` }"></span>
+            </span>
+            <span class="chat-context-window-tag__text">{{ contextWindowSummaryTag }}</span>
           </n-tag>
         </template>
         {{ contextWindowSummaryTooltipText }}
@@ -203,6 +206,8 @@ const props = defineProps({
   toolModeDisplayText: { type: String, default: '' },
   contextWindowSummaryTag: { type: String, default: '' },
   contextWindowSummaryTagType: { type: String, default: undefined },
+  contextWindowSummaryLevel: { type: String, default: 'safe' },
+  contextWindowSummaryPercent: { type: Number, default: 0 },
   contextWindowSummaryTooltipText: { type: String, default: '' },
   activeSessionFilePath: { type: String, default: '' },
   activeSessionDisplayTitle: { type: String, default: '' },
@@ -310,5 +315,33 @@ const contextWindowSummaryTagType = computed(() => props.contextWindowSummaryTag
   .chat-header-overview {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+
+.chat-context-window-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.chat-context-window-tag__bar {
+  width: 44px;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(128, 128, 128, 0.18);
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+.chat-context-window-tag__fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.25s ease;
+}
+.chat-context-window-tag__fill.is-safe { background: #18a058; }
+.chat-context-window-tag__fill.is-info { background: #2080f0; }
+.chat-context-window-tag__fill.is-warning { background: #f0a020; }
+.chat-context-window-tag__fill.is-critical { background: #d03050; }
+.chat-context-window-tag__text {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 </style>

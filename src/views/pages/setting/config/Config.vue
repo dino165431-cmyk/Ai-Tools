@@ -835,6 +835,7 @@ const contextWindowPresetOptions = [
   { label: '紧凑', value: 'aggressive' },
   { label: '平衡', value: 'balanced' },
   { label: '宽松', value: 'wide' },
+  { label: '最大', value: 'max' },
   { label: '自定义', value: 'custom' }
 ]
 

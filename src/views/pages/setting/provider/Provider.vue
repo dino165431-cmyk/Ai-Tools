@@ -266,11 +266,14 @@ import {
 } from '@/utils/configListener'
 import {
   getProviderApiModeLabel,
+  getProviderContextWindow,
   getProviderModelType,
   normalizeProviderApiMode,
+  normalizeProviderContextWindows,
   normalizeProviderModelType,
   normalizeProviderModelTypes,
   PROVIDER_API_MODE_OPTIONS,
+  PROVIDER_CONTEXT_WINDOW_OPTIONS,
   PROVIDER_MODEL_TYPE_OPTIONS
 } from '@/utils/providerModelConfig'
 
@@ -309,7 +312,8 @@ const formData = reactive({
   apikey: '',
   apiMode: 'auto',
   selectModels: [],
-  modelTypes: {}
+  modelTypes: {},
+  modelContextWindows: {}
 })
 
 const availableModels = ref([])
@@ -344,6 +348,22 @@ const modelColumns = [
         disabled: !isSelected,
         title: isSelected ? '指定后会覆盖按模型名称自动识别的结果' : '请先启用该模型',
         'onUpdate:value': (value) => setModelType(row.id, value)
+      })
+    }
+  },
+  {
+    title: '上下文挡位',
+    key: 'contextWindow',
+    width: 128,
+    render(row) {
+      const isSelected = formData.selectModels.includes(row.id)
+      return h(NSelect, {
+        value: getProviderContextWindow(formData, row.id),
+        options: PROVIDER_CONTEXT_WINDOW_OPTIONS,
+        size: 'small',
+        disabled: !isSelected,
+        title: isSelected ? '指定上下文窗口挡位，未设置时按全局配置' : '请先启用该模型',
+        'onUpdate:value': (value) => setModelContextWindow(row.id, value)
       })
     }
   },
@@ -462,6 +482,9 @@ function toggleModel(modelId, isSelected) {
     const nextModelTypes = { ...formData.modelTypes }
     delete nextModelTypes[modelId]
     formData.modelTypes = nextModelTypes
+    const nextModelContextWindows = { ...formData.modelContextWindows }
+    delete nextModelContextWindows[modelId]
+    formData.modelContextWindows = nextModelContextWindows
   } else {
     formData.selectModels.push(modelId)
   }
@@ -475,6 +498,16 @@ function setModelType(modelId, value) {
   if (type === 'auto') delete nextModelTypes[id]
   else nextModelTypes[id] = type
   formData.modelTypes = nextModelTypes
+}
+
+function setModelContextWindow(modelId, value) {
+  const id = String(modelId || '').trim()
+  if (!id) return
+  const level = normalizeProviderContextWindows({ [id]: value })[id] || 'auto'
+  const nextModelContextWindows = { ...formData.modelContextWindows }
+  if (level === 'auto') delete nextModelContextWindows[id]
+  else nextModelContextWindows[id] = level
+  formData.modelContextWindows = nextModelContextWindows
 }
 
 function confirmPruneMissingModels() {
@@ -503,6 +536,9 @@ function confirmPruneMissingModels() {
       formData.selectModels = formData.selectModels.filter((id) => validIds.has(String(id || '').trim()))
       formData.modelTypes = Object.fromEntries(
         Object.entries(formData.modelTypes || {}).filter(([id]) => validIds.has(String(id || '').trim()))
+      )
+      formData.modelContextWindows = Object.fromEntries(
+        Object.entries(formData.modelContextWindows || {}).filter(([id]) => validIds.has(String(id || '').trim()))
       )
       const removed = before - formData.selectModels.length
       message.success(`已清理 ${removed} 个失效模型，保存后生效`)
@@ -696,6 +732,7 @@ function resetCustomForm() {
   formData.apiMode = 'auto'
   formData.selectModels = []
   formData.modelTypes = {}
+  formData.modelContextWindows = {}
   availableModels.value = []
   modelFilterKeyword.value = ''
 }
@@ -729,6 +766,7 @@ async function openEditModal(provider) {
   formData.apiMode = normalizeProviderApiMode(provider.apiMode)
   formData.selectModels = provider.selectModels ? [...provider.selectModels] : []
   formData.modelTypes = normalizeProviderModelTypes(provider.modelTypes)
+  formData.modelContextWindows = normalizeProviderContextWindows(provider.modelContextWindows)
   if (formData.baseurl && formData.apikey) {
     refreshModels()
   } else {
@@ -755,7 +793,8 @@ function handleSave() {
         apikey: formData.apikey,
         apiMode: normalizeProviderApiMode(formData.apiMode),
         selectModels: formData.selectModels,
-        modelTypes: normalizeProviderModelTypes(formData.modelTypes)
+        modelTypes: normalizeProviderModelTypes(formData.modelTypes),
+        modelContextWindows: normalizeProviderContextWindows(formData.modelContextWindows)
       }
 
       const safeData = JSON.parse(JSON.stringify(providerData))

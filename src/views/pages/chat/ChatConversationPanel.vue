@@ -113,6 +113,10 @@
 
                     <template v-else-if="msg.role === 'user'">
                       <n-tag v-if="msg.guidance" size="tiny" type="info" class="chat-user-guidance-tag">引导</n-tag>
+                      <div v-if="msg.compactGuidance" style="display:inline-flex;align-items:center;gap:6px;margin:2px 0 6px;padding:3px 10px;border-radius:999px;font-size:11px;background:rgba(24,160,88,0.10);border:1px solid rgba(24,160,88,0.22);color:rgba(24,160,88,0.95);max-width:100%;">
+                        <span style="font-weight:600;flex:0 0 auto;">历史已压缩</span>
+                        <span style="opacity:0.85;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ msg.content }}</span>
+                      </div>
                       <n-input
                         v-if="msg.editing"
                         v-model:value="msg.editDraft"
@@ -123,7 +127,7 @@
                         @keydown="(event) => actions.handleUserEditKeydown(event, msg)"
                       />
 
-                      <div v-if="!msg.editing" class="chat-user-message" :class="{ 'is-collapsed': helpers.isUserMessageCollapsed(msg) }">
+                      <div v-if="!msg.editing && !msg.compactGuidance" class="chat-user-message" :class="{ 'is-collapsed': helpers.isUserMessageCollapsed(msg) }">
                         <pre v-if="helpers.isUserMessageCollapsed(msg)" class="chat-plain chat-user-message__preview">{{ helpers.userMessagePreview(msg) }}</pre>
                         <template v-else>
                           <pre v-if="helpers.shouldRenderUserMessageAsPlainText(msg)" class="chat-plain">{{ msg.content }}</pre>
@@ -153,7 +157,7 @@
                         </button>
                       </div>
 
-                      <ChatUserAttachments :msg="msg" :theme="theme" :helpers="userAttachmentHelpers" :actions="userAttachmentActions" />
+                      <ChatUserAttachments v-if="!msg.compactGuidance" :msg="msg" :theme="theme" :helpers="userAttachmentHelpers" :actions="userAttachmentActions" />
                     </template>
 
                     <ChatToolActivityGroup

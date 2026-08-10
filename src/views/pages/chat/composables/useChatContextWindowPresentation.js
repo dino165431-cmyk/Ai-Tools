@@ -24,6 +24,11 @@ export const contextWindowPresetOptions = [
     description: CHAT_CONTEXT_WINDOW_PRESETS.wide.description
   },
   {
+    label: '最大',
+    value: 'max',
+    description: CHAT_CONTEXT_WINDOW_PRESETS.max.description
+  },
+  {
     label: '自定义',
     value: 'custom',
     description: '手动控制轮次、消息数量和字符预算。'
@@ -421,11 +426,25 @@ export function useChatContextWindowPresentation({
     }
   })
 
-  const contextWindowSummaryTagType = computed(() => {
+  const contextWindowSummaryPercent = computed(() => {
     const pressure = Number(contextWindowBudgetPlan.value?.effectivePressure || 0)
-    if (pressure >= 0.98) return 'error'
+    return Math.max(0, Math.min(100, Math.round(pressure * 100)))
+  })
+
+  const contextWindowSummaryLevel = computed(() => {
+    const pressure = Number(contextWindowBudgetPlan.value?.effectivePressure || 0)
+    if (pressure >= 0.95) return 'critical'
     if (pressure >= 0.8) return 'warning'
-    return undefined
+    if (pressure >= 0.6) return 'info'
+    return 'safe'
+  })
+
+  const contextWindowSummaryTagType = computed(() => {
+    const level = contextWindowSummaryLevel.value
+    if (level === 'critical') return 'error'
+    if (level === 'warning') return 'warning'
+    if (level === 'info') return 'info'
+    return 'success'
   })
 
   const contextWindowSummaryTooltipText = computed(() => {
@@ -535,6 +554,8 @@ export function useChatContextWindowPresentation({
     contextWindowPreviewBudgetItems,
     contextWindowPreviewBudgetSummaryText,
     contextWindowBudgetStatus,
+    contextWindowSummaryPercent,
+    contextWindowSummaryLevel,
     contextWindowSummaryTagType,
     contextWindowSummaryTooltipText,
     contextWindowCompressedSummaryText,
