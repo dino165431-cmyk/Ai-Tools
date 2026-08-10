@@ -525,6 +525,20 @@ export function createPreparedSkillToolExecutor(runtime) {
     }
   }
 
+  function syncSkillActivationToSessionState(targetSession, skillId) {
+    if (!targetSession?.state || typeof targetSession.state !== 'object') return
+    const id = String(skillId || '').trim()
+    if (!id) return
+    const stateSelected = new Set(Array.isArray(targetSession.state.selectedSkillIds) ? targetSession.state.selectedSkillIds : [])
+    const stateAgent = new Set(Array.isArray(targetSession.state.agentSkillIds) ? targetSession.state.agentSkillIds : [])
+    const stateActivated = new Set(Array.isArray(targetSession.state.activatedAgentSkillIds) ? targetSession.state.activatedAgentSkillIds : [])
+    if (!stateSelected.has(id)) stateSelected.add(id)
+    if (!stateAgent.has(id)) stateAgent.add(id)
+    if (!stateActivated.has(id)) stateActivated.add(id)
+    targetSession.state.selectedSkillIds = Array.from(stateSelected)
+    targetSession.state.agentSkillIds = Array.from(stateAgent)
+    targetSession.state.activatedAgentSkillIds = Array.from(stateActivated)
+  }
   async function activateOneSkill({
     argsObj,
     serverName,
@@ -599,9 +613,11 @@ export function createPreparedSkillToolExecutor(runtime) {
       const previous = Array.isArray(activatedAgentSkillIds.value) ? activatedAgentSkillIds.value : []
       if (!previous.includes(skillId)) {
         activatedAgentSkillIds.value = [...previous, skillId]
+
         changed = true
       }
     }
+    if (changed) syncSkillActivationToSessionState(targetSession, skillId)
 
     const configuredMcpIds = Array.isArray(target?.mcp)
       ? target.mcp.map((id) => String(id || '').trim()).filter(Boolean)
@@ -726,6 +742,7 @@ export function createPreparedSkillToolExecutor(runtime) {
           activated.push(id)
         }
       }
+      if (activated.includes(id)) syncSkillActivationToSessionState(targetSession, id)
 
       const mcpStatus = getSkillMcpStatus(skill)
       mcpStatus.mountedNames.forEach((name) => mountedMcpNames.add(name))

@@ -120,6 +120,7 @@ export const AGENT_SKILL_LAZY_LOAD_GUIDANCE_LINES = Object.freeze([
   '- `skill_discover` 可检索全部已安装且启用的目录 Skill 和内置 Skill。只知道任务意图时传 `search`；找到目录 Skill 后用 `use_skill` 加载正文。内置 Action Schema 不会全量注册，需要查看动作时传 `skill_id`，需要完整参数 Schema 时再传 `action`。',
   '- 同一轮中已加载的 Skill、已发现的 Action Schema 和已有能力索引应直接复用；除非状态变化、继续分页或结果不足，不要重复调用 `use_skill`、`use_skills` 或 `skill_discover`。',
   '- 调用内置动作前必须先加载对应 Skill，然后使用 `skill_call({"skill_id":"...","action":"...","args":{...}})`。不要猜 Action 名称或参数。',
+  '- `skill_call` 的 `skill_id`、`action`、`args` 三个顶层参数必须平级并列。不要只传 `action` 而漏掉 `args`/`skill_id`，也不要写成 `skill_call({"args":{"action":"...","args":{...}}})` 这类把 `action` 嵌进 `args` 的格式——宿主解析不到顶层 `action` 会报“action 不能为空 / 未找到要调用的内置 Skill”，错误信息不会回显你传入的原始参数，先自查参数结构再重试。',
   '- `skill_call` 失败时先根据错误修正参数或选择其他 Action，不要原样重试；同一根因连续失败后停止盲试并说明阻碍。',
   '- 外部 MCP 绑定仍会随 Skill 选择挂载；`use_skill` / `use_skills` 负责把技能正文加入上下文。'
 ])
@@ -241,7 +242,7 @@ export const INTERNAL_TOOL_SPECS = Object.freeze({
   },
   skillCall: {
     description:
-      '调用当前会话已选择且已加载的内置 Skill Action。先用 use_skill 加载 Skill；Action 或参数不明确时先用 skill_discover 查询。必须传精确 skill_id、action 和 args；无参数 Action 也要传 args:{}。',
+      '调用当前会话已选择且已加载的内置 Skill Action。先用 use_skill 加载 Skill；Action 或参数不明确时先用 skill_discover 查询。必须传精确 skill_id、action 和 args；无参数 Action 也要传 args:{}。skill_id、action、args 三个顶层参数必须平级并列；不要只传 action 漏掉 args/skill_id，也不要写 skill_call({"args":{"action":"...","args":{...}}}) 这类把 action 嵌进 args 的格式，宿主会解析不到顶层 action 并报错。',
     parameters: {
       type: 'object',
       properties: {

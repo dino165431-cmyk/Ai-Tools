@@ -529,7 +529,7 @@ export function useChatRequestRunner(dependencies) {
     ) {
       const targetRecord = getRunRecord(
         pendingMessage?.toolAbortState || abortController.value || null
-      ) || getActiveMemorySession()
+      ) || (pendingMessage ? getMemorySessionForToolMessage(pendingMessage) : null) || getActiveMemorySession()
       const sessionId = targetRecord?.id || activeMemorySessionId.value || 'default'
       const defaultWorkspaceId = resolveMemorySessionSandboxWorkspaceId(targetRecord)
       const withSessionWorkspace = (args) => withDefaultChatSandboxWorkspaceId(
@@ -4742,6 +4742,18 @@ export function useChatRequestRunner(dependencies) {
     }
   }
 
+function resolveSkillObjectsForRecord(record) {
+  const state = record?.state && typeof record.state === 'object' ? record.state : {}
+  const ids = new Set([
+    ...normalizeStringList(state.selectedSkillIds),
+    ...normalizeStringList(state.agentSkillIds),
+    ...normalizeStringList(state.activatedAgentSkillIds)
+  ])
+  return (Array.isArray(skills.value) ? skills.value : []).filter((skill) =>
+    skill && ids.has(String(skill?._id || '').trim())
+  )
+}
+
   async function hydrateSkillGatewayExecutionContext(context, abortState = null) {
     if (context?.mapping?.type !== 'internal' || context.mapping.internal !== 'skill_call') {
       return context
@@ -4752,7 +4764,7 @@ export function useChatRequestRunner(dependencies) {
       throwIfAborted(abortState)
       resolved = await waitForAbortable(
         resolveBuiltinSkillCall({
-          selectedSkills: selectedSkillObjects.value,
+          selectedSkills: getRunRecord(abortState) ? resolveSkillObjectsForRecord(getRunRecord(abortState)) : selectedSkillObjects.value,
           catalog: builtinSkillActionCatalog,
           args: context.argsObj,
           isSkillLoaded: isSkillPromptContentLoaded

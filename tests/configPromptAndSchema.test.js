@@ -367,13 +367,15 @@ test('default system prompt fallbacks stay synchronized and include execution gu
   const preloadDefaultSystemPrompt = globalConfig.getConfig().chatConfig.defaultSystemPrompt
 
   assert.equal(rendererDefaultSystemPrompt, preloadDefaultSystemPrompt)
-  assert.ok(preloadDefaultSystemPrompt.includes('解释、审查、报告或诊断默认只读'))
-  assert.ok(preloadDefaultSystemPrompt.includes('采用最小充分调用'))
-  assert.ok(preloadDefaultSystemPrompt.includes('不要重复发现能力、列目录、搜索或读取同一目标'))
-  assert.ok(preloadDefaultSystemPrompt.includes('不要原样重试'))
-  assert.ok(preloadDefaultSystemPrompt.includes('不得声称文件已保存、命令已执行或测试已通过'))
-  assert.ok(preloadDefaultSystemPrompt.includes('达到用户目标后立即停止调用工具'))
-  assert.ok(preloadDefaultSystemPrompt.includes('不回显密钥、token、cookie、env、headers'))
+  assert.ok(preloadDefaultSystemPrompt.includes('定位为「执行型智能助手」'))
+  assert.ok(preloadDefaultSystemPrompt.includes('以「准确、可执行、可验证」为最高优先级'))
+  assert.ok(preloadDefaultSystemPrompt.includes('【结论】'))
+  assert.ok(preloadDefaultSystemPrompt.includes('【步骤】'))
+  assert.ok(preloadDefaultSystemPrompt.includes('【验证】'))
+  assert.ok(preloadDefaultSystemPrompt.includes('【注意事项】'))
+  assert.ok(preloadDefaultSystemPrompt.includes('不要输出详细思考过程'))
+  assert.ok(preloadDefaultSystemPrompt.includes('编造不存在的信息'))
+  assert.ok(preloadDefaultSystemPrompt.includes('假装已经执行实际操作'))
 })
 
 test('legacy official default prompts upgrade without overwriting custom prompts', () => {
@@ -393,8 +395,8 @@ test('legacy official default prompts upgrade without overwriting custom prompts
 
   const upgraded = globalConfig.getConfig().chatConfig.defaultSystemPrompt
   assert.notEqual(upgraded, legacyDefaultPrompt)
-  assert.ok(upgraded.includes('执行：'))
-  assert.ok(upgraded.includes('不要原样重试'))
+  assert.ok(upgraded.includes('定位为「执行型智能助手」'))
+  assert.ok(upgraded.includes('以「准确、可执行、可验证」为最高优先级'))
 
   const customPrompt = '这是用户自定义的系统提示词，不应被迁移覆盖。'
   const customStored = storage.get('global-config') || {}

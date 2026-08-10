@@ -1565,6 +1565,7 @@ function handleChatScroll(e) {
   if (!isProgrammaticScroll && currentTop + 1 < previousTop) {
     autoScrollSuspendedByUser.value = true
     autoScrollEnabled.value = false
+    userChatScrollIntentUntil = Date.now() + CHAT_USER_SCROLL_INTENT_MS
   }
   queueProcessChatScroll(targetEl)
 }
