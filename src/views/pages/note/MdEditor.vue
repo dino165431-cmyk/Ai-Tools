@@ -1600,6 +1600,18 @@ ${String(bodyHtml || '')}
 </html>`;
 }
 
+async function waitForPreviewLayoutSettled(preview, maxWaitMs = 1200) {
+  if (!(preview instanceof HTMLElement)) return;
+  const start = performance.now();
+  let previousHeight = -1;
+  while (performance.now() - start < maxWaitMs) {
+    await waitForAnimationFrames(2);
+    const currentHeight = preview.scrollHeight || 0;
+    if (currentHeight === previousHeight) return;
+    previousHeight = currentHeight;
+  }
+}
+
 async function waitForPreviewExportReady() {
   await flushPendingSave();
   clearPendingHtmlRefresh();
@@ -1611,12 +1623,21 @@ async function waitForPreviewExportReady() {
   if (!(preview instanceof HTMLElement)) {
     throw new Error('未找到可导出的笔记预览内容');
   }
+
+  // 导出期间关闭 content-visibility:auto 的按需渲染：
+  // 长笔记屏外块若停留在估算高度（contain-intrinsic-block-size），
+  // 克隆时会内联错误高度，导致导出内容重叠。
+  preview.classList.add('is-exporting');
+
   if (previewHasDiagramHosts(preview)) {
     decoratePreviewDiagrams(preview);
   }
   await hydratePreviewImagesForExport(preview);
   await waitForPreviewImages(preview);
   await waitForPreviewDiagrams(preview);
+
+  // 强制全量布局并等待高度稳定，确保克隆内联的尺寸为真实值
+  await waitForPreviewLayoutSettled(preview);
   await waitForAnimationFrames(2);
   return preview;
 }
@@ -1769,6 +1790,7 @@ async function exportCurrentNoteAsHtml() {
     message.success(`已导出：${outputPath}`);
     return true;
   } finally {
+    getPreviewRoot()?.classList.remove('is-exporting');
     await nextTick();
   }
 }
@@ -1791,6 +1813,7 @@ async function exportCurrentNoteAsPng() {
     message.success(`已导出：${outputPath}`);
     return true;
   } finally {
+    getPreviewRoot()?.classList.remove('is-exporting');
     await nextTick();
   }
 }
@@ -3023,6 +3046,12 @@ onBeforeUnmount(() => {
 .editor-container :deep(.md-editor-preview > *) {
   content-visibility: auto;
   contain-intrinsic-block-size: auto 96px;
+}
+
+.editor-container :deep(.md-editor-preview.is-exporting > *) {
+  content-visibility: visible !important;
+  contain: none !important;
+  contain-intrinsic-block-size: auto !important;
 }
 
 .editor-container :deep(.md-editor-preview img) {
