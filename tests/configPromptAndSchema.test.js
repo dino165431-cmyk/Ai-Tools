@@ -1114,7 +1114,7 @@ test('directory skill infers Python entry scripts and header metadata without ma
   assert.equal(imported.cache.scriptCatalog[1].path, 'scripts/helpers/util.py')
 })
 
-test('skill import prepares an isolated Python environment from requirements.txt for later reuse', {
+test('skill import prepares an isolated Python environment in the background for later reuse', {
   skip: hasPython3Runtime() ? false : 'Python 3 runtime is unavailable'
 }, async (t) => {
   resetConfigStorage()
@@ -1137,8 +1137,15 @@ test('skill import prepares an isolated Python environment from requirements.txt
   let first
   try {
     imported = globalConfig.importSkillDirectory(skillDir)
-    assert.equal(imported.install.pythonDependencies.status, 'ready')
+    assert.equal(imported.install.pythonDependencies.status, 'pending')
     assert.equal(imported.install.pythonDependencies.dependencyFile, 'requirements.txt')
+    await globalConfig._skillPythonSetupQueues.get(imported._id)
+    const prepared = globalConfig.getSkill(imported._id)
+    if (prepared.install.pythonDependencies.status === 'error') {
+      t.skip(`Python venv support is unavailable: ${prepared.install.pythonDependencies.error}`)
+      return
+    }
+    assert.equal(prepared.install.pythonDependencies.status, 'ready')
     first = await globalConfig.runSkillScript(imported._id, 'scripts/run.py', { timeout_ms: 5000 })
   } catch (error) {
     if (/failed to prepare Python dependencies|No module named (?:venv|ensurepip)/i.test(String(error?.message || error))) {

@@ -430,6 +430,13 @@ const installLines = computed(() => {
   const pythonDependencies = install.pythonDependencies && typeof install.pythonDependencies === 'object'
     ? install.pythonDependencies
     : null
+  const pythonDependencyStatus = pythonDependencies?.status === 'pending'
+    ? '后台安装中'
+    : pythonDependencies?.status === 'error'
+      ? `安装失败${pythonDependencies.error ? `：${pythonDependencies.error}` : ''}`
+      : pythonDependencies?.reused
+        ? '复用已就绪环境'
+        : '已预装'
   return [
     { label: '导入类型', value: install.type },
     { label: '原始来源', value: install.originalSourcePath || install.filePath },
@@ -437,7 +444,7 @@ const installLines = computed(() => {
     pythonDependencies?.dependencyFile
       ? {
           label: 'Python 依赖',
-          value: `${pythonDependencies.dependencyFile}（${pythonDependencies.reused ? '复用已就绪环境' : '已预装'}）`
+          value: `${pythonDependencies.dependencyFile}（${pythonDependencyStatus}）`
         }
       : null,
     { label: '最近解析', value: cache.refreshedAt }

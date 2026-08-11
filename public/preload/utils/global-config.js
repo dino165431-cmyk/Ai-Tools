@@ -1775,6 +1775,14 @@ function toSkillScriptPreviewText(text, maxLength = 220) {
     return `${normalized.slice(0, Math.max(0, maxLength - 1)).trim()}...`
 }
 
+function toSkillDependencyErrorPreview(error, maxLength = 500) {
+    const redacted = String(error || '')
+        .replace(/(https?:\/\/)([^/\s:@]+):([^@\s/]+)@/gi, '$1[redacted]@')
+        .replace(/([?&](?:token|api[_-]?key|secret|password|passwd|authorization)=)[^&\s]+/gi, '$1[redacted]')
+        .replace(/\b(authorization|api[_-]?key|secret|password|passwd)\s*[:=]\s*[^\s,;]+/gi, '$1=[redacted]')
+    return toSkillScriptPreviewText(redacted, maxLength)
+}
+
 function cleanLeadingCommentText(text) {
     return String(text || '')
         .replace(/^\uFEFF/, '')
@@ -1981,6 +1989,7 @@ class GlobalConfig {
 
         this.STORAGE_KEY = 'global-config';
         this._skillPythonSetupQueues = new Map();
+        this._skillPythonSetupTargets = new Map();
 
         this._defaultConfig = {
             theme: 'light',
@@ -3792,6 +3801,164 @@ class GlobalConfig {
         return prepared.metadata
     }
 
+    _buildSkillPythonDependencyState(dependencySpec, patch = {}) {
+        if (!dependencySpec) return null
+        return {
+            status: 'pending',
+            dependencyFile: dependencySpec.path,
+            dependencyType: dependencySpec.type,
+            fingerprint: dependencySpec.fingerprint,
+            ...patch
+        }
+    }
+
+    _isCurrentSkillPythonDependencyJob(skill, target) {
+        if (!skill || !target) return false
+        const currentSource = String(skill.sourcePath || '').trim()
+        const targetSource = String(target.sourcePath || '').trim()
+        if (!currentSource || !targetSource) return false
+
+        try {
+            if (path.resolve(currentSource) !== path.resolve(targetSource)) return false
+        } catch {
+            return false
+        }
+
+        return String(skill?.install?.pythonDependencies?.fingerprint || '') === String(target.fingerprint || '')
+    }
+
+    _updateSkillPythonDependencyState(target, patch) {
+        const config = this._getRaw()
+        const current = config.skills?.[target.skillId]
+        if (!this._isCurrentSkillPythonDependencyJob(current, target)) return false
+
+        current.install = {
+            ...(current.install && typeof current.install === 'object' ? current.install : {}),
+            pythonDependencies: {
+                ...(current.install?.pythonDependencies && typeof current.install.pythonDependencies === 'object'
+                    ? current.install.pythonDependencies
+                    : {}),
+                ...patch
+            }
+        }
+        config.skills[target.skillId] = current
+        this._applyBuiltinsInPlace(config)
+        this._save(config)
+        return true
+    }
+
+    _buildSkillPythonDependencyJobTarget(skill, dependencySpec) {
+        if (!skill || !dependencySpec) return null
+        const skillId = String(skill._id || '').trim()
+        const sourcePath = String(skill.sourcePath || '').trim()
+        if (!skillId || !sourcePath || !dependencySpec.fingerprint) return null
+        return {
+            skillId,
+            sourcePath,
+            dependencyFile: dependencySpec.path,
+            dependencyType: dependencySpec.type,
+            fingerprint: dependencySpec.fingerprint
+        }
+    }
+
+    _scheduleSkillPythonDependencies(skill, dependencySpec = null) {
+        const resolvedSpec = dependencySpec || this._findSkillPythonDependencySpec(skill?.sourcePath)
+        const target = this._buildSkillPythonDependencyJobTarget(skill, resolvedSpec)
+        if (!target) return Promise.resolve(null)
+
+        const queuedTarget = this._skillPythonSetupTargets.get(target.skillId)
+        const queuedJob = this._skillPythonSetupQueues.get(target.skillId)
+        if (
+            queuedJob
+            && queuedTarget?.sourcePath === target.sourcePath
+            && queuedTarget?.fingerprint === target.fingerprint
+        ) {
+            return queuedJob
+        }
+
+        const previous = this._skillPythonSetupQueues.get(target.skillId) || Promise.resolve()
+        const job = previous
+            .catch(() => null)
+            .then(() => this._prepareSkillPythonDependenciesInBackground(target))
+        this._skillPythonSetupQueues.set(target.skillId, job)
+        this._skillPythonSetupTargets.set(target.skillId, target)
+        job.then(
+            () => {
+                if (this._skillPythonSetupQueues.get(target.skillId) === job) {
+                    this._skillPythonSetupQueues.delete(target.skillId)
+                    this._skillPythonSetupTargets.delete(target.skillId)
+                }
+            },
+            () => {
+                if (this._skillPythonSetupQueues.get(target.skillId) === job) {
+                    this._skillPythonSetupQueues.delete(target.skillId)
+                    this._skillPythonSetupTargets.delete(target.skillId)
+                }
+            }
+        )
+        return job
+    }
+
+    async _prepareSkillPythonDependenciesInBackground(target) {
+        const config = this._getRaw()
+        const skill = config.skills?.[target.skillId]
+        if (!this._isCurrentSkillPythonDependencyJob(skill, target)) return null
+
+        try {
+            const skillRoot = this._ensureAbsoluteDirectory(skill.sourcePath, 'sourcePath')
+            const dependencySpec = this._findSkillPythonDependencySpec(skillRoot)
+            if (!dependencySpec || dependencySpec.fingerprint !== target.fingerprint) return null
+
+            const dataRoot = this._ensureWritableDataStorageRoot(config)
+            const runtimeEnv = this._buildSkillRuntimeEnvironment(dataRoot, skill, skillRoot, '')
+            const prepared = await this._ensureSkillPythonEnvironment({
+                dataRoot,
+                skill,
+                skillRoot,
+                runtimeEnv,
+                dependencySpec,
+                timeoutMs: 10 * 60 * 1000
+            })
+            this._updateSkillPythonDependencyState(target, {
+                status: 'ready',
+                reused: !!prepared?.metadata?.reused,
+                preparedAt: new Date().toISOString(),
+                error: ''
+            })
+            return prepared?.metadata || null
+        } catch (error) {
+            const errorMessage = toSkillDependencyErrorPreview(error?.message || String(error), 500)
+            this._updateSkillPythonDependencyState(target, {
+                status: 'error',
+                reused: false,
+                error: errorMessage || 'failed to prepare Python dependencies',
+                failedAt: new Date().toISOString()
+            })
+            console.warn('[Skill] Python dependency setup failed in background', {
+                skillId: target.skillId,
+                dependencyFile: target.dependencyFile,
+                error: errorMessage || 'unknown error'
+            })
+            return null
+        }
+    }
+
+    _schedulePendingSkillPythonDependencies(config) {
+        Object.values(config?.skills || {}).forEach((skill) => {
+            const state = skill?.install?.pythonDependencies
+            if (state?.status !== 'pending') return
+            try {
+                const dependencySpec = this._findSkillPythonDependencySpec(skill.sourcePath)
+                if (dependencySpec) this._scheduleSkillPythonDependencies(skill, dependencySpec)
+            } catch (error) {
+                console.warn('[Skill] Failed to resume pending Python dependency setup', {
+                    skillId: String(skill?._id || ''),
+                    error: toSkillDependencyErrorPreview(error?.message || String(error), 300) || 'unknown error'
+                })
+            }
+        })
+    }
+
     async _prepareSkillPythonRuntime({ dataRoot, skill, skillRoot, runtimeEnv, timeoutMs }) {
         const dependencySpec = this._findSkillPythonDependencySpec(skillRoot)
         if (!dependencySpec) {
@@ -3816,6 +3983,16 @@ class GlobalConfig {
         const environmentPython = this._getSkillVirtualEnvironmentPythonPath(environmentRoot)
         const marker = this._readSkillPythonEnvironmentMarker(environmentRoot)
         if (marker?.fingerprint !== dependencySpec.fingerprint || !fs.existsSync(environmentPython)) {
+            const pendingState = skill?.install?.pythonDependencies
+            if (pendingState?.status === 'pending') {
+                const pendingJob = this._skillPythonSetupQueues.get(String(skill?._id || '').trim())
+                    || this._scheduleSkillPythonDependencies(skill, dependencySpec)
+                await pendingJob
+            }
+        }
+
+        const readyMarker = this._readSkillPythonEnvironmentMarker(environmentRoot)
+        if (readyMarker?.fingerprint !== dependencySpec.fingerprint || !fs.existsSync(environmentPython)) {
             throw new Error(
                 `Python dependencies from ${dependencySpec.path} are not prepared. Refresh the Skill to install them into its managed environment.`
             )
@@ -4261,24 +4438,23 @@ class GlobalConfig {
         let skill = packagedSkill;
         let skillAction = 'added';
         let committed = false;
+        let pythonDependencySpec = null;
 
         try {
             if (hasPackagedFiles) {
                 materializedPackage = this._buildInstalledFilePackageSkill(config, pkg);
                 skill = materializedPackage.skill;
                 if (existingSkill) this._preserveSkillDotEnv(existingSkill, skill)
-                const pythonDependencies = this._prepareSkillPythonDependenciesForImport(config, skill, skill.sourcePath)
-                if (pythonDependencies) {
+                pythonDependencySpec = this._findSkillPythonDependencySpec(skill.sourcePath)
+                if (pythonDependencySpec) {
                     skill.install = {
                         ...(skill.install && typeof skill.install === 'object' ? skill.install : {}),
-                        pythonDependencies: {
-                            status: 'ready',
-                            dependencyFile: pythonDependencies.dependencyFile,
-                            dependencyType: pythonDependencies.dependencyType,
-                            reused: !!pythonDependencies.reused,
-                            preparedAt: new Date().toISOString()
-                        }
+                        pythonDependencies: this._buildSkillPythonDependencyState(pythonDependencySpec)
                     }
+                } else if (skill.install?.pythonDependencies) {
+                    const nextInstall = { ...skill.install }
+                    delete nextInstall.pythonDependencies
+                    skill.install = nextInstall
                 }
             }
 
@@ -4306,6 +4482,7 @@ class GlobalConfig {
             if (hasPackagedFiles && skill?.sourcePath) {
                 this._pruneManagedSkillVersionsAfterCommit(config, skillId, [skill.sourcePath])
             }
+            if (pythonDependencySpec) this._scheduleSkillPythonDependencies(skill, pythonDependencySpec)
 
             const missingMcpIds = (Array.isArray(skill?.mcp) ? skill.mcp : [])
                 .map((id) => String(id || '').trim())
@@ -4338,7 +4515,9 @@ class GlobalConfig {
     }
 
     getConfig() {
-        return this._buildPublicConfig(this._getRaw());
+        const config = this._getRaw()
+        this._schedulePendingSkillPythonDependencies(config)
+        return this._buildPublicConfig(config)
     }
 
     exportToFile(filePath) {
@@ -4551,15 +4730,11 @@ class GlobalConfig {
                 }
             }
 
-            const pythonDependencies = this._prepareSkillPythonDependenciesForImport(config, record, managedRoot)
-            if (pythonDependencies) {
-                record.install.pythonDependencies = {
-                    status: 'ready',
-                    dependencyFile: pythonDependencies.dependencyFile,
-                    dependencyType: pythonDependencies.dependencyType,
-                    reused: !!pythonDependencies.reused,
-                    preparedAt: new Date().toISOString()
-                }
+            const pythonDependencySpec = this._findSkillPythonDependencySpec(managedRoot)
+            if (pythonDependencySpec) {
+                record.install.pythonDependencies = this._buildSkillPythonDependencyState(pythonDependencySpec)
+            } else if (record.install?.pythonDependencies) {
+                delete record.install.pythonDependencies
             }
 
             if (conflict && (!existing || conflict._id !== existing._id)) {
@@ -4573,6 +4748,7 @@ class GlobalConfig {
             this._save(config)
             committed = true
             this._pruneManagedSkillVersionsAfterCommit(config, record._id, [record.sourcePath])
+            if (pythonDependencySpec) this._scheduleSkillPythonDependencies(record, pythonDependencySpec)
             return this._clone(record)
         } finally {
             if (!committed && managedRoot && path.resolve(managedRoot) !== path.resolve(absRoot)) {
@@ -5447,7 +5623,3 @@ class GlobalConfig {
 }
 
 module.exports = new GlobalConfig();
-
-
-
-

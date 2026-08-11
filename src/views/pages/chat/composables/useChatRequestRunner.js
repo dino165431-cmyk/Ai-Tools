@@ -1117,9 +1117,39 @@ export function useChatRequestRunner(dependencies) {
       reportedRequestChars: tokenTelemetry.requestChars,
       modelContextTokens: resolveModelContextWindowTokens(selectedProvider.value, selectedModel.value)
     })
-    if (budgetPlan.mode !== "compact" || budgetPlan.reason !== "auto_threshold") return false
-    const summaryTriggerChars = calculateContextSummaryTriggerChars({ historyCharsBudget: budgetPlan.historyCharsBudget })
-    const summaryText = await ensureContextWindowSummary({
+    const cachedSummary = targetSession.contextSummary && typeof targetSession.contextSummary === "object"
+      ? targetSession.contextSummary
+      : null
+    const cachedSummaryText = String(cachedSummary?.summaryText || "").trim()
+    const cachedCoveredCount = Math.max(0, Math.floor(Number(cachedSummary?.coveredMessageCount || 0)))
+    const hasUsableSummary =
+      !!cachedSummaryText &&
+      cachedCoveredCount > 0 &&
+      cachedCoveredCount < sourceMessages.length
+
+    let compactionBudgetPlan = budgetPlan
+    let compactionReservedChars = reservedChars
+    if (hasUsableSummary) {
+      // Once a summary exists, decide from the unsummarized tail. The raw
+      // history remains large by design, so using it here would re-enter the
+      // compaction path on every tool round even when the actual request fits.
+      compactionReservedChars += cachedSummaryText.length
+      const tailMessages = sourceMessages.slice(cachedCoveredCount)
+      if (!tailMessages.length) return false
+      const tailBudgetState = resolveHistoryContextBudgetState({
+        tools,
+        reservedCharsOverride: compactionReservedChars,
+        apiMessages: tailMessages,
+        sessionRecord: targetSession
+      })
+      compactionBudgetPlan = tailBudgetState.budgetPlan
+    }
+
+    if (compactionBudgetPlan.mode !== "compact" || compactionBudgetPlan.reason !== "auto_threshold") return false
+    const summaryTriggerChars = calculateContextSummaryTriggerChars({
+      historyCharsBudget: compactionBudgetPlan.historyCharsBudget
+    })
+    const summaryResult = await ensureContextWindowSummary({
       cfg: {
         requestMode: "chat",
         providerKind: "openai-compatible",
@@ -1131,14 +1161,15 @@ export function useChatRequestRunner(dependencies) {
       },
       requestRecord: targetSession,
       tools,
-      reservedCharsOverride: reservedChars,
+      reservedCharsOverride: compactionReservedChars,
       targetSourceChars: summaryTriggerChars,
-      force: false
+      force: false,
+      returnMeta: true
     }).catch((err) => {
       console.warn("[chat context summary] inline compact failed:", err)
-      return ""
+      return { summaryText: "", generated: false }
     })
-    return !!String(summaryText || "").trim()
+    return summaryResult?.generated === true && !!String(summaryResult.summaryText || "").trim()
   }
 
   function pushCompactResumeStep(targetSession, abortState) {
@@ -3260,9 +3291,15 @@ export function useChatRequestRunner(dependencies) {
     tools = [],
     reservedCharsOverride = null,
     targetSourceChars = null,
-    force = false
+    force = false,
+    returnMeta = false
   } = {}) {
-    if (!cfg || cfg.requestMode !== 'chat' || !requestRecord) return ''
+    const finish = (summaryText = '', generated = false) => {
+      const normalized = String(summaryText || '').trim()
+      return returnMeta ? { summaryText: normalized, generated } : normalized
+    }
+
+    if (!cfg || cfg.requestMode !== 'chat' || !requestRecord) return finish()
     const sourceMessages = Array.isArray(requestRecord.apiMessages) ? requestRecord.apiMessages : []
     const { coveredCount, sourceSlice, sourceHash } = resolveContextSummaryCoverage({
       sourceMessages,
@@ -3272,13 +3309,13 @@ export function useChatRequestRunner(dependencies) {
       targetSourceChars,
       sessionRecord: requestRecord
     })
-    if (coveredCount < 1) return ''
+    if (coveredCount < 1) return finish()
   
     const cached = requestRecord.contextSummary && typeof requestRecord.contextSummary === 'object'
       ? requestRecord.contextSummary
       : null
     if (!force && cached?.summaryText && cached.sourceHash === sourceHash && Number(cached.coveredMessageCount || 0) === coveredCount) {
-      return String(cached.summaryText || '').trim()
+      return finish(cached.summaryText, false)
     }
   
     const cachedSummaryText = String(cached?.summaryText || '').trim()
@@ -3313,7 +3350,7 @@ export function useChatRequestRunner(dependencies) {
             : `all prior history, ${conversationTurns.length} turns`
         }]
       : []
-    if (!conversationPairs.length) return ''
+    if (!conversationPairs.length) return finish()
     const summaryLevel = resolveContextSummaryLevel(cached, hasForwardProgress)
     const summaryChain = resolveContextSummaryChain(cached, summaryLevel, hasForwardProgress)
     const summarySourceLabel = resolveContextSummarySourceLabel(hasForwardProgress)
@@ -3332,8 +3369,11 @@ export function useChatRequestRunner(dependencies) {
       return ''
     })
   
+    const normalizedSummaryText = String(summaryText || '').trim()
+    if (!normalizedSummaryText) return finish()
+
     requestRecord.contextSummary = {
-      summaryText: String(summaryText || '').trim(),
+      summaryText: normalizedSummaryText,
       coveredMessageCount: coveredCount,
       coveredTurnCount: conversationTurns.length,
       batchCount: 1,
@@ -3343,7 +3383,7 @@ export function useChatRequestRunner(dependencies) {
       sourceHash,
       updatedAt: Date.now()
     }
-    return String(requestRecord.contextSummary.summaryText || '').trim()
+    return finish(requestRecord.contextSummary.summaryText, true)
   }
   
   function syncContextSummaryCacheForRecord(requestRecord, coverage = null) {

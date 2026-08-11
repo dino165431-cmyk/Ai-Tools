@@ -362,6 +362,10 @@ body .md-editor-custom-scrollbar__thumb:hover {
   z-index: 200000 !important;
 }
 
+.n-message-container {
+  z-index: 200001 !important;
+}
+
 .n-tooltip,
 .n-popover {
   max-width: min(640px, calc(100vw - 24px));

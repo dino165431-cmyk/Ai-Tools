@@ -78,6 +78,28 @@ test('chat auxiliary model requests inherit the configured provider API mode', (
   )
 })
 
+test('inline context compaction reports only freshly generated summaries', () => {
+  const inlineCompaction = getFunctionSource(
+    requestRunnerSource,
+    'maybeCompactContextInline',
+    'function pushCompactResumeStep'
+  )
+  const contextSummaryDispatcher = getFunctionSource(
+    requestRunnerSource,
+    'ensureContextWindowSummary',
+    'function syncContextSummaryCacheForRecord'
+  )
+
+  assert.match(inlineCompaction, /returnMeta:\s*true/)
+  assert.match(inlineCompaction, /summaryResult\?\.generated\s*===\s*true/)
+  assert.match(inlineCompaction, /const tailMessages = sourceMessages\.slice\(cachedCoveredCount\)/)
+  assert.match(inlineCompaction, /compactionBudgetPlan = tailBudgetState\.budgetPlan/)
+  assert.match(contextSummaryDispatcher, /returnMeta\s*=\s*false/)
+  assert.match(contextSummaryDispatcher, /return finish\(cached\.summaryText, false\)/)
+  assert.match(contextSummaryDispatcher, /if \(!normalizedSummaryText\) return finish\(\)/)
+  assert.match(contextSummaryDispatcher, /return finish\(requestRecord\.contextSummary\.summaryText, true\)/)
+})
+
 test('chat auxiliary model requests do not force a sampling temperature', () => {
   const auxiliaryRequests = [
     getFunctionSource(
