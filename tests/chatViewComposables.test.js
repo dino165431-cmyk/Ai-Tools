@@ -42,6 +42,8 @@ import {
   buildDefaultSessionName,
   buildSessionTitleGenerationPrompt,
   extractAutoSessionTitle,
+  extractFinalSessionTitleContent,
+  isUsableGeneratedSessionTitle,
   normalizeGeneratedSessionTitle,
   sanitizeAutoSessionTitle,
   summarizeAttachmentNamesForSessionTitle
@@ -601,6 +603,19 @@ test('chat session title helpers preserve sanitizing, fallback, and prompt input
   )
   assert.equal(buildAutoSessionTitle({ messages: [] }, 'fallback title'), 'fallback title')
   assert.equal(normalizeGeneratedSessionTitle('Title: "clean title"'), 'clean title')
+  assert.equal(
+    extractFinalSessionTitleContent({ content: '最终标题', reasoning: '内部思考' }),
+    '最终标题'
+  )
+  assert.equal(
+    extractFinalSessionTitleContent({ content: '内部思考', reasoning: '内部思考' }),
+    ''
+  )
+  assert.equal(isUsableGeneratedSessionTitle('clean title'), true)
+  assert.equal(
+    isUsableGeneratedSessionTitle('我们需要理解任务。用户消息：帮我看下 af 的笔记'),
+    false
+  )
   assert.equal(
     summarizeAttachmentNamesForSessionTitle([
       { name: 'one.txt' },

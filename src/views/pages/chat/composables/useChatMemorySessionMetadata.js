@@ -1,4 +1,8 @@
-import { buildAutoSessionTitle, normalizeGeneratedSessionTitle } from './useChatSessionTitles.js'
+import {
+  buildAutoSessionTitle,
+  isUsableGeneratedSessionTitle,
+  normalizeGeneratedSessionTitle
+} from './useChatSessionTitles.js'
 
 export function useChatMemorySessionMetadata({
   defaultMemorySessionTitle,
@@ -88,7 +92,7 @@ function getPersistedMemorySessionTitle(record, filePath = '') {
 function isGeneratedSessionTitle(title) {
   const value = String(title || '').trim()
   if (!value) return false
-  return value !== defaultMemorySessionTitle && value.length <= 32
+  return value !== defaultMemorySessionTitle && value.length <= 32 && isUsableGeneratedSessionTitle(value)
 }
 
 function hasPersistableMemorySessionResponse(record) {

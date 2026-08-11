@@ -312,3 +312,50 @@ test('use_skill can add an installed unselected Skill to the current session', a
   assert.deepEqual(selected, [installed._id])
   assert.match(execution.result.content, /status: loaded/)
 })
+
+test('use_skill syncs an already-activated Skill into the current run snapshot', async () => {
+  const context = createExecutionContext()
+  context.targetSession.state = {
+    selectedSkillIds: [],
+    agentSkillIds: [],
+    activatedAgentSkillIds: []
+  }
+  const installed = {
+    _id: 'builtin_skill_notes',
+    name: '笔记',
+    nativeActions: ['notes_search']
+  }
+  const selectedTargets = []
+  const execute = createPreparedSkillToolExecutor({
+    activatedAgentSkillIds: { value: [installed._id] },
+    agentSkillIdSet: { value: new Set([installed._id]) },
+    availableSkillObjects: { value: [installed] },
+    mcpServers: { value: [] },
+    maybeScrollToBottomForRun: async () => {},
+    resolveAvailableSkillTarget: ({ idCandidate }) => (
+      idCandidate === installed._id ? installed : null
+    ),
+    selectSkillForSession: (_id, targetSession) => {
+      selectedTargets.push(targetSession)
+      return { ok: true, changed: false }
+    },
+    selectedSkillObjects: { value: [installed] }
+  })
+
+  const execution = await execute(
+    {
+      mapping: { type: 'internal', internal: 'use_skill' },
+      serverName: 'Skill',
+      toolName: 'use_skill',
+      argsObj: { id: installed._id }
+    },
+    context
+  )
+
+  assert.equal(execution.handled, true)
+  assert.equal(execution.result.ok, true)
+  assert.equal(selectedTargets[0], context.targetSession)
+  assert.deepEqual(context.targetSession.state.selectedSkillIds, [installed._id])
+  assert.deepEqual(context.targetSession.state.agentSkillIds, [installed._id])
+  assert.deepEqual(context.targetSession.state.activatedAgentSkillIds, [installed._id])
+})

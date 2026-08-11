@@ -61,6 +61,28 @@ export function normalizeGeneratedSessionTitle(text, fallback = '') {
   return sanitizeAutoSessionTitle(fallback, 32)
 }
 
+export function extractFinalSessionTitleContent(result) {
+  const content = String(result?.content || '').trim()
+  const reasoning = String(result?.reasoning || result?.reasoning_content || '').trim()
+  if (!content) return ''
+  // Some OpenAI-compatible gateways echo the reasoning stream into content.
+  // There is no reliable way to reconstruct the missing final answer from
+  // reasoning, so let the caller use the deterministic user-text fallback.
+  if (reasoning && content === reasoning) return ''
+  return content
+}
+
+const SESSION_TITLE_META_PREFIX_RE = /^(?:我们需要|我们只需要|用户消息|用户说|根据用户|根据这条消息|让我|我先|现在|首先|思考|分析过程|以下是)/iu
+const SESSION_TITLE_META_MARKER_RE = /(?:用户消息\s*[:：]|用户消息是|用户说\s*[:：]|user\s+message\s*[:：]|reasoning|assistant\s*[:：])/iu
+
+export function isUsableGeneratedSessionTitle(text) {
+  const value = normalizeGeneratedSessionTitle(text, '')
+  if (!value) return false
+  if (SESSION_TITLE_META_PREFIX_RE.test(value)) return false
+  if (SESSION_TITLE_META_MARKER_RE.test(value)) return false
+  return true
+}
+
 export function summarizeAttachmentNamesForSessionTitle(attachments = []) {
   const names = (Array.isArray(attachments) ? attachments : [])
     .map((item) => String(item?.name || item?.filename || item?.fileName || '').trim())

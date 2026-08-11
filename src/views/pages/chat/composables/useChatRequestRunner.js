@@ -1872,7 +1872,11 @@ export function useChatRequestRunner(dependencies) {
     const runRecord = sessionRecord || getActiveMemorySession()
     runRecord.runningTaskCount = Math.max(0, Number(runRecord.runningTaskCount || 0)) + 1
     runRecord.chatRunCount = Math.max(0, Number(runRecord.chatRunCount || 0)) + 1
-    runRecord.state = buildCurrentChatState()
+    // The reactive settings belong to the visible session. A detached run
+    // must keep the target record's own snapshot for skills and workspace.
+    runRecord.state = isMemorySessionActive(runRecord)
+      ? buildCurrentChatState()
+      : deepCopyJson(runRecord.state, {})
     if (!isFinalizedMemorySessionTitle(runRecord)) runRecord.title = resolveMemorySessionTitle(runRecord)
     let requestHandle = null
     const abortListeners = new Set()
@@ -4381,10 +4385,34 @@ export function useChatRequestRunner(dependencies) {
     return listSelectedSkillsBriefFromList(skills.value, limit)
   }
 
-  function selectSkillForSession(skillId) {
+  function selectSkillForSession(skillId, targetSession = null) {
     const id = String(skillId || '').trim()
     if (!id || !resolveInstalledSkillTarget({ idCandidate: id })) {
       return { ok: false, changed: false }
+    }
+
+    const isActiveTarget = !targetSession || targetSession === getActiveMemorySession()
+    if (!isActiveTarget) {
+      const state = targetSession?.state && typeof targetSession.state === 'object'
+        ? targetSession.state
+        : {}
+      const selected = normalizeStringList(state.selectedSkillIds)
+      const agent = normalizeStringList(state.agentSkillIds)
+      const activated = normalizeStringList(state.activatedAgentSkillIds)
+      const addedSelected = !selected.includes(id)
+      const addedAgent = !agent.includes(id)
+      const addedActivation = !activated.includes(id)
+      if (addedSelected) state.selectedSkillIds = [...selected, id]
+      if (addedAgent) state.agentSkillIds = [...agent, id]
+      if (addedActivation) state.activatedAgentSkillIds = [...activated, id]
+      targetSession.state = state
+      return {
+        ok: true,
+        changed: addedSelected || addedAgent || addedActivation,
+        addedSelected,
+        addedAgent,
+        addedActivation
+      }
     }
 
     markSkillActivationPersistent([id])

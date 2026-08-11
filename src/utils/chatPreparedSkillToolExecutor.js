@@ -594,7 +594,7 @@ export function createPreparedSkillToolExecutor(runtime) {
     let changed = false
     let isAgentSkill = agentSkillIdSet?.value?.has(skillId) === true
     if (typeof selectSkillForSession === 'function') {
-      const selected = selectSkillForSession(skillId)
+      const selected = selectSkillForSession(skillId, targetSession)
       if (selected?.ok === false) {
         const errorText = `技能无法加入当前会话：${skillId}`
         targetSession.messages.push(
@@ -617,7 +617,10 @@ export function createPreparedSkillToolExecutor(runtime) {
         changed = true
       }
     }
-    if (changed) syncSkillActivationToSessionState(targetSession, skillId)
+    // The skill can already be active in the global router state while the
+    // current run snapshot still lacks it. Always mirror the resolved skill
+    // into the run session, including the already-activated case.
+    if (isAgentSkill || changed) syncSkillActivationToSessionState(targetSession, skillId)
 
     const configuredMcpIds = Array.isArray(target?.mcp)
       ? target.mcp.map((id) => String(id || '').trim()).filter(Boolean)
@@ -723,7 +726,7 @@ export function createPreparedSkillToolExecutor(runtime) {
       const id = String(skill?._id || '').trim()
       if (!id || loadFailed.some((item) => item.id === id)) return
       if (typeof selectSkillForSession === 'function') {
-        const selected = selectSkillForSession(id)
+        const selected = selectSkillForSession(id, targetSession)
         if (selected?.ok === false) {
           noop.push(id)
           return
@@ -742,7 +745,7 @@ export function createPreparedSkillToolExecutor(runtime) {
           activated.push(id)
         }
       }
-      if (activated.includes(id)) syncSkillActivationToSessionState(targetSession, id)
+      syncSkillActivationToSessionState(targetSession, id)
 
       const mcpStatus = getSkillMcpStatus(skill)
       mcpStatus.mountedNames.forEach((name) => mountedMcpNames.add(name))

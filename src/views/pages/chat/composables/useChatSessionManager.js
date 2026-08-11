@@ -1,4 +1,7 @@
-import { getSessionTitleFromPath } from './useChatSessionTitles.js'
+import {
+  extractFinalSessionTitleContent,
+  getSessionTitleFromPath
+} from './useChatSessionTitles.js'
 
 export function useChatSessionManager(dependencies) {
   const {
@@ -194,7 +197,7 @@ export function useChatSessionManager(dependencies) {
         endpoint: 'utools-ai',
         purpose: 'session-title'
       })
-      return String(result?.content || '').trim()
+      return extractFinalSessionTitleContent(result)
     }
 
     if (!baseUrl || !apiKey || !model) return ''
@@ -218,7 +221,7 @@ export function useChatSessionManager(dependencies) {
       endpoint: result?.endpoint || 'auto',
       purpose: 'session-title'
     })
-    return String(result?.content || '').trim()
+    return extractFinalSessionTitleContent(result)
   }
 
   async function moveAutoChatSessionAssetsForRename(oldPath, newPath) {
@@ -358,7 +361,12 @@ export function useChatSessionManager(dependencies) {
         if (!latestRecord) return
 
         const normalizedTitle = normalizeGeneratedSessionTitle(generated, '')
-        if (!isGeneratedSessionTitle(normalizedTitle)) return
+        // A provider may expose its reasoning stream as the text content. Do
+        // not persist that meta-text as a title; the catch path applies the
+        // deterministic title derived from the user's first message.
+        if (!isGeneratedSessionTitle(normalizedTitle)) {
+          throw new Error('模型返回的会话标题无效')
+        }
 
         const titleReadyAt = Date.now()
         latestRecord.title = normalizedTitle
