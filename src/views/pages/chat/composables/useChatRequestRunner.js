@@ -1143,8 +1143,7 @@ export function useChatRequestRunner(dependencies) {
 
   function pushCompactResumeStep(targetSession, abortState) {
     if (!targetSession || typeof targetSession !== "object") return
-    const step = createDisplayMessage("user", "", {
-      guidance: true,
+    const step = createDisplayMessage("system", "", {
       compactGuidance: true,
       content: "（较早历史已压缩，继续处理中）"
     })
@@ -1877,6 +1876,14 @@ export function useChatRequestRunner(dependencies) {
     runRecord.state = isMemorySessionActive(runRecord)
       ? buildCurrentChatState()
       : deepCopyJson(runRecord.state, {})
+    runRecord.activeRunSkillIds = normalizeStringList([
+      ...normalizeStringList(runRecord.state?.selectedSkillIds),
+      ...normalizeStringList(runRecord.state?.agentSkillIds),
+      ...normalizeStringList(runRecord.state?.activatedAgentSkillIds),
+      ...(isMemorySessionActive(runRecord)
+        ? (Array.isArray(runtimeSkillObjects.value) ? runtimeSkillObjects.value : []).map((skill) => skill?._id)
+        : [])
+    ])
     if (!isFinalizedMemorySessionTitle(runRecord)) runRecord.title = resolveMemorySessionTitle(runRecord)
     let requestHandle = null
     const abortListeners = new Set()
@@ -2090,6 +2097,7 @@ export function useChatRequestRunner(dependencies) {
       window.clearTimeout(requestTimeoutTimer)
       runRecord.runningTaskCount = Math.max(0, Number(runRecord.runningTaskCount || 0) - 1)
       runRecord.chatRunCount = Math.max(0, Number(runRecord.chatRunCount || 0) - 1)
+      if (runRecord.runningTaskCount === 0) delete runRecord.activeRunSkillIds
       if (runRecord.activeRequestAbortState === requestAbortState) {
         runRecord.activeRequestAbortState = null
       }
@@ -4775,7 +4783,8 @@ function resolveSkillObjectsForRecord(record) {
   const ids = new Set([
     ...normalizeStringList(state.selectedSkillIds),
     ...normalizeStringList(state.agentSkillIds),
-    ...normalizeStringList(state.activatedAgentSkillIds)
+    ...normalizeStringList(state.activatedAgentSkillIds),
+    ...normalizeStringList(record?.activeRunSkillIds)
   ])
   return (Array.isArray(skills.value) ? skills.value : []).filter((skill) =>
     skill && ids.has(String(skill?._id || '').trim())

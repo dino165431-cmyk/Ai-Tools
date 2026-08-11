@@ -3642,6 +3642,7 @@ const conversationPanelActions = {
   handleChatPreviewLinkClick,
   handleChatPreviewLinkContextMenu,
   toggleThinking,
+  toggleGuidanceExpanded,
   handleUserEditKeydown: (...args) => handleUserEditKeydown(...args),
   toggleUserMessageExpanded,
   toggleToolExpanded,
@@ -3670,6 +3671,14 @@ const pendingAttachmentActions = {
 function toggleThinking(msg) {
   if (!msg) return
   msg.thinkingExpanded = !msg.thinkingExpanded
+  scheduleChatVirtualItemRemeasure(msg, { followTail: isAtBottom.value })
+  scheduleRefreshUserAnchorMeta()
+  scheduleStickyChatBubbleSync()
+}
+
+function toggleGuidanceExpanded(msg) {
+  if (!msg || !msg.compactGuidance) return
+  msg.guidanceExpanded = !msg.guidanceExpanded
   scheduleChatVirtualItemRemeasure(msg, { followTail: isAtBottom.value })
   scheduleRefreshUserAnchorMeta()
   scheduleStickyChatBubbleSync()
@@ -3938,6 +3947,11 @@ function normalizeLoadedDisplayMessage(msg) {
   const raw = msg && typeof msg === 'object' ? { ...msg } : {}
   raw.id = String(raw.id || '').trim() || newId()
   raw.role = String(raw.role || 'assistant').trim() || 'assistant'
+  if (raw.compactGuidance) {
+    raw.role = 'system'
+    raw.guidance = false
+    raw.guidanceExpanded = false
+  }
   raw.time = typeof raw.time === 'number' ? raw.time : Date.now()
   if (typeof raw.content !== 'string') raw.content = stableStringify(raw.content)
   const content = String(raw.content || '')

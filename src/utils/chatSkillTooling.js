@@ -550,21 +550,46 @@ export async function resolveBuiltinSkillCall({
     return { ok: false, error: '内置 Skill 动作目录不可用' }
   }
 
-  const skillId = normalizeText(args?.skill_id ?? args?.skillId ?? args?.id)
-  const skillName = normalizeText(args?.skill_name ?? args?.skillName ?? args?.name)
-  const actionName = normalizeText(args?.action ?? args?.tool)
-  const hasArgs = Object.prototype.hasOwnProperty.call(args || {}, 'args') ||
-    Object.prototype.hasOwnProperty.call(args || {}, 'arguments')
-  const actionArgs = Object.prototype.hasOwnProperty.call(args || {}, 'args')
-    ? args.args
-    : Object.prototype.hasOwnProperty.call(args || {}, 'arguments')
-      ? args.arguments
+  const rawArgs = args && typeof args === 'object' && !Array.isArray(args) ? args : {}
+  const nestedCall = rawArgs.args && typeof rawArgs.args === 'object' && !Array.isArray(rawArgs.args)
+    ? rawArgs.args
+    : null
+  const nestedCallLooksLikeWrapper = nestedCall && (
+    Object.prototype.hasOwnProperty.call(nestedCall, 'action') ||
+    Object.prototype.hasOwnProperty.call(nestedCall, 'tool') ||
+    Object.prototype.hasOwnProperty.call(nestedCall, 'skill_id') ||
+    Object.prototype.hasOwnProperty.call(nestedCall, 'skillId')
+  )
+  const normalizedArgs = nestedCallLooksLikeWrapper ? nestedCall : rawArgs
+  const skillId = normalizeText(rawArgs?.skill_id ?? rawArgs?.skillId ?? rawArgs?.id ?? normalizedArgs?.skill_id ?? normalizedArgs?.skillId ?? normalizedArgs?.id)
+  const skillName = normalizeText(rawArgs?.skill_name ?? rawArgs?.skillName ?? rawArgs?.name ?? normalizedArgs?.skill_name ?? normalizedArgs?.skillName ?? normalizedArgs?.name)
+  const actionName = normalizeText(rawArgs?.action ?? rawArgs?.tool ?? normalizedArgs?.action ?? normalizedArgs?.tool)
+  const hasArgs = Object.prototype.hasOwnProperty.call(normalizedArgs || {}, 'args') ||
+    Object.prototype.hasOwnProperty.call(normalizedArgs || {}, 'arguments')
+  const actionArgs = Object.prototype.hasOwnProperty.call(normalizedArgs || {}, 'args')
+    ? normalizedArgs.args
+    : Object.prototype.hasOwnProperty.call(normalizedArgs || {}, 'arguments')
+      ? normalizedArgs.arguments
       : {}
-  const skill = resolveSelectedSkillTarget(selectedSkills, {
+  let skill = resolveSelectedSkillTarget(selectedSkills, {
     idCandidate: skillId,
     nameCandidate: skillName,
     nativeOnly: true
   })
+
+  if (!skill && !skillId && !skillName && actionName) {
+    const actionCandidates = []
+    for (const candidate of listBuiltinNativeSkills(selectedSkills)) {
+      const candidateId = normalizeText(candidate?._id)
+      if (!candidateId) continue
+      const candidateActions = await catalog.list(candidateId)
+      const candidateAction = candidateActions.find((item) => item.name === actionName) ||
+        candidateActions.find((item) => item.name.toLowerCase() === actionName.toLowerCase())
+      if (candidateAction) actionCandidates.push({ skill: candidate, action: candidateAction })
+      if (actionCandidates.length > 1) break
+    }
+    if (actionCandidates.length === 1) skill = actionCandidates[0].skill
+  }
 
   if (!skill) {
     return {

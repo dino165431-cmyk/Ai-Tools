@@ -201,27 +201,42 @@ export function useChatSessionManager(dependencies) {
     }
 
     if (!baseUrl || !apiKey || !model) return ''
-    const result = await streamChatCompletion({
-      baseUrl,
-      apiKey,
-      apiMode,
-      body: {
-        model,
-        stream: true,
-        max_tokens: 64,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt }
-        ]
-      }
-    })
-    recordModelUsage(result?.usage, {
-      providerId,
+    const body = {
       model,
-      endpoint: result?.endpoint || 'auto',
-      purpose: 'session-title'
-    })
-    return extractFinalSessionTitleContent(result)
+      stream: true,
+      max_tokens: 64,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ]
+    }
+    const modes = String(apiMode || '').trim().toLowerCase() === 'auto'
+      ? ['auto', 'responses']
+      : [apiMode]
+    let lastError = null
+    for (const requestMode of modes) {
+      try {
+        apiMode = requestMode
+        const result = await streamChatCompletion({
+          baseUrl,
+          apiKey,
+          apiMode,
+          body: body
+        })
+        recordModelUsage(result?.usage, {
+          providerId,
+          model,
+          endpoint: result?.endpoint || requestMode || 'auto',
+          purpose: 'session-title'
+        })
+        const title = extractFinalSessionTitleContent(result)
+        if (title) return title
+      } catch (err) {
+        lastError = err
+      }
+    }
+    if (lastError) throw lastError
+    return ''
   }
 
   async function moveAutoChatSessionAssetsForRename(oldPath, newPath) {
@@ -747,10 +762,17 @@ export function useChatSessionManager(dependencies) {
     if (!msg || typeof msg !== 'object') return null
     const out = { ...msg }
 
+    if (out.compactGuidance) {
+      out.role = 'system'
+      out.guidance = false
+      out.guidanceExpanded = false
+    }
+
     if (out.role === 'user') {
       out.editing = false
       out.editDraft = ''
       out.attachmentsExpanded = false
+      out.guidanceExpanded = false
     }
 
     if (out.role === 'assistant') {

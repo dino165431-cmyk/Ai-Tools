@@ -111,12 +111,23 @@
                       <pre v-else-if="msg.content" class="chat-plain chat-plain--deferred">{{ msg.content }}</pre>
                     </template>
 
-                    <template v-else-if="msg.role === 'user'">
-                      <n-tag v-if="msg.guidance" size="tiny" type="info" class="chat-user-guidance-tag">引导</n-tag>
-                      <div v-if="msg.compactGuidance" style="display:inline-flex;align-items:center;gap:6px;margin:2px 0 6px;padding:3px 10px;border-radius:999px;font-size:11px;background:rgba(24,160,88,0.10);border:1px solid rgba(24,160,88,0.22);color:rgba(24,160,88,0.95);max-width:100%;">
+                    <template v-else-if="msg.compactGuidance">
+                      <div v-if="msg.compactGuidance && !msg.guidanceExpanded" class="chat-system-guidance chat-system-guidance--collapsed">
+                        <button type="button" class="chat-system-guidance__toggle" @click="actions.toggleGuidanceExpanded(msg)">
+                          <n-icon :component="InformationCircleOutline" size="13" />
+                          <span class="chat-system-guidance__label">系统引导</span>
+                          <span class="chat-system-guidance__summary">历史已压缩，继续处理</span>
+                          <n-icon :component="ChevronDownOutline" size="13" />
+                        </button>
+                      </div>
+                      <div v-if="msg.compactGuidance && msg.guidanceExpanded" class="chat-system-guidance chat-system-guidance--expanded" title="点击收起详情" @click="actions.toggleGuidanceExpanded(msg)">
                         <span style="font-weight:600;flex:0 0 auto;">历史已压缩</span>
                         <span style="opacity:0.85;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ msg.content }}</span>
                       </div>
+                    </template>
+
+                    <template v-else-if="msg.role === 'user'">
+                      <n-tag v-if="msg.guidance" size="tiny" type="info" class="chat-user-guidance-tag">引导</n-tag>
                       <n-input
                         v-if="msg.editing"
                         v-model:value="msg.editDraft"
@@ -324,6 +335,7 @@ import {
   ChevronDownOutline,
   ChevronUpOutline,
   CopyOutline,
+  InformationCircleOutline,
   PencilOutline,
   RefreshOutline
 } from '@vicons/ionicons5'

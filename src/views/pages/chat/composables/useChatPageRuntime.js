@@ -166,7 +166,7 @@ function estimateChatMessageHeight(msg) {
   const contentExtra = estimateChatMessageContentHeight(content)
   const attachmentExtra = attachmentCount * 76
   const thinkingExtra = msg?.thinkingExpanded ? Math.min(320, Math.ceil(thinkingLength / 10)) : 0
-  const guidanceExtra = msg?.guidance ? 22 : 0
+  const guidanceExtra = msg?.guidance || msg?.compactGuidance ? 22 : 0
   const minHeight = isToolRole ? 112 : CHAT_TEXT_MESSAGE_MIN_HEIGHT
   return Math.max(minHeight, base + contentExtra + attachmentExtra + thinkingExtra + guidanceExtra)
 }
@@ -198,6 +198,7 @@ function getEstimatedChatMessageHeight(msg) {
     msg?.toolExpanded ? 1 : 0,
     msg?.attachmentsExpanded ? 1 : 0,
     msg?.userMessageExpanded ? 1 : 0,
+    msg?.guidanceExpanded ? 1 : 0,
     msg?.toolGroupExpanded ? 1 : 0,
     Array.isArray(msg?.toolGroupMessages)
       ? msg.toolGroupMessages.map((child) => child?.toolExpanded ? '1' : '0').join('')
@@ -1300,6 +1301,7 @@ function isFixedCompactToolMessage(msg) {
 }
 
 function getFixedCompactChatMessageHeight(msg) {
+  if (msg?.compactGuidance && !msg?.guidanceExpanded) return 42
   if (isFixedCompactToolMessage(msg)) return CHAT_TOOL_COMPACT_ITEM_FIXED_HEIGHT
   if (isToolActivityGroup(msg) && !msg.toolGroupExpanded) return CHAT_TOOL_ACTIVITY_GROUP_FIXED_HEIGHT
   return 0

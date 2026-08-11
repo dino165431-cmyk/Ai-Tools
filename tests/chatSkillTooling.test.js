@@ -185,6 +185,37 @@ test('skill_call resolves the real approval policy and requires Skill content to
   assert.deepEqual(resolved.args, { path: 'demo.ipynb', cellIndex: 0 })
 })
 
+test('skill_call tolerates a nested wrapper and infers a unique selected Skill', async () => {
+  const skill = makeBuiltinSkill()
+  const catalog = createBuiltinSkillActionCatalog(async () => ACTIONS)
+  const resolved = await resolveBuiltinSkillCall({
+    selectedSkills: [skill],
+    catalog,
+    args: { args: { action: 'notes_read', args: { path: 'demo.md' } } },
+    isSkillLoaded: () => true
+  })
+
+  assert.equal(resolved.ok, true)
+  assert.equal(resolved.skill._id, skill._id)
+  assert.equal(resolved.action.name, 'notes_read')
+  assert.deepEqual(resolved.args, { path: 'demo.md' })
+})
+
+test('skill_call does not infer an ambiguous action across selected Skills', async () => {
+  const first = makeBuiltinSkill()
+  const second = makeBuiltinSkill({ _id: 'builtin_skill_other' })
+  const catalog = createBuiltinSkillActionCatalog(async () => ACTIONS)
+  const result = await resolveBuiltinSkillCall({
+    selectedSkills: [first, second],
+    catalog,
+    args: { action: 'notes_read', args: { path: 'demo.md' } },
+    isSkillLoaded: () => true
+  })
+
+  assert.equal(result.ok, false)
+  assert.match(result.error, /Skill/)
+})
+
 test('Skill prompt keeps metadata but defers action names and full content', () => {
   const skill = makeBuiltinSkill()
   const unloaded = buildSkillsPromptText({

@@ -611,6 +611,12 @@ test('chat session title helpers preserve sanitizing, fallback, and prompt input
     extractFinalSessionTitleContent({ content: '内部思考', reasoning: '内部思考' }),
     ''
   )
+  assert.equal(
+    extractFinalSessionTitleContent({
+      payloads: [{ type: 'response.output_text.delta', delta: 'Responses 标题' }]
+    }),
+    'Responses 标题'
+  )
   assert.equal(isUsableGeneratedSessionTitle('clean title'), true)
   assert.equal(
     isUsableGeneratedSessionTitle('我们需要理解任务。用户消息：帮我看下 af 的笔记'),

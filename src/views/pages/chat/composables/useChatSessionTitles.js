@@ -1,4 +1,5 @@
 import { extractEditableUserTextFromContent } from '@/utils/chatUserMessageContent'
+import { extractAssistantTextFromPayloads } from '@/utils/chatAssistantResponse'
 
 export function getSessionTitleFromPath(filePath) {
   const path = String(filePath || '').trim()
@@ -62,7 +63,10 @@ export function normalizeGeneratedSessionTitle(text, fallback = '') {
 }
 
 export function extractFinalSessionTitleContent(result) {
-  const content = String(result?.content || '').trim()
+  const content = String(
+    result?.content ||
+    (Array.isArray(result?.payloads) ? extractAssistantTextFromPayloads(result.payloads) : '')
+  ).trim()
   const reasoning = String(result?.reasoning || result?.reasoning_content || '').trim()
   if (!content) return ''
   // Some OpenAI-compatible gateways echo the reasoning stream into content.

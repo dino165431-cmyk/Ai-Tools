@@ -13,6 +13,7 @@ import {
   FolderOpenOutline,
   GlobeOutline,
   HardwareChipOutline,
+  InformationCircleOutline,
   PauseCircleOutline,
   PeopleOutline,
   PersonCircleOutline,
@@ -227,6 +228,7 @@ export function useChatToolPresentation() {
     const role = String(msg?.role || messageOrRole || '').trim()
     if (role === 'user') return PersonCircleOutline
     if (role === 'assistant') return SparklesOutline
+    if (role === 'system') return InformationCircleOutline
     if (role === 'thinking') return ChatbubbleEllipsesOutline
     if (role === 'tool_call' || role === 'tool') {
       const status = getToolMessageStatus(msg || { role })
