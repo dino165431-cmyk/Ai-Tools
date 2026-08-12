@@ -109,20 +109,37 @@ export function shouldClearBasePromptSelectionImmediately(currentState = {}, par
 
 export const AGENT_SKILL_LAZY_LOAD_GUIDANCE_LINES = Object.freeze([
   '## 技能（按需加载）',
-  '- 系统仅列出已安装技能的精简元数据；完整规则、脚本与 Action Schema 按需加载。',
-  '- 目录 Skill 用 `use_skill({"id":"..."})` 加载 SKILL.md；补充材料用 `read_skill_file`，执行脚本用 `run_skill_script`。',
-  '- 调用内置动作前先加载对应 Skill，再 `skill_call({"skill_id":"...","action":"...","args":{...}})`，三个顶层参数平级并列。',
-  '- 已加载的 Skill、已发现的 Schema 直接复用；不重复加载、不盲试，失败先改参数再重试。'
+  '- 系统会列出已安装技能的精简元数据；完整规则、引用、脚本和 Action Schema 均按需加载。',
+  '- 只有在你确实需要某个技能的完整规则时，才调用 `use_skill` 或 `use_skills`。',
+  '- 标准目录 Skill 先用 `use_skill({"id":"..."})` 加载 `SKILL.md`。',
+  '- 需要补充材料时，再用 `read_skill_file({"id":"...","path":"references/..."})` 或 `read_skill_file({"id":"...","path":"scripts/..."})` 按需读取文本文件。',
+  '- 如果技能自带可执行脚本，再用 `run_skill_script({"id":"...","path":"scripts/xxx.js","args":["..."]})` 执行；只允许执行 `scripts/` 目录下脚本。若仅有一个可执行脚本，`path` 可省略。标准 skill 优先依赖 `SKILL.md` 和脚本顶部注释来说明用法；`scripts/manifest.json` 仅作为可选兼容扩展，不是必须。',
+  '- `assets/` 只应在其中存放文本模板、SVG、HTML、CSS、JSON 等可读文本时再读取；二进制图片、字体、压缩包等资产不要用 `read_skill_file`。',
+  '- 优先使用技能块展示的 id，不要传空对象，也不要猜不存在的技能。',
+  '- 单个技能用：`use_skill({"id":"..."})`；多个技能再用：`use_skills({"ids":["...","..."]})`。',
+  '- `skill_discover` 可检索全部已安装且启用的目录 Skill 和内置 Skill。只知道任务意图时传 `search`；找到目录 Skill 后用 `use_skill` 加载正文。内置 Action Schema 不会全量注册，需要查看动作时传 `skill_id`，需要完整参数 Schema 时再传 `action`。',
+  '- 同一轮中已加载的 Skill、已发现的 Action Schema 和已有能力索引应直接复用；除非状态变化、继续分页或结果不足，不要重复调用 `use_skill`、`use_skills` 或 `skill_discover`。',
+  '- 调用内置动作前必须先加载对应 Skill，然后使用 `skill_call({"skill_id":"...","action":"...","args":{...}})`。不要猜 Action 名称或参数。',
+  '- `skill_call` 的 `skill_id`、`action`、`args` 三个顶层参数必须平级并列。不要只传 `action` 而漏掉 `args`/`skill_id`，也不要写成 `skill_call({"args":{"action":"...","args":{...}}})` 这类把 `action` 嵌进 `args` 的格式——宿主解析不到顶层 `action` 会报“action 不能为空 / 未找到要调用的内置 Skill”，错误信息不会回显你传入的原始参数，先自查参数结构再重试。',
+  '- `skill_call` 失败时先根据错误修正参数或选择其他 Action，不要原样重试；同一根因连续失败后停止盲试并说明阻碍。',
+  '- 外部 MCP 绑定仍会随 Skill 选择挂载；`use_skill` / `use_skills` 负责把技能正文加入上下文。'
 ])
 
 export const COMPACT_MCP_CATALOG_NOTE =
-  'tool_names 为工具名列表；truncated=true 表示列表不完整。优先用精确 server_id + tool；参数放 args；config_update_* 传 {id, patch}；Schema 不清时 mcp_discover 查一次后复用；失败先改参数再重试。'
+  'tool_names is the tool-name list. tool_names_truncated=true means the list is partial, not exhaustive. tool_hints and pinned_tool_hints are hints only, not full schemas. Prefer the exact server_id and tool. Put real tool arguments in args. args may be an object, string, array, number, boolean, or null. For config_add_* tools pass the full object directly; for config_update_* tools pass {"id":"...","patch":{...}}. If the schema is unclear, tool_names may be incomplete, or the tool looks executable (script/run/execute/exec), use mcp_discover({server_id, tool}) once, then reuse that schema. After a failed call, inspect the error and change the arguments or approach; do not repeat the same call unchanged.'
 
 export const COMPACT_MCP_TOOL_GUIDANCE_LINES = Object.freeze([
   '## MCP tools (compact mode)',
-  '- 系统提示词已含 MCP 目录 JSON；用精确的 `server_id` 和 `tool` 调用，不猜名称，`tool_names_truncated=true` 时列表不完整。',
-  '- 参数放 `args`（可为对象/字符串/数组/数字/布尔/null）；配置类工具 `config_update_*` 传 {"id":"...","patch":{...}}。',
-  '- 敏感字段显示为 `***` 是脱敏标记，不要写回；调用失败先改参数再重试，不重复相同调用。'
+  '- The system prompt already includes an MCP catalog JSON with `server_id`, `tool_names`, `tool_names_truncated`, `tool_hints`, and sometimes `pinned_tool_hints`.',
+  '- Prefer the exact `server_id` and `tool` from the catalog. Do not guess server names or tool names. If `tool_names_truncated=true`, do not treat the list as exhaustive. `pinned_tool_hints` and `tool_hints` are only hints, not full schemas.',
+  '- Put real tool arguments in `args`. `args` may be an object, string, array, number, boolean, or null. Tools without arguments usually use `args:{}`.',
+  '- Standard form: `mcp_call({"server_id":"...","tool":"...","args":{...}})`. If the target inputSchema root is not an object, set `args` to the raw JSON value instead.',
+  '- If the user explicitly wants to run a script/task/automation and the catalog contains a tool whose name or description includes `script`, `run`, `execute`, or `exec`, call it directly instead of only describing it.',
+  '- For config tools (`config_` prefix), call `config_list_*` first when the id is unknown; `config_add_*` should receive the full object directly, and `config_update_*` must receive {"id":"...","patch":{...}}.',
+  '- If sensitive fields in the listing are shown as `***`, that is a redaction placeholder. Do not write `***` back into `apikey`, `env`, or `headers`.',
+  '- Only call `mcp_discover` when you need to refresh the catalog, check for missing tools, or fetch the full inputSchema for one tool.',
+  '- When querying one tool schema, prefer `mcp_discover({"server_id":"...","tool":"..."})`. Reuse the returned schema; do not discover the same unchanged tool repeatedly.',
+  '- After `mcp_call` fails, inspect the error and change the arguments, target, or approach before retrying. Never repeat the same failed call unchanged.'
 ])
 
 export const INTERNAL_TOOL_SPECS = Object.freeze({
