@@ -127,14 +127,14 @@ export function contextWindowPreviewModeType(entry) {
   return 'default'
 }
 
-export function contextWindowPreviewEntryLabel(entry, index) {
+export function contextWindowPreviewEntryLabel(entry, index, turnOffset = 0) {
   if (entry?.kind === 'prelude') return '系统前导消息'
   if (entry?.kind === 'pinned_attachment_summary') {
     const turnNumber = Number(entry?.index)
-    return Number.isFinite(turnNumber) ? `附件回补 | 第 ${turnNumber + 1} 轮` : `附件回补 | 第 ${index + 1} 项`
+    return Number.isFinite(turnNumber) ? `附件回补 | 第 ${turnNumber + 1 + turnOffset} 轮` : `附件回补 | 第 ${index + 1} 项`
   }
   const turnNumber = Number(entry?.index)
-  return Number.isFinite(turnNumber) ? `第 ${turnNumber + 1} 轮` : `片段 ${index + 1}`
+  return Number.isFinite(turnNumber) ? `第 ${turnNumber + 1 + turnOffset} 轮` : `片段 ${index + 1}`
 }
 
 export function contextWindowPreviewEntryNote(entry) {
@@ -477,8 +477,12 @@ export function useChatContextWindowPresentation({
       : (contextWindowCompressedSummaryText.value ? 1 : 0)
     if (!contextWindowCompressedSummaryText.value) return ''
     const parts = []
+    parts.push('已压缩')
     if (resolvedSummaryLevel > 0) parts.push(`第 ${resolvedSummaryLevel} 代摘要`)
-    if (turnCount > 0) parts.push(`${turnCount} 轮`)
+    if (turnCount > 0) {
+      const sourceLabel = String(summary?.summarySourceLabel || '').trim()
+      parts.push(sourceLabel === '全量前史' ? `原第 1~${turnCount} 轮` : `覆盖 ${turnCount} 轮`)
+    }
     if (messageCount > 0) parts.push(`${messageCount} 条消息`)
     return parts.join(' · ')
   })
@@ -543,10 +547,17 @@ export function useChatContextWindowPresentation({
     return `当前筛选下展示 ${filteredCount}/${omittedEntries.length} 段被省略的历史。`
   })
 
+  const contextWindowTurnOffset = computed(() => {
+    const summary = activeMemorySessionContextSummary.value
+    const sourceLabel = String(summary?.summarySourceLabel || '').trim()
+    const turnCount = Math.max(0, Math.floor(Number(summary?.coveredTurnCount || 0)))
+    return sourceLabel === '全量前史' ? turnCount : 0
+  })
+
   const contextWindowPreviewHelpers = {
     modeType: contextWindowPreviewModeType,
     modeLabel: contextWindowPreviewModeLabelV2,
-    entryLabel: contextWindowPreviewEntryLabel,
+    entryLabel: (entry, index) => contextWindowPreviewEntryLabel(entry, index, contextWindowTurnOffset.value),
     entryNote: contextWindowPreviewEntryNoteV2,
     omittedReasonType: contextWindowPreviewOmittedReasonType,
     omittedReasonLabel: contextWindowPreviewOmittedReasonLabel,

@@ -39,11 +39,22 @@
       <div class="chat-context-preview__meta">{{ previewSummaryText }}</div>
     </div>
     <div v-if="summaryText" class="chat-context-preview__summary">
-      <div class="chat-context-preview__summary-label">摘要内容</div>
-      <div v-if="summaryMetaText" class="chat-context-preview__summary-meta">{{ summaryMetaText }}</div>
-      <div v-if="summarySourceText" class="chat-context-preview__summary-source">{{ summarySourceText }}</div>
-      <div v-if="summaryChainText" class="chat-context-preview__summary-chain">{{ summaryChainText }}</div>
-      <div class="chat-context-preview__summary-text">{{ summaryText }}</div>
+      <div class="chat-context-preview__summary-header" @click="toggleSummaryExpanded">
+        <div class="chat-context-preview__summary-title-row">
+          <n-tag size="small" :bordered="false" type="success">已压缩</n-tag>
+          <div class="chat-context-preview__summary-label">摘要内容</div>
+        </div>
+        <div class="chat-context-preview__summary-toggle">
+          <n-icon :component="summaryExpanded ? ChevronUpOutline : ChevronDownOutline" size="14" />
+          <span>{{ summaryExpanded ? '收起' : '展开' }}</span>
+        </div>
+      </div>
+      <template v-if="summaryExpanded">
+        <div v-if="summaryMetaText" class="chat-context-preview__summary-meta">{{ summaryMetaText }}</div>
+        <div v-if="summarySourceText" class="chat-context-preview__summary-source">{{ summarySourceText }}</div>
+        <div v-if="summaryChainText" class="chat-context-preview__summary-chain">{{ summaryChainText }}</div>
+        <div class="chat-context-preview__summary-text">{{ summaryText }}</div>
+      </template>
     </div>
     <div v-if="entries.length" class="chat-context-preview__list">
       <div
@@ -99,32 +110,39 @@
         :key="entryKey(entry, index, 'omitted')"
         class="chat-context-preview__item chat-context-preview__item--omitted"
       >
-        <div class="chat-context-preview__item-header">
+        <div class="chat-context-preview__item-header chat-context-preview__item-header--toggle" @click="toggleOmittedEntry(entryKey(entry, index, 'omitted'))">
           <n-tag size="small" :bordered="false" :type="helpers.modeType(entry)">
             {{ helpers.modeLabel(entry) }}
           </n-tag>
           <div class="chat-context-preview__item-title">{{ helpers.entryLabel(entry, index) }}</div>
           <div class="chat-context-preview__item-meta">
             {{ entry.messageCount }} 条 · {{ helpers.formatApproxChars(entry.chars) }}
+            <n-icon
+              :component="isOmittedEntryExpanded(entryKey(entry, index, 'omitted')) ? ChevronUpOutline : ChevronDownOutline"
+              size="12"
+              class="chat-context-preview__item-chevron"
+            />
           </div>
         </div>
-        <div v-if="entry.reasons && entry.reasons.length" class="chat-context-preview__item-reasons">
-          <n-tag
-            v-for="reason in entry.reasons"
-            :key="`${entry.kind}-${entry.index ?? 'prelude'}-${reason}`"
-            size="small"
-            :bordered="false"
-            :type="helpers.omittedReasonType(reason)"
-          >
-            {{ helpers.omittedReasonLabel(reason) }}
-          </n-tag>
-        </div>
-        <div v-if="helpers.entryNote(entry)" class="chat-context-preview__item-note">
-          {{ helpers.entryNote(entry) }}
-        </div>
-        <div class="chat-context-preview__item-text">
-          {{ entry.previewText || '（无预览文本）' }}
-        </div>
+        <template v-if="isOmittedEntryExpanded(entryKey(entry, index, 'omitted'))">
+          <div v-if="entry.reasons && entry.reasons.length" class="chat-context-preview__item-reasons">
+            <n-tag
+              v-for="reason in entry.reasons"
+              :key="`${entry.kind}-${entry.index ?? 'prelude'}-${reason}`"
+              size="small"
+              :bordered="false"
+              :type="helpers.omittedReasonType(reason)"
+            >
+              {{ helpers.omittedReasonLabel(reason) }}
+            </n-tag>
+          </div>
+          <div v-if="helpers.entryNote(entry)" class="chat-context-preview__item-note">
+            {{ helpers.entryNote(entry) }}
+          </div>
+          <div class="chat-context-preview__item-text">
+            {{ entry.previewText || '（无预览文本）' }}
+          </div>
+        </template>
       </div>
     </div>
     <div v-else class="chat-context-preview__empty">
@@ -134,7 +152,9 @@
 </template>
 
 <script setup>
-import { NButton, NTag } from 'naive-ui'
+import { NButton, NIcon, NTag } from 'naive-ui'
+import { ref } from 'vue'
+import { ChevronDownOutline, ChevronUpOutline } from '@vicons/ionicons5'
 
 defineProps({
   budgetStatus: {
@@ -218,6 +238,24 @@ function entryKey(entry, index, prefix = '') {
     index
   ]
   return parts.filter(Boolean).join('-')
+}
+
+const summaryExpanded = ref(false)
+const omittedExpandedKeys = ref(new Set())
+
+function toggleSummaryExpanded() {
+  summaryExpanded.value = !summaryExpanded.value
+}
+
+function toggleOmittedEntry(key) {
+  const next = new Set(omittedExpandedKeys.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  omittedExpandedKeys.value = next
+}
+
+function isOmittedEntryExpanded(key) {
+  return omittedExpandedKeys.value.has(key)
 }
 </script>
 
@@ -549,6 +587,41 @@ function entryKey(entry, index, prefix = '') {
   line-height: 1.6;
 }
 
+.chat-context-preview__summary-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  margin-bottom: 6px;
+}
+
+.chat-context-preview__summary-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-context-preview__summary-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  opacity: 0.72;
+  white-space: nowrap;
+}
+
+.chat-context-preview__item-header--toggle {
+  cursor: pointer;
+  user-select: none;
+}
+
+.chat-context-preview__item-chevron {
+  margin-left: 4px;
+  vertical-align: -2px;
+}
+
 .chat-context-preview__summary {
   margin: 12px 0 14px;
   padding: 12px 14px;
@@ -558,7 +631,6 @@ function entryKey(entry, index, prefix = '') {
 }
 
 .chat-context-preview__summary-label {
-  margin-bottom: 6px;
   font-size: 12px;
   font-weight: 600;
   color: rgba(24, 160, 88, 0.9);

@@ -2932,6 +2932,10 @@ watch(
       return
     }
 
+    const activeRecord = getActiveMemorySession()
+    const estimateSource = resolveContextEstimateSource(activeRecord, rawMessages)
+    const previewMessages = estimateSource.messages
+
     const providerKind = isUtoolsBuiltinProvider(selectedProvider.value) ? 'utools-ai' : 'openai-compatible'
     const previewConfig = contextWindowPreviewConfig.value
     const toolEstimateFresh =
@@ -2941,14 +2945,14 @@ watch(
     const tokenTelemetry = getContextTokenTelemetry()
     const budgetPlan = resolveChatContextWindowBudgetPlan(previewConfig, {
       reservedChars,
-      sourceChars: estimateMessagesSize(rawMessages),
+      sourceChars: estimateMessagesSize(previewMessages),
       reportedInputTokens: tokenTelemetry.inputTokens,
       reportedRequestChars: tokenTelemetry.requestChars,
       modelContextTokens: resolveModelContextWindowTokens(selectedProvider.value, selectedModel.value)
     })
 
     contextWindowPreviewState.value = inspectChatContextWindow(
-      rawMessages,
+      previewMessages,
       buildChatContextWindowRuntimeOptions(previewConfig, {
         providerKind,
         maxChars: budgetPlan.historyCharsBudget
