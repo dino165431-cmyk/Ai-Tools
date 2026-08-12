@@ -1759,7 +1759,7 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
           messages: chosenMessages,
           stats: chosenStats
         })
-        break
+        continue
       }
     }
 

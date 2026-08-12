@@ -219,10 +219,14 @@ export function useChatContextWindowPresentation({
   activeMemorySessionId,
   contextWindowPreviewOmittedFilter
 }) {
+  const resolveContextEstimatedTokens = (stats) => {
+    const value = Number(stats?.requestEstimatedTokens || 0)
+    return value > 0 ? value : Number(stats?.totalEstimatedTokens || 0)
+  }
   const contextWindowSummaryTag = computed(() => {
     const stats = contextWindowStats.value
     if (stats.telemetryAvailable) {
-      return `上下文 ${formatApproxChars(stats.totalEstimatedTokens)} / ${formatApproxChars(stats.baseTokens)} Token`
+      return `上下文 ${formatApproxChars(resolveContextEstimatedTokens(stats))} / ${formatApproxChars(stats.baseTokens)} Token`
     }
     return `上下文 ${formatApproxChars(stats.totalEstimatedChars)} / ${formatApproxChars(stats.baseChars)} 字符`
   })
@@ -231,7 +235,7 @@ export function useChatContextWindowPresentation({
     const stats = contextWindowStats.value
     const modeText = effectiveToolMode.value === 'compact' ? '精简工具模式' : '展开工具模式'
     const budgetText = stats.telemetryAvailable
-      ? `上下文预算以最近一次真实输入 ${formatApproxChars(stats.reportedInputTokens)} Token 校准；当前预计 ${formatApproxChars(stats.totalEstimatedTokens)}/${formatApproxChars(stats.baseTokens)} Token。`
+      ? `上下文预算以最近一次真实输入 ${formatApproxChars(stats.reportedInputTokens)} Token 校准；当前预计 ${formatApproxChars(resolveContextEstimatedTokens(stats))}/${formatApproxChars(stats.baseTokens)} Token。`
       : `当前端点尚未返回可用的输入 Token，暂按 ${formatApproxChars(stats.totalEstimatedChars)}/${formatApproxChars(stats.baseChars)} 字符预算估算。`
     const toolBudgetText = stats.toolEstimateFresh
       ? `工具定义预留：约 ${formatApproxChars(stats.toolSchemaChars)}，共 ${stats.toolCount} 个工具。`
@@ -313,6 +317,7 @@ export function useChatContextWindowPresentation({
       baseTokens: budgetPlan.baseTokens,
       requestEstimatedTokens,
       telemetryAvailable: budgetPlan.telemetryAvailable,
+      reservedTokens: budgetPlan.telemetryAvailable ? Math.max(0, Math.floor(Number(budgetPlan.reservedTokens) || 0)) : 0,
       reservedChars,
       systemChars,
       toolSchemaChars,
@@ -357,10 +362,10 @@ export function useChatContextWindowPresentation({
       }),
       primaryBudgetItem,
       buildContextWindowBudgetItem({
-        key: 'reserved_chars',
-        label: '预留开销',
-        used: stats.reservedChars,
-        max: stats.baseChars,
+        key: 'reserved',
+        label: stats.telemetryAvailable ? '预留 Token' : '预留开销',
+        used: stats.telemetryAvailable ? stats.reservedTokens : stats.reservedChars,
+        max: stats.telemetryAvailable ? stats.baseTokens : stats.baseChars,
         formatter: formatApproxChars,
         hint: stats.toolEstimateFresh
           ? `系统提示词约占 ${formatApproxChars(stats.systemChars)}；工具定义约占 ${formatApproxChars(stats.toolSchemaChars)}。`

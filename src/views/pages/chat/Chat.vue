@@ -2858,6 +2858,10 @@ function buildContextWindowStats({ includeRequestDetails = false } = {}) {
   })
   const requestAttachmentCount = countChatContextAttachmentMessages(requestMessages)
   const attachmentSummaryCount = countChatContextAttachmentSummaryMessages(requestMessages)
+  const requestChars = estimateMessagesSize(requestMessages)
+  const requestEstimatedTokens = budgetPlan.telemetryAvailable
+    ? Math.max(0, Math.ceil((requestChars + reservedChars) * budgetPlan.tokensPerChar))
+    : 0
 
   return {
     providerKind,
@@ -2865,6 +2869,8 @@ function buildContextWindowStats({ includeRequestDetails = false } = {}) {
     rawTurns: lightRawTurns,
     rawAttachmentCount,
     requestCount: requestMessages.length,
+    requestChars,
+    requestEstimatedTokens,
     requestTurns: countUserTurns(requestMessages),
     requestAttachmentCount,
     attachmentSummaryCount,
