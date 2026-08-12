@@ -15,9 +15,11 @@ import {
 } from './providerModelConfig'
 import {
   shouldRetryWithoutChatCompletionStreamUsage,
+  shouldRetryWithoutMaxTokens,
   shouldRetryWithoutTemperature,
   withChatCompletionStreamUsage,
   withoutChatCompletionStreamUsage,
+  withoutMaxTokens,
   withoutTemperature
 } from './chatRequestCompat'
 import { extractAssistantTextFromPayload, extractAssistantTextFromPayloads } from './chatAssistantResponse'
@@ -157,6 +159,7 @@ async function streamResponsesCompletionWithFallback(args) {
   let requestBody = args?.body
   let useStreaming = true
   let retriedWithoutTemperature = false
+  let retriedWithoutMaxTokens = false
 
   while (true) {
     try {
@@ -175,6 +178,16 @@ async function streamResponsesCompletionWithFallback(args) {
       ) {
         retriedWithoutTemperature = true
         requestBody = withoutTemperature(requestBody)
+        continue
+      }
+      if (
+        !retriedWithoutMaxTokens &&
+        (Object.prototype.hasOwnProperty.call(requestBody || {}, 'max_tokens') ||
+          Object.prototype.hasOwnProperty.call(requestBody || {}, 'max_completion_tokens')) &&
+        shouldRetryWithoutMaxTokens(errorText)
+      ) {
+        retriedWithoutMaxTokens = true
+        requestBody = withoutMaxTokens(requestBody)
         continue
       }
       throw error
@@ -220,6 +233,7 @@ export async function streamChatCompletion({
   let requestBody = withChatCompletionStreamUsage(body)
   let retriedWithoutStreamUsage = false
   let retriedWithoutTemperature = false
+  let retriedWithoutMaxTokens = false
 
   while (true) {
     response = null
@@ -268,6 +282,16 @@ export async function streamChatCompletion({
     ) {
       retriedWithoutTemperature = true
       requestBody = withoutTemperature(requestBody)
+      continue
+    }
+    if (
+      !retriedWithoutMaxTokens &&
+      (Object.prototype.hasOwnProperty.call(requestBody || {}, 'max_tokens') ||
+        Object.prototype.hasOwnProperty.call(requestBody || {}, 'max_completion_tokens')) &&
+      shouldRetryWithoutMaxTokens(errorText)
+    ) {
+      retriedWithoutMaxTokens = true
+      requestBody = withoutMaxTokens(requestBody)
       continue
     }
     if (automaticApiFallback && shouldFallbackChatCompletionsToResponses(errorText)) {

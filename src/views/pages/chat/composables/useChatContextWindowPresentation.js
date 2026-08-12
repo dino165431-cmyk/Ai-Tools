@@ -6,6 +6,7 @@ import {
   resolveChatContextWindowBudgetPlan
 } from '@/utils/chatContextWindow'
 import { isUtoolsBuiltinProvider } from '@/utils/utoolsAiProvider'
+import { resolveModelContextWindowTokens } from '@/utils/providerModelConfig'
 
 export const contextWindowPresetOptions = [
   {
@@ -208,6 +209,7 @@ export function useChatContextWindowPresentation({
   contextWindowHistoryFocusBehaviorText,
   effectiveToolMode,
   selectedProvider,
+  selectedModel,
   lastBuiltRequestToolsStats,
   systemContent,
   session,
@@ -292,7 +294,8 @@ export function useChatContextWindowPresentation({
       reservedChars,
       sourceChars: estimateMessagesSize(rawMessages),
       reportedInputTokens: tokenTelemetry.inputTokens,
-      reportedRequestChars: tokenTelemetry.requestChars
+      reportedRequestChars: tokenTelemetry.requestChars,
+      modelContextTokens: resolveModelContextWindowTokens(selectedProvider.value, selectedModel.value)
     })
     const historyCharsUsed = entries.reduce((total, entry) => total + Number(entry?.chars || 0), 0)
     const requestEstimatedTokens = budgetPlan.telemetryAvailable

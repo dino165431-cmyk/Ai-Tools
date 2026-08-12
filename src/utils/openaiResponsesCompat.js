@@ -270,7 +270,7 @@ export function buildResponsesRequestBodyFromChatBody(chatBody = {}, options = {
     ['frequency_penalty', 'frequency_penalty'],
     ['seed', 'seed']
   ].forEach(([from, to]) => {
-    if (body[from] !== undefined && responsesBody[to] === undefined) responsesBody[to] = body[from]
+    if (body[from] != null && responsesBody[to] === undefined) responsesBody[to] = body[from]
   })
 
   return responsesBody

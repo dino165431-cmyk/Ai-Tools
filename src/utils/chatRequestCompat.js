@@ -135,6 +135,35 @@ export function withoutTemperature(body = {}) {
   return next
 }
 
+export function withoutMaxTokens(body = {}) {
+  const source = body && typeof body === 'object' && !Array.isArray(body) ? body : {}
+  const next = { ...source }
+  delete next.max_tokens
+  delete next.max_completion_tokens
+  return next
+}
+
+export function shouldRetryWithoutMaxTokens(errorText = '') {
+  const lower = normalizeLowercaseText(errorText)
+  if (!lower || (!lower.includes('max_tokens') && !lower.includes('max_completion_tokens') && !lower.includes('max tokens'))) return false
+  return (
+    lower.includes('unsupported') ||
+    lower.includes('not supported') ||
+    lower.includes('does not support') ||
+    lower.includes("doesn't support") ||
+    lower.includes('unknown parameter') ||
+    lower.includes('unrecognized') ||
+    lower.includes('not allowed') ||
+    lower.includes('extra inputs are not permitted') ||
+    lower.includes('invalid parameter') ||
+    lower.includes('invalid request') ||
+    lower.includes('不受支持') ||
+    lower.includes('未知参数') ||
+    lower.includes('非法参数') ||
+    lower.includes('参数错误')
+  )
+}
+
 export function shouldRetryWithoutTemperature(errorText = '') {
   const lower = normalizeLowercaseText(errorText)
   if (!lower || !lower.includes('temperature')) return false

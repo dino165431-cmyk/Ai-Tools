@@ -311,18 +311,9 @@ export function resolveChatContextWindowBudgetPlan(raw, runtime = {}) {
       ? runtime.modeHint
       : 'auto'
 
-  let mode = 'expanded'
-  let reason = 'default'
-  if (modeHint === 'compact') {
-    mode = 'compact'
-    reason = 'forced_compact'
-  } else if (modeHint === 'expanded') {
-    mode = 'expanded'
-    reason = 'forced_expanded'
-  } else if (expandedPressure >= triggerRatio) {
-    mode = 'compact'
-    reason = 'auto_threshold'
-  }
+  // Codex-style: single budget window. No automatic expanded/compact switching.
+  const mode = modeHint === 'compact' ? 'compact' : 'expanded'
+  const reason = modeHint === 'compact' ? 'forced_compact' : 'default'
 
   const baseChars = mode === 'compact' ? compactChars : expandedChars
   const baseTokens = mode === 'compact' ? compactTokens : expandedTokens
@@ -331,6 +322,9 @@ export function resolveChatContextWindowBudgetPlan(raw, runtime = {}) {
   const historyCharsBudget = telemetryAvailable
     ? Math.max(1, Math.floor(historyTokensBudget / tokensPerChar))
     : Math.max(charFallbackFloor, baseChars - reservedChars)
+  const triggerTokens = telemetryAvailable
+    ? Math.max(0, Math.floor(expandedTokens * triggerRatio))
+    : 0
   const effectivePressure = telemetryAvailable
     ? (baseTokens > 0 ? totalEstimatedTokens / baseTokens : 0)
     : (baseChars > 0 ? totalEstimatedChars / baseChars : 0)
@@ -361,6 +355,7 @@ export function resolveChatContextWindowBudgetPlan(raw, runtime = {}) {
     sourceChars,
     totalEstimatedChars,
     expandedPressure,
+    triggerTokens,
     effectivePressure,
     historyCharsBudget
   }
@@ -379,10 +374,6 @@ export function shouldSummarizeContextWindow({
   sourceMessages = [],
   sourceChars = 0,
   summaryTriggerChars = 0,
-  coveredCount,
-  contextWouldTrim = false,
-  summaryMissing = false,
-  summaryStale = false,
   minMessages = 2
 } = {}) {
   const messageCount = Array.isArray(sourceMessages) ? sourceMessages.length : 0
@@ -391,12 +382,7 @@ export function shouldSummarizeContextWindow({
 
   const triggerChars = Math.max(0, Math.floor(Number(summaryTriggerChars) || 0))
   const safeSourceChars = Math.max(0, Math.floor(Number(sourceChars) || 0))
-  return (
-    (triggerChars > 0 && safeSourceChars >= triggerChars) ||
-    contextWouldTrim ||
-    summaryMissing ||
-    summaryStale
-  )
+  return triggerChars > 0 && safeSourceChars >= triggerChars
 }
 
 export function resolveContextSummaryLevel(cachedSummary = null, hasForwardProgress = false) {

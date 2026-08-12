@@ -2810,7 +2810,7 @@ function buildContextWindowStats({ includeRequestDetails = false } = {}) {
   const reservedChars = systemChars + toolSchemaChars
   const sourceChars = estimateMessagesSize(estimateSource.messages)
   const tokenTelemetry = getContextTokenTelemetry()
-  const budgetPlan = resolveChatContextWindowBudgetPlan(effectiveContextWindowConfig.value, {
+  const budgetPlan = resolveChatContextWindowBudgetPlan(showContextWindowModal.value ? contextWindowPreviewConfig.value : effectiveContextWindowConfig.value, {
     reservedChars,
     sourceChars,
     reportedInputTokens: tokenTelemetry.inputTokens,
@@ -3001,6 +3001,7 @@ const {
   contextWindowHistoryFocusBehaviorText,
   effectiveToolMode,
   selectedProvider,
+  selectedModel,
   lastBuiltRequestToolsStats,
   systemContent,
   session,

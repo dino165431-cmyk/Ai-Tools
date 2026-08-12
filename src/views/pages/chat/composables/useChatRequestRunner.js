@@ -191,8 +191,7 @@ export function useChatRequestRunner(dependencies) {
     getSkillScriptCatalog,
     globalContextWindowConfig,
     handleBuiltinAgentsTraceEvent,
-    hasChatContextWindowReduction,
-    hasLoadedSkillMainContent,
+      hasLoadedSkillMainContent,
     hasPendingBuiltinAgentsEvents,
     imageGenerationMode,
     importFilesToSandbox,
@@ -210,8 +209,7 @@ export function useChatRequestRunner(dependencies) {
     inlineCommandSuggestions,
     inlineCommandType,
     input,
-    inspectChatContextWindow,
-    isAbortError,
+      isAbortError,
     isAgentRunToolName,
     isChatMemoryEnabled,
     isComposerCompositionKeydownEvent,
@@ -1145,7 +1143,10 @@ export function useChatRequestRunner(dependencies) {
       compactionBudgetPlan = tailBudgetState.budgetPlan
     }
 
-    if (compactionBudgetPlan.mode !== "compact" || compactionBudgetPlan.reason !== "auto_threshold") return false
+    if (!compactionBudgetPlan.telemetryAvailable) return false
+  const pressureTokens = compactionBudgetPlan.totalEstimatedTokens
+  const triggerTokens = compactionBudgetPlan.triggerTokens || Math.floor(compactionBudgetPlan.expandedTokens * compactionBudgetPlan.triggerRatio)
+  if (!triggerTokens || pressureTokens < triggerTokens) return false
     const summaryTriggerChars = calculateContextSummaryTriggerChars({
       historyCharsBudget: compactionBudgetPlan.historyCharsBudget
     })
@@ -3487,38 +3488,10 @@ export function useChatRequestRunner(dependencies) {
         sessionRecord: targetRecord
       })
       const cachedSummary = syncContextSummaryCacheForRecord(targetRecord, coverage)
-      const sourceBudgetMessages = buildRequestApiMessages(cfg.providerKind || 'openai-compatible', {
-        tools: requestTools,
-        reservedCharsOverride: reservedChars,
-        apiMessages: sourceMessages,
-        contextSummary: targetRecord?.contextSummary || null,
-        sessionRecord: targetRecord
-      })
-      const contextInspection = inspectChatContextWindow(
-        sourceMessages,
-        buildChatContextWindowRuntimeOptions(resolvedContext, {
-          providerKind: cfg.providerKind || 'openai-compatible',
-          maxChars: historyBudget,
-          preserveToolResultTurns: budgetState.budgetPlan.mode !== 'compact' || !String(cachedSummary?.summaryText || '').trim()
-        })
-      )
-      const contextWouldTrim =
-        sourceBudgetMessages.length < sourceMessages.length || hasChatContextWindowReduction(contextInspection)
-      const summaryMissing = !String(cachedSummary?.summaryText || '').trim()
-      const summaryStale =
-        coverage.coveredCount >= 1 &&
-        (
-          coverage.sourceHash !== String(cachedSummary?.sourceHash || '') ||
-          coverage.coveredCount !== Math.max(0, Math.floor(Number(cachedSummary?.coveredMessageCount || 0)))
-        )
       const shouldSummarize = shouldSummarizeContextWindow({
         sourceMessages,
         sourceChars,
         summaryTriggerChars,
-        coveredCount: coverage.coveredCount,
-        contextWouldTrim,
-        summaryMissing,
-        summaryStale,
         minMessages: 2
       })
       if (shouldSummarize) {
@@ -3528,7 +3501,15 @@ export function useChatRequestRunner(dependencies) {
           tools: requestTools,
           reservedCharsOverride: reservedChars,
           targetSourceChars: summaryTriggerChars,
-          force: summaryStale
+          force: (() => {
+            const cached = targetRecord?.contextSummary && typeof targetRecord.contextSummary === 'object'
+              ? targetRecord.contextSummary
+              : null
+            return !!cached?.summaryText && (
+              String(coverage?.sourceHash || '') !== String(cached?.sourceHash || '') ||
+              Math.max(0, Math.floor(Number(coverage?.coveredCount || 0))) !== Math.max(0, Math.floor(Number(cached?.coveredMessageCount || 0)))
+            )
+          })()
         })
       }
     } catch (err) {
