@@ -389,12 +389,6 @@ export function shouldSummarizeContextWindow({
   const safeMinMessages = Math.max(1, Math.floor(Number(minMessages) || 0))
   if (messageCount < safeMinMessages) return false
 
-  const parsedCoveredCount = Number(coveredCount)
-  const safeCoveredCount = Number.isFinite(parsedCoveredCount)
-    ? Math.max(0, Math.floor(parsedCoveredCount))
-    : (messageCount > 1 ? 1 : 0)
-  if (!safeCoveredCount) return false
-
   const triggerChars = Math.max(0, Math.floor(Number(summaryTriggerChars) || 0))
   const safeSourceChars = Math.max(0, Math.floor(Number(sourceChars) || 0))
   return (

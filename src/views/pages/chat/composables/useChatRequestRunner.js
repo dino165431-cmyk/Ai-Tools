@@ -3237,46 +3237,33 @@ export function useChatRequestRunner(dependencies) {
     sessionRecord = null
   } = {}) {
     const list = Array.isArray(sourceMessages) ? sourceMessages : []
-    if (!cfg || cfg.requestMode !== 'chat' || list.length < 1) {
+    if (!cfg || cfg.requestMode !== 'chat' || list.length < 2) {
       return {
         coveredCount: 0,
         sourceSlice: [],
         sourceHash: ''
       }
     }
-  
-    const requestMessages = buildRequestApiMessages(cfg.providerKind || 'openai-compatible', {
+
+    // Codex-style: accumulate coverage by budget from oldest to newest,
+    // independent of any other trimming rule.
+    const budgetState = resolveHistoryContextBudgetState({
       tools,
       reservedCharsOverride,
       apiMessages: list,
       sessionRecord
     })
-    let coveredCount = Math.max(0, list.length - requestMessages.length)
-    if (coveredCount < 1 && list.length > 1 && Number.isFinite(Number(targetSourceChars))) {
-      const targetChars = Math.max(4000, Math.floor(Number(targetSourceChars)))
-      const keepRecentTurnsFull = Math.max(1, Number(contextWindowResolvedOptions.value?.keepRecentTurnsFull || 6))
-      const minKeptMessages = Math.max(1, Math.min(list.length - 1, Math.max(2, keepRecentTurnsFull * 2)))
-      let keepStart = Math.max(0, list.length - minKeptMessages)
-      let keptChars = estimateMessagesSize(list.slice(keepStart))
-  
-      while (keepStart > 0) {
-        const nextMessageChars = estimateMessageSize(list[keepStart - 1])
-        if (keptChars + nextMessageChars > targetChars) break
-        keepStart -= 1
-        keptChars += nextMessageChars
-      }
-  
-      if (keepStart > 0) coveredCount = keepStart
+    const summaryBudget = Math.max(8000, Math.floor(budgetState.historyBudget * 0.7))
+    let coveredCount = 0
+    let coveredChars = 0
+    for (let i = 0; i < list.length - 1; i += 1) {
+      const nextChars = estimateMessageSize(list[i])
+      if (coveredCount > 0 && coveredChars + nextChars > summaryBudget) break
+      coveredCount += 1
+      coveredChars += nextChars
     }
-  
-    if (coveredCount < 1) {
-      return {
-        coveredCount: 0,
-        sourceSlice: [],
-        sourceHash: ''
-      }
-    }
-  
+    if (coveredCount < 1) return { coveredCount: 0, sourceSlice: [], sourceHash: '' }
+
     const sourceSlice = list.slice(0, coveredCount)
     return {
       coveredCount,
