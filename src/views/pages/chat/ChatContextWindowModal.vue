@@ -41,25 +41,13 @@
             <n-input-number v-model:value="draft.keepRecentTurnsFull" :min="1" :max="64" style="width: 180px;" />
           </n-form-item>
           <n-form-item label="最大消息数">
-            <n-input-number v-model:value="draft.maxMessages" :min="8" :max="1000" style="width: 180px;" />
+            <n-input-number v-model:value="draft.maxMessages" :min="8" :max="32000" style="width: 180px;" />
           </n-form-item>
-          <n-form-item label="展开 Token">
-            <n-input-number v-model:value="draft.maxTokensExpanded" :min="1000" :max="4000000" :step="1000" style="width: 180px;" />
-          </n-form-item>
-          <n-form-item label="精简 Token">
-            <n-input-number v-model:value="draft.maxTokensCompact" :min="1000" :max="4000000" :step="1000" style="width: 180px;" />
-          </n-form-item>
-          <n-form-item label="展开模式字符">
-            <n-input-number v-model:value="draft.maxCharsExpanded" :min="4000" :max="4200000" :step="10000" style="width: 180px;" />
-          </n-form-item>
-          <n-form-item label="精简模式字符">
-            <n-input-number v-model:value="draft.maxCharsCompact" :min="6000" :max="4200000" :step="10000" style="width: 180px;" />
-          </n-form-item>
-          <n-form-item label="自动压缩阈值">
-            <n-input-number v-model:value="draft.autoCompactTriggerPercent" :min="55" :max="95" :step="1" style="width: 180px;" />
+          <n-form-item label="预算 Token">
+            <n-input-number v-model:value="draft.maxTokens" :min="1000" :max="4000000" :step="1000" style="width: 180px;" />
           </n-form-item>
           <n-text depth="3" style="font-size: 12px;">
-            有输入 Token 统计时使用 Token 预算；否则自动使用字符预算。
+            单一预算窗口：历史按完整轮次从最新往旧保留，放不下就丢弃；接近上限时由云端模型把旧历史压缩成摘要。
           </n-text>
         </template>
       </n-form>

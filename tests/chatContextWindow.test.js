@@ -71,7 +71,7 @@ test('buildChatContextWindow always keeps the latest turn even when it exceeds t
   assert.deepEqual(result.map((item) => item.content), ['latest user', 'x'.repeat(400)])
 })
 
-test('buildChatContextWindow can compact the latest attachment turn when full payload would blow the budget', () => {
+test('buildChatContextWindow keeps the latest attachment turn complete even when it exceeds the budget', () => {
   const messages = [
     { role: 'user', content: 'old user' },
     { role: 'assistant', content: 'old answer' },
@@ -89,9 +89,9 @@ test('buildChatContextWindow can compact the latest attachment turn when full pa
 
   assert.equal(result.messages.length, 2)
   assert.equal(result.inspection.entries.at(-1)?.mustKeep, true)
-  assert.notEqual(result.inspection.entries.at(-1)?.variant, 'full')
-  assert.ok(result.inspection.entries.at(-1)?.chars <= 500)
-  assert.ok(String(result.messages[0]?.content || '').length < 8000)
+  assert.equal(result.inspection.entries.at(-1)?.variant, 'full')
+  assert.ok(result.inspection.entries.at(-1)?.chars > 500)
+  assert.ok(String(result.messages[0]?.content || '').includes('big.pdf'))
 })
 
 test('buildChatContextWindow strips tool state for plain-text providers', () => {
@@ -133,7 +133,7 @@ test('buildChatContextWindow strips tool state for plain-text providers', () => 
   )
 })
 
-test('buildChatContextWindow compacts tool-heavy turns instead of dropping them when tool results are not preserved', () => {
+test('buildChatContextWindow drops tool-heavy turns instead of compacting them when budget is tight', () => {
   const hugeToolResult = 'tool payload\n' + 'A'.repeat(6000)
   const messages = [
     { role: 'user', content: 'old user' },
@@ -157,13 +157,11 @@ test('buildChatContextWindow compacts tool-heavy turns instead of dropping them 
     preserveToolResultTurns: false
   })
 
-  assert.equal(result.length, 6)
-  assert.ok(result.some((item) => item.role === 'tool'))
-  assert.ok(String(result.find((item) => item.role === 'tool')?.content || '').length < hugeToolResult.length)
-  assert.ok(result.some((item) => item.role === 'assistant' && item.content === 'old preamble'))
+  assert.deepEqual(result.map((item) => item.content), ['latest user', 'latest answer'])
+  assert.ok(!result.some((item) => item.role === 'tool'))
 })
 
-test('buildChatContextWindow keeps omitted attachment turns as pinned summaries', () => {
+test('buildChatContextWindow keeps recent turns and drops older turns beyond the limits', () => {
   const messages = [
     {
       role: 'user',
@@ -196,22 +194,17 @@ test('buildChatContextWindow keeps omitted attachment turns as pinned summaries'
     toolPolicy: 'full'
   })
 
-  assert.equal(result.length, 3)
-  assert.equal(result[0].role, 'user')
-  assert.equal(typeof result[0].content, 'string')
-  assert.ok(result[0].content.includes('design.png'))
-  assert.ok(!Array.isArray(result[0].content))
-  assert.ok(!result.some((item) => item.content === 'plain turn should be evicted'))
-  assert.deepEqual(
-    result.slice(1).map((item) => ({ role: item.role, content: item.content })),
-    [
-      { role: 'user', content: 'latest user' },
-      { role: 'assistant', content: 'latest answer' }
-    ]
-  )
+  assert.equal(result.length, 4)
+  assert.deepEqual(result.map((item) => item.content), [
+    'plain turn should be evicted',
+    'plain answer',
+    'latest user',
+    'latest answer'
+  ])
+  assert.ok(!result.some((item) => Array.isArray(item.content)))
 })
 
-test('buildChatContextWindow adaptively tightens pinned attachment summaries when budget is tight', () => {
+test('buildChatContextWindow drops the attachment turn when budget is tight', () => {
   const messages = [
     {
       role: 'user',
@@ -233,13 +226,17 @@ test('buildChatContextWindow adaptively tightens pinned attachment summaries whe
     toolPolicy: 'full'
   })
 
-  assert.equal(result.length, 5)
-  assert.equal(result[0].role, 'user')
-  assert.ok(String(result[0].content || '').includes('spec-a.pdf'))
-  assert.deepEqual(result.slice(-2).map((item) => item.content), ['latest user', 'latest answer'])
+  assert.equal(result.length, 4)
+  assert.deepEqual(result.map((item) => item.content), [
+    'plain turn 1',
+    'plain answer 1',
+    'latest user',
+    'latest answer'
+  ])
+  assert.ok(!result.some((item) => String(item.content || '').includes('spec-a.pdf')))
 })
 
-test('buildChatContextWindow keeps pinned attachment summaries when a smaller attachment limit is needed', () => {
+test('buildChatContextWindow keeps only the latest turn when char budget is very small', () => {
   const messages = [
     {
       role: 'user',
@@ -259,13 +256,10 @@ test('buildChatContextWindow keeps pinned attachment summaries when a smaller at
     toolPolicy: 'full'
   })
 
-  assert.equal(result.length, 3)
-  assert.equal(result[0].role, 'user')
-  assert.ok(String(result[0].content || '').includes('spec-b.pdf'))
-  assert.deepEqual(result.slice(-2).map((item) => item.content), ['latest user', 'latest answer'])
+  assert.deepEqual(result.map((item) => item.content), ['latest user', 'latest answer'])
 })
 
-test('buildChatContextWindow tightens the latest attachment turn when the first adaptive limit is still too loose', () => {
+test('buildChatContextWindow keeps the latest attachment turn complete when maxTurns is 1', () => {
   const messages = [
     { role: 'user', content: 'older turn' },
     { role: 'assistant', content: 'older answer' },
@@ -285,12 +279,12 @@ test('buildChatContextWindow tightens the latest attachment turn when the first 
 
   assert.equal(result.messages.length, 1)
   assert.equal(result.inspection.entries.at(-1)?.mustKeep, true)
-  assert.notEqual(result.inspection.entries.at(-1)?.variant, 'full')
+  assert.equal(result.inspection.entries.at(-1)?.variant, 'full')
   assert.ok(String(result.messages[0]?.content || '').includes('spec-c.pdf'))
-  assert.ok(result.inspection.entries.at(-1)?.chars <= 430)
+  assert.ok(result.inspection.entries.at(-1)?.chars > 430)
 })
 
-test('buildChatContextWindow truncates compact attachment text instead of dropping the turn', () => {
+test('buildChatContextWindow drops the old attachment turn instead of truncating its text', () => {
   const longAttachmentText = 'continue with attachment\n\n' + attachmentHeader + '\n' + attachmentPrefix + 'manual.pdf\n' + 'A'.repeat(5000)
     + '\nsandbox_workspace_id: chat-history-1\nsandbox_path: inbox/manual.pdf'
   const messages = [
@@ -308,16 +302,11 @@ test('buildChatContextWindow truncates compact attachment text instead of droppi
     toolPolicy: 'full'
   })
 
-  assert.equal(result[0].role, 'user')
-  assert.equal(typeof result[0].content, 'string')
-  assert.ok(result[0].content.includes('manual.pdf'))
-  assert.ok(result[0].content.includes('sandbox_workspace_id: chat-history-1'))
-  assert.ok(result[0].content.includes('sandbox_path: inbox/manual.pdf'))
-  assert.ok(result[0].content.length < longAttachmentText.length)
-  assert.deepEqual(result.slice(-2).map((item) => item.content), ['latest user', 'latest answer'])
+  assert.deepEqual(result.map((item) => item.content), ['latest user', 'latest answer'])
+  assert.ok(!result.some((item) => String(item.content || '').includes('manual.pdf')))
 })
 
-test('buildChatContextWindow can further tighten an already-selected plain-text turn to keep older history', () => {
+test('buildChatContextWindow drops the oversized plain turn instead of tightening it', () => {
   const messages = [
     { role: 'user', content: 'oldest user' },
     { role: 'assistant', content: 'oldest answer' },
@@ -338,14 +327,14 @@ test('buildChatContextWindow can further tighten an already-selected plain-text 
   })
 
   assert.deepEqual(
-    result.messages.map((item) => item.content).slice(0, 4),
-    ['oldest user', 'oldest answer', 'older user', 'older answer']
+    result.messages.map((item) => item.content),
+    ['oldest user', 'oldest answer', 'older user', 'older answer', 'latest user', 'latest answer']
   )
-  assert.equal(result.inspection.entries[2]?.variant, 'compact_tight')
-  assert.ok(!result.inspection.omittedEntries.some((entry) => entry.index === 0))
+  assert.ok(result.inspection.entries.every((entry) => entry.variant === 'full'))
+  assert.ok(result.inspection.omittedEntries.some((entry) => entry.index === 2))
 })
 
-test('buildChatContextWindow prefers pinned attachment summaries over older plain turns when budget is tight', () => {
+test('buildChatContextWindow keeps the recent attachment turn and drops older plain turns when budget is tight', () => {
   const messages = [
     {
       role: 'user',
@@ -373,10 +362,10 @@ test('buildChatContextWindow prefers pinned attachment summaries over older plai
   })
 
   assert.equal(result.length, 4)
-  assert.deepEqual(result.map((item) => item.role), ['user', 'user', 'user', 'assistant'])
-  assert.ok(result[0].content.includes('spec-a.pdf'))
-  assert.ok(result[1].content.includes('spec-b.pdf'))
+  assert.deepEqual(result.map((item) => item.role), ['user', 'assistant', 'user', 'assistant'])
+  assert.ok(String(result[0].content || '').includes('spec-b.pdf'))
   assert.ok(!result.some((item) => item.content === 'plain turn 1'))
+  assert.ok(!result.some((item) => String(item.content || '').includes('spec-a.pdf')))
   assert.deepEqual(result.slice(-2).map((item) => item.content), ['latest user', 'latest answer'])
 })
 
@@ -468,7 +457,7 @@ test('resolveChatContextWindowOptions maps history focus to attachment preservat
   assert.equal(attachments.allowAttachmentTurnDisplacement, true)
 })
 
-test('shouldSummarizeContextWindow skips missing-summary retries when no history can be compressed', () => {
+test('shouldSummarizeContextWindow requires message count and char threshold', () => {
   assert.equal(
     shouldSummarizeContextWindow({
       sourceMessages: [
@@ -476,24 +465,19 @@ test('shouldSummarizeContextWindow skips missing-summary retries when no history
         { role: 'assistant', content: 'hello' }
       ],
       sourceChars: 5000,
-      summaryTriggerChars: 2000,
-      coveredCount: 0,
-      summaryMissing: true
+      summaryTriggerChars: 2000
     }),
-    false
+    true
   )
 
   assert.equal(
     shouldSummarizeContextWindow({
       sourceMessages: [
-        { role: 'user', content: 'hi' },
-        { role: 'assistant', content: 'hello' }
+        { role: 'user', content: 'hi' }
       ],
       sourceChars: 5000,
-      summaryTriggerChars: 2000,
-      coveredCount: 1,
-      summaryMissing: true
+      summaryTriggerChars: 2000
     }),
-    true
+    false
   )
 })

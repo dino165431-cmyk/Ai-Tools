@@ -405,6 +405,7 @@ import {
 } from '@/utils/promptConfig'
 import {
   buildChatContextWindow,
+  buildChatContextRequestEstimate,
   buildChatContextWindowRuntimeOptions,
   calculateContextSummaryTriggerChars,
   CHAT_CONTEXT_WINDOW_HISTORY_FOCUS_PRESETS,
@@ -761,10 +762,6 @@ function scheduleSessionAutosave(...args) {
 
 function getCurrentToolsKey(...args) {
   return chatRequestRunnerApi?.getCurrentToolsKey?.(...args) || ''
-}
-
-function buildRequestApiMessages(...args) {
-  return chatRequestRunnerApi?.buildRequestApiMessages?.(...args) || []
 }
 
 function isDisplayMessageInActiveSession(...args) {
@@ -2731,22 +2728,6 @@ function clearSandboxHostWorkspace() {
   message.info('已断开本机工作区；继续使用默认会话沙盒')
 }
 
-function resolveContextEstimateSource(record, rawMessages) {
-  const list = Array.isArray(rawMessages) ? rawMessages : []
-  const summaryText = String(record?.contextSummary?.summaryText || '').trim()
-  const coveredMessageCount = Math.max(0, Math.floor(Number(record?.contextSummary?.coveredMessageCount || 0)))
-  if (!summaryText || coveredMessageCount < 1 || coveredMessageCount > list.length) {
-    return {
-      messages: list,
-      summaryReservedChars: 0
-    }
-  }
-  return {
-    messages: list.slice(coveredMessageCount),
-    summaryReservedChars: buildContextSummaryPrelude(summaryText).length
-  }
-}
-
 const contextWindowBudgetPlan = computed(() => {
   const providerKind = isUtoolsBuiltinProvider(selectedProvider.value) ? 'utools-ai' : 'openai-compatible'
   const currentToolsKey = getCurrentToolsKey()
@@ -2755,29 +2736,34 @@ const contextWindowBudgetPlan = computed(() => {
   const toolSchemaChars = toolEstimateFresh ? Number(lastBuiltRequestToolsStats.chars || 0) : 0
   const activeRecord = getActiveMemorySession()
   const rawMessages = Array.isArray(session.apiMessages) ? session.apiMessages : []
-  const estimateSource = resolveContextEstimateSource(activeRecord, rawMessages)
-  const systemChars = String(systemContent.value || '').length + estimateSource.summaryReservedChars
+  const systemChars = String(systemContent.value || '').length
   const reservedChars = systemChars + toolSchemaChars
-  const sourceChars = estimateMessagesSize(estimateSource.messages)
   const tokenTelemetry = getContextTokenTelemetry()
-  const basePlan = resolveChatContextWindowBudgetPlan(effectiveContextWindowConfig.value, {
+  // 统一口径：与 runner 压缩触发一致，按「summary prelude + 裁剪后 tail」估算实际请求。
+  const estimate = buildChatContextRequestEstimate({
+    apiMessages: rawMessages,
+    contextSummary: activeRecord?.contextSummary,
     reservedChars,
-    sourceChars,
+    config: effectiveContextWindowConfig.value,
+    providerKind,
+    modelContextTokens: resolveModelContextWindowTokens(selectedProvider.value, selectedModel.value),
     reportedInputTokens: tokenTelemetry.inputTokens,
-    reportedRequestChars: tokenTelemetry.requestChars,
-    modelContextTokens: resolveModelContextWindowTokens(selectedProvider.value, selectedModel.value)
+    reportedRequestChars: tokenTelemetry.requestChars
   })
+  const basePlan = estimate.budgetPlan
   return {
     ...basePlan,
     providerKind,
     toolSchemaChars,
     toolEstimateFresh,
-    systemChars,
+    systemChars: systemChars + estimate.summaryReservedChars,
     currentToolsKey,
-    effectiveToolMode: basePlan.mode
+    effectiveToolMode: basePlan.mode,
+    requestEstimatedTokens: estimate.estimatedTokens,
+    requestChars: estimate.requestChars,
+    effectivePressure: estimate.pressure
   }
 })
-
 const contextWindowPreviewConfig = computed(() => {
   const raw = showContextWindowModal.value ? contextWindowDraft : effectiveContextWindowConfig.value
   return resolveChatContextWindowOptions(normalizeChatContextWindowConfig(raw))
@@ -2799,85 +2785,49 @@ function createEmptyContextWindowInspection() {
 function buildContextWindowStats({ includeRequestDetails = false } = {}) {
   const rawMessages = Array.isArray(session.apiMessages) ? session.apiMessages : []
   const activeRecord = getActiveMemorySession()
-  const estimateSource = resolveContextEstimateSource(activeRecord, rawMessages)
   const providerKind = isUtoolsBuiltinProvider(selectedProvider.value) ? 'utools-ai' : 'openai-compatible'
   const currentToolsKey = getCurrentToolsKey()
   const toolEstimateFresh =
     !!lastBuiltRequestToolsStats.updatedAt && String(lastBuiltRequestToolsStats.key || '') === currentToolsKey
   const toolCount = toolEstimateFresh ? Number(lastBuiltRequestToolsStats.count || 0) : 0
   const toolSchemaChars = toolEstimateFresh ? Number(lastBuiltRequestToolsStats.chars || 0) : 0
-  const systemChars = String(systemContent.value || '').length + estimateSource.summaryReservedChars
+  const systemChars = String(systemContent.value || '').length
   const reservedChars = systemChars + toolSchemaChars
-  const sourceChars = estimateMessagesSize(estimateSource.messages)
   const tokenTelemetry = getContextTokenTelemetry()
-  const budgetPlan = resolveChatContextWindowBudgetPlan(showContextWindowModal.value ? contextWindowPreviewConfig.value : effectiveContextWindowConfig.value, {
+  const config = showContextWindowModal.value ? contextWindowPreviewConfig.value : effectiveContextWindowConfig.value
+  // 统一口径：与 runner 压缩触发一致，按「summary prelude + 裁剪后 tail」估算实际请求。
+  const estimate = buildChatContextRequestEstimate({
+    apiMessages: rawMessages,
+    contextSummary: activeRecord?.contextSummary,
     reservedChars,
-    sourceChars,
+    config,
+    providerKind,
+    modelContextTokens: resolveModelContextWindowTokens(selectedProvider.value, selectedModel.value),
     reportedInputTokens: tokenTelemetry.inputTokens,
-    reportedRequestChars: tokenTelemetry.requestChars,
-    modelContextTokens: resolveModelContextWindowTokens(selectedProvider.value, selectedModel.value)
+    reportedRequestChars: tokenTelemetry.requestChars
   })
+  const budgetPlan = estimate.budgetPlan
+  const totalReservedChars = reservedChars + estimate.summaryReservedChars
   const historyBudgetChars = budgetPlan.historyCharsBudget
   const rawAttachmentCount = countChatContextAttachmentMessages(rawMessages)
   const lightRawTurns = countUserTurns(rawMessages)
-
-  if (!includeRequestDetails) {
-    return {
-      providerKind,
-      rawCount: rawMessages.length,
-      rawTurns: lightRawTurns,
-      rawAttachmentCount,
-      requestCount: estimateSource.messages.length,
-      requestTurns: countUserTurns(estimateSource.messages),
-      requestAttachmentCount: rawAttachmentCount,
-      attachmentSummaryCount: 0,
-      baseChars: budgetPlan.baseChars,
-      baseTokens: budgetPlan.baseTokens,
-      totalEstimatedTokens: budgetPlan.totalEstimatedTokens,
-      totalEstimatedChars: budgetPlan.totalEstimatedChars,
-      reportedInputTokens: budgetPlan.reportedInputTokens,
-      telemetryAvailable: budgetPlan.telemetryAvailable,
-      budgetUnit: budgetPlan.budgetUnit,
-      expandedChars: budgetPlan.expandedChars,
-      compactChars: budgetPlan.compactChars,
-      autoCompactTriggerPercent: budgetPlan.autoCompactTriggerPercent,
-      autoCompactActive: budgetPlan.autoCompactActive,
-      effectiveContextMode: budgetPlan.mode,
-      systemChars,
-      toolCount,
-      toolSchemaChars,
-      reservedChars,
-      historyBudgetChars,
-      toolEstimateFresh
-    }
-  }
-
-  const requestMessages = buildRequestApiMessages(providerKind, {
-    reservedCharsOverride: reservedChars,
-    sessionRecord: getActiveMemorySession()
-  })
-  const requestAttachmentCount = countChatContextAttachmentMessages(requestMessages)
-  const attachmentSummaryCount = countChatContextAttachmentSummaryMessages(requestMessages)
-  const requestChars = estimateMessagesSize(requestMessages)
-  const requestEstimatedTokens = budgetPlan.telemetryAvailable
-    ? Math.max(0, Math.ceil((requestChars + reservedChars) * budgetPlan.tokensPerChar))
-    : 0
+  const effectiveMessages = estimate.effectiveMessages
 
   return {
     providerKind,
     rawCount: rawMessages.length,
     rawTurns: lightRawTurns,
     rawAttachmentCount,
-    requestCount: requestMessages.length,
-    requestChars,
-    requestEstimatedTokens,
-    requestTurns: countUserTurns(requestMessages),
-    requestAttachmentCount,
-    attachmentSummaryCount,
+    requestCount: effectiveMessages.length,
+    requestChars: estimate.requestChars,
+    requestEstimatedTokens: estimate.estimatedTokens,
+    requestTurns: countUserTurns(effectiveMessages),
+    requestAttachmentCount: countChatContextAttachmentMessages(effectiveMessages),
+    attachmentSummaryCount: countChatContextAttachmentSummaryMessages(effectiveMessages),
     baseChars: budgetPlan.baseChars,
     baseTokens: budgetPlan.baseTokens,
-    totalEstimatedTokens: budgetPlan.totalEstimatedTokens,
-    totalEstimatedChars: budgetPlan.totalEstimatedChars,
+    totalEstimatedTokens: estimate.estimatedTokens,
+    totalEstimatedChars: estimate.requestChars,
     reportedInputTokens: budgetPlan.reportedInputTokens,
     telemetryAvailable: budgetPlan.telemetryAvailable,
     budgetUnit: budgetPlan.budgetUnit,
@@ -2886,15 +2836,14 @@ function buildContextWindowStats({ includeRequestDetails = false } = {}) {
     autoCompactTriggerPercent: budgetPlan.autoCompactTriggerPercent,
     autoCompactActive: budgetPlan.autoCompactActive,
     effectiveContextMode: budgetPlan.mode,
-    systemChars,
+    systemChars: systemChars + estimate.summaryReservedChars,
     toolCount,
     toolSchemaChars,
-    reservedChars,
+    reservedChars: totalReservedChars,
     historyBudgetChars,
     toolEstimateFresh
   }
 }
-
 function buildContextWindowPreviewSourceSignature() {
   const messageSignature = (session.apiMessages || [])
     .map((msg) => [
@@ -2933,9 +2882,6 @@ watch(
     }
 
     const activeRecord = getActiveMemorySession()
-    const estimateSource = resolveContextEstimateSource(activeRecord, rawMessages)
-    const previewMessages = estimateSource.messages
-
     const providerKind = isUtoolsBuiltinProvider(selectedProvider.value) ? 'utools-ai' : 'openai-compatible'
     const previewConfig = contextWindowPreviewConfig.value
     const toolEstimateFresh =
@@ -2943,19 +2889,23 @@ watch(
     const toolSchemaChars = toolEstimateFresh ? Number(lastBuiltRequestToolsStats.chars || 0) : 0
     const reservedChars = String(systemContent.value || '').length + toolSchemaChars
     const tokenTelemetry = getContextTokenTelemetry()
-    const budgetPlan = resolveChatContextWindowBudgetPlan(previewConfig, {
+    // 统一口径：预览与实际发送一致（summary prelude + 裁剪后 tail）。
+    const estimate = buildChatContextRequestEstimate({
+      apiMessages: rawMessages,
+      contextSummary: activeRecord?.contextSummary,
       reservedChars,
-      sourceChars: estimateMessagesSize(previewMessages),
+      config: previewConfig,
+      providerKind,
+      modelContextTokens: resolveModelContextWindowTokens(selectedProvider.value, selectedModel.value),
       reportedInputTokens: tokenTelemetry.inputTokens,
-      reportedRequestChars: tokenTelemetry.requestChars,
-      modelContextTokens: resolveModelContextWindowTokens(selectedProvider.value, selectedModel.value)
+      reportedRequestChars: tokenTelemetry.requestChars
     })
 
     contextWindowPreviewState.value = inspectChatContextWindow(
-      previewMessages,
+      estimate.effectiveMessages,
       buildChatContextWindowRuntimeOptions(previewConfig, {
         providerKind,
-        maxChars: budgetPlan.historyCharsBudget
+        maxChars: estimate.budgetPlan.historyCharsBudget
       })
     )
   },

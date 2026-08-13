@@ -18,14 +18,10 @@ test('normalizeChatContextWindowConfig fills missing custom limits from the acti
   assert.deepEqual(normalizeChatContextWindowConfig({ preset: 'custom' }), {
     preset: 'custom',
     historyFocus: 'balanced',
-    maxTurns: 48,
-    keepRecentTurnsFull: 16,
-    maxMessages: 320,
-    maxTokensExpanded: 100000,
-    maxTokensCompact: 80000,
-    maxCharsExpanded: 400000,
-    maxCharsCompact: 320000,
-    autoCompactTriggerPercent: 80
+    maxTurns: 1000,
+    keepRecentTurnsFull: 256,
+    maxMessages: 8000,
+    maxTokens: 262144
   })
 })
 
@@ -48,8 +44,8 @@ test('buildChatContextWindowRuntimeOptions preserves attachment recovery policy 
 
   assert.equal(options.maxChars, 12345)
   assert.equal(options.maxMessages, 64)
-  assert.equal(options.maxTurns, 14)
-  assert.equal(options.keepRecentTurnsFull, 9)
+  assert.equal(options.maxTurns, 12)
+  assert.equal(options.keepRecentTurnsFull, 8)
   assert.ok(options.maxPinnedAttachmentTurns >= 4)
   assert.equal(options.allowSelectedAttachmentShrink, true)
   assert.equal(options.allowAttachmentTurnDisplacement, true)
@@ -91,7 +87,7 @@ test('buildChatContextWindowRuntimeOptions can release tool turns for compact bu
   assert.equal(options.preserveToolResultTurns, false)
 })
 
-test('resolveChatContextWindowBudgetPlan switches to compact budget when estimated usage crosses the trigger', () => {
+test('resolveChatContextWindowBudgetPlan keeps a single expanded budget (Codex style)', () => {
   const plan = resolveChatContextWindowBudgetPlan(
     {
       preset: 'balanced',
@@ -103,12 +99,12 @@ test('resolveChatContextWindowBudgetPlan switches to compact budget when estimat
     }
   )
 
-  assert.equal(plan.expandedChars, 400000)
-  assert.equal(plan.compactChars, 320000)
-  assert.equal(plan.autoCompactTriggerPercent, 80)
-  assert.equal(plan.mode, 'compact')
-  assert.equal(plan.reason, 'auto_threshold')
-  assert.equal(plan.autoCompactActive, true)
+  assert.equal(plan.expandedChars, Number.MAX_SAFE_INTEGER)
+  assert.equal(plan.mode, 'expanded')
+  assert.equal(plan.autoCompactActive, false)
+  assert.equal(plan.autoCompactTriggerPercent, 95)
+  assert.equal(plan.baseChars, 262144)
+  assert.equal(plan.budgetUnit, 'char')
 })
 
 test('resolveChatContextWindowBudgetPlan keeps expanded budget below the trigger', () => {
@@ -125,7 +121,7 @@ test('resolveChatContextWindowBudgetPlan keeps expanded budget below the trigger
 
   assert.equal(plan.mode, 'expanded')
   assert.equal(plan.autoCompactActive, false)
-  assert.equal(plan.baseChars, 128000)
+  assert.equal(plan.baseChars, 131072)
 })
 
 test('resolveChatContextWindowBudgetPlan prefers reported input token calibration', () => {
@@ -150,10 +146,10 @@ test('resolveChatContextWindowBudgetPlan prefers reported input token calibratio
   assert.equal(plan.telemetryAvailable, true)
   assert.equal(plan.tokensPerChar, 0.5)
   assert.equal(plan.totalEstimatedTokens, 100000)
-  assert.equal(plan.mode, 'compact')
-  assert.equal(plan.baseTokens, 80000)
-  assert.equal(plan.historyTokensBudget, 70000)
-  assert.equal(plan.historyCharsBudget, 140000)
+  assert.equal(plan.mode, 'expanded')
+  assert.equal(plan.baseTokens, 100000)
+  assert.equal(plan.historyTokensBudget, 90000)
+  assert.equal(plan.historyCharsBudget, 180000)
 })
 
 test('resolveChatContextWindowBudgetPlan keeps character fallback when usage is unavailable', () => {
@@ -168,7 +164,7 @@ test('resolveChatContextWindowBudgetPlan keeps character fallback when usage is 
   assert.equal(plan.budgetUnit, 'char')
   assert.equal(plan.telemetryAvailable, false)
   assert.equal(plan.totalEstimatedTokens, 0)
-  assert.equal(plan.historyCharsBudget, 250000)
+  assert.equal(plan.historyCharsBudget, 262144)
 })
 
 test('calculateContextSummaryTriggerChars uses history budget directly without re-subtracting reserved chars', () => {
@@ -176,7 +172,7 @@ test('calculateContextSummaryTriggerChars uses history budget directly without r
     calculateContextSummaryTriggerChars({
       historyCharsBudget: 100000
     }),
-    72000
+    92000
   )
 
   assert.equal(
@@ -207,8 +203,8 @@ test('shouldSummarizeContextWindow triggers on short but char-heavy chats', () =
   )
 })
 
-test('hasChatContextWindowReduction detects compacted history even when message count stays stable', () => {
-  const longAttachmentText = 'continue with attachment\n\n【附件内容】\n附件：manual.pdf\n' + 'A'.repeat(5000)
+test('hasChatContextWindowReduction detects dropped turns as reduction', () => {
+  const longAttachmentText = 'continue with attachment\n\n銆愰檮浠跺唴瀹广€慭n闄勪欢锛歮anual.pdf\n' + 'A'.repeat(5000)
   const inspection = inspectChatContextWindow(
     [
       { role: 'user', content: longAttachmentText },
@@ -225,8 +221,9 @@ test('hasChatContextWindowReduction detects compacted history even when message 
     }
   )
 
-  assert.equal(inspection.messages.length, 4)
-  assert.ok(inspection.inspection.entries.some((entry) => entry.mode === 'compact'))
+  assert.equal(inspection.messages.length, 2)
+  assert.ok(inspection.inspection.entries.every((entry) => entry.mode === 'full'))
+  assert.ok(inspection.inspection.omittedEntries.some((entry) => entry.kind === 'turn'))
   assert.equal(hasChatContextWindowReduction(inspection), true)
 })
 

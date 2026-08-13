@@ -1431,9 +1431,13 @@
 }
 
 .chat-system-guidance--expanded {
-  padding: 4px 8px;
-  border-left: 2px solid rgba(24, 160, 88, 0.22);
-  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 100%;
+  padding: 2px 0 2px 10px;
+  border-left: 2px solid rgba(24, 160, 88, 0.35);
 }
 
 .chat-system-guidance__toggle {

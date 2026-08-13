@@ -37,7 +37,7 @@ test('inspectChatContextWindow exposes ordered entries for preview rendering', (
   assert.deepEqual(result.messages, direct)
   assert.ok(result.inspection.entries.length >= 1)
   assert.equal(result.inspection.entries.at(-1).mustKeep, true)
-  assert.ok(result.inspection.entries.some((entry) => entry.mode === 'full' || entry.mode === 'compact'))
+  assert.ok(result.inspection.entries.some((entry) => entry.mode === 'full'))
 })
 
 test('inspectChatContextWindow exposes omitted entries and reasons for preview diagnostics', () => {
@@ -64,27 +64,35 @@ test('inspectChatContextWindow exposes omitted entries and reasons for preview d
     toolPolicy: 'full'
   })
 
-  assert.deepEqual(result.messages.map((item) => item.content), ['plain turn 1', 'plain answer 1', 'latest user', 'latest answer'])
+  // prelude keeps at most maxPreludeMessages; the latest turn is always kept;
+  // older turns beyond maxMessages/maxTurns are dropped (Codex style).
+  assert.deepEqual(
+    result.messages.map((item) => item.content),
+    ['system prelude a', 'latest user', 'latest answer']
+  )
   assert.ok(Array.isArray(result.inspection.omittedEntries))
 
-  const omittedPrelude = result.inspection.omittedEntries.find((entry) => entry.kind === 'prelude')
-  assert.ok(omittedPrelude)
-  assert.ok(omittedPrelude.reasons.includes('prelude_budget_exhausted'))
-
-  const omittedAttachmentTurn = result.inspection.omittedEntries.find((entry) => entry.kind === 'turn' && entry.index === 0)
-  assert.ok(omittedAttachmentTurn)
-  assert.ok(omittedAttachmentTurn.reasons.includes('attachment_policy_disabled'))
+  const omittedSpecATurn = result.inspection.omittedEntries.find((entry) => entry.kind === 'turn' && entry.index === 0)
+  assert.ok(omittedSpecATurn)
   assert.ok(
-    omittedAttachmentTurn.reasons.includes('turn_limit') ||
-      omittedAttachmentTurn.reasons.includes('message_limit') ||
-      omittedAttachmentTurn.reasons.includes('char_limit')
+    omittedSpecATurn.reasons.includes('turn_limit') ||
+      omittedSpecATurn.reasons.includes('message_limit') ||
+      omittedSpecATurn.reasons.includes('char_limit')
+  )
+
+  const omittedPlainTurn = result.inspection.omittedEntries.find((entry) => entry.kind === 'turn' && entry.index === 1)
+  assert.ok(omittedPlainTurn)
+  assert.ok(
+    omittedPlainTurn.reasons.includes('message_limit') ||
+      omittedPlainTurn.reasons.includes('turn_limit') ||
+      omittedPlainTurn.reasons.includes('char_limit')
   )
 })
 
 test('inspectChatContextWindow groups synthetic tool-vision messages into the tool turn and discounts base64 payloads', () => {
   const largeDataUrl = `data:image/png;base64,${'a'.repeat(200000)}`
   const result = inspectChatContextWindow([
-    { role: 'user', content: '查看笔记里的图' },
+    { role: 'user', content: 'view note image' },
     {
       role: 'assistant',
       content: '',
@@ -101,11 +109,11 @@ test('inspectChatContextWindow groups synthetic tool-vision messages into the to
       role: 'user',
       synthetic_tool_vision: true,
       content: [
-        { type: 'text', text: '系统补充：以下图片来自刚才的工具结果。' },
+        { type: 'text', text: 'system note: image from tool result' },
         { type: 'image_url', image_url: { url: largeDataUrl } }
       ]
     },
-    { role: 'assistant', content: '图片里是一张示例图。' }
+    { role: 'assistant', content: 'the image is a sample picture' }
   ], {
     maxChars: 2000,
     maxMessages: 20,

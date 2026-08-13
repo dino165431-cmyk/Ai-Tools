@@ -100,13 +100,18 @@ export function buildSessionTitleGenerationPrompt({ text = '', attachments = [] 
   const cleanText = String(text || '').trim()
   const attachmentSummary = summarizeAttachmentNamesForSessionTitle(attachments)
   return [
-    '请根据这条用户消息生成一个简短的会话标题。',
+    '请根据下面的用户消息生成一个会话标题。',
     '要求：',
-    '1. 只输出标题本身，不要解释，不要引号，不要序号。',
-    '2. 优先使用中文，控制在 4 到 18 个字以内。',
-    '3. 避免使用“请帮我”“帮我”“如何”“能不能”等口语开头。',
+    '1. 只输出一行标题文字，不要输出解释、前后缀、序号、引号或 Markdown 标记。',
+    '2. 标题必须是概括主题的名词性短语，不要使用问句，不要以“如何”“怎么”“请帮我”“帮我”等口语开头。',
+    '3. 优先使用中文，控制在 4 到 18 个字以内。',
     '4. 不要包含路径、扩展名、时间戳或多余符号。',
-    cleanText ? `用户消息：${cleanText}` : '用户消息：用户发送了附件，请结合附件信息概括主题。',
+    '示例：',
+    '用户消息：帮我分析一下这个月的广告投放数据',
+    '标题：本月广告投放数据分析',
+    '用户消息：写一个 Vue 组件用来展示图片列表',
+    '标题：Vue 图片列表组件',
+    cleanText ? `用户消息：${cleanText}` : '用户消息：用户发送了附件，请根据附件名称概括主题。',
     attachmentSummary ? `附件信息：${attachmentSummary}` : ''
   ].filter(Boolean).join('\n')
 }

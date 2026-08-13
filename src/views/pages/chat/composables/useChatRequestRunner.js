@@ -1,4 +1,6 @@
 import { useChatMediaGeneration } from './useChatMediaGeneration.js'
+import { buildContextSummaryPrelude } from '../../../../utils/chatContextSummary.js'
+import { buildChatContextRequestEstimate } from '../../../../utils/chatContextWindow.js'
 
 export function useChatRequestRunner(dependencies) {
   const {
@@ -1106,49 +1108,23 @@ export function useChatRequestRunner(dependencies) {
     const sourceMessages = Array.isArray(targetSession.apiMessages) ? targetSession.apiMessages : []
     if (sourceMessages.length < 4) return false
     const reservedChars = calculateReservedRequestChars({ systemContent: systemContent.value, tools })
-    const sourceChars = estimateMessagesSize(sourceMessages)
     const tokenTelemetry = getContextTokenTelemetry(targetSession)
-    const budgetPlan = resolveChatContextWindowBudgetPlan(effectiveContextWindowConfig.value, {
+    // Codex-style 统一口径：以「summary prelude + 经窗口裁剪后的 tail」估算实际请求，
+    // 与 UI 统计、压缩后 telemetry 回写共用同一个估算函数，避免触发阈值和展示互相打架。
+    const estimate = buildChatContextRequestEstimate({
+      apiMessages: sourceMessages,
+      contextSummary: targetSession.contextSummary,
       reservedChars,
-      sourceChars,
+      config: effectiveContextWindowConfig.value,
+      providerKind: "openai-compatible",
+      modelContextTokens: resolveModelContextWindowTokens(selectedProvider.value, selectedModel.value),
       reportedInputTokens: tokenTelemetry.inputTokens,
-      reportedRequestChars: tokenTelemetry.requestChars,
-      modelContextTokens: resolveModelContextWindowTokens(selectedProvider.value, selectedModel.value)
+      reportedRequestChars: tokenTelemetry.requestChars
     })
-    const cachedSummary = targetSession.contextSummary && typeof targetSession.contextSummary === "object"
-      ? targetSession.contextSummary
-      : null
-    const cachedSummaryText = String(cachedSummary?.summaryText || "").trim()
-    const cachedCoveredCount = Math.max(0, Math.floor(Number(cachedSummary?.coveredMessageCount || 0)))
-    const hasUsableSummary =
-      !!cachedSummaryText &&
-      cachedCoveredCount > 0 &&
-      cachedCoveredCount < sourceMessages.length
-
-    let compactionBudgetPlan = budgetPlan
-    let compactionReservedChars = reservedChars
-    if (hasUsableSummary) {
-      // Once a summary exists, decide from the unsummarized tail. The raw
-      // history remains large by design, so using it here would re-enter the
-      // compaction path on every tool round even when the actual request fits.
-      compactionReservedChars += cachedSummaryText.length
-      const tailMessages = sourceMessages.slice(cachedCoveredCount)
-      if (!tailMessages.length) return false
-      const tailBudgetState = resolveHistoryContextBudgetState({
-        tools,
-        reservedCharsOverride: compactionReservedChars,
-        apiMessages: tailMessages,
-        sessionRecord: targetSession
-      })
-      compactionBudgetPlan = tailBudgetState.budgetPlan
-    }
-
-    if (!compactionBudgetPlan.telemetryAvailable) return false
-  const pressureTokens = compactionBudgetPlan.totalEstimatedTokens
-  const triggerTokens = compactionBudgetPlan.triggerTokens || Math.floor(compactionBudgetPlan.expandedTokens * compactionBudgetPlan.triggerRatio)
-  if (!triggerTokens || pressureTokens < triggerTokens) return false
+    if (!estimate.budgetPlan.telemetryAvailable) return false
+    if (!estimate.triggered) return false
     const summaryTriggerChars = calculateContextSummaryTriggerChars({
-      historyCharsBudget: compactionBudgetPlan.historyCharsBudget
+      historyCharsBudget: estimate.budgetPlan.historyCharsBudget
     })
     const summaryResult = await ensureContextWindowSummary({
       cfg: {
@@ -1162,7 +1138,7 @@ export function useChatRequestRunner(dependencies) {
       },
       requestRecord: targetSession,
       tools,
-      reservedCharsOverride: compactionReservedChars,
+      reservedCharsOverride: reservedChars,
       targetSourceChars: summaryTriggerChars,
       force: false,
       returnMeta: true
@@ -1170,7 +1146,52 @@ export function useChatRequestRunner(dependencies) {
       console.warn("[chat context summary] inline compact failed:", err)
       return { summaryText: "", generated: false }
     })
-    return summaryResult?.generated === true && !!String(summaryResult.summaryText || "").trim()
+    const inlineCompacted = summaryResult?.generated === true && !!String(summaryResult.summaryText || "").trim()
+    if (inlineCompacted) {
+      // Codex-style: 压缩后立即用同一估算口径回写 telemetry，
+      // 让下一次流式压力判断与 UI 统计立即使用新口径，而不是等模型返回 usage。
+      refreshContextTokenTelemetryAfterCompaction(targetSession, {
+        reservedChars,
+        budgetPlan: estimate.budgetPlan,
+        providerId: String(requestCfg.providerId || "").trim(),
+        model: String(requestCfg.model || "").trim(),
+        endpoint: String(requestCfg.apiMode || "").trim()
+      })
+    }
+    return inlineCompacted
+  }
+
+  function refreshContextTokenTelemetryAfterCompaction(targetSession, options = {}) {
+    if (!targetSession || typeof targetSession !== "object") return
+    const prevTelemetry = getContextTokenTelemetry(targetSession)
+    if (!prevTelemetry || !prevTelemetry.inputTokens || !prevTelemetry.requestChars) return
+
+    const sourceMessages = Array.isArray(targetSession.apiMessages) ? targetSession.apiMessages : []
+    const estimate = buildChatContextRequestEstimate({
+      apiMessages: sourceMessages,
+      contextSummary: targetSession.contextSummary,
+      reservedChars: Math.max(0, Math.floor(Number(options?.reservedChars) || 0)),
+      config: effectiveContextWindowConfig.value,
+      providerKind: "openai-compatible",
+      modelContextTokens: options?.budgetPlan?.modelContextTokens
+        || resolveModelContextWindowTokens(selectedProvider.value, selectedModel.value),
+      reportedInputTokens: prevTelemetry.inputTokens,
+      reportedRequestChars: prevTelemetry.requestChars
+    })
+    if (!estimate.hasSummary || estimate.requestChars < 1) return
+
+    const tokensPerChar = prevTelemetry.inputTokens / prevTelemetry.requestChars
+    const estimatedInputTokens = Math.max(1, Math.ceil(estimate.requestChars * tokensPerChar))
+
+    updateContextTokenTelemetry(targetSession, {
+      prompt_tokens: estimatedInputTokens,
+      prompt_tokens_details: { cached_tokens: 0 }
+    }, {
+      requestChars: estimate.requestChars,
+      providerId: String(options?.providerId || ""),
+      model: String(options?.model || ""),
+      endpoint: String(options?.endpoint || "")
+    })
   }
 
   function pushCompactResumeStep(targetSession, abortState) {
@@ -1226,15 +1247,15 @@ export function useChatRequestRunner(dependencies) {
     for (let round = 0; ; round += 1) {
       throwIfAborted(abortState)
       await refreshToolsBundleIfNeeded()
+      const inlineCompacted = await maybeCompactContextInline(targetSession, tools, abortState, {
+        providerId,
+        baseUrl,
+        apiKey,
+        apiMode,
+        model
+      })
+      if (inlineCompacted) pushCompactResumeStep(targetSession, abortState)
       if (round > 0) {
-        const inlineCompacted = await maybeCompactContextInline(targetSession, tools, abortState, {
-          providerId,
-          baseUrl,
-          apiKey,
-          apiMode,
-          model
-        })
-        if (inlineCompacted) pushCompactResumeStep(targetSession, abortState)
         await injectPendingGuidanceMessages(abortState, { preferVision: supportsVision })
       }
       const assistantDisplay = createDisplayMessage('assistant', '', {
@@ -1255,13 +1276,42 @@ export function useChatRequestRunner(dependencies) {
       }
   
       let lastReasoningText = ''
-  
+      let currentAttemptRequestChars = 0
+      let streamOutputChars = 0
+      let lastStreamPressureCheckAt = 0
+      let streamBudgetPlan = null
+
+      const maybeAbortStreamForContextPressure = () => {
+        if (abortState?.compactNeeded || abortState?.aborted) return
+        if (streamOutputChars - lastStreamPressureCheckAt < 400) return
+        lastStreamPressureCheckAt = streamOutputChars
+        if (!streamBudgetPlan) {
+          const tokenTelemetry = getContextTokenTelemetry(targetSession)
+          streamBudgetPlan = resolveChatContextWindowBudgetPlan(effectiveContextWindowConfig.value, {
+            reservedChars: calculateReservedRequestChars({ systemContent: systemContent.value, tools }),
+            sourceChars: 0,
+            reportedInputTokens: tokenTelemetry.inputTokens,
+            reportedRequestChars: tokenTelemetry.requestChars,
+            modelContextTokens: resolveModelContextWindowTokens(selectedProvider.value, selectedModel.value)
+          })
+        }
+        const plan = streamBudgetPlan
+        if (!plan || !plan.telemetryAvailable || !plan.triggerTokens) return
+        const estimatedPressureTokens = Math.ceil((currentAttemptRequestChars + streamOutputChars) * plan.tokensPerChar)
+        if (estimatedPressureTokens >= plan.triggerTokens) {
+          abortState.compactNeeded = true
+          abortState.aborted = true
+        }
+      }
+
       const onDelta = (evt) => {
         if (abortState?.aborted || signal?.aborted) return
         if (evt?.type === 'content' && evt.delta) {
           prepareAssistantDisplayForTextResponse(assistantDisplay)
           ensureAssistantDisplayMounted()
           typewriterEnqueue(assistantDisplay, String(evt.delta))
+          streamOutputChars += String(evt.delta).length
+          maybeAbortStreamForContextPressure()
         }
   
         if (evt?.type === 'reasoning' && evt.delta) {
@@ -1312,6 +1362,7 @@ export function useChatRequestRunner(dependencies) {
           const attemptRequestChars =
             estimateMessagesSize(attemptBody.messages) +
             estimateToolDefinitionsChars(attemptBody.tools)
+          currentAttemptRequestChars = attemptRequestChars
 
         try {
           result = await streamChatCompletion({
@@ -1328,7 +1379,10 @@ export function useChatRequestRunner(dependencies) {
           break
         } catch (err) {
           const errText = String(err?.message || err || '')
-          if (isAbortError(err) || abortState?.aborted || signal?.aborted) throw createAbortError()
+          if (isAbortError(err) || abortState?.aborted || signal?.aborted) {
+            if (abortState?.compactNeeded) break
+            throw createAbortError()
+          }
   
           if (!compatFcToolCallId && errText.includes("Expected an ID that begins with 'fc'") && errText.includes('input[') && errText.includes('.id')) {
             compatFcToolCallId = true
@@ -1373,6 +1427,35 @@ export function useChatRequestRunner(dependencies) {
         }
       }
   
+      if (abortState?.compactNeeded) {
+        abortState.compactNeeded = false
+        abortState.aborted = false
+        await Promise.all([
+          typewriterWaitIdle(assistantDisplay.id),
+          deferredMessageFieldWaitIdle(assistantDisplay.id, 'thinking')
+        ])
+        assistantDisplay.streaming = false
+        assistantDisplay.render = 'md'
+        typewriterStates.delete(assistantDisplay.id)
+        targetSession.apiMessages.push({
+          role: 'assistant',
+          content: String(assistantDisplay.content || ''),
+          reasoning_content: String(lastReasoningText || '')
+        })
+        assistantDisplay.apiIndex = targetSession.apiMessages.length - 1
+        setCurrentAssistantDisplay(null)
+        const inlineCompacted = await maybeCompactContextInline(targetSession, tools, abortState, {
+          providerId,
+          baseUrl,
+          apiKey,
+          apiMode,
+          model
+        })
+        if (inlineCompacted) pushCompactResumeStep(targetSession, abortState)
+        await maybeScrollToBottomForRun(abortState)
+        continue
+      }
+
       if (!result) {
         throw new Error('请求失败：已达到重试次数上限')
       }
@@ -3163,6 +3246,7 @@ export function useChatRequestRunner(dependencies) {
     const prompt = [
       '请把下面这段较早的多轮对话压缩成后续继续聊天可用的历史摘要。',
       '保留：用户身份、长期偏好、约束、项目背景、关键已决策事项、未完成事项、重要事实。',
+      '如果用户最近下达了明确的执行指令或当前正在推进的目标，必须原样保留其要点，并放在摘要最前面，作为「当前任务」。',
       '删除：寒暄、重复表述、低信息量回复、工具噪声。',
       '输出要求：使用简洁中文，分点总结，控制在 800 字以内，不要编造。'
     ]
@@ -3254,15 +3338,35 @@ export function useChatRequestRunner(dependencies) {
       apiMessages: list,
       sessionRecord
     })
-    const summaryBudget = Math.max(8000, Math.floor(budgetState.historyBudget * 0.7))
-    let coveredCount = 0
-    let coveredChars = 0
-    for (let i = 0; i < list.length - 1; i += 1) {
-      const nextChars = estimateMessageSize(list[i])
-      if (coveredCount > 0 && coveredChars + nextChars > summaryBudget) break
-      coveredCount += 1
-      coveredChars += nextChars
+    // Codex-style: 从最新往回保留最近消息，直到塞满 tail 预算；
+    // 更老的部分（含超长工具轮）全部交给摘要，覆盖随历史增长自动前移，
+    // 不再使用固定比例上限，避免“最近几轮很大时覆盖不前移、反复触发压缩”。
+    const tailBudget = Math.max(4000, Math.floor(budgetState.historyBudget * 0.35))
+    // 保底：最新一条 user 消息及其之后的全部消息必须留在 tail，
+    // 避免压缩把用户当前指令覆盖掉，导致模型「不知道要干什么」。
+    let lastUserIndex = -1
+    for (let i = list.length - 1; i >= 0; i -= 1) {
+      if (list[i]?.role === 'user') {
+        lastUserIndex = i
+        break
+      }
     }
+    const minKeep = lastUserIndex >= 0 ? list.length - lastUserIndex : 1
+    let keepCount = 0
+    let keepChars = 0
+    for (let i = list.length - 1; i >= 0; i -= 1) {
+      const nextChars = estimateMessageSize(list[i])
+      if (keepCount >= minKeep && keepChars + nextChars > tailBudget) break
+      keepCount += 1
+      keepChars += nextChars
+    }
+    if (keepCount < minKeep) {
+      // 即使超预算也保证最新 user 指令及其后的回复完整留在 tail。
+      keepCount = minKeep
+      keepChars = list.slice(lastUserIndex >= 0 ? lastUserIndex : 0)
+        .reduce((total, msg) => total + estimateMessageSize(msg), 0)
+    }
+    const coveredCount = Math.max(0, list.length - keepCount)
     if (coveredCount < 1) return { coveredCount: 0, sourceSlice: [], sourceHash: '' }
 
     const sourceSlice = list.slice(0, coveredCount)

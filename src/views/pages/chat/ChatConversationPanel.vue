@@ -112,17 +112,9 @@
                     </template>
 
                     <template v-else-if="msg.compactGuidance">
-                      <div v-if="msg.compactGuidance && !msg.guidanceExpanded" class="chat-system-guidance chat-system-guidance--collapsed">
-                        <button type="button" class="chat-system-guidance__toggle" @click="actions.toggleGuidanceExpanded(msg)">
-                          <n-icon :component="InformationCircleOutline" size="13" />
-                          <span class="chat-system-guidance__label">系统引导</span>
-                          <span class="chat-system-guidance__summary">历史已压缩，继续处理</span>
-                          <n-icon :component="ChevronDownOutline" size="13" />
-                        </button>
-                      </div>
-                      <div v-if="msg.compactGuidance && msg.guidanceExpanded" class="chat-system-guidance chat-system-guidance--expanded" title="点击收起详情" @click="actions.toggleGuidanceExpanded(msg)">
+                      <div class="chat-system-guidance chat-system-guidance--expanded">
                         <span style="font-weight:600;flex:0 0 auto;">历史已压缩</span>
-                        <span style="opacity:0.85;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ msg.content }}</span>
+                        <span style="opacity:0.85;">{{ msg.content }}</span>
                       </div>
                     </template>
 

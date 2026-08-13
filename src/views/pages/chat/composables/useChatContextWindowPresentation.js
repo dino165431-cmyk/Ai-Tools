@@ -1,9 +1,8 @@
 import { computed } from 'vue'
 import {
+  buildChatContextRequestEstimate,
   CHAT_CONTEXT_WINDOW_HISTORY_FOCUS_PRESETS,
-  CHAT_CONTEXT_WINDOW_PRESETS,
-  estimateMessagesSize,
-  resolveChatContextWindowBudgetPlan
+  CHAT_CONTEXT_WINDOW_PRESETS
 } from '@/utils/chatContextWindow'
 import { isUtoolsBuiltinProvider } from '@/utils/utoolsAiProvider'
 import { resolveModelContextWindowTokens } from '@/utils/providerModelConfig'
@@ -71,7 +70,7 @@ export function buildContextWindowBudgetItem({ key, label, used, max, formatter 
   const ratio = safeMax > 0 ? safeUsed / safeMax : 0
   const percent = Math.max(0, Math.min(100, Math.round(ratio * 100)))
   let tone = 'safe'
-  if (ratio >= 0.95) tone = 'critical'
+  if (ratio >= 0.85) tone = 'critical'
   else if (ratio >= 0.8) tone = 'warning'
 
   return {
@@ -291,20 +290,22 @@ export function useChatContextWindowPresentation({
     const toolSchemaChars = toolEstimateFresh ? Number(lastBuiltRequestToolsStats.chars || 0) : 0
     const toolCount = toolEstimateFresh ? Number(lastBuiltRequestToolsStats.count || 0) : 0
     const systemChars = String(systemContent.value || '').length
-    const reservedChars = systemChars + toolSchemaChars
     const rawMessages = Array.isArray(session.apiMessages) ? session.apiMessages : []
     const tokenTelemetry = getContextTokenTelemetry()
-    const budgetPlan = resolveChatContextWindowBudgetPlan(previewConfig, {
-      reservedChars,
-      sourceChars: estimateMessagesSize(rawMessages),
+    // 统一口径：与 runner 压缩触发、实际请求一致（summary prelude + 裁剪后 tail）。
+    const activeRecord = getMemorySessionById(activeMemorySessionId.value)
+    const estimate = buildChatContextRequestEstimate({
+      apiMessages: rawMessages,
+      contextSummary: activeRecord?.contextSummary,
+      reservedChars: systemChars + toolSchemaChars,
+      config: previewConfig,
+      providerKind,
+      modelContextTokens: resolveModelContextWindowTokens(selectedProvider.value, selectedModel.value),
       reportedInputTokens: tokenTelemetry.inputTokens,
-      reportedRequestChars: tokenTelemetry.requestChars,
-      modelContextTokens: resolveModelContextWindowTokens(selectedProvider.value, selectedModel.value)
+      reportedRequestChars: tokenTelemetry.requestChars
     })
+    const budgetPlan = estimate.budgetPlan
     const historyCharsUsed = entries.reduce((total, entry) => total + Number(entry?.chars || 0), 0)
-    const requestEstimatedTokens = budgetPlan.telemetryAvailable
-      ? Math.max(0, Math.ceil((historyCharsUsed + reservedChars) * budgetPlan.tokensPerChar))
-      : 0
 
     return {
       turnBudget: providerKind === 'utools-ai' ? Math.min(32, previewConfig.maxTurns + 2) : previewConfig.maxTurns,
@@ -315,10 +316,10 @@ export function useChatContextWindowPresentation({
       historyCharsUsed,
       baseChars: budgetPlan.baseChars,
       baseTokens: budgetPlan.baseTokens,
-      requestEstimatedTokens,
+      requestEstimatedTokens: estimate.estimatedTokens,
       telemetryAvailable: budgetPlan.telemetryAvailable,
       reservedTokens: budgetPlan.telemetryAvailable ? Math.max(0, Math.floor(Number(budgetPlan.reservedTokens) || 0)) : 0,
-      reservedChars,
+      reservedChars: systemChars + toolSchemaChars + estimate.summaryReservedChars,
       systemChars,
       toolSchemaChars,
       toolCount,
@@ -441,7 +442,7 @@ export function useChatContextWindowPresentation({
 
   const contextWindowSummaryLevel = computed(() => {
     const pressure = Number(contextWindowBudgetPlan.value?.effectivePressure || 0)
-    if (pressure >= 0.95) return 'critical'
+    if (pressure >= 0.85) return 'critical'
     if (pressure >= 0.8) return 'warning'
     if (pressure >= 0.6) return 'info'
     return 'safe'

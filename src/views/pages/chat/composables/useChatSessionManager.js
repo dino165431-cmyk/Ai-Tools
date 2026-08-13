@@ -180,7 +180,7 @@ export function useChatSessionManager(dependencies) {
     const userPrompt = String(prompt || '').trim()
     if (!userPrompt) return ''
 
-    const systemPrompt = '你是会话标题生成器，只输出一个忠实、简短的标题。'
+    const systemPrompt = '你是会话标题生成器。严格只输出一个 4 到 18 个字的中文标题，不输出任何解释、前缀、引号或格式标记。'
 
     if (providerKind === 'utools-ai') {
       if (!canUseUtoolsAi()) return ''
@@ -201,10 +201,11 @@ export function useChatSessionManager(dependencies) {
     }
 
     if (!baseUrl || !apiKey || !model) return ''
-    const body = {
+    const baseBody = {
       model,
       stream: true,
       max_tokens: 64,
+      temperature: 0,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }
@@ -214,25 +215,31 @@ export function useChatSessionManager(dependencies) {
       ? ['auto', 'responses']
       : [apiMode]
     let lastError = null
-    for (const requestMode of modes) {
-      try {
-        apiMode = requestMode
-        const result = await streamChatCompletion({
-          baseUrl,
-          apiKey,
-          apiMode,
-          body: body
-        })
-        recordModelUsage(result?.usage, {
-          providerId,
-          model,
-          endpoint: result?.endpoint || requestMode || 'auto',
-          purpose: 'session-title'
-        })
-        const title = extractFinalSessionTitleContent(result)
-        if (title) return title
-      } catch (err) {
-        lastError = err
+    // 第一轮显式关闭思考模式（reasoning_effort: none），让标题输出更快更稳定；
+    // 若接口或模型不支持该字段，第二轮去掉该字段重试，避免标题生成直接失败。
+    for (const reasoningEffort of ['none', '']) {
+      for (const requestMode of modes) {
+        try {
+          apiMode = requestMode
+          const body = { ...baseBody }
+          if (reasoningEffort) body.reasoning_effort = reasoningEffort
+          const result = await streamChatCompletion({
+            baseUrl,
+            apiKey,
+            apiMode,
+            body
+          })
+          recordModelUsage(result?.usage, {
+            providerId,
+            model,
+            endpoint: result?.endpoint || requestMode || 'auto',
+            purpose: 'session-title'
+          })
+          const title = extractFinalSessionTitleContent(result)
+          if (title) return title
+        } catch (err) {
+          lastError = err
+        }
       }
     }
     if (lastError) throw lastError
