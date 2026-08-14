@@ -154,7 +154,6 @@ test('buildChatContextWindow drops tool-heavy turns instead of compacting them w
     maxTurns: 2,
     keepRecentTurnsFull: 1,
     toolPolicy: 'full',
-    preserveToolResultTurns: false
   })
 
   assert.deepEqual(result.map((item) => item.content), ['latest user', 'latest answer'])
@@ -441,20 +440,14 @@ test('resolveChatContextWindowOptions maps history focus to attachment preservat
   const recent = resolveChatContextWindowOptions({ preset: 'balanced', historyFocus: 'recent' })
   assert.equal(recent.historyFocus, 'recent')
   assert.equal(recent.maxPinnedAttachmentTurns, 0)
-  assert.equal(recent.allowSelectedAttachmentShrink, false)
-  assert.equal(recent.allowAttachmentTurnDisplacement, false)
 
   const balanced = resolveChatContextWindowOptions({ preset: 'balanced', historyFocus: 'balanced' })
   assert.equal(balanced.historyFocus, 'balanced')
   assert.ok(balanced.maxPinnedAttachmentTurns >= 1)
-  assert.equal(balanced.allowSelectedAttachmentShrink, true)
-  assert.equal(balanced.allowAttachmentTurnDisplacement, false)
 
   const attachments = resolveChatContextWindowOptions({ preset: 'balanced', historyFocus: 'attachments' })
   assert.equal(attachments.historyFocus, 'attachments')
   assert.ok(attachments.maxPinnedAttachmentTurns >= 4)
-  assert.equal(attachments.allowSelectedAttachmentShrink, true)
-  assert.equal(attachments.allowAttachmentTurnDisplacement, true)
 })
 
 test('shouldSummarizeContextWindow requires message count and char threshold', () => {

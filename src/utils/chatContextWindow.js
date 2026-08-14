@@ -85,10 +85,7 @@ export const DEFAULT_CHAT_CONTEXT_WINDOW_OPTIONS = Object.freeze({
   maxPreludeMessages: 2,
   maxPinnedAttachmentTurns: 4,
   toolPolicy: 'full',
-  preserveToolResultTurns: true,
-  attachmentSummaryEnabled: true,
-  allowSelectedAttachmentShrink: true,
-  allowAttachmentTurnDisplacement: false
+  attachmentSummaryEnabled: true
 })
 
 const ATTACHMENT_TEXT_MARKERS = Object.freeze([
@@ -154,26 +151,20 @@ function resolveHistoryFocusOptions(config) {
   if (historyFocus === 'recent') {
     return {
       historyFocus,
-      maxPinnedAttachmentTurns: 0,
-      allowSelectedAttachmentShrink: false,
-      allowAttachmentTurnDisplacement: false
+      maxPinnedAttachmentTurns: 0
     }
   }
 
   if (historyFocus === 'attachments') {
     return {
       historyFocus,
-      maxPinnedAttachmentTurns: Math.min(12, Math.max(4, Math.floor(maxTurns / 16))),
-      allowSelectedAttachmentShrink: true,
-      allowAttachmentTurnDisplacement: true
+      maxPinnedAttachmentTurns: Math.min(12, Math.max(4, Math.floor(maxTurns / 16)))
     }
   }
 
   return {
     historyFocus,
-    maxPinnedAttachmentTurns: Math.min(4, Math.max(1, Math.floor(maxTurns / 64))),
-    allowSelectedAttachmentShrink: true,
-    allowAttachmentTurnDisplacement: false
+    maxPinnedAttachmentTurns: Math.min(4, Math.max(1, Math.floor(maxTurns / 64)))
   }
 }
 
@@ -263,24 +254,24 @@ export function resolveChatContextWindowBudgetPlan(raw, runtime = {}) {
   const reportedInputTokens = Math.max(0, Math.floor(Number(runtime?.reportedInputTokens) || 0))
   const reportedRequestChars = Math.max(0, Math.floor(Number(runtime?.reportedRequestChars) || 0))
   const telemetryAvailable = reportedInputTokens > 0 && reportedRequestChars > 0
+  // 无遥测时使用保守的字符/token 换算（约 4 字符 ≈ 1 token），
+  // 保证预算口径与有遥测时一致：否则 token 数会被当作字符数使用，
+  // 导致预算被压缩到实际窗口的 1/4，历史被过度提前裁剪。
+  const FALLBACK_TOKENS_PER_CHAR = 0.25
   const tokensPerChar = telemetryAvailable
     ? Math.min(8, Math.max(0.05, reportedInputTokens / reportedRequestChars))
-    : 0
+    : FALLBACK_TOKENS_PER_CHAR
   const totalEstimatedChars = reservedChars + sourceChars
-  const reservedTokens = telemetryAvailable ? Math.max(0, Math.ceil(reservedChars * tokensPerChar)) : 0
-  const sourceEstimatedTokens = telemetryAvailable ? Math.max(0, Math.ceil(sourceChars * tokensPerChar)) : 0
-  const totalEstimatedTokens = telemetryAvailable ? reservedTokens + sourceEstimatedTokens : 0
-  const expandedPressure = telemetryAvailable
-    ? (expandedTokens > 0 ? totalEstimatedTokens / expandedTokens : 0)
-    : 0
+  const reservedTokens = Math.max(0, Math.ceil(reservedChars * tokensPerChar))
+  const sourceEstimatedTokens = Math.max(0, Math.ceil(sourceChars * tokensPerChar))
+  const totalEstimatedTokens = reservedTokens + sourceEstimatedTokens
+  const expandedPressure = expandedTokens > 0 ? totalEstimatedTokens / expandedTokens : 0
   const mode = 'expanded'
   const reason = 'default'
   const baseChars = expandedChars
   const baseTokens = expandedTokens
-  const historyTokensBudget = telemetryAvailable ? Math.max(0, baseTokens - reservedTokens) : 0
-  const historyCharsBudget = telemetryAvailable
-    ? Math.max(1, Math.floor(historyTokensBudget / tokensPerChar))
-    : Math.max(1, Math.floor(Number(runtime?.maxChars) || baseTokens))
+  const historyTokensBudget = Math.max(0, baseTokens - reservedTokens)
+  const historyCharsBudget = Math.max(1, Math.floor(historyTokensBudget / tokensPerChar))
   const triggerRatio = CONTEXT_WINDOW_TRIGGER_RATIO
   const triggerTokens = telemetryAvailable
     ? Math.max(0, Math.floor(expandedTokens * triggerRatio))
@@ -401,11 +392,6 @@ export function buildChatContextWindowRuntimeOptions(raw, runtime = {}) {
       : isUtools
         ? 'strip'
         : 'full'
-  const preserveToolResultTurns =
-    typeof runtime?.preserveToolResultTurns === 'boolean'
-      ? runtime.preserveToolResultTurns
-      : true
-
   return {
     maxChars,
     maxMessages: isFinitePositiveNumber(resolved.maxMessages) ? resolved.maxMessages : Number.MAX_SAFE_INTEGER,
@@ -414,10 +400,7 @@ export function buildChatContextWindowRuntimeOptions(raw, runtime = {}) {
       ? resolved.keepRecentTurnsFull
       : Number.MAX_SAFE_INTEGER,
     maxPinnedAttachmentTurns: resolved.maxPinnedAttachmentTurns,
-    allowSelectedAttachmentShrink: resolved.allowSelectedAttachmentShrink,
-    allowAttachmentTurnDisplacement: resolved.allowAttachmentTurnDisplacement,
-    toolPolicy,
-    preserveToolResultTurns
+    toolPolicy
   }
 }
 
@@ -444,9 +427,8 @@ function stringifySize(value) {
     if (value.type === 'image_url' && value.image_url && typeof value.image_url === 'object') {
       const url = String(value.image_url.url || '').trim()
       if (!url) return ESTIMATED_IMAGE_URL_CHARS
-      return /^data:image\/[a-z0-9.+-]+;base64,/i.test(url)
-        ? ESTIMATED_IMAGE_URL_CHARS
-        : Math.max(ESTIMATED_IMAGE_URL_CHARS, url.length)
+      // base64 鍥剧墖浼氶殢璇锋眰浣撳彂閫侊紝蹇呴』鎸夌湡瀹為暱搴﹁鍏ラ绠楋紝鍚﹀垯甯﹀浘鍘嗗彶浼氫弗閲嶄綆浼扮獥鍙ｅ崰鐢紱
+      // 澶栭摼 URL 鏃犳硶棰勭煡鍥剧墖澶у皬锛岀户缁娇鐢ㄥ浐瀹氫及绠楀€笺€?      return Math.max(ESTIMATED_IMAGE_URL_CHARS, url.length)
     }
 
     try {
@@ -750,8 +732,13 @@ function splitConversationTurns(messages) {
     if (!isMessageLike(message)) return
 
     if (message.role === 'user') {
-      if (message.synthetic_tool_vision === true && currentTurn.length) {
-        currentTurn.push(message)
+      if (message.synthetic_tool_vision === true) {
+        // 工具视觉消息只并入已有轮次；若异常出现在最前，归入前导而非自开新轮。
+        if (currentTurn.length) {
+          currentTurn.push(message)
+        } else {
+          prelude.push(message)
+        }
         return
       }
 
@@ -798,44 +785,6 @@ export function countChatContextAttachmentSummaryMessages(messages) {
 //   3. 不做任何本地文本截断/摘要；历史压缩统一由云端模型摘要（contextSummary）完成。
 // ---------------------------------------------------------------------
 
-function buildLatestTurnTail(turnMessages, budget) {
-  const messages = Array.isArray(turnMessages) ? turnMessages : []
-  if (!messages.length) return null
-
-  let lastUserIndex = -1
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    if (messages[i]?.role === 'user') {
-      lastUserIndex = i
-      break
-    }
-  }
-
-  // 最新 user 输入必保（宁超不丢最新问题）。
-  const userMessage = lastUserIndex >= 0 ? messages[lastUserIndex] : messages[messages.length - 1]
-  const userChars = estimateMessageSize(userMessage)
-  let kept = [userMessage]
-  let keptChars = userChars
-
-  // user 之后的回复（assistant/tool 等）从尾部向前累积，优先保留最近的。
-  const tailAfterUser = lastUserIndex >= 0 ? messages.slice(lastUserIndex + 1) : []
-  for (let i = tailAfterUser.length - 1; i >= 0; i -= 1) {
-    const nextChars = estimateMessageSize(tailAfterUser[i])
-    if (keptChars + nextChars > budget) break
-    kept.push(tailAfterUser[i])
-    keptChars += nextChars
-  }
-
-  // 预算有余时，向 user 之前的更早内容累积。
-  for (let i = lastUserIndex - 1; i >= 0; i -= 1) {
-    const nextChars = estimateMessageSize(messages[i])
-    if (keptChars + nextChars > budget) break
-    kept.unshift(messages[i])
-    keptChars += nextChars
-  }
-
-  return { messages: kept, stats: { count: kept.length, chars: keptChars } }
-}
-
 function buildEmptyInspection() {
   return {
     messages: [],
@@ -861,6 +810,10 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
   const maxPreludeMessages = normalizeInteger(
     opts.maxPreludeMessages,
     DEFAULT_CHAT_CONTEXT_WINDOW_OPTIONS.maxPreludeMessages
+  )
+  const keepRecentTurnsFull = normalizeInteger(
+    opts.keepRecentTurnsFull,
+    DEFAULT_CHAT_CONTEXT_WINDOW_OPTIONS.keepRecentTurnsFull
   )
   const toolPolicy = opts.toolPolicy === 'strip' ? 'strip' : 'full'
   const attachmentPriority = opts.historyFocus === 'attachments'
@@ -897,8 +850,9 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
     selectedMessageCount + extraMessages <= maxMessages &&
     selectedChars + extraChars <= maxChars
 
+  // selectedTurns 按「最新优先」的顺序存放，最旧的可替换轮在数组末尾。
   const findOldestDisplaceableTurnIndex = () => {
-    for (let i = 0; i < selectedTurns.length; i += 1) {
+    for (let i = selectedTurns.length - 1; i >= 0; i -= 1) {
       const item = selectedTurns[i]
       if (!item || item.mustKeep) continue
       if (attachmentPriority && item.hasAttachment) continue
@@ -910,6 +864,8 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
   for (let turnIndex = turns.length - 1; turnIndex >= 0; turnIndex -= 1) {
     const turn = turns[turnIndex]
     const reverseIndex = turns.length - 1 - turnIndex
+    // Codex 对齐：仅最新轮宁超不丢（保证当前输入完整），
+    // keepRecentTurnsFull 只作为“最近 N 轮优先”的语义标记，不再豁免预算。
     const mustKeep = reverseIndex === 0
     const hasAttachment = turnHasAttachmentPayload(turn)
     const fullMessages = cloneTurnMessages(turn, toolPolicy)
@@ -918,32 +874,20 @@ function inspectChatContextWindowInternal(apiMessages, options = {}) {
       chars: estimateMessagesSize(fullMessages)
     }
 
-    // 最新轮：优先完整保留；预算不足时保留其尾部（保证最新 user 输入完整）。
+    // 最新轮：完整保留（宁超不丢），保证最新输入与当前回复完整。
     if (mustKeep) {
-      let entryMessages = fullMessages
-      let entryStats = fullStats
-      let entryVariant = 'full'
-      if (!fitsLimits(1, fullStats.count, fullStats.chars)) {
-        const tail = buildLatestTurnTail(fullMessages, maxChars - selectedChars)
-        if (tail && tail.stats.chars < fullStats.chars) {
-          entryMessages = tail.messages
-          entryStats = tail.stats
-          entryVariant = 'latest_tail'
-        }
-      }
       selectedTurns.push({
         index: turnIndex,
-        messages: entryMessages,
-        stats: entryStats,
-        selectionMode: entryVariant === 'latest_tail' ? 'compact' : 'full',
-        selectionVariant: entryVariant,
+        messages: fullMessages,
+        stats: fullStats,
+        selectionMode: 'full',
+        selectionVariant: 'full',
         hasAttachment,
-        mustKeep,
-        reasons: entryVariant === 'latest_tail' ? ['latest_turn_tail'] : []
+        mustKeep
       })
       selectedTurnCount += 1
-      selectedMessageCount += entryStats.count
-      selectedChars += entryStats.chars
+      selectedMessageCount += fullStats.count
+      selectedChars += fullStats.chars
       continue
     }
 
@@ -1089,8 +1033,7 @@ export function buildChatContextRequestEstimate({
     tailMessages,
     buildChatContextWindowRuntimeOptions(config, {
       providerKind,
-      maxChars: Math.max(1, Math.floor(Number(budgetPlan.historyCharsBudget) || Number.MAX_SAFE_INTEGER)),
-      preserveToolResultTurns: true
+      maxChars: Math.max(1, Math.floor(Number(budgetPlan.historyCharsBudget) || Number.MAX_SAFE_INTEGER))
     })
   )
   const requestChars = estimateMessagesSize(effectiveMessages) + totalReservedChars

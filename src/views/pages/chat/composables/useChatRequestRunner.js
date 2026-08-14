@@ -1123,9 +1123,6 @@ export function useChatRequestRunner(dependencies) {
     })
     if (!estimate.budgetPlan.telemetryAvailable) return false
     if (!estimate.triggered) return false
-    const summaryTriggerChars = calculateContextSummaryTriggerChars({
-      historyCharsBudget: estimate.budgetPlan.historyCharsBudget
-    })
     const summaryResult = await ensureContextWindowSummary({
       cfg: {
         requestMode: "chat",
@@ -1139,8 +1136,6 @@ export function useChatRequestRunner(dependencies) {
       requestRecord: targetSession,
       tools,
       reservedCharsOverride: reservedChars,
-      targetSourceChars: summaryTriggerChars,
-      force: false,
       returnMeta: true
     }).catch((err) => {
       console.warn("[chat context summary] inline compact failed:", err)
@@ -3224,8 +3219,7 @@ export function useChatRequestRunner(dependencies) {
       effectiveMessages,
       buildChatContextWindowRuntimeOptions(contextWindowResolvedOptions.value, {
         providerKind,
-        maxChars: budgetState.historyBudget,
-        preserveToolResultTurns: budgetState.budgetPlan.mode !== 'compact' || !summaryText
+        maxChars: budgetState.historyBudget
       })
     )
   }
@@ -3318,7 +3312,6 @@ export function useChatRequestRunner(dependencies) {
     cfg = null,
     tools = [],
     reservedCharsOverride = null,
-    targetSourceChars = null,
     sessionRecord = null
   } = {}) {
     const list = Array.isArray(sourceMessages) ? sourceMessages : []
@@ -3382,8 +3375,6 @@ export function useChatRequestRunner(dependencies) {
     requestRecord,
     tools = [],
     reservedCharsOverride = null,
-    targetSourceChars = null,
-    force = false,
     returnMeta = false
   } = {}) {
     const finish = (summaryText = '', generated = false) => {
@@ -3398,7 +3389,6 @@ export function useChatRequestRunner(dependencies) {
       cfg,
       tools,
       reservedCharsOverride,
-      targetSourceChars,
       sessionRecord: requestRecord
     })
     if (coveredCount < 1) return finish()
@@ -3406,7 +3396,7 @@ export function useChatRequestRunner(dependencies) {
     const cached = requestRecord.contextSummary && typeof requestRecord.contextSummary === 'object'
       ? requestRecord.contextSummary
       : null
-    if (!force && cached?.summaryText && cached.sourceHash === sourceHash && Number(cached.coveredMessageCount || 0) === coveredCount) {
+    if (cached?.summaryText && cached.sourceHash === sourceHash && Number(cached.coveredMessageCount || 0) === coveredCount) {
       return finish(cached.summaryText, false)
     }
   
@@ -3588,7 +3578,6 @@ export function useChatRequestRunner(dependencies) {
         cfg,
         tools: requestTools,
         reservedCharsOverride: reservedChars,
-        targetSourceChars: summaryTriggerChars,
         sessionRecord: targetRecord
       })
       const cachedSummary = syncContextSummaryCacheForRecord(targetRecord, coverage)
@@ -3603,17 +3592,7 @@ export function useChatRequestRunner(dependencies) {
           cfg,
           requestRecord: targetRecord,
           tools: requestTools,
-          reservedCharsOverride: reservedChars,
-          targetSourceChars: summaryTriggerChars,
-          force: (() => {
-            const cached = targetRecord?.contextSummary && typeof targetRecord.contextSummary === 'object'
-              ? targetRecord.contextSummary
-              : null
-            return !!cached?.summaryText && (
-              String(coverage?.sourceHash || '') !== String(cached?.sourceHash || '') ||
-              Math.max(0, Math.floor(Number(coverage?.coveredCount || 0))) !== Math.max(0, Math.floor(Number(cached?.coveredMessageCount || 0)))
-            )
-          })()
+          reservedCharsOverride: reservedChars
         })
       }
     } catch (err) {

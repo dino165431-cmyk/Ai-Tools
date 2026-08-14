@@ -12,19 +12,31 @@ function extractSummaryText(message) {
   ).trim()
 }
 
+// FNV-1a 32 位哈希：把每条消息折叠进稳定的整数摘要，
+// 避免拼接后整体截断导致「超长历史中更早的消息变更无法被检测」。
+function hashStringToUint32(value) {
+  let hash = 0x811c9dc5
+  const text = String(value || '')
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return hash >>> 0
+}
+
 export function buildContextSummarySourceHash(messages = []) {
-  return (Array.isArray(messages) ? messages : [])
-    .map((message) => {
-      if (!message || typeof message !== 'object') return ''
-      const role = String(message.role || '').trim()
-      const text = extractEditableUserTextFromContent(
-        extractRequestMessageTextContent(message.content)
-      ).slice(0, 1200)
-      return role || text ? `${role}:${text}` : ''
-    })
-    .filter(Boolean)
-    .join('\n')
-    .slice(0, 20000)
+  let combined = 0x9e3779b9
+  ;(Array.isArray(messages) ? messages : []).forEach((message) => {
+    if (!message || typeof message !== 'object') return
+    const role = String(message.role || '').trim()
+    const text = extractEditableUserTextFromContent(
+      extractRequestMessageTextContent(message.content)
+    ).slice(0, 1200)
+    if (!role && !text) return
+    const messageHash = hashStringToUint32(`${role}:${text}`)
+    combined = Math.imul(combined ^ messageHash, 0x01000193) >>> 0
+  })
+  return combined === 0 ? '0' : String(combined)
 }
 
 export function buildContextSummaryTurnSegments(apiMessages = [], options = {}) {

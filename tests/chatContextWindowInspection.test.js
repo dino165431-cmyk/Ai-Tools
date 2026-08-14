@@ -24,8 +24,6 @@ test('inspectChatContextWindow exposes ordered entries for preview rendering', (
     keepRecentTurnsFull: 1,
     maxPreludeMessages: 1,
     maxPinnedAttachmentTurns: 4,
-    allowSelectedAttachmentShrink: true,
-    allowAttachmentTurnDisplacement: true,
     toolPolicy: 'full'
   }
 
@@ -59,8 +57,6 @@ test('inspectChatContextWindow exposes omitted entries and reasons for preview d
     keepRecentTurnsFull: 1,
     maxPreludeMessages: 1,
     maxPinnedAttachmentTurns: 0,
-    allowSelectedAttachmentShrink: false,
-    allowAttachmentTurnDisplacement: false,
     toolPolicy: 'full'
   })
 
@@ -89,7 +85,7 @@ test('inspectChatContextWindow exposes omitted entries and reasons for preview d
   )
 })
 
-test('inspectChatContextWindow groups synthetic tool-vision messages into the tool turn and discounts base64 payloads', () => {
+test('inspectChatContextWindow groups synthetic tool-vision messages into the tool turn and counts base64 payloads at full length', () => {
   const largeDataUrl = `data:image/png;base64,${'a'.repeat(200000)}`
   const result = inspectChatContextWindow([
     { role: 'user', content: 'view note image' },
@@ -121,14 +117,13 @@ test('inspectChatContextWindow groups synthetic tool-vision messages into the to
     keepRecentTurnsFull: 4,
     maxPreludeMessages: 2,
     maxPinnedAttachmentTurns: 0,
-    allowSelectedAttachmentShrink: true,
-    allowAttachmentTurnDisplacement: false,
     toolPolicy: 'full'
   })
 
   assert.equal(result.inspection.turnCount, 1)
   assert.equal(result.inspection.entries.length, 1)
-  assert.ok(result.inspection.entries[0].chars < 2000)
+  // base64 图片按真实长度计入预算（不再固定折算 256 字符）。
+  assert.ok(result.inspection.entries[0].chars > 200000)
   assert.deepEqual(
     result.messages.map((message) => message.role),
     ['user', 'assistant', 'tool', 'user', 'assistant']

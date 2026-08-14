@@ -47,8 +47,6 @@ test('buildChatContextWindowRuntimeOptions preserves attachment recovery policy 
   assert.equal(options.maxTurns, 12)
   assert.equal(options.keepRecentTurnsFull, 8)
   assert.ok(options.maxPinnedAttachmentTurns >= 4)
-  assert.equal(options.allowSelectedAttachmentShrink, true)
-  assert.equal(options.allowAttachmentTurnDisplacement, true)
   assert.equal(options.toolPolicy, 'strip')
 })
 
@@ -67,24 +65,6 @@ test('buildChatContextWindowRuntimeOptions defaults to full tool policy for stan
   assert.equal(options.maxChars, 6789)
   assert.equal(options.toolPolicy, 'full')
   assert.equal(options.maxPinnedAttachmentTurns, 0)
-  assert.equal(options.allowSelectedAttachmentShrink, false)
-  assert.equal(options.allowAttachmentTurnDisplacement, false)
-})
-
-test('buildChatContextWindowRuntimeOptions can release tool turns for compact budgets', () => {
-  const options = buildChatContextWindowRuntimeOptions(
-    {
-      preset: 'balanced',
-      historyFocus: 'balanced'
-    },
-    {
-      providerKind: 'openai-compatible',
-      maxChars: 6789,
-      preserveToolResultTurns: false
-    }
-  )
-
-  assert.equal(options.preserveToolResultTurns, false)
 })
 
 test('resolveChatContextWindowBudgetPlan keeps a single expanded budget (Codex style)', () => {
@@ -102,8 +82,8 @@ test('resolveChatContextWindowBudgetPlan keeps a single expanded budget (Codex s
   assert.equal(plan.expandedChars, Number.MAX_SAFE_INTEGER)
   assert.equal(plan.mode, 'expanded')
   assert.equal(plan.autoCompactActive, false)
-  assert.equal(plan.autoCompactTriggerPercent, 95)
-  assert.equal(plan.baseChars, 262144)
+  assert.equal(plan.autoCompactTriggerPercent, 85)
+  assert.equal(plan.baseChars, 978576)
   assert.equal(plan.budgetUnit, 'char')
 })
 
@@ -121,7 +101,7 @@ test('resolveChatContextWindowBudgetPlan keeps expanded budget below the trigger
 
   assert.equal(plan.mode, 'expanded')
   assert.equal(plan.autoCompactActive, false)
-  assert.equal(plan.baseChars, 131072)
+  assert.equal(plan.baseChars, 512288)
 })
 
 test('resolveChatContextWindowBudgetPlan prefers reported input token calibration', () => {
@@ -163,8 +143,9 @@ test('resolveChatContextWindowBudgetPlan keeps character fallback when usage is 
 
   assert.equal(plan.budgetUnit, 'char')
   assert.equal(plan.telemetryAvailable, false)
-  assert.equal(plan.totalEstimatedTokens, 0)
-  assert.equal(plan.historyCharsBudget, 262144)
+  // 无遥测时使用保守换算（0.25 token/char）继续参与预算估算。
+  assert.equal(plan.totalEstimatedTokens, 82500)
+  assert.equal(plan.historyCharsBudget, 978576)
 })
 
 test('calculateContextSummaryTriggerChars uses history budget directly without re-subtracting reserved chars', () => {
